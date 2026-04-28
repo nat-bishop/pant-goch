@@ -1,0 +1,19 @@
+[project]
+name = "npc-service"
+version = "0.1.0"
+description = "Hostage-negotiation NPC sidecar (FastAPI + Pydantic AI + llama-server)"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "fastapi>=0.115,<0.116",
+    "uvicorn[standard]>=0.32,<0.33",
+    "pydantic>=2.10,<3",
+    "pydantic-ai>=1.0,<2",
+    "httpx>=0.28,<0.29",
+]
+
+[tool.uv]
+# This project is run as a standalone application, not installed as a library.
+# uv only manages the virtualenv and dependencies — it does NOT try to package
+# the source. Run from the *parent* directory so `npc_service` is importable
+# as a package (or set PYTHONPATH=.. when invoking from this directory).
+package = false

@@ -1,0 +1,39 @@
+# Large model weights (~8 GB) — fetched via `make download-model`
+models/
+.download/
+
+# Vendored llama.cpp binaries — fetched out-of-band, not source
+vendor/
+
+# Runtime logs
+logs/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Godot
+.godot/
+.import/
+*.translation
+
+# .NET / C#
+bin/
+obj/
+*.csproj.old
+*.user
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.vs/
+.idea/
+.vscode/
+
+# Local-only Claude artifacts
+.claude/settings.local.json
