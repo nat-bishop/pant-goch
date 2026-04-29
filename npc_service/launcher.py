@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import ctypes
 import logging
 import os
 import subprocess
@@ -18,6 +19,107 @@ log = logging.getLogger(__name__)
 HEALTH_POLL_INTERVAL_SECONDS = 0.5
 HEALTH_TIMEOUT_DEFAULT_SECONDS = 600.0  # cold Q8_0 load on slow disk: 90+s; HF download can be minutes
 SHUTDOWN_GRACE_SECONDS = 5.0
+
+
+# ───────────────────────── Windows Job Object cleanup ─────────────────────────
+#
+# When this Python process dies abruptly (Ctrl-C in `make sidecar`, OOM kill,
+# crash), normal stop_llama() doesn't run and llama-server orphans on :8080.
+# A Job Object with KILL_ON_JOB_CLOSE makes the kernel kill llama-server when
+# Python's process exits, regardless of whether shutdown ran. When this Python
+# is itself a child of Godot's job, we sit inside that job AND own a nested
+# job for our own child — both are belt-and-suspenders, both close the same
+# loop.
+
+def _create_kill_on_close_job() -> int | None:
+    if os.name != "nt":
+        return None
+
+    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
+    JobObjectExtendedLimitInformation = 9
+
+    class JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
+        _fields_ = [
+            ("PerProcessUserTimeLimit", ctypes.c_int64),
+            ("PerJobUserTimeLimit", ctypes.c_int64),
+            ("LimitFlags", ctypes.c_uint32),
+            ("MinimumWorkingSetSize", ctypes.c_size_t),
+            ("MaximumWorkingSetSize", ctypes.c_size_t),
+            ("ActiveProcessLimit", ctypes.c_uint32),
+            ("Affinity", ctypes.c_size_t),
+            ("PriorityClass", ctypes.c_uint32),
+            ("SchedulingClass", ctypes.c_uint32),
+        ]
+
+    class IO_COUNTERS(ctypes.Structure):
+        _fields_ = [
+            ("ReadOperationCount", ctypes.c_uint64),
+            ("WriteOperationCount", ctypes.c_uint64),
+            ("OtherOperationCount", ctypes.c_uint64),
+            ("ReadTransferCount", ctypes.c_uint64),
+            ("WriteTransferCount", ctypes.c_uint64),
+            ("OtherTransferCount", ctypes.c_uint64),
+        ]
+
+    class JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
+        _fields_ = [
+            ("BasicLimitInformation", JOBOBJECT_BASIC_LIMIT_INFORMATION),
+            ("IoInfo", IO_COUNTERS),
+            ("ProcessMemoryLimit", ctypes.c_size_t),
+            ("JobMemoryLimit", ctypes.c_size_t),
+            ("PeakProcessMemoryUsed", ctypes.c_size_t),
+            ("PeakJobMemoryUsed", ctypes.c_size_t),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateJobObjectW.restype = ctypes.c_void_p
+    kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p]
+    kernel32.SetInformationJobObject.restype = ctypes.c_int
+    kernel32.SetInformationJobObject.argtypes = [
+        ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32
+    ]
+    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+
+    h = kernel32.CreateJobObjectW(None, None)
+    if not h:
+        log.warning("CreateJobObject failed (err=%s); llama-server cleanup falls back to stop_llama()", ctypes.get_last_error())
+        return None
+
+    info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+    info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    if not kernel32.SetInformationJobObject(
+        h, JobObjectExtendedLimitInformation, ctypes.byref(info), ctypes.sizeof(info)
+    ):
+        log.warning("SetInformationJobObject failed (err=%s); closing job", ctypes.get_last_error())
+        kernel32.CloseHandle(h)
+        return None
+    return h
+
+
+def _assign_pid_to_job(job_handle: int, pid: int) -> None:
+    if os.name != "nt" or not job_handle:
+        return
+    PROCESS_TERMINATE = 0x0001
+    PROCESS_SET_QUOTA = 0x0100
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.restype = ctypes.c_void_p
+    kernel32.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
+    kernel32.AssignProcessToJobObject.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+    h_proc = kernel32.OpenProcess(PROCESS_TERMINATE | PROCESS_SET_QUOTA, False, pid)
+    if not h_proc:
+        log.warning("OpenProcess(pid=%s) failed (err=%s)", pid, ctypes.get_last_error())
+        return
+    try:
+        if not kernel32.AssignProcessToJobObject(job_handle, h_proc):
+            log.warning("AssignProcessToJobObject failed (err=%s) — likely already in a non-nestable parent job", ctypes.get_last_error())
+    finally:
+        kernel32.CloseHandle(h_proc)
+
+
+# Module-level: handle is held for the lifetime of the Python interpreter, so
+# the kernel auto-closes it (and kills llama-server) on any kind of exit.
+_LLAMA_JOB_HANDLE: int | None = _create_kill_on_close_job()
 
 
 class LlamaStartupError(RuntimeError):
@@ -158,6 +260,13 @@ def start_llama(cfg: LlamaConfig | None = None) -> subprocess.Popen:
             f"Set LLAMA_SERVER_BIN or place llama-server in {cfg.bin.parent}. "
             f"Underlying error: {e}"
         ) from e
+
+    # Enroll llama-server in our KILL_ON_JOB_CLOSE job so it dies if Python
+    # exits abruptly without running stop_llama(). No-op on non-Windows or
+    # if job creation failed (logged above) — stop_llama() remains the
+    # primary cleanup path.
+    if _LLAMA_JOB_HANDLE is not None:
+        _assign_pid_to_job(_LLAMA_JOB_HANDLE, proc.pid)
 
     threading.Thread(
         target=_drain_pipe, args=(proc.stdout, log_handle, "out"), daemon=True
