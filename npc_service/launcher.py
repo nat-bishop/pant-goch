@@ -50,7 +50,7 @@ def resolve_config() -> LlamaConfig:
     base = _exe_dir()
 
     bin_env = os.getenv("LLAMA_SERVER_BIN")
-    bin_path = Path(bin_env) if bin_env else base / _bin_name("llama-server")
+    bin_path = Path(bin_env) if bin_env else base / "vendor" / "llama.cpp" / _bin_name("llama-server")
 
     model_env = os.getenv("LLAMA_MODEL_PATH")
     hf_repo = os.getenv("LLAMA_HF_REPO", "unsloth/gemma-4-E4B-it-GGUF:Q8_0")
@@ -148,6 +148,9 @@ def start_llama(cfg: LlamaConfig | None = None) -> subprocess.Popen:
             stdin=subprocess.DEVNULL,
             bufsize=0,
             creationflags=creationflags,
+            # Don't let llama-server inherit uvicorn's listening socket — otherwise
+            # an orphaned llama keeps :8000 bound after the sidecar dies.
+            close_fds=True,
         )
     except FileNotFoundError as e:
         raise LlamaStartupError(
