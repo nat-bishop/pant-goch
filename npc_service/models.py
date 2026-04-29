@@ -114,6 +114,24 @@ def load_scenario(path: str | Path) -> Scenario:
 class ActionRequest(BaseModel):
     type: Literal["offer", "refuse", "empathize", "threaten"]
     detail: str = ""
+    line: str
+
+
+class PlayerOption(BaseModel):
+    """One generated dialogue option the player can pick.
+
+    `line` is shown verbatim to the player and sent verbatim to the captor.
+    `action_type` + `detail` are the hidden tag the server uses to drive
+    meter deltas, mirroring the four hardcoded action types of the prior UI.
+    """
+
+    line: str
+    action_type: Literal["offer", "refuse", "empathize", "threaten"]
+    detail: str = ""
+
+
+class OptionsResponse(BaseModel):
+    options: list[PlayerOption] = Field(min_length=3, max_length=3)
 
 
 class CaptorResponse(BaseModel):

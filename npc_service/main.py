@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import subprocess
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -16,6 +17,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import ValidationError
 from pydantic_ai import Agent, NativeOutput
 from pydantic_ai.messages import (
+    ModelMessage,
     ModelRequest,
     ModelResponse,
     TextPart,
@@ -37,6 +39,7 @@ from .models import (
     CaptorResponse,
     GameState,
     HostageDef,
+    OptionsResponse,
     Scenario,
     TimelineEvent,
     load_scenario,
@@ -55,6 +58,19 @@ EVENTS_KEEPALIVE_SECONDS = 15.0
 # How long to wait for llama-server when LAUNCH_LLAMA=false (just a probe — we
 # proceed even if it fails so the dev can start it after the sidecar).
 EXTERNAL_LLAMA_PROBE_TIMEOUT_SECONDS = 2.0
+# History compaction: when approx token count of message_history crosses this,
+# summarize_when_large folds the oldest messages into a recap before the next
+# captor turn. Heuristic: chars / 4. Set well below LLAMA_CTX so the summarizer
+# has its own working room.
+SUMMARY_TRIGGER_TOKENS = int(os.getenv("NPC_SUMMARY_TRIGGER_TOKENS", "5000"))
+# Number of trailing messages to keep verbatim past the recap (≈ last 2 turns).
+SUMMARY_KEEP_TAIL = int(os.getenv("NPC_SUMMARY_KEEP_TAIL", "4"))
+# Hard ceiling: even if summarization didn't fire, never send more than this
+# many messages to the captor. Last-resort safety net.
+MAX_HISTORY_MSGS = int(os.getenv("NPC_MAX_HISTORY_MSGS", "20"))
+# Whole-stream timeout for /action. If the model stalls past this, surface an
+# explicit error rather than hanging the SSE response open indefinitely.
+ACTION_STREAM_TIMEOUT_SECONDS = float(os.getenv("NPC_ACTION_TIMEOUT", "120"))
 
 
 # ───────────────────────── globals (set in lifespan) ─────────────────────────
@@ -63,6 +79,8 @@ SCENARIO: Scenario | None = None
 GAME_STATE: GameState | None = None
 HISTORY: list = []  # pydantic_ai message history
 CAPTOR_AGENT: Agent | None = None
+OPTIONS_AGENT: Agent | None = None
+SUMMARIZER_AGENT: Agent | None = None
 LLAMA_PROC: subprocess.Popen | None = None
 TIMELINE_TASK: asyncio.Task | None = None
 EVENT_BUS: "EventBus | None" = None
@@ -116,7 +134,7 @@ def build_system_prompt(captor: Captor, hostages: list[HostageDef]) -> str:
             trust_delta=1,
         )
         examples = (
-            f"\nExample. Negotiator action: {ex.user}\n"
+            f"\nExample. Negotiator says: {ex.user}\n"
             f"Your structured response:\n{example_response.model_dump_json()}\n"
         )
 
@@ -136,13 +154,12 @@ Stay in character. Speak only from the knowledge above — if asked about anythi
 outside it, refuse in character ({captor.deflection_style}). Never invent names, \
 places, times, or events that are not in your knowledge.
 
-Each turn the negotiator sends an action wrapped in tags like \
-<player_action type="empathize"/> or <player_action type="offer" detail="vehicle"/>. \
-You decide how the action lands and respond with these fields:
+Each turn the negotiator speaks to you. Read the tone and substance of what they \
+say and respond with these fields:
 
-- response_text: 1-3 sentences IN CHARACTER, replying to the negotiator's action.
+- response_text: 1-3 sentences IN CHARACTER, replying to the negotiator's line.
 - stress_delta, trust_delta, desperation_delta: integers in -20..+20 reflecting how \
-the action affected you. Genuine empathy and reasonable offers usually lower stress \
+their words affected you. Genuine empathy and reasonable offers usually lower stress \
 and raise trust. Refusing your demands raises stress and desperation. Threats spike \
 stress and desperation, lower trust.
 - action: one of [null, "release_hostage", "harm_hostage", "surrender"]. null is the \
@@ -154,15 +171,58 @@ the negotiator threatens you or if you feel cornered with no way out.
 otherwise null.{examples}"""
 
 
+def build_options_prompt(scenario: Scenario) -> str:
+    """System prompt for OPTIONS_AGENT: writes 3 candidate negotiator lines.
+
+    Deliberately POV-flipped from build_system_prompt — this agent is the
+    negotiator's writing room, not the captor. It only sees the chat history
+    (no meters), so the options stay honest about what the player can know.
+    """
+    captor = scenario.captor
+    hostage_list = ", ".join(f"{h.name} ({h.description})" for h in scenario.hostages)
+    demands = "\n".join(f"- {d}" for d in captor.initial_demands)
+
+    return f"""You are scripting dialogue options for a hostage negotiator.
+
+The negotiator is talking to {captor.name}: {captor.persona}
+
+Hostages: {hostage_list}.
+
+The captor's stated demands:
+{demands}
+
+Scene: {scenario.setup}
+
+Given the conversation so far, write exactly 3 distinct things the negotiator \
+could say next. Each option must:
+
+- Be a single short line (1-2 sentences) phrased as natural spoken dialogue. \
+No stage directions, no quote marks, no labels.
+- Take a clearly different strategic angle from the other two — pick from \
+empathy, offering something concrete, refusing/pushing back, or threatening \
+escalation. Vary the angles across the three.
+- Be tagged with the dominant action_type and (for offers) a detail.
+
+Tags you may use:
+- action_type: "offer" | "refuse" | "empathize" | "threaten"
+- detail (only for "offer"): "vehicle" | "money" | "safe_passage" | "medical"
+- detail for any other action_type: empty string ""
+
+Return JSON with three options. If the captor just made a specific request, \
+at least one option should respond directly to that request."""
+
+
 # ───────────────────────── action -> prompt rendering ─────────────────────────
 
 
 def render_action(req: ActionRequest) -> str:
-    if req.type == "offer":
-        # sanitise detail to keep tag well-formed
-        safe_detail = "".join(c for c in req.detail if c.isalnum() or c in ("_", "-"))
-        return f'<player_action type="offer" detail="{safe_detail}"/>'
-    return f'<player_action type="{req.type}"/>'
+    """The player's chosen line, sent verbatim to the captor as a user message.
+
+    `type` and `detail` come along for the ride (logged, surfaced to clients)
+    but are not part of the captor's prompt — the captor reads tone and
+    substance from the words alone.
+    """
+    return req.line
 
 
 # ───────────────────────── state mutation ─────────────────────────
@@ -263,6 +323,55 @@ async def timeline_scheduler(scenario: Scenario, state: GameState, bus: EventBus
         raise
 
 
+# ───────────────────────── history processors (pydantic-ai history_processors=) ─────────────────────────
+
+
+def _approx_tokens(messages: list[ModelMessage]) -> int:
+    """Cheap proxy for prompt token count. ~4 chars/token works as a threshold."""
+    return sum(len(str(m)) for m in messages) // 4
+
+
+async def summarize_when_large(messages: list[ModelMessage]) -> list[ModelMessage]:
+    """Fold the oldest messages into a single recap when history grows too big."""
+    if SUMMARIZER_AGENT is None:
+        return messages
+    approx = _approx_tokens(messages)
+    if approx < SUMMARY_TRIGGER_TOKENS:
+        return messages
+    if len(messages) <= SUMMARY_KEEP_TAIL:
+        return messages
+    head = messages[:-SUMMARY_KEEP_TAIL]
+    tail = messages[-SUMMARY_KEEP_TAIL:]
+    if len(head) < 6:
+        return messages
+
+    log.info(
+        "history compaction: approx_tokens=%d threshold=%d folding %d msgs into recap, keeping %d",
+        approx, SUMMARY_TRIGGER_TOKENS, len(head), len(tail),
+    )
+    t0 = time.monotonic()
+    summary = await SUMMARIZER_AGENT.run(message_history=head)
+    log.info(
+        "history compaction: recap produced in %.2fs, recap_chars=%d",
+        time.monotonic() - t0, len(summary.output),
+    )
+    recap_msg = ModelRequest(parts=[
+        UserPromptPart(content=f"[recap of earlier negotiation]\n{summary.output}")
+    ])
+    return [recap_msg, *tail]
+
+
+def hard_tail_cap(messages: list[ModelMessage]) -> list[ModelMessage]:
+    """Last-resort cap: drop oldest messages once we exceed MAX_HISTORY_MSGS."""
+    if len(messages) <= MAX_HISTORY_MSGS:
+        return messages
+    log.info(
+        "history compaction: hard cap dropping %d oldest msgs (had %d, cap %d)",
+        len(messages) - MAX_HISTORY_MSGS, len(messages), MAX_HISTORY_MSGS,
+    )
+    return messages[-MAX_HISTORY_MSGS:]
+
+
 # ───────────────────────── seed history (empty for structured-output safety) ─────────────────────────
 
 
@@ -281,8 +390,8 @@ def seed_history(captor: Captor) -> list:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    global SCENARIO, GAME_STATE, HISTORY, CAPTOR_AGENT, LLAMA_PROC
-    global TIMELINE_TASK, EVENT_BUS
+    global SCENARIO, GAME_STATE, HISTORY, CAPTOR_AGENT, OPTIONS_AGENT
+    global SUMMARIZER_AGENT, LLAMA_PROC, TIMELINE_TASK, EVENT_BUS
 
     scenario_path = Path(os.getenv("SCENARIO_PATH", str(Path(__file__).parent / "scenario.json")))
     log.info("loading scenario: %s", scenario_path)
@@ -320,10 +429,27 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # required. ToolOutput (default) requires the model to emit tool_calls in
     # OpenAI format; Gemma 4's tool calling via llama.cpp is unreliable in
     # practice with our prompt — model degenerates into runaway generation.
+    SUMMARIZER_AGENT = Agent(
+        model,
+        instructions=(
+            "Summarize the negotiation so far in 4-6 short bullets. "
+            "Cover: emotional state, demands raised, offers made, hostage status, "
+            "and any commitments. Plain text, no preamble."
+        ),
+    )
     CAPTOR_AGENT = Agent(
         model,
         output_type=NativeOutput(CaptorResponse),
         instructions=build_system_prompt(SCENARIO.captor, SCENARIO.hostages),
+        history_processors=[summarize_when_large, hard_tail_cap],
+    )
+    # Same model, but POV-flipped: writes 3 candidate negotiator lines for the
+    # player to pick from. Shares HISTORY (read-only) so options track context.
+    OPTIONS_AGENT = Agent(
+        model,
+        output_type=NativeOutput(OptionsResponse),
+        instructions=build_options_prompt(SCENARIO),
+        history_processors=[summarize_when_large, hard_tail_cap],
     )
 
     HISTORY = seed_history(SCENARIO.captor)
@@ -357,7 +483,7 @@ async def health() -> dict:
     return {
         "ok": True,
         "scenario_loaded": SCENARIO is not None,
-        "agent_ready": CAPTOR_AGENT is not None,
+        "agent_ready": CAPTOR_AGENT is not None and OPTIONS_AGENT is not None,
     }
 
 
@@ -396,15 +522,64 @@ async def post_action(req: ActionRequest) -> StreamingResponse:
         raise HTTPException(503, "service not ready")
     if GAME_STATE.ended:
         raise HTTPException(409, f"scenario already ended ({GAME_STATE.end_reason})")
+    if not req.line.strip():
+        raise HTTPException(422, "line must be a non-empty player utterance")
 
     user_prompt = render_action(req)
-    log.info("/action %s -> prompt %s", req.model_dump(), user_prompt)
+    log.info(
+        "/action type=%s detail=%r -> prompt=%r",
+        req.type, req.detail, user_prompt,
+    )
 
     return StreamingResponse(
         _action_event_stream(user_prompt),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@app.post("/options")
+async def post_options() -> OptionsResponse:
+    """Generate 3 candidate negotiator lines based on the current chat history.
+
+    Fail loudly: validation errors and model errors propagate as HTTP errors;
+    no canned-fallback options. Shares ACTION_LOCK so HISTORY is stable
+    against concurrent /action calls.
+    """
+    if OPTIONS_AGENT is None or GAME_STATE is None:
+        raise HTTPException(503, "service not ready")
+    if GAME_STATE.ended:
+        raise HTTPException(409, f"scenario already ended ({GAME_STATE.end_reason})")
+
+    async with ACTION_LOCK:
+        try:
+            result = await asyncio.wait_for(
+                OPTIONS_AGENT.run(
+                    "Write 3 dialogue options for the negotiator now.",
+                    message_history=HISTORY,
+                ),
+                timeout=ACTION_STREAM_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            log.warning(
+                "/options stalled past %.1fs", ACTION_STREAM_TIMEOUT_SECONDS,
+            )
+            raise HTTPException(
+                504,
+                f"options generation stalled after {ACTION_STREAM_TIMEOUT_SECONDS:.0f}s",
+            )
+        except ValidationError as e:
+            log.warning("options response failed validation: %s", e)
+            raise HTTPException(502, f"validation_error: {e}")
+        except Exception as e:
+            log.exception("/options failed")
+            raise HTTPException(502, str(e))
+
+    log.info(
+        "/options -> %s",
+        [(o.action_type, o.detail, o.line) for o in result.output.options],
+    )
+    return result.output
 
 
 async def _action_event_stream(user_prompt: str) -> AsyncIterator[bytes]:
@@ -416,32 +591,45 @@ async def _action_event_stream(user_prompt: str) -> AsyncIterator[bytes]:
         last_text = ""
         completed = False
         try:
-            async with CAPTOR_AGENT.run_stream(
-                user_prompt, message_history=HISTORY
-            ) as result:
-                async for partial in result.stream_output():
-                    text = getattr(partial, "response_text", "") or ""
-                    if text and text != last_text:
-                        delta = text[len(last_text):]
-                        yield _sse({"type": "text", "text": delta})
-                        last_text = text
+            async with asyncio.timeout(ACTION_STREAM_TIMEOUT_SECONDS):
+                async with CAPTOR_AGENT.run_stream(
+                    user_prompt, message_history=HISTORY
+                ) as result:
+                    async for partial in result.stream_output():
+                        text = getattr(partial, "response_text", "") or ""
+                        if text and text != last_text:
+                            delta = text[len(last_text):]
+                            yield _sse({"type": "text", "text": delta})
+                            last_text = text
 
-                final = await result.get_output()
-                # Persist + mutate only on full completion (cancellation jumps
-                # straight to the except clause and skips this block).
-                HISTORY = list(result.all_messages())
-                apply_response(GAME_STATE, final)
-                yield _sse({"type": "state", "state": GAME_STATE.public_view()})
-                if GAME_STATE.ended:
-                    await EVENT_BUS.publish({
-                        "type": "game_ended",
-                        "end_reason": GAME_STATE.end_reason,
-                        "captor_outcome": GAME_STATE.captor_outcome,
-                    })
+                    final = await result.get_output()
+                    # Persist + mutate only on full completion (cancellation jumps
+                    # straight to the except clause and skips this block).
+                    HISTORY = list(result.all_messages())
+                    apply_response(GAME_STATE, final)
+                    yield _sse({"type": "state", "state": GAME_STATE.public_view()})
+                    if GAME_STATE.ended:
+                        await EVENT_BUS.publish({
+                            "type": "game_ended",
+                            "end_reason": GAME_STATE.end_reason,
+                            "captor_outcome": GAME_STATE.captor_outcome,
+                        })
             yield _sse({"type": "done"})
         except asyncio.CancelledError:
             log.info("/action cancelled by client (partial discarded)")
             raise
+        except TimeoutError:
+            log.warning(
+                "/action stalled past %.1fs — likely context exhaustion or model hang",
+                ACTION_STREAM_TIMEOUT_SECONDS,
+            )
+            yield _sse({
+                "type": "error",
+                "message": (
+                    f"model stalled after {ACTION_STREAM_TIMEOUT_SECONDS:.0f}s — "
+                    "likely context exhaustion. Try /reset."
+                ),
+            })
         except ValidationError as e:
             log.warning("captor response failed validation: %s", e)
             yield _sse({"type": "error", "message": f"validation_error: {e}"})

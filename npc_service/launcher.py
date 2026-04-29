@@ -73,7 +73,7 @@ def resolve_config() -> LlamaConfig:
         hf_repo=hf,
         port=int(os.getenv("LLAMA_PORT", "8080")),
         host=os.getenv("LLAMA_HOST", "127.0.0.1"),
-        ctx=int(os.getenv("LLAMA_CTX", "8192")),
+        ctx=int(os.getenv("LLAMA_CTX", "32768")),
         extra_args=os.getenv("LLAMA_EXTRA_ARGS", "").split() if os.getenv("LLAMA_EXTRA_ARGS") else [],
     )
 

@@ -34,6 +34,7 @@ public partial class Game : Control
     private CancellationTokenSource? _eventsCts;
     private bool _streaming;
     private bool _ended;
+    private bool _optionsFetchInFlight;
     private double _timeLeftSeconds;
     private int _displayedSecond = -1;
 
@@ -99,11 +100,12 @@ public partial class Game : Control
                 ct: _eventsCts.Token);
 
             HideBoot();
-            _actionPanel.SetEnabled(true);
 
             // Debug regenerate button
             var debug = (System.Environment.GetEnvironmentVariable("DEBUG_AFFORDANCES") ?? "").ToLower();
             _regenButton.Visible = debug == "1" || debug == "true" || debug == "yes";
+
+            await FetchAndShowOptions();
         }
         catch (Exception e)
         {
@@ -114,26 +116,26 @@ public partial class Game : Control
 
     // ── action flow ──
 
-    private void OnActionSelected(string type, string detail)
+    private void OnActionSelected(string type, string detail, string line)
     {
         if (_ended) return;
-        _ = FireAction(type, detail);
+        _ = FireAction(type, detail, line);
     }
 
-    private async Task FireAction(string type, string detail)
+    private async Task FireAction(string type, string detail, string line)
     {
         _activeStreamCts?.Cancel();
         _activeStreamCts = new CancellationTokenSource();
         var ct = _activeStreamCts.Token;
 
         SetStreamingUI(true);
-        AppendChatPlayerAction(type, detail);
+        AppendChatPlayerLine(line);
         BeginCaptorBubble();
 
         try
         {
             await _client.StreamActionAsync(
-                type, detail,
+                type, detail, line,
                 onTextDelta: AppendCaptorDelta,
                 onState: ApplyStateEvent,
                 onDone: OnStreamDone,
@@ -147,11 +149,35 @@ public partial class Game : Control
         }
     }
 
+    private async Task FetchAndShowOptions()
+    {
+        if (_ended || _optionsFetchInFlight) return;
+        _optionsFetchInFlight = true;
+        _actionPanel.ShowLoading();
+        try
+        {
+            var opts = await _client.GetOptionsAsync();
+            if (_ended) return;
+            _actionPanel.SetOptions(opts);
+        }
+        catch (Exception e)
+        {
+            GD.PrintErr($"[Game] options fetch failed: {e}");
+            AppendChatSystem($"[options error] {e.Message}");
+            _actionPanel.ShowError(e.Message);
+        }
+        finally
+        {
+            _optionsFetchInFlight = false;
+        }
+    }
+
     private void OnStopPressed()
     {
         _activeStreamCts?.Cancel();
         MarkInterrupted();
         SetStreamingUI(false);
+        _ = FetchAndShowOptions();
     }
 
     private void OnRegenPressed()
@@ -174,12 +200,14 @@ public partial class Game : Control
     private void OnStreamDone()
     {
         SetStreamingUI(false);
+        _ = FetchAndShowOptions();
     }
 
     private void OnStreamError(string msg)
     {
         AppendChatSystem($"[error] {msg}");
         SetStreamingUI(false);
+        _ = FetchAndShowOptions();
     }
 
     private void ApplyStateEvent(GameState s)
@@ -205,14 +233,14 @@ public partial class Game : Control
 
     // ── chat log helpers ──
 
-    private void AppendChatPlayerAction(string type, string detail)
+    private void AppendChatPlayerLine(string line)
     {
-        var label = string.IsNullOrEmpty(detail) ? type.ToUpper() : $"{type.ToUpper()} → {detail}";
         _chatLog.AppendText("\n\n");
         _chatLog.PushColor(new Color(0.5f, 0.85f, 0.95f));
         _chatLog.PushBold();
-        _chatLog.AppendText($"→ {label}");
+        _chatLog.AppendText("Negotiator: ");
         _chatLog.Pop();
+        _chatLog.AppendText(line);
         _chatLog.Pop();
     }
 
@@ -255,7 +283,9 @@ public partial class Game : Control
     private void SetStreamingUI(bool streaming)
     {
         _streaming = streaming;
-        _actionPanel.SetEnabled(!streaming && !_ended);
+        // Streaming start disables buttons; streaming end leaves them disabled
+        // until FetchAndShowOptions loads the next batch and re-enables.
+        if (streaming) _actionPanel.SetEnabled(false);
         _stopButton.Visible = streaming;
     }
 
@@ -320,10 +350,10 @@ public partial class Game : Control
             _timeLeftSeconds = _scenario.DurationSeconds;
             _displayedSecond = -1;
             UpdateTimerLabel();
-            _actionPanel.SetEnabled(true);
             AppendChatSystem(_scenario.Setup);
             AppendChatSystem("Demands: " + string.Join(" / ", _scenario.Captor.InitialDemands));
             _timerLabel.RemoveThemeColorOverride("font_color");
+            await FetchAndShowOptions();
         }
         catch (Exception e)
         {

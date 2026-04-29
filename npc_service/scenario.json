@@ -24,7 +24,7 @@
     ],
     "seed_exchanges": [
       {
-        "user": "<player_action type=\"empathize\"/>",
+        "user": "I hear you, man. This wasn't supposed to go this way, was it?",
         "assistant": "Don't — don't try that voice on me, man. I know what you're doing. Just tell me about the car."
       }
     ],
