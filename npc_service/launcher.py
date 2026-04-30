@@ -210,7 +210,11 @@ def _drain_pipe(pipe, log_file_handle, tag: str) -> None:
             log_file_handle.flush()
             # tee key lines to stderr so they show up in console
             lower = line.lower()
-            if any(k in lower for k in ("error", "loaded model", "model loaded", "warming up", "listening on")):
+            keywords = (
+                "error", "loaded model", "model loaded", "warming up", "listening on",
+                "prompt eval", "eval time", "tokens per second", "slot release",
+            )
+            if any(k in lower for k in keywords):
                 print(f"[llama:{tag}] {line}", file=sys.stderr, flush=True)
     finally:
         try:

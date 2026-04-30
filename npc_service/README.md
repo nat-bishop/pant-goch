@@ -142,15 +142,15 @@ ship; `LLAMA_SERVER_BIN` and `LLAMA_MODEL_PATH` default off that.
   for the underlying llama-server stderr. Common causes: port in use,
   GPU OOM (drop `LLAMA_NGL`), missing `--jinja` (we set it; if you've
   overridden `LLAMA_EXTRA_ARGS`, make sure it's still there).
-- **Captor response is plain prose, not JSON / runaway generation**:
-  Gemma 4 + Pydantic AI's default `ToolOutput` mode is unreliable — even
-  though llama.cpp's chat template supports Gemma 4's native
-  `<|tool_call>` tokens, the model frequently degenerates into long
-  non-tool-call streams. **The shipped sidecar uses `NativeOutput`**
-  (`response_format=json_schema`); llama-server enforces the JSON
-  schema via GBNF grammar at the sampler level, so the output is
-  guaranteed to validate. If you ever switch to `ToolOutput`, expect
-  flaky behaviour.
+- **Captor turns are slow / runaway generation / `/action stalled past
+  120s`**: with an unbounded `response_text` field on `CaptorResponse`,
+  the model can fill it indefinitely and each turn's bloated reply seeds
+  the next turn into even more verbosity. The shipped sidecar uses
+  `ToolOutput(CaptorResponse)` plus `model_settings={"max_tokens": 512}`,
+  which keeps turns bounded. Earlier builds shipped `NativeOutput` —
+  reliable JSON via GBNF grammar at the sampler, but no per-field length
+  cap, so it hit the runaway pattern on long sessions. If you switch back
+  to `NativeOutput`, also add `Field(max_length=...)` on `response_text`.
 - **Empty captor responses / 18K-token "responses"**: `--reasoning off`
   is missing from llama-server. Gemma 4 E-models default to thinking-on,
   spending all their tokens inside a hidden `<think>` block. The

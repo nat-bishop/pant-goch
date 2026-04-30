@@ -37,3 +37,6 @@ Thumbs.db
 
 # Local-only Claude artifacts
 .claude/settings.local.json
+
+# Logfire project credentials (per-machine, contains write token)
+.logfire/

@@ -12,10 +12,11 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import AsyncIterator
 
+import logfire
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import ValidationError
-from pydantic_ai import Agent, NativeOutput
+from pydantic_ai import Agent, ToolOutput
 from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
@@ -47,7 +48,30 @@ logging.basicConfig(
     level=os.getenv("NPC_LOG_LEVEL", "info").upper(),
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
+# httpx logs every request at INFO; at DEBUG it spams every health probe and
+# chat completion. Pin it to WARNING so NPC_LOG_LEVEL=debug stays readable.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 log = logging.getLogger("npc_service")
+
+# Logfire: instrument the captor agent and FastAPI. send_to_logfire='if-token-present'
+# keeps the SDK silent when no project credentials / LOGFIRE_TOKEN are configured —
+# safe for fresh checkouts and CI without credentials.
+logfire.configure(
+    service_name="npc_service",
+    send_to_logfire="if-token-present",
+    console=False,
+)
+logfire.instrument_pydantic_ai()
+# httpx: capture every call to llama-server as a child span — surfaces LLM
+# round-trip latency, status, and timeouts. Critical for diagnosing the cold-load
+# / stream-stall / context-exhaustion failure modes called out in CLAUDE.md.
+logfire.instrument_httpx()
+# Bridge stdlib logging (`log.info(...)` throughout this file) into Logfire as
+# structured events so meter mutations, hostage-status changes, and timeline
+# events appear inline with spans without rewriting the call sites. Attached as
+# a second handler so the existing stderr StreamHandler (from basicConfig) still
+# prints locally.
+logging.getLogger().addHandler(logfire.LogfireLoggingHandler())
 
 # SSE keepalive: send a comment ":" line every N seconds when /events queue is
 # idle, so proxies and HttpClient instances don't drop the connection.
@@ -365,12 +389,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         model_name,
         provider=OpenAIProvider(base_url=base_url, api_key="not-needed"),
     )
-    # NativeOutput uses response_format={"type":"json_schema",...}. llama-server
-    # enforces the schema via GBNF grammar at the sampler level — output is
-    # GUARANTEED to be valid JSON matching CaptorResponse, no tool-call parsing
-    # required. ToolOutput (default) requires the model to emit tool_calls in
-    # OpenAI format; Gemma 4's tool calling via llama.cpp is unreliable in
-    # practice with our prompt — model degenerates into runaway generation.
+    # ToolOutput requires the model to emit OpenAI-format tool_calls; Pydantic
+    # AI parses the args into CaptorResponse. With current llama.cpp this is
+    # reliable on Gemma 4 and produces bounded, in-character turns. NativeOutput
+    # (response_format=json_schema, GBNF-enforced at the sampler) was previously
+    # shipped here, but with an unbounded response_text field the model filled
+    # it indefinitely, cascading turn-over-turn into 19K-token generations.
+    # The model_settings max_tokens cap is a safety net for occasional non-
+    # tool-call prefix prose that Pydantic AI silently discards.
     SUMMARIZER_AGENT = Agent(
         model,
         instructions=(
@@ -381,9 +407,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     CAPTOR_AGENT = Agent(
         model,
-        output_type=NativeOutput(CaptorResponse),
+        output_type=ToolOutput(CaptorResponse),
         instructions=build_system_prompt(SCENARIO.captor, SCENARIO.hostages),
         history_processors=[summarize_when_large, hard_tail_cap],
+        model_settings={"max_tokens": 512},
     )
 
     HISTORY = seed_history(SCENARIO.captor)
@@ -407,6 +434,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(lifespan=lifespan, title="npc_service")
+logfire.instrument_fastapi(app, capture_headers=False)
 
 
 # ───────────────────────── endpoints ─────────────────────────
@@ -477,6 +505,8 @@ async def _action_event_stream(user_prompt: str) -> AsyncIterator[bytes]:
     async with ACTION_LOCK:
         last_text = ""
         completed = False
+        t_start = time.monotonic()
+        t_first: float | None = None
         try:
             async with asyncio.timeout(ACTION_STREAM_TIMEOUT_SECONDS):
                 async with CAPTOR_AGENT.run_stream(
@@ -485,6 +515,8 @@ async def _action_event_stream(user_prompt: str) -> AsyncIterator[bytes]:
                     async for partial in result.stream_output():
                         text = getattr(partial, "response_text", "") or ""
                         if text and text != last_text:
+                            if t_first is None:
+                                t_first = time.monotonic()
                             delta = text[len(last_text):]
                             yield _sse({"type": "text", "text": delta})
                             last_text = text
@@ -501,6 +533,13 @@ async def _action_event_stream(user_prompt: str) -> AsyncIterator[bytes]:
                             "end_reason": GAME_STATE.end_reason,
                             "captor_outcome": GAME_STATE.captor_outcome,
                         })
+                    ttfb_ms = int((t_first - t_start) * 1000) if t_first else -1
+                    total_ms = int((time.monotonic() - t_start) * 1000)
+                    log.info(
+                        "/action complete: ttfb=%dms total=%dms response_chars=%d history_msgs=%d approx_tokens=%d",
+                        ttfb_ms, total_ms, len(final.response_text or ""),
+                        len(HISTORY), _approx_tokens(HISTORY),
+                    )
             yield _sse({"type": "done"})
         except asyncio.CancelledError:
             log.info("/action cancelled by client (partial discarded)")
