@@ -135,21 +135,6 @@ public partial class LLMClient : Node
             onTextDelta, onState, onTimeline, onDone, onError, ct);
 
     /// <summary>
-    /// POST /regenerate. Pops the last exchange server-side and re-streams.
-    /// Server enforces DEBUG_AFFORDANCES=true.
-    /// </summary>
-    public Task RegenerateAsync(
-        Action<string> onTextDelta,
-        Action<GameState> onState,
-        Action<TimelineEvent> onTimeline,
-        Action onDone,
-        Action<string> onError,
-        CancellationToken ct = default)
-        => StreamSseAsync(
-            new HttpRequestMessage(HttpMethod.Post, $"{BaseUrl}/regenerate"),
-            onTextDelta, onState, onTimeline, onDone, onError, ct);
-
-    /// <summary>
     /// Subscribe to /events SSE — game-end and reset signals. Timeline events
     /// are NOT broadcast here anymore; they flow inline through /action SSE so
     /// the action turn is a single source of truth. Lifetime = whole game session.

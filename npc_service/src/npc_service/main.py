@@ -105,6 +105,7 @@ SUMMARY_TRIGGER_TOKENS: int = _BOOT_SETTINGS.summary_trigger_tokens
 LLAMA_CTX_TOKENS: int = 0
 SUMMARY_KEEP_TAIL = _BOOT_SETTINGS.summary_keep_tail
 ACTION_STREAM_TIMEOUT_SECONDS = _BOOT_SETTINGS.action_stream_timeout_seconds
+OPTIONS_TIMEOUT_SECONDS = _BOOT_SETTINGS.options_timeout_seconds
 
 
 # ───────────────────────── globals (set in lifespan) ─────────────────────────
@@ -516,16 +517,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     # OPTIONS_AGENT: separate agent generating player dialogue picks each turn.
     # Reuses the same model and history processors as the captor so both agents
-    # see a consistent compacted view of HISTORY. max_tokens=1024 (vs captor's
-    # 512) because up to 5 options × ~400-char hidden_line + tags + tool-call
-    # overhead can blow past 512.
+    # see a consistent compacted view of HISTORY. max_tokens=1536 covers the
+    # worst case (5 options × ~400-char hidden_line + 24-char tags + JSON +
+    # tool-call envelope ≈ 1100-1400 tokens) with margin so the last option
+    # never truncates into invalid JSON.
     OPTIONS_AGENT = Agent(
         model,
         name="options",
         output_type=ToolOutput(OptionsResponse),
         instructions=build_options_system_prompt(SCENARIO),
         history_processors=[summarize_when_large],
-        model_settings={"max_tokens": 1024},
+        model_settings={"max_tokens": 1536},
     )
 
     HISTORY = seed_history(SCENARIO.captor)
@@ -631,7 +633,6 @@ async def _action_event_stream(user_prompt: str) -> AsyncIterator[bytes]:
 
     async with ACTION_LOCK:
         last_text = ""
-        completed = False
         t_start = time.monotonic()
         t_first: float | None = None
         try:
@@ -704,49 +705,6 @@ async def _action_event_stream(user_prompt: str) -> AsyncIterator[bytes]:
             yield _sse({"type": "error", "message": str(e)})
 
 
-@app.post("/regenerate")
-async def post_regenerate() -> StreamingResponse:
-    """Debug-only: pop the last exchange and re-stream the captor's response."""
-    if not _debug_affordances_enabled():
-        raise HTTPException(403, "regenerate disabled (set DEBUG_AFFORDANCES=true)")
-    if CAPTOR_AGENT is None or GAME_STATE is None:
-        raise HTTPException(503, "service not ready")
-    if GAME_STATE.ended:
-        raise HTTPException(409, "scenario already ended")
-
-    global HISTORY
-    # find the last user prompt; pop it and any later messages, re-issue
-    last_user_prompt = None
-    new_history = list(HISTORY)
-    while new_history:
-        msg = new_history.pop()
-        if isinstance(msg, ModelRequest):
-            for part in reversed(msg.parts):
-                if isinstance(part, UserPromptPart):
-                    last_user_prompt = part.content
-                    break
-            if last_user_prompt is not None:
-                break
-    if last_user_prompt is None:
-        raise HTTPException(400, "no prior user prompt to regenerate")
-    HISTORY = new_history
-    # Rewind action-budget state: the popped turn already incremented action_count
-    # and may have fired timeline events. Decrement count and unfire any events
-    # whose threshold is now in the future. Meter deltas from the popped turn are
-    # NOT reverted — pre-existing /regenerate behaviour, documented as a caveat.
-    GAME_STATE.action_count = max(0, GAME_STATE.action_count - 1)
-    threshold_by_id = {e.id: e.after_actions for e in SCENARIO.timeline}
-    GAME_STATE.fired_timeline_event_ids = {
-        eid for eid in GAME_STATE.fired_timeline_event_ids
-        if eid in threshold_by_id and threshold_by_id[eid] <= GAME_STATE.action_count
-    }
-    return StreamingResponse(
-        _action_event_stream(str(last_user_prompt)),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
-
-
 @app.post("/reset")
 async def post_reset() -> JSONResponse:
     global HISTORY, GAME_STATE
@@ -770,24 +728,52 @@ async def get_options() -> dict:
 
     Shares ACTION_LOCK with /action so this can't read HISTORY mid-mutation.
     Called by the client (a) on boot before any captor turn, and (b) after each
-    /action SSE 'done'.
+    /action SSE 'done'. On any failure (validation, timeout, model error)
+    returns `{"options": []}` so the Godot client falls into its existing
+    "No options available." path instead of breaking the UX.
     """
     if SCENARIO is None or GAME_STATE is None or OPTIONS_AGENT is None:
         raise HTTPException(503, "service not ready")
     if GAME_STATE.ended:
         return {"options": []}
-    log.info("/options request (action_count=%d)", GAME_STATE.action_count)
+    action_count = GAME_STATE.action_count
+    actions_remaining = GAME_STATE.actions_remaining()
+    log.info("/options request (action_count=%d)", action_count)
     t_start = time.monotonic()
-    async with ACTION_LOCK:
-        # Read-only: do NOT write result back to HISTORY.
-        result = await OPTIONS_AGENT.run("Generate options.", message_history=HISTORY)
-    usage = result.usage()
-    log.info(
-        "/options complete: %dms options=%d input_tokens=%s output_tokens=%d",
-        int((time.monotonic() - t_start) * 1000), len(result.output.options),
-        _pct_of_ctx(usage.input_tokens), usage.output_tokens,
+    # Pace signal in the user prompt (not the system prompt) so prefix-cache
+    # stays warm across turns. Don't leak meters — actions_remaining is in
+    # public_view().
+    user_prompt = (
+        f"Generate options. Actions remaining: {actions_remaining}/{GAME_STATE.max_actions}."
     )
-    return {"options": [o.model_dump() for o in result.output.options]}
+    with logfire.span(
+        "options_request",
+        action_count=action_count,
+        actions_remaining=actions_remaining,
+        history_msgs=len(HISTORY),
+    ) as span:
+        try:
+            async with ACTION_LOCK:
+                async with asyncio.timeout(OPTIONS_TIMEOUT_SECONDS):
+                    # Read-only: do NOT write result back to HISTORY.
+                    result = await OPTIONS_AGENT.run(user_prompt, message_history=HISTORY)
+        except (TimeoutError, ValidationError) as e:
+            span.set_attribute("error", type(e).__name__)
+            log.warning("/options failed (%s): %s", type(e).__name__, e)
+            return {"options": []}
+        except Exception as e:
+            span.set_attribute("error", type(e).__name__)
+            log.exception("/options crashed: %s", e)
+            return {"options": []}
+        usage = result.usage()
+        span.set_attribute("options_count", len(result.output.options))
+        span.set_attribute("output_tokens", usage.output_tokens)
+        log.info(
+            "/options complete: %dms options=%d input_tokens=%s output_tokens=%d",
+            int((time.monotonic() - t_start) * 1000), len(result.output.options),
+            _pct_of_ctx(usage.input_tokens), usage.output_tokens,
+        )
+        return {"options": [o.model_dump() for o in result.output.options]}
 
 
 @app.get("/events")

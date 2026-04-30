@@ -67,7 +67,6 @@ events arriving smoothly, then `data: {"type":"state",...}`, then
 | GET | `/scenario` | scenario data minus `known_facts`, `seed_exchanges`, meters |
 | GET | `/state` | live public game state (hostage statuses, time, ended flags) |
 | POST | `/action` | SSE — text deltas, then state event, then done |
-| POST | `/regenerate` | SSE — debug only, gated by `DEBUG_AFFORDANCES=true` |
 | POST | `/reset` | wipes game state, restarts timeline scheduler |
 | GET | `/events` | SSE — timeline events + game-end notifications |
 
@@ -90,7 +89,7 @@ environment and an optional `.env` at the repo root.
 | `NPC_SERVICE_PORT` | `8000` | sidecar port |
 | `NPC_LOG_LEVEL` | `info` | Python log level |
 | `SCENARIO_PATH` | `<sidecarDir>/scenario.json` | Scenario data file |
-| `DEBUG_AFFORDANCES` | `false` | Exposes `/regenerate`, `/state.debug`, and the DebugPanel |
+| `DEBUG_AFFORDANCES` | `false` | Exposes `/state.debug` and the DebugPanel |
 | `LOGFIRE_TOKEN` | (unset) | Logfire write token; the sidecar also reads `npc_service/.logfire/logfire_credentials.json` |
 
 ## Architecture notes

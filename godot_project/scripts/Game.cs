@@ -17,7 +17,6 @@ public partial class Game : Control
     private RichTextLabel _chatLog = null!;
     private ActionPanel _actionPanel = null!;
     private Button _stopButton = null!;
-    private Button _regenButton = null!;
     private HostageStatusPanel _hostagePanel = null!;
     private TimelineFeed _timelineFeed = null!;
     private DebugPanel? _debugPanel;
@@ -88,10 +87,6 @@ public partial class Game : Control
 
             HideBoot();
 
-            // Debug regenerate button
-            var debug = (System.Environment.GetEnvironmentVariable("DEBUG_AFFORDANCES") ?? "").ToLower();
-            _regenButton.Visible = debug == "1" || debug == "true" || debug == "yes";
-
             // First-turn options. RefreshOptionsAsync re-enables the action panel on success.
             _actionPanel.ShowLoading();
             await RefreshOptionsAsync();
@@ -147,24 +142,6 @@ public partial class Game : Control
         // is unchanged and the next /options call gives picks against the same
         // pre-stream state.
         RecoverFromStream();
-    }
-
-    private void OnRegenPressed()
-    {
-        if (_ended) return;
-        _activeStreamCts?.Cancel();
-        _activeStreamCts = new CancellationTokenSource();
-        var ct = _activeStreamCts.Token;
-        SetStreamingUI(true);
-        AppendChatSystem("(regenerating…)");
-        BeginCaptorBubble();
-        _ = _client.RegenerateAsync(
-            onTextDelta: AppendCaptorDelta,
-            onState: ApplyStateEvent,
-            onTimeline: OnTimelineEvent,
-            onDone: OnStreamDone,
-            onError: OnStreamError,
-            ct: ct);
     }
 
     private void OnStreamDone() => RecoverFromStream();
@@ -498,15 +475,6 @@ public partial class Game : Control
         };
         _stopButton.Pressed += OnStopPressed;
         actionRow.AddChild(_stopButton);
-
-        _regenButton = new Button
-        {
-            Text = "↻ Regen",
-            CustomMinimumSize = new Vector2(80, 0),
-            Visible = false,
-        };
-        _regenButton.Pressed += OnRegenPressed;
-        actionRow.AddChild(_regenButton);
 
         // right
         var right = new VBoxContainer { CustomMinimumSize = new Vector2(300, 0) };

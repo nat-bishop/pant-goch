@@ -61,3 +61,6 @@ class Settings(BaseSettings):
     summary_keep_tail: int = 4
     # Whole-stream timeout for /action; surface error rather than hang the SSE.
     action_stream_timeout_seconds: float = 120.0
+    # Whole-call timeout for /options; bounds how long ACTION_LOCK can be held by
+    # an options call so a stalled model can't lock out /action indefinitely.
+    options_timeout_seconds: float = 30.0
