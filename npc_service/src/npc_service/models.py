@@ -136,17 +136,35 @@ class DialogueOption(BaseModel):
     `hidden_line` is the full sentence sent to the captor when chosen.
     """
 
-    tag: str = Field(min_length=1, max_length=24)
-    hidden_line: str = Field(min_length=1, max_length=400)
+    tag: str
+    hidden_line: str
 
 
 class OptionsResponse(BaseModel):
-    """Structured output the options agent must produce each call."""
+    """Structured output the options agent must produce each call.
 
-    options: list[DialogueOption] = Field(min_length=2, max_length=5)
+    Bounds (2-5 options, tag 1-24 chars, hidden_line 1-400 chars) live in the
+    validator below, not in `Field(...)`. llama.cpp's Gemma 4 tool-call grammar
+    doesn't enforce JSON-Schema constraints anyway (PR #21418), and a complex
+    schema tickled a duplicate-`thought`-rule bug that crashed grammar install
+    on b8953. Pydantic AI's retry loop converts these `ValueError`s into
+    corrective feedback for the model.
+    """
+
+    options: list[DialogueOption]
 
     @model_validator(mode="after")
-    def _tags_distinct(self) -> "OptionsResponse":
+    def _validate_options(self) -> "OptionsResponse":
+        n = len(self.options)
+        if not 2 <= n <= 5:
+            raise ValueError(f"emit between 2 and 5 options (got {n})")
+        for i, o in enumerate(self.options):
+            tag = o.tag.strip()
+            if not 1 <= len(tag) <= 24:
+                raise ValueError(f"option {i} tag must be 1-24 chars (got {len(tag)})")
+            line = o.hidden_line.strip()
+            if not 1 <= len(line) <= 400:
+                raise ValueError(f"option {i} hidden_line must be 1-400 chars (got {len(line)})")
         tags = [o.tag.strip().lower() for o in self.options]
         if len(set(tags)) != len(tags):
             raise ValueError("option tags must be distinct within a set")

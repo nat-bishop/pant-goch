@@ -27,9 +27,14 @@ def app(monkeypatch):
 
 def _stub_options(payload):
     """Override OPTIONS_AGENT to return `payload` (an OptionsResponse or raw
-    dict that may fail validation). Use as a context manager."""
-    args = payload.model_dump() if hasattr(payload, "model_dump") else payload
-    return main.OPTIONS_AGENT.override(model=TestModel(custom_output_args=args))
+    dict that may fail validation). Use as a context manager.
+
+    OPTIONS_AGENT uses PromptedOutput, so the fake response is text JSON, not
+    tool-call args. See main.py's OPTIONS_AGENT note for why.
+    """
+    import json
+    text = payload.model_dump_json() if hasattr(payload, "model_dump_json") else json.dumps(payload)
+    return main.OPTIONS_AGENT.override(model=TestModel(custom_output_text=text))
 
 
 def test_health_reports_ready(app):
@@ -96,10 +101,10 @@ async def test_captor_agent_emits_validated_response():
 
 
 async def test_options_agent_emits_validated_response():
-    """Direct agent.run() under TestModel — confirms ToolOutput(OptionsResponse)
-    parses a faked tool-call payload back into the typed model unchanged.
+    """Direct agent.run() under TestModel — confirms PromptedOutput(OptionsResponse)
+    parses a faked text-JSON response back into the typed model unchanged.
     """
-    from pydantic_ai import Agent, ToolOutput
+    from pydantic_ai import Agent, PromptedOutput
 
     fake = OptionsResponse(options=[
         DialogueOption(tag="Empathize", hidden_line="Talk to me."),
@@ -107,8 +112,8 @@ async def test_options_agent_emits_validated_response():
         DialogueOption(tag="Stall", hidden_line="Give me a minute on that."),
     ])
     agent = Agent(
-        TestModel(custom_output_args=fake.model_dump()),
-        output_type=ToolOutput(OptionsResponse),
+        TestModel(custom_output_text=fake.model_dump_json()),
+        output_type=PromptedOutput(OptionsResponse),
         instructions="be the options coach",
     )
     result = await agent.run("Generate options.")
