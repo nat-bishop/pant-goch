@@ -53,19 +53,30 @@ logging.basicConfig(
 logging.getLogger("httpx").setLevel(logging.WARNING)
 log = logging.getLogger("npc_service")
 
-# Logfire: instrument the captor agent and FastAPI. send_to_logfire='if-token-present'
-# keeps the SDK silent when no project credentials / LOGFIRE_TOKEN are configured —
-# safe for fresh checkouts and CI without credentials.
+# Logfire: load the write token from the credentials file next to this module
+# rather than relying on CWD-based discovery. Godot spawns the sidecar with
+# cwd=project root (see SidecarHost.cs), not npc_service/, so the default
+# `.logfire/` lookup misses the file. send_to_logfire='if-token-present' keeps
+# the SDK silent when neither the file nor LOGFIRE_TOKEN exists (fresh checkouts,
+# CI).
+_logfire_creds = Path(__file__).parent / ".logfire" / "logfire_credentials.json"
+_logfire_token = os.getenv("LOGFIRE_TOKEN")
+if not _logfire_token and _logfire_creds.is_file():
+    with contextlib.suppress(Exception):
+        _logfire_token = json.loads(_logfire_creds.read_text()).get("token")
 logfire.configure(
     service_name="npc_service",
     send_to_logfire="if-token-present",
+    token=_logfire_token,
     console=False,
 )
 logfire.instrument_pydantic_ai()
-# httpx: capture every call to llama-server as a child span — surfaces LLM
-# round-trip latency, status, and timeouts. Critical for diagnosing the cold-load
-# / stream-stall / context-exhaustion failure modes called out in CLAUDE.md.
-logfire.instrument_httpx()
+# httpx: capture every call to llama-server as a child span with full request /
+# response bodies. Surfaces LLM round-trip latency, status, and timeouts plus the
+# exact OpenAI tool-call payload — high signal for diagnosing the cold-load /
+# stream-stall / context-exhaustion / tool-call-shape failure modes called out in
+# CLAUDE.md. capture_all=True is verbose; gated implicitly by send_to_logfire.
+logfire.instrument_httpx(capture_all=True)
 # Bridge stdlib logging (`log.info(...)` throughout this file) into Logfire as
 # structured events so meter mutations, hostage-status changes, and timeline
 # events appear inline with spans without rewriting the call sites. Attached as
@@ -316,7 +327,9 @@ async def summarize_when_large(messages: list[ModelMessage]) -> list[ModelMessag
         approx, SUMMARY_TRIGGER_TOKENS, len(head), len(tail),
     )
     t0 = time.monotonic()
-    summary = await SUMMARIZER_AGENT.run(message_history=head)
+    summary = await SUMMARIZER_AGENT.run(
+        "Produce the recap now.", message_history=head
+    )
     log.info(
         "history compaction: recap produced in %.2fs, recap_chars=%d",
         time.monotonic() - t0, len(summary.output),

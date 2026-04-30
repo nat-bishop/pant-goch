@@ -18,3 +18,16 @@ dependencies = [
 # the source. Run from the *parent* directory so `npc_service` is importable
 # as a package (or set PYTHONPATH=.. when invoking from this directory).
 package = false
+
+[dependency-groups]
+dev = [
+    "pytest>=8,<9",
+    "pytest-asyncio>=0.24,<0.25",
+]
+
+[tool.pytest.ini_options]
+# Same package-resolution gotcha as the runtime: tests live in npc_service/tests/
+# but import `npc_service.*`, which only resolves from the parent directory.
+pythonpath = [".."]
+testpaths = ["tests"]
+asyncio_mode = "auto"
