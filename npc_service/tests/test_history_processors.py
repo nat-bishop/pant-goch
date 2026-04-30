@@ -1,8 +1,7 @@
 """Tests for history-compaction processors.
 
-`hard_tail_cap` is a pure list operation. `summarize_when_large` calls the
-SUMMARIZER_AGENT global, which we patch with a TestModel-backed stand-in so the
-test runs without an LLM provider.
+`summarize_when_large` calls the SUMMARIZER_AGENT global, which we patch with a
+TestModel-backed stand-in so the test runs without an LLM provider.
 """
 import pytest
 from pydantic_ai import Agent
@@ -10,7 +9,7 @@ from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserProm
 from pydantic_ai.models.test import TestModel
 
 import npc_service.main as main
-from npc_service.main import hard_tail_cap, summarize_when_large
+from npc_service.main import summarize_when_large
 
 
 def _user_msg(content: str = "hello") -> ModelRequest:
@@ -19,28 +18,6 @@ def _user_msg(content: str = "hello") -> ModelRequest:
 
 def _model_msg(content: str = "reply") -> ModelResponse:
     return ModelResponse(parts=[TextPart(content=content)])
-
-
-# ───────────────────────── hard_tail_cap ─────────────────────────
-
-
-def test_hard_tail_cap_under_limit_passthrough():
-    msgs = [_user_msg() for _ in range(5)]
-    assert hard_tail_cap(msgs) == msgs
-
-
-def test_hard_tail_cap_at_limit_passthrough(monkeypatch):
-    monkeypatch.setattr(main, "MAX_HISTORY_MSGS", 4)
-    msgs = [_user_msg(f"m{i}") for i in range(4)]
-    assert hard_tail_cap(msgs) == msgs
-
-
-def test_hard_tail_cap_drops_oldest(monkeypatch):
-    monkeypatch.setattr(main, "MAX_HISTORY_MSGS", 4)
-    msgs = [_user_msg(f"m{i}") for i in range(9)]
-    out = hard_tail_cap(msgs)
-    assert len(out) == 4
-    assert out == msgs[-4:]
 
 
 # ───────────────────────── summarize_when_large ─────────────────────────

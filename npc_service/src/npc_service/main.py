@@ -19,11 +19,13 @@ from pydantic_ai import Agent, ToolOutput
 from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
+    ModelResponse,
     UserPromptPart,
 )
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
+from .config import Settings
 from .launcher import (
     LlamaStartupError,
     resolve_config,
@@ -44,8 +46,9 @@ from .models import (
 )
 
 
+_BOOT_SETTINGS = Settings()
 logging.basicConfig(
-    level=os.getenv("NPC_LOG_LEVEL", "info").upper(),
+    level=_BOOT_SETTINGS.npc_log_level.upper(),
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 # httpx logs every request at INFO; at DEBUG it spams every health probe and
@@ -59,7 +62,9 @@ log = logging.getLogger("npc_service")
 # `.logfire/` lookup misses the file. send_to_logfire='if-token-present' keeps
 # the SDK silent when neither the file nor LOGFIRE_TOKEN exists (fresh checkouts,
 # CI).
-_logfire_creds = Path(__file__).parent / ".logfire" / "logfire_credentials.json"
+# src layout: src/npc_service/main.py → npc_service project root is parents[2],
+# where .logfire/logfire_credentials.json lives.
+_logfire_creds = Path(__file__).resolve().parents[2] / ".logfire" / "logfire_credentials.json"
 _logfire_token = os.getenv("LOGFIRE_TOKEN")
 if not _logfire_token and _logfire_creds.is_file():
     with contextlib.suppress(Exception):
@@ -90,19 +95,16 @@ EVENTS_KEEPALIVE_SECONDS = 15.0
 # How long to wait for llama-server when LAUNCH_LLAMA=false (just a probe — we
 # proceed even if it fails so the dev can start it after the sidecar).
 EXTERNAL_LLAMA_PROBE_TIMEOUT_SECONDS = 2.0
-# History compaction: when approx token count of message_history crosses this,
-# summarize_when_large folds the oldest messages into a recap before the next
-# captor turn. Heuristic: chars / 4. Set well below LLAMA_CTX so the summarizer
-# has its own working room.
-SUMMARY_TRIGGER_TOKENS = int(os.getenv("NPC_SUMMARY_TRIGGER_TOKENS", "5000"))
-# Number of trailing messages to keep verbatim past the recap (≈ last 2 turns).
-SUMMARY_KEEP_TAIL = int(os.getenv("NPC_SUMMARY_KEEP_TAIL", "4"))
-# Hard ceiling: even if summarization didn't fire, never send more than this
-# many messages to the captor. Last-resort safety net.
-MAX_HISTORY_MSGS = int(os.getenv("NPC_MAX_HISTORY_MSGS", "20"))
-# Whole-stream timeout for /action. If the model stalls past this, surface an
-# explicit error rather than hanging the SSE response open indefinitely.
-ACTION_STREAM_TIMEOUT_SECONDS = float(os.getenv("NPC_ACTION_TIMEOUT", "120"))
+# History compaction tunables. Defaults come from Settings; tests still
+# monkeypatch these module attributes directly.
+SUMMARY_TRIGGER_FRAC = _BOOT_SETTINGS.summary_trigger_frac
+# 0 → computed in lifespan as SUMMARY_TRIGGER_FRAC * LLAMA_CTX.
+SUMMARY_TRIGGER_TOKENS: int = _BOOT_SETTINGS.summary_trigger_tokens
+# Mirrors launcher's LLAMA_CTX so log lines can show pct-of-max without
+# re-reading config. Set in lifespan once cfg.ctx is known.
+LLAMA_CTX_TOKENS: int = 0
+SUMMARY_KEEP_TAIL = _BOOT_SETTINGS.summary_keep_tail
+ACTION_STREAM_TIMEOUT_SECONDS = _BOOT_SETTINGS.action_stream_timeout_seconds
 
 
 # ───────────────────────── globals (set in lifespan) ─────────────────────────
@@ -358,8 +360,28 @@ def _timeline_event_payload(evt: TimelineEvent) -> dict:
 
 
 def _approx_tokens(messages: list[ModelMessage]) -> int:
-    """Cheap proxy for prompt token count. ~4 chars/token works as a threshold."""
+    """Approximate prompt-token count of `messages` if sent as message_history.
+
+    Prefer the most recent ModelResponse.usage from the history — its
+    input_tokens is the exact tokenized prefix length the model just saw, plus
+    its own output_tokens completes the run. For any messages added after that
+    response (e.g., synthetic timeline scene-updates injected directly into
+    HISTORY) fall back to chars/4. Returns chars/4 over the whole list when no
+    usage is available (e.g., test fixtures, freshly seeded history).
+    """
+    for i in range(len(messages) - 1, -1, -1):
+        msg = messages[i]
+        if isinstance(msg, ModelResponse) and msg.usage is not None:
+            tail_chars = sum(len(str(m)) for m in messages[i + 1:])
+            return msg.usage.input_tokens + msg.usage.output_tokens + tail_chars // 4
     return sum(len(str(m)) for m in messages) // 4
+
+
+def _pct_of_ctx(tokens: int) -> str:
+    """Format `tokens` as 'N (P% of ctx)' for log lines, when ctx is known."""
+    if LLAMA_CTX_TOKENS <= 0:
+        return str(tokens)
+    return f"{tokens} ({100 * tokens // LLAMA_CTX_TOKENS}% of {LLAMA_CTX_TOKENS})"
 
 
 async def summarize_when_large(messages: list[ModelMessage]) -> list[ModelMessage]:
@@ -377,32 +399,27 @@ async def summarize_when_large(messages: list[ModelMessage]) -> list[ModelMessag
         return messages
 
     log.info(
-        "history compaction: approx_tokens=%d threshold=%d folding %d msgs into recap, keeping %d",
-        approx, SUMMARY_TRIGGER_TOKENS, len(head), len(tail),
+        "history compaction: firing — input=%s threshold=%s folding %d msgs into recap, keeping %d verbatim",
+        _pct_of_ctx(approx), _pct_of_ctx(SUMMARY_TRIGGER_TOKENS), len(head), len(tail),
     )
     t0 = time.monotonic()
     summary = await SUMMARIZER_AGENT.run(
         "Produce the recap now.", message_history=head
     )
-    log.info(
-        "history compaction: recap produced in %.2fs, recap_chars=%d",
-        time.monotonic() - t0, len(summary.output),
-    )
+    summary_usage = summary.usage()
     recap_msg = ModelRequest(parts=[
         UserPromptPart(content=f"[recap of earlier negotiation]\n{summary.output}")
     ])
-    return [recap_msg, *tail]
-
-
-def hard_tail_cap(messages: list[ModelMessage]) -> list[ModelMessage]:
-    """Last-resort cap: drop oldest messages once we exceed MAX_HISTORY_MSGS."""
-    if len(messages) <= MAX_HISTORY_MSGS:
-        return messages
+    out = [recap_msg, *tail]
     log.info(
-        "history compaction: hard cap dropping %d oldest msgs (had %d, cap %d)",
-        len(messages) - MAX_HISTORY_MSGS, len(messages), MAX_HISTORY_MSGS,
+        "history compaction: recap done in %.2fs — summarizer input_tokens=%d output_tokens=%d "
+        "recap_chars=%d post_compaction=%s (was %s)",
+        time.monotonic() - t0,
+        summary_usage.input_tokens, summary_usage.output_tokens,
+        len(summary.output),
+        _pct_of_ctx(_approx_tokens(out)), _pct_of_ctx(approx),
     )
-    return messages[-MAX_HISTORY_MSGS:]
+    return out
 
 
 # ───────────────────────── seed history (empty for structured-output safety) ─────────────────────────
@@ -425,14 +442,19 @@ def seed_history(captor: Captor) -> list:
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     global SCENARIO, GAME_STATE, HISTORY, CAPTOR_AGENT, OPTIONS_AGENT
     global SUMMARIZER_AGENT, LLAMA_PROC, EVENT_BUS
+    global SUMMARY_TRIGGER_TOKENS, LLAMA_CTX_TOKENS
 
-    scenario_path = Path(os.getenv("SCENARIO_PATH", str(Path(__file__).parent / "scenario.json")))
+    settings = Settings()
+
+    # scenario.json lives at the npc_service project root (parents[2] from this
+    # module under src/npc_service/main.py), not next to the source.
+    scenario_path = settings.scenario_path or Path(__file__).resolve().parents[2] / "scenario.json"
     log.info("loading scenario: %s", scenario_path)
     SCENARIO = load_scenario(scenario_path)
 
-    if os.getenv("LAUNCH_LLAMA", "true").lower() in ("1", "true", "yes"):
+    cfg = resolve_config(settings)
+    if settings.launch_llama:
         log.info("starting llama-server (LAUNCH_LLAMA=true)")
-        cfg = resolve_config()
         try:
             LLAMA_PROC = start_llama(cfg)
             await wait_healthy(host=cfg.host, port=cfg.port)
@@ -442,15 +464,24 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             raise
     else:
         log.info("LAUNCH_LLAMA=false — assuming llama-server is managed externally")
-        cfg = resolve_config()
         # Quick non-blocking probe; warn but proceed even if unreachable.
         try:
             await wait_healthy(host=cfg.host, port=cfg.port, timeout=EXTERNAL_LLAMA_PROBE_TIMEOUT_SECONDS)
         except LlamaStartupError as e:
             log.warning("llama-server not reachable yet: %s — sidecar will boot anyway", e)
 
-    base_url = os.getenv("LLAMA_BASE_URL", f"http://{cfg.host}:{cfg.port}/v1")
-    model_name = os.getenv("LLAMA_MODEL", "gemma-4-e4b")
+    LLAMA_CTX_TOKENS = cfg.ctx
+    if SUMMARY_TRIGGER_TOKENS <= 0:
+        SUMMARY_TRIGGER_TOKENS = int(LLAMA_CTX_TOKENS * SUMMARY_TRIGGER_FRAC)
+    log.info(
+        "history compaction config: ctx=%d trigger=%d (%.0f%% of ctx) keep_tail=%d",
+        LLAMA_CTX_TOKENS, SUMMARY_TRIGGER_TOKENS,
+        100 * SUMMARY_TRIGGER_TOKENS / LLAMA_CTX_TOKENS if LLAMA_CTX_TOKENS else 0,
+        SUMMARY_KEEP_TAIL,
+    )
+
+    base_url = settings.llama_base_url or f"http://{cfg.host}:{cfg.port}/v1"
+    model_name = "gemma-4-e4b"
     log.info("building Pydantic AI agent: model=%s base_url=%s", model_name, base_url)
     model = OpenAIChatModel(
         model_name,
@@ -464,8 +495,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # it indefinitely, cascading turn-over-turn into 19K-token generations.
     # The model_settings max_tokens cap is a safety net for occasional non-
     # tool-call prefix prose that Pydantic AI silently discards.
+    # name= surfaces in Logfire spans so each agent's runs are filterable —
+    # captor turns vs. options picks vs. summarization passes show up distinctly.
     SUMMARIZER_AGENT = Agent(
         model,
+        name="summarizer",
         instructions=(
             "Summarize the negotiation so far in 4-6 short bullets. "
             "Cover: emotional state, demands raised, offers made, hostage status, "
@@ -474,9 +508,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     CAPTOR_AGENT = Agent(
         model,
+        name="captor",
         output_type=ToolOutput(CaptorResponse),
         instructions=build_system_prompt(SCENARIO.captor, SCENARIO.hostages),
-        history_processors=[summarize_when_large, hard_tail_cap],
+        history_processors=[summarize_when_large],
         model_settings={"max_tokens": 512},
     )
     # OPTIONS_AGENT: separate agent generating player dialogue picks each turn.
@@ -486,9 +521,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # overhead can blow past 512.
     OPTIONS_AGENT = Agent(
         model,
+        name="options",
         output_type=ToolOutput(OptionsResponse),
         instructions=build_options_system_prompt(SCENARIO),
-        history_processors=[summarize_when_large, hard_tail_cap],
+        history_processors=[summarize_when_large],
         model_settings={"max_tokens": 1024},
     )
 
@@ -542,7 +578,7 @@ async def get_scenario() -> dict:
 
 
 def _debug_affordances_enabled() -> bool:
-    return os.getenv("DEBUG_AFFORDANCES", "false").lower() in ("1", "true", "yes")
+    return Settings().debug_affordances
 
 
 def _state_body(state: GameState) -> dict:
@@ -634,11 +670,15 @@ async def _action_event_stream(user_prompt: str) -> AsyncIterator[bytes]:
                         })
                     ttfb_ms = int((t_first - t_start) * 1000) if t_first else -1
                     total_ms = int((time.monotonic() - t_start) * 1000)
+                    usage = result.usage()
                     log.info(
                         "/action complete: ttfb=%dms total=%dms response_chars=%d "
-                        "action_count=%d history_msgs=%d approx_tokens=%d",
+                        "input_tokens=%s output_tokens=%d action_count=%d history_msgs=%d "
+                        "history_tokens=%s",
                         ttfb_ms, total_ms, len(final.response_text or ""),
-                        GAME_STATE.action_count, len(HISTORY), _approx_tokens(HISTORY),
+                        _pct_of_ctx(usage.input_tokens), usage.output_tokens,
+                        GAME_STATE.action_count, len(HISTORY),
+                        _pct_of_ctx(_approx_tokens(HISTORY)),
                     )
             yield _sse({"type": "done"})
         except asyncio.CancelledError:
@@ -667,7 +707,7 @@ async def _action_event_stream(user_prompt: str) -> AsyncIterator[bytes]:
 @app.post("/regenerate")
 async def post_regenerate() -> StreamingResponse:
     """Debug-only: pop the last exchange and re-stream the captor's response."""
-    if os.getenv("DEBUG_AFFORDANCES", "false").lower() not in ("1", "true", "yes"):
+    if not _debug_affordances_enabled():
         raise HTTPException(403, "regenerate disabled (set DEBUG_AFFORDANCES=true)")
     if CAPTOR_AGENT is None or GAME_STATE is None:
         raise HTTPException(503, "service not ready")
@@ -741,9 +781,11 @@ async def get_options() -> dict:
     async with ACTION_LOCK:
         # Read-only: do NOT write result back to HISTORY.
         result = await OPTIONS_AGENT.run("Generate options.", message_history=HISTORY)
+    usage = result.usage()
     log.info(
-        "/options complete: %dms options=%d",
+        "/options complete: %dms options=%d input_tokens=%s output_tokens=%d",
         int((time.monotonic() - t_start) * 1000), len(result.output.options),
+        _pct_of_ctx(usage.input_tokens), usage.output_tokens,
     )
     return {"options": [o.model_dump() for o in result.output.options]}
 

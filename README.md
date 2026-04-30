@@ -83,7 +83,7 @@ curl -s -X POST http://localhost:8080/v1/chat/completions \
 ```bash
 cd npc_service
 uv sync                                  # one-time
-PYTHONPATH=.. LAUNCH_LLAMA=false uv run python -m npc_service
+LAUNCH_LLAMA=false uv run python -m npc_service
 ```
 
 Smoke-test:
@@ -205,10 +205,10 @@ that gives the "medical" offer-detail real weight.
   retries.
 - **Streaming chunky in Godot** — verify `HttpCompletionOption.ResponseHeadersRead`
   is on the SSE call (it is — `LLMClient.cs:170`).
-- **`No module named npc_service`** — set `PYTHONPATH=..` when running
-  uv from the `npc_service/` directory, OR run uv from the parent dir:
-  `uv --directory npc_service run python -m npc_service`. The Godot
-  side does this automatically.
+- **`No module named npc_service`** — run `uv sync` from `npc_service/`
+  to install the package editable into the venv. The src layout means
+  `python -m npc_service` only resolves the package via the venv, not
+  via CWD.
 - **Port 8000 already in use** — set `NPC_SERVICE_PORT=8042` (or any
   free port) on the sidecar AND `NPC_SERVICE_URL=http://127.0.0.1:8042`
   on the Godot side.

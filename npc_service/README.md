@@ -73,25 +73,25 @@ events arriving smoothly, then `data: {"type":"state",...}`, then
 
 ## Env vars
 
+Loaded via `pydantic-settings` (see `npc_service/config.py`) from the
+environment and an optional `.env` at the repo root.
+
 | Var | Default | Purpose |
 |---|---|---|
-| `LLAMA_BASE_URL` | `http://127.0.0.1:8080/v1` | OpenAI-compatible base URL |
-| `LLAMA_MODEL` | `gemma-4-e4b` | Cosmetic model name (llama-server ignores) |
-| `LLAMA_SERVER_BIN` | `<exeDir>/llama-server[.exe]` | llama-server binary path |
-| `LLAMA_MODEL_PATH` | `<exeDir>/models/gemma-4-E4B-it-Q8_0.gguf` | GGUF file path |
-| `LLAMA_HF_REPO` | `unsloth/gemma-4-E4B-it-GGUF:Q8_0` | Fallback HF source if no local model |
-| `LLAMA_HOST` | `127.0.0.1` | llama-server bind host |
+| `LAUNCH_LLAMA` | `true` | Set `false` to skip auto-launch and run llama-server yourself |
 | `LLAMA_PORT` | `8080` | llama-server port |
-| `LLAMA_CTX` | `8192` | Context window |
-| `LLAMA_NGL` | `99` | GPU layers (-ngl) |
+| `LLAMA_CTX` | `32768` | Context window |
+| `LLAMA_NGL` | `99` | GPU layers (-ngl); drop on GPU OOM |
 | `LLAMA_EXTRA_ARGS` | (unset) | Whitespace-split extra args appended verbatim |
-| `LAUNCH_LLAMA` | `true` | Set `false` to skip auto-launch |
-| `LLAMA_HEALTH_TIMEOUT` | `600` | Seconds to wait for `/health` (cold load can be 90+s) |
-| `NPC_SERVICE_HOST` | `127.0.0.1` | sidecar bind host |
+| `LLAMA_SERVER_BIN` | `<repo>/vendor/llama.cpp/llama-server[.exe]` | llama-server binary path |
+| `LLAMA_MODEL_PATH` | `<repo>/models/gemma-4-E4B-it-Q8_0.gguf` | Local GGUF; falls back to HF download |
+| `LLAMA_HF_REPO` | `unsloth/gemma-4-E4B-it-GGUF:Q8_0` | HF source when no local model |
+| `LLAMA_BASE_URL` | `http://127.0.0.1:${LLAMA_PORT}/v1` | Override only when pointing at a remote llama |
 | `NPC_SERVICE_PORT` | `8000` | sidecar port |
-| `SCENARIO_PATH` | `<sidecarDir>/scenario.json` | Scenario data file |
-| `DEBUG_AFFORDANCES` | `false` | Enables `/regenerate` |
 | `NPC_LOG_LEVEL` | `info` | Python log level |
+| `SCENARIO_PATH` | `<sidecarDir>/scenario.json` | Scenario data file |
+| `DEBUG_AFFORDANCES` | `false` | Exposes `/regenerate`, `/state.debug`, and the DebugPanel |
+| `LOGFIRE_TOKEN` | (unset) | Logfire write token; the sidecar also reads `npc_service/.logfire/logfire_credentials.json` |
 
 ## Architecture notes
 

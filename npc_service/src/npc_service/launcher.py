@@ -13,6 +13,8 @@ from pathlib import Path
 
 import httpx
 
+from .config import Settings
+
 
 log = logging.getLogger(__name__)
 
@@ -135,29 +137,32 @@ class LlamaConfig:
     host: str
     ctx: int
     extra_args: list[str]
+    ngl: int
 
 
 def _exe_dir() -> Path:
-    """Directory of the running executable / script entry. NEVER CWD."""
-    # When running `python -m npc_service`, sys.argv[0] is "<...>/npc_service/__main__.py"
-    return Path(sys.argv[0]).resolve().parent.parent
+    """Workspace root — the directory containing vendor/, models/, npc_service/.
+    Resolved from this module's location, NEVER from CWD.
+
+    src layout: this file is <workspace>/npc_service/src/npc_service/launcher.py.
+    parents[0]=src/npc_service, [1]=src, [2]=npc_service, [3]=<workspace>.
+    """
+    return Path(__file__).resolve().parents[3]
 
 
 def _bin_name(name: str) -> str:
     return name + ".exe" if os.name == "nt" else name
 
 
-def resolve_config() -> LlamaConfig:
-    """Pull llama-server invocation params from env or sane defaults."""
+def resolve_config(settings: Settings | None = None) -> LlamaConfig:
+    """Pull llama-server invocation params from settings or sane defaults."""
+    s = settings or Settings()
     base = _exe_dir()
 
-    bin_env = os.getenv("LLAMA_SERVER_BIN")
-    bin_path = Path(bin_env) if bin_env else base / "vendor" / "llama.cpp" / _bin_name("llama-server")
+    bin_path = s.llama_server_bin or base / "vendor" / "llama.cpp" / _bin_name("llama-server")
 
-    model_env = os.getenv("LLAMA_MODEL_PATH")
-    hf_repo = os.getenv("LLAMA_HF_REPO", "unsloth/gemma-4-E4B-it-GGUF:Q8_0")
-    if model_env:
-        model_path: Path | None = Path(model_env)
+    if s.llama_model_path:
+        model_path: Path | None = s.llama_model_path
         hf: str | None = None
     else:
         candidate = base / "models" / "gemma-4-E4B-it-Q8_0.gguf"
@@ -167,16 +172,17 @@ def resolve_config() -> LlamaConfig:
         else:
             # fall back to HF download-on-launch
             model_path = None
-            hf = hf_repo
+            hf = s.llama_hf_repo
 
     return LlamaConfig(
         bin=bin_path,
         model_path=model_path,
         hf_repo=hf,
-        port=int(os.getenv("LLAMA_PORT", "8080")),
-        host=os.getenv("LLAMA_HOST", "127.0.0.1"),
-        ctx=int(os.getenv("LLAMA_CTX", "32768")),
-        extra_args=os.getenv("LLAMA_EXTRA_ARGS", "").split() if os.getenv("LLAMA_EXTRA_ARGS") else [],
+        port=s.llama_port,
+        host="127.0.0.1",
+        ctx=s.llama_ctx,
+        extra_args=s.llama_extra_args.split() if s.llama_extra_args else [],
+        ngl=s.llama_ngl,
     )
 
 
@@ -192,7 +198,7 @@ def _build_command(cfg: LlamaConfig) -> list[str]:
         "-c", str(cfg.ctx),
         "--jinja",  # REQUIRED for Gemma chat template
         "--reasoning", "off",  # REQUIRED for Gemma 4 E-models — default-on thinking swallows output
-        "-ngl", os.getenv("LLAMA_NGL", "99"),
+        "-ngl", str(cfg.ngl),
     ]
     cmd += cfg.extra_args
     return cmd
@@ -295,7 +301,7 @@ async def wait_healthy(
     200 too early on cold start.
     """
     if timeout is None:
-        timeout = float(os.getenv("LLAMA_HEALTH_TIMEOUT", str(HEALTH_TIMEOUT_DEFAULT_SECONDS)))
+        timeout = HEALTH_TIMEOUT_DEFAULT_SECONDS
 
     url = f"http://{host}:{port}/health"
     deadline = asyncio.get_event_loop().time() + timeout

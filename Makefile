@@ -33,7 +33,7 @@ llama: $(MODEL)
 
 .PHONY: sidecar
 sidecar:
-	cd npc_service && PYTHONPATH=.. LAUNCH_LLAMA=false uv run python -m npc_service
+	cd npc_service && LAUNCH_LLAMA=false uv run python -m npc_service
 
 .PHONY: godot
 godot:

@@ -40,3 +40,6 @@ Thumbs.db
 
 # Logfire project credentials (per-machine, contains write token)
 .logfire/
+
+# Local env overrides (.env.example is checked in)
+.env

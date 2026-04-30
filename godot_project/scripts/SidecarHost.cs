@@ -76,14 +76,16 @@ public partial class SidecarHost : Node
         string projectRoot = ProjectSettings.GlobalizePath("res://");
 
         string sidecarDir = ResolveSidecarDir(exeDir, projectRoot);
-        string? maybeParent = Path.GetDirectoryName(sidecarDir.TrimEnd('/', '\\'));
-        string parentOfSidecar = maybeParent ?? sidecarDir;
         string python = ResolvePython(exeDir);
 
         var psi = new ProcessStartInfo
         {
             FileName = python,
-            WorkingDirectory = parentOfSidecar,
+            // Run from the npc_service project root so the .venv at
+            // npc_service/.venv is the active environment. The package itself
+            // lives at npc_service/src/npc_service and is installed editable
+            // by `uv sync`, so PYTHONPATH is not needed.
+            WorkingDirectory = sidecarDir,
             UseShellExecute = false,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
@@ -93,16 +95,10 @@ public partial class SidecarHost : Node
         psi.ArgumentList.Add("-m");
         psi.ArgumentList.Add("npc_service");
 
-        // Forward important env vars; ensure parent of npc_service is on PYTHONPATH
-        // so `python -m npc_service` resolves the package even when uv didn't install it.
-        var existingPp = Environment.GetEnvironmentVariable("PYTHONPATH") ?? "";
-        psi.Environment["PYTHONPATH"] = string.IsNullOrEmpty(existingPp)
-            ? parentOfSidecar
-            : parentOfSidecar + Path.PathSeparator + existingPp;
         // Force UTF-8 stdio so logs render emoji / em-dashes correctly on Windows.
         psi.Environment["PYTHONUTF8"] = "1";
 
-        GD.Print($"[SidecarHost] spawning: {python} -m npc_service (cwd={parentOfSidecar})");
+        GD.Print($"[SidecarHost] spawning: {python} -m npc_service (cwd={sidecarDir})");
 
         _proc = new Process { StartInfo = psi, EnableRaisingEvents = true };
         _proc.OutputDataReceived += (_, e) =>

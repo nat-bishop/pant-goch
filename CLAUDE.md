@@ -7,16 +7,18 @@ Godot 4.6 (C#) ──spawn──► npc_service (FastAPI/Pydantic AI) ──spaw
               ◄──HTTP/SSE──                                 ◄──OpenAI /v1──
 ```
 
-`make run` boots the whole tree; `make llama` / `make sidecar` / `make godot` run the layers separately for iteration. Tests: `cd npc_service && PYTHONPATH=.. uv run pytest` (state mutation, history processors, FastAPI smoke; uses Pydantic-AI `TestModel` instead of llama-server).
+`make run` boots the whole tree; `make llama` / `make sidecar` / `make godot` run the layers separately for iteration. Tests: `cd npc_service && uv run pytest` (state mutation, history processors, FastAPI smoke; uses Pydantic-AI `TestModel` instead of llama-server).
 
 ## File map
 
 ```
-npc_service/
-  main.py        FastAPI app, captor + options agent wiring, SSE, action-counted timeline, history processors
-  models.py      Pydantic scenario schema + CaptorResponse + OptionsResponse + GameState (mutable)
-  launcher.py    llama-server subprocess + Windows Job Object for cleanup
-  scenario.json  the one scenario (validated strictly at startup)
+npc_service/                  uv project root — pyproject.toml, uv.lock, .venv, scenario.json, .logfire/
+  src/npc_service/            installed editable into .venv via `uv sync` (src layout)
+    main.py        FastAPI app, captor + options agent wiring, SSE, action-counted timeline, history processors
+    models.py      Pydantic scenario schema + CaptorResponse + OptionsResponse + GameState (mutable)
+    launcher.py    llama-server subprocess + Windows Job Object for cleanup
+    config.py      pydantic-settings Settings (env + .env at workspace root)
+  tests/           pytest suite
 godot_project/scripts/
   Game.cs              scene controller — boot, action flow, end-of-game overlay
   LLMClient.cs         HTTP + SSE client (autoload)
@@ -53,6 +55,3 @@ First turn: client skips `/action` and goes straight to `GET /options` after boo
 - **Action-counted timeline events fire AFTER the captor's N-th turn but BEFORE the next `/options` call.** Inline in `_action_event_stream` after `apply_response`. Skipped if the captor's response already ended the game. The next options agent call sees the synthetic scene-update message in `HISTORY` and reacts to it. Don't move firing into `/options` — that would make a GET have side effects on `HISTORY`.
 - **`/regenerate` rewinds `action_count` and unfires timeline events** whose `after_actions > new action_count`. Meter deltas from the popped turn are NOT reverted — pre-existing behaviour, documented caveat.
 
-## Invocation gotcha
-
-`uv run python -m npc_service` from inside `npc_service/` fails with `No module named npc_service` — the package resolves from the parent. Set `PYTHONPATH=..` (the Makefile and `SidecarHost.cs` do this).
