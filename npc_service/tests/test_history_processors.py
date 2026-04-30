@@ -60,7 +60,7 @@ async def test_summarize_folds_head_into_recap(monkeypatch):
     first = out[0]
     assert isinstance(first, ModelRequest)
     assert any(
-        isinstance(p, UserPromptPart) and "[recap of earlier negotiation]" in p.content
+        isinstance(p, UserPromptPart) and "[recap of earlier transmissions]" in p.content
         for p in first.parts
     )
     assert out[1:] == msgs[-4:]

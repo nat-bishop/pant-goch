@@ -1,38 +1,53 @@
 using System.Collections.Generic;
+using System.Linq;
 using Godot;
 
 namespace Smallville;
 
 /// <summary>
-/// Server-state debug overlay. Shows the three hidden meters
-/// (stress / trust / desperation), the action budget, and which timeline
-/// events have fired. Mounted only when the server has DEBUG_AFFORDANCES=true
-/// (i.e. <see cref="GameState.Debug"/> is non-null on the first /state response).
+/// Server-state debug overlay. Per-channel meters (stress / trust) for the
+/// active dossier, plus the action budget and which timeline events have
+/// fired. Mounted only when the server returns DEBUG_AFFORDANCES=true (i.e.
+/// <see cref="HandlerState.Debug"/> is non-null on the first /state response).
 /// </summary>
 public partial class DebugPanel : PanelContainer
 {
+    private Label _activeAgentLabel = null!;
     private Label _stressLabel = null!;
     private ProgressBar _stressBar = null!;
     private Label _trustLabel = null!;
     private ProgressBar _trustBar = null!;
-    private Label _despLabel = null!;
-    private ProgressBar _despBar = null!;
     private Label _budgetLabel = null!;
     private Label _firedLabel = null!;
+
+    private string _activeAgentId = "";
+    private DebugView? _lastDebug;
 
     public override void _Ready()
     {
         Build();
     }
 
+    public void SetActiveAgent(string agentId)
+    {
+        _activeAgentId = agentId;
+        if (_lastDebug != null) UpdateFrom(_lastDebug);
+    }
+
     public void UpdateFrom(DebugView dbg)
     {
-        _stressLabel.Text = $"stress     {dbg.Stress,3}";
-        _stressBar.Value = dbg.Stress;
-        _trustLabel.Text = $"trust       {dbg.Trust,3}";
-        _trustBar.Value = dbg.Trust;
-        _despLabel.Text = $"desperation {dbg.Desperation,3}";
-        _despBar.Value = dbg.Desperation;
+        _lastDebug = dbg;
+        var a = dbg.Agents.FirstOrDefault(x => x.Id == _activeAgentId);
+        if (a == null && dbg.Agents.Count > 0) a = dbg.Agents[0];
+
+        if (a != null)
+        {
+            _activeAgentLabel.Text = $"// {a.Id.ToUpperInvariant()}";
+            _stressLabel.Text = $"stress {a.Stress,3}";
+            _stressBar.Value = a.Stress;
+            _trustLabel.Text = $"trust  {a.Trust,3}";
+            _trustBar.Value = a.Trust;
+        }
         _budgetLabel.Text = $"actions: {dbg.ActionCount} / {dbg.MaxActions}";
         _firedLabel.Text = dbg.FiredTimelineEventIds.Count == 0
             ? "fired: —"
@@ -47,13 +62,17 @@ public partial class DebugPanel : PanelContainer
 
         var header = new Label { Text = "DEBUG" };
         header.AddThemeFontSizeOverride("font_size", 12);
-        header.AddThemeColorOverride("font_color", new Color(0.95f, 0.7f, 0.4f));
+        header.AddThemeColorOverride("font_color", new Color(0.83f, 0.65f, 0.20f));
         col.AddChild(header);
         col.AddChild(new HSeparator());
 
+        _activeAgentLabel = new Label { Text = "// —" };
+        _activeAgentLabel.AddThemeFontSizeOverride("font_size", 11);
+        _activeAgentLabel.AddThemeColorOverride("font_color", new Color(0.6f, 0.6f, 0.6f));
+        col.AddChild(_activeAgentLabel);
+
         (_stressLabel, _stressBar) = BuildMeter(col, new Color(0.95f, 0.5f, 0.4f));
         (_trustLabel, _trustBar) = BuildMeter(col, new Color(0.5f, 0.85f, 0.6f));
-        (_despLabel, _despBar) = BuildMeter(col, new Color(0.95f, 0.85f, 0.4f));
 
         _budgetLabel = new Label { Text = "actions: 0 / 0" };
         _budgetLabel.AddThemeFontSizeOverride("font_size", 11);

@@ -3,20 +3,13 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 
-HostageStatus = Literal["held", "released", "harmed"]
-EndReason = Literal[
-    "budget_exhausted",
-    "captor_surrendered",
-    "all_released",
-    "hostage_harmed",
-    "auto_breach",
-]
-CaptorAction = Literal["release_hostage", "harm_hostage", "surrender"]
+EndReason = Literal["budget_exhausted", "all_lost"]
+TimelineKind = Literal["world_event", "flash_traffic", "directive"]
 
 
 # ───────────────────────── scenario data (authored, immutable) ─────────────────────────
@@ -27,53 +20,68 @@ class SeedExchange(BaseModel):
     assistant: str
 
 
-class Meters(BaseModel):
+class AgentMeters(BaseModel):
     stress: int = Field(ge=0, le=100)
     trust: int = Field(ge=0, le=100)
-    desperation: int = Field(ge=0, le=100)
 
 
-class Captor(BaseModel):
+class AgentDef(BaseModel):
+    id: str = Field(min_length=1, pattern=r"^[a-z][a-z0-9_]*$")
+    callsign: str = Field(min_length=1)
     name: str
+    city: str
+    role: str
     persona: str
     deflection_style: str
-    initial_demands: list[str]
     known_facts: list[str] = Field(min_length=1)
+    starting_meters: AgentMeters
     seed_exchanges: list[SeedExchange] = Field(default_factory=list)
-    starting_meters: Meters
+    # The agent's first transmission, rendered to the player at boot AND seeded
+    # into HISTORIES[id] as a scene-update so the agent treats it as their own
+    # prior context. Not a ModelResponse (would break structured output learning
+    # — see CLAUDE.md / seed_history rationale).
+    opening_transmission: str = Field(min_length=1)
 
 
-class HostageDef(BaseModel):
-    """Authored hostage definition (immutable). Live state lives in GameState."""
-
-    name: str
-    description: str
+class Operation(BaseModel):
+    codename: str = Field(min_length=1)
+    objective: str = Field(min_length=1)
+    # Free-form author crib sheet — keeps known_facts distortions consistent
+    # across agents. NOT consumed at runtime; never sent to any model.
+    world_state: dict[str, Any] = Field(default_factory=dict)
 
 
 class TimelineEvent(BaseModel):
     id: str
     after_actions: int = Field(ge=1)
-    kind: Literal["check_in", "medical", "ultimatum", "other"]
+    kind: TimelineKind
     notification_text: str
-    injection_text: str
+    # Per-agent scene-update injections. Keys are agent_ids; values are the
+    # text appended (as a UserPromptPart) to that agent's HISTORY when this
+    # event fires. Validated at Scenario level — keys must resolve to a known
+    # agent_id.
+    injections: dict[str, str] = Field(min_length=1)
 
 
 class Scenario(BaseModel):
     title: str
     setup: str
     max_actions: int = Field(gt=0)
-    captor: Captor
-    hostages: list[HostageDef]
+    operation: Operation
+    agents: list[AgentDef]
     timeline: list[TimelineEvent]
 
-    @field_validator("hostages")
+    @field_validator("agents")
     @classmethod
-    def exactly_two_hostages(cls, v: list[HostageDef]) -> list[HostageDef]:
-        if len(v) != 2:
-            raise ValueError(f"scenario must have exactly 2 hostages, got {len(v)}")
-        names = {h.name for h in v}
-        if len(names) != len(v):
-            raise ValueError("hostage names must be unique")
+    def exactly_three_agents(cls, v: list[AgentDef]) -> list[AgentDef]:
+        if len(v) != 3:
+            raise ValueError(f"scenario must have exactly 3 agents, got {len(v)}")
+        ids = [a.id for a in v]
+        if len(set(ids)) != len(ids):
+            raise ValueError("agent ids must be unique")
+        callsigns = [a.callsign for a in v]
+        if len(set(callsigns)) != len(callsigns):
+            raise ValueError("agent callsigns must be unique")
         return v
 
     @field_validator("timeline")
@@ -99,6 +107,18 @@ class Scenario(BaseModel):
                 )
         return self
 
+    @model_validator(mode="after")
+    def injection_keys_resolve(self) -> "Scenario":
+        agent_ids = {a.id for a in self.agents}
+        for evt in self.timeline:
+            unknown = set(evt.injections) - agent_ids
+            if unknown:
+                raise ValueError(
+                    f"timeline event {evt.id} injects into unknown agent_id(s): "
+                    f"{sorted(unknown)} (known: {sorted(agent_ids)})"
+                )
+        return self
+
 
 def load_scenario(path: str | Path) -> Scenario:
     """Read and validate scenario JSON. Fails loudly on bad data."""
@@ -111,60 +131,41 @@ def load_scenario(path: str | Path) -> Scenario:
 
 
 class ActionRequest(BaseModel):
+    agent_id: str = Field(min_length=1)
     line: str
 
 
-class CaptorResponse(BaseModel):
-    """Structured output the captor agent must produce each turn.
+class AgentReport(BaseModel):
+    """Structured output the agent persona must produce each turn.
 
     Defaults on every field so partial validation succeeds during streaming.
-    Range constraints fire on the final fully-validated output.
+    Range constraints fire on the final fully-validated output. No action
+    enum at MVP — agents speak, meters move, op runs on its clock.
     """
 
-    response_text: str = ""
+    report_text: str = ""
     stress_delta: int = Field(default=0, ge=-20, le=20)
     trust_delta: int = Field(default=0, ge=-20, le=20)
-    desperation_delta: int = Field(default=0, ge=-20, le=20)
-    action: Literal["release_hostage", "harm_hostage", "surrender"] | None = None
-    action_target: str | None = None
 
 
 class DialogueOption(BaseModel):
-    """One LLM-generated player dialogue option.
+    """One LLM-generated handler dialogue option.
 
-    The player sees only `tag` (a short emotion/intent label like "Empathize");
-    `hidden_line` is the full sentence sent to the captor when chosen.
+    The player sees only `tag` (a short intent label like "Probe");
+    `hidden_line` is the full sentence sent to the agent when chosen.
     """
 
-    tag: str
-    hidden_line: str
+    tag: str = Field(min_length=1, max_length=24)
+    hidden_line: str = Field(min_length=1, max_length=400)
 
 
 class OptionsResponse(BaseModel):
-    """Structured output the options agent must produce each call.
+    """Structured output the options agent must produce each call."""
 
-    Bounds (2-5 options, tag 1-24 chars, hidden_line 1-400 chars) live in the
-    validator below, not in `Field(...)`. llama.cpp's Gemma 4 tool-call grammar
-    doesn't enforce JSON-Schema constraints anyway (PR #21418), and a complex
-    schema tickled a duplicate-`thought`-rule bug that crashed grammar install
-    on b8953. Pydantic AI's retry loop converts these `ValueError`s into
-    corrective feedback for the model.
-    """
-
-    options: list[DialogueOption]
+    options: list[DialogueOption] = Field(min_length=2, max_length=5)
 
     @model_validator(mode="after")
-    def _validate_options(self) -> "OptionsResponse":
-        n = len(self.options)
-        if not 2 <= n <= 5:
-            raise ValueError(f"emit between 2 and 5 options (got {n})")
-        for i, o in enumerate(self.options):
-            tag = o.tag.strip()
-            if not 1 <= len(tag) <= 24:
-                raise ValueError(f"option {i} tag must be 1-24 chars (got {len(tag)})")
-            line = o.hidden_line.strip()
-            if not 1 <= len(line) <= 400:
-                raise ValueError(f"option {i} hidden_line must be 1-400 chars (got {len(line)})")
+    def _tags_distinct(self) -> "OptionsResponse":
         tags = [o.tag.strip().lower() for o in self.options]
         if len(set(tags)) != len(tags):
             raise ValueError("option tags must be distinct within a set")
@@ -175,56 +176,60 @@ class OptionsResponse(BaseModel):
 
 
 @dataclass
-class HostageState:
-    name: str
-    description: str
-    status: HostageStatus = "held"
+class AgentState:
+    id: str
+    callsign: str
+    city: str
+    stress: int
+    trust: int
+    lost: bool = False
+    last_report_action_count: int = 0
 
 
 @dataclass
-class GameState:
+class HandlerState:
     max_actions: int
-    stress: int
-    trust: int
-    desperation: int
-    hostages: list[HostageState]
+    agents: dict[str, AgentState]
     action_count: int = 0
     fired_timeline_event_ids: set[str] = field(default_factory=set)
     ended: bool = False
-    captor_outcome: str | None = None  # "surrendered" | "breached" | "harmed"
     end_reason: EndReason | None = None
 
     @classmethod
-    def from_scenario(cls, scenario: Scenario) -> "GameState":
+    def from_scenario(cls, scenario: Scenario) -> "HandlerState":
         return cls(
             max_actions=scenario.max_actions,
-            stress=scenario.captor.starting_meters.stress,
-            trust=scenario.captor.starting_meters.trust,
-            desperation=scenario.captor.starting_meters.desperation,
-            hostages=[HostageState(name=h.name, description=h.description) for h in scenario.hostages],
+            agents={
+                a.id: AgentState(
+                    id=a.id,
+                    callsign=a.callsign,
+                    city=a.city,
+                    stress=a.starting_meters.stress,
+                    trust=a.starting_meters.trust,
+                )
+                for a in scenario.agents
+            },
         )
-
-    def hostage_by_name(self, name: str | None) -> HostageState | None:
-        if not name:
-            return None
-        for h in self.hostages:
-            if h.name == name:
-                return h
-        return None
 
     def actions_remaining(self) -> int:
         return max(0, self.max_actions - self.action_count)
 
     def public_view(self) -> dict:
-        """Client-facing state. Never includes meters."""
+        """Client-facing state. Per-agent meters omitted unless DEBUG envelope is added."""
         return {
-            "hostages": [
-                {"name": h.name, "description": h.description, "status": h.status}
-                for h in self.hostages
+            "agents": [
+                {
+                    "id": a.id,
+                    "callsign": a.callsign,
+                    "city": a.city,
+                    "lost": a.lost,
+                    "last_report_action_count": a.last_report_action_count,
+                }
+                for a in self.agents.values()
             ],
             "actions_remaining": self.actions_remaining(),
             "max_actions": self.max_actions,
+            "action_count": self.action_count,
             "ended": self.ended,
-            "captor_outcome": self.captor_outcome,
             "end_reason": self.end_reason,
         }

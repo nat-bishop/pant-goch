@@ -1,26 +1,44 @@
 using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Godot;
 
 namespace Smallville;
 
+/// <summary>Scene controller. See CLAUDE.md for architecture and invariants.</summary>
 public partial class Game : Control
 {
-    private LLMClient _client = null!;
+    private sealed class ChannelView
+    {
+        public AgentDef Def { get; }
+        public StringBuilder Cache { get; } = new();
+        public int TxCounter;
+        public ChannelView(AgentDef def) { Def = def; }
+    }
 
-    // ── ui ──
-    private Label _actionBudgetLabel = null!;
-    private Label _titleLabel = null!;
-    private Label _captorNameLabel = null!;
-    private RichTextLabel _captorPersonaLabel = null!;
+    // ── palette ──
+    private static readonly Color PaperCream = new(0.94f, 0.90f, 0.82f);
+    private static readonly Color InkBlack = new(0.10f, 0.10f, 0.11f);
+    private static readonly Color InkMuted = new(0.30f, 0.28f, 0.26f);
+    private static readonly Color SignalAmber = new(0.83f, 0.65f, 0.20f);
+    private static readonly Color ClassRed = new(0.61f, 0.17f, 0.17f);
+    private static readonly Color DeskGrey = new(0.18f, 0.17f, 0.16f);
+
+    // ── nodes ──
+    private LLMClient _client = null!;
+    private Label _budgetCount = null!;
+    private BudgetPunchcard _punchcard = null!;
+    private Label _opLabel = null!;
+    private DossierTabs _tabs = null!;
     private RichTextLabel _chatLog = null!;
     private ActionPanel _actionPanel = null!;
     private Button _stopButton = null!;
-    private HostageStatusPanel _hostagePanel = null!;
     private TimelineFeed _timelineFeed = null!;
     private DebugPanel? _debugPanel;
-    private VBoxContainer _leftColumn = null!;
+    private VBoxContainer _rightColumn = null!;
     private Control _bootSplash = null!;
     private Label _bootMessage = null!;
     private Control _resolutionOverlay = null!;
@@ -29,12 +47,15 @@ public partial class Game : Control
 
     // ── state ──
     private Scenario _scenario = new();
-    private GameState _state = new();
+    private HandlerState _state = new();
     private CancellationTokenSource? _activeStreamCts;
     private CancellationTokenSource? _optionsCts;
     private CancellationTokenSource? _eventsCts;
     private bool _streaming;
     private bool _ended;
+    private bool _budgetAdvisoryStamped;
+
+    private readonly Dictionary<string, ChannelView> _channels = new();
 
     // ── lifecycle ──
 
@@ -59,37 +80,32 @@ public partial class Game : Control
     {
         try
         {
-            ShowBoot("Waiting for sidecar…");
+            ShowBoot("Connecting to station…");
             await _client.WaitReady(180.0);
 
-            ShowBoot("Loading scenario…");
+            ShowBoot("Loading operation brief…");
             var scenarioTask = _client.GetScenarioAsync();
             var stateTask = _client.GetStateAsync();
             _scenario = await scenarioTask;
             _state = await stateTask;
 
-            _titleLabel.Text = _scenario.Title;
-            _captorNameLabel.Text = _scenario.Captor.Name;
-            _captorPersonaLabel.Text = _scenario.Captor.Persona;
-            _hostagePanel.SetHostages(_scenario.Hostages);
-            _hostagePanel.UpdateFrom(_state.Hostages);
-            UpdateBudgetLabel();
-            MaybeMountDebugPanel();
+            _opLabel.Text = $"{_scenario.Operation.Codename} — {_scenario.Operation.Objective}";
 
-            AppendChatSystem(_scenario.Setup);
-            AppendChatSystem("Demands: " + string.Join(" / ", _scenario.Captor.InitialDemands));
+            var firstId = SeedChannelsAndRenderFirst();
+            UpdateBudgetUI();
+            MaybeMountDebugPanel();
+            _debugPanel?.SetActiveAgent(firstId);
 
             _eventsCts = new CancellationTokenSource();
             _ = _client.SubscribeEventsAsync(
-                onGameEnded: OnGameEnded,
+                onGameEnded: er => OnGameEnded(er),
                 onError: msg => GD.PrintErr($"[events] {msg}"),
                 ct: _eventsCts.Token);
 
             HideBoot();
 
-            // First-turn options. RefreshOptionsAsync re-enables the action panel on success.
             _actionPanel.ShowLoading();
-            await RefreshOptionsAsync();
+            await RefreshOptionsAsync(firstId);
         }
         catch (Exception e)
         {
@@ -103,24 +119,26 @@ public partial class Game : Control
     private void OnOptionSelected(string hiddenLine)
     {
         if (_ended) return;
-        _ = FireAction(hiddenLine);
+        var aid = _tabs.ActiveAgentId;
+        if (string.IsNullOrEmpty(aid)) return;
+        _ = FireAction(aid, hiddenLine);
     }
 
-    private async Task FireAction(string line)
+    private async Task FireAction(string agentId, string line)
     {
         _activeStreamCts?.Cancel();
         _activeStreamCts = new CancellationTokenSource();
         var ct = _activeStreamCts.Token;
 
         SetStreamingUI(true);
-        AppendChatPlayerLine(line);
-        BeginCaptorBubble();
+        AppendHandlerLine(agentId, line);
+        BeginAgentBubble(agentId);
 
         try
         {
             await _client.StreamActionAsync(
-                line,
-                onTextDelta: AppendCaptorDelta,
+                agentId, line,
+                onTextDelta: (id, delta) => OnAgentDelta(id, delta),
                 onState: ApplyStateEvent,
                 onTimeline: OnTimelineEvent,
                 onDone: OnStreamDone,
@@ -134,13 +152,17 @@ public partial class Game : Control
         }
     }
 
+    private void OnAgentDelta(string agentId, string delta)
+    {
+        var bb = EscapeBb(delta);
+        AppendToChannelCache(agentId, bb);
+        if (agentId == _tabs.ActiveAgentId) _chatLog.AppendText(bb);
+    }
+
     private void OnStopPressed()
     {
         _activeStreamCts?.Cancel();
-        MarkInterrupted();
-        // Cancellation discards the partial captor turn server-side, so HISTORY
-        // is unchanged and the next /options call gives picks against the same
-        // pre-stream state.
+        MarkInterrupted(_tabs.ActiveAgentId);
         RecoverFromStream();
     }
 
@@ -148,7 +170,7 @@ public partial class Game : Control
 
     private void OnStreamError(string msg)
     {
-        AppendChatSystem($"[error] {msg}");
+        AppendSystemToChannel(_tabs.ActiveAgentId, $"// SIGNAL ERROR: {msg}");
         RecoverFromStream();
     }
 
@@ -157,21 +179,23 @@ public partial class Game : Control
         SetStreamingUI(false);
         if (_ended) return;
         _actionPanel.ShowLoading();
-        _ = RefreshOptionsAsync();
+        _ = RefreshOptionsAsync(_tabs.ActiveAgentId);
     }
 
-    private async Task RefreshOptionsAsync()
+    private async Task RefreshOptionsAsync(string agentId)
     {
+        if (string.IsNullOrEmpty(agentId)) return;
         _optionsCts?.Cancel();
         _optionsCts = new CancellationTokenSource();
         var ct = _optionsCts.Token;
         try
         {
-            var options = await _client.GetOptionsAsync(ct);
+            var options = await _client.GetOptionsAsync(agentId, ct);
             if (ct.IsCancellationRequested || _ended) return;
+            if (agentId != _tabs.ActiveAgentId) return;  // user switched mid-fetch
             if (options.Length == 0)
             {
-                _actionPanel.ShowError("No options available.");
+                _actionPanel.ShowError("no options available.");
                 return;
             }
             _actionPanel.SetOptions(options);
@@ -182,15 +206,15 @@ public partial class Game : Control
         catch (Exception e)
         {
             GD.PrintErr($"[Game] /options failed: {e}");
-            _actionPanel.ShowError($"Options unavailable ({e.Message}).");
+            _actionPanel.ShowError($"options unavailable ({e.Message}).");
         }
     }
 
-    private void ApplyStateEvent(GameState s)
+    private void ApplyStateEvent(HandlerState s)
     {
         _state = s;
-        _hostagePanel.UpdateFrom(s.Hostages);
-        UpdateBudgetLabel();
+        _tabs.UpdateFrom(s);
+        UpdateBudgetUI();
         if (s.Debug != null)
         {
             MaybeMountDebugPanel();
@@ -198,90 +222,141 @@ public partial class Game : Control
         }
         if (s.Ended)
         {
-            EndGame(s.EndReason ?? "ended", s.CaptorOutcome ?? "ended");
+            EndGame(s.EndReason ?? "ended");
         }
     }
 
     private void OnTimelineEvent(TimelineEvent evt)
     {
         _timelineFeed.AddEvent(evt);
+        var active = _tabs.ActiveAgentId;
+        foreach (var aid in evt.AffectedAgents)
+        {
+            AppendSystemToChannel(aid, $"[scene update] {evt.NotificationText}");
+            if (aid != active) _tabs.MarkUnread(aid);
+        }
     }
 
-    private void OnGameEnded(string reason, string outcome)
+    private void OnGameEnded(string reason)
     {
-        EndGame(reason, outcome);
+        EndGame(reason);
     }
 
-    // ── chat log helpers ──
+    // ── channel switching ──
 
-    private void AppendChatPlayerLine(string line)
+    private void OnChannelSelected(string agentId)
     {
-        _chatLog.AppendText("\n\n");
-        _chatLog.PushColor(new Color(0.5f, 0.85f, 0.95f));
-        _chatLog.PushBold();
-        _chatLog.AppendText("Negotiator: ");
-        _chatLog.Pop();
-        _chatLog.AppendText(line);
-        _chatLog.Pop();
+        if (_streaming)
+        {
+            _activeStreamCts?.Cancel();
+        }
+        RenderChannel(agentId);
+        _debugPanel?.SetActiveAgent(agentId);
+        if (!_ended)
+        {
+            _actionPanel.ShowLoading();
+            _ = RefreshOptionsAsync(agentId);
+        }
     }
 
-    private void AppendChatSystem(string text)
+    private void RenderChannel(string agentId)
     {
-        _chatLog.AppendText("\n\n");
-        _chatLog.PushColor(new Color(0.55f, 0.55f, 0.55f));
-        _chatLog.PushItalics();
-        _chatLog.AppendText(text);
-        _chatLog.Pop();
-        _chatLog.Pop();
+        if (string.IsNullOrEmpty(agentId)) return;
+        _chatLog.Clear();
+        if (_channels.TryGetValue(agentId, out var ch))
+        {
+            _chatLog.AppendText(ch.Cache.ToString());
+        }
     }
 
-    private void BeginCaptorBubble()
+    // ── chat cache helpers ──
+
+    private string SeedChannelsAndRenderFirst()
     {
-        _chatLog.AppendText("\n\n");
-        _chatLog.PushColor(new Color(0.95f, 0.65f, 0.5f));
-        _chatLog.PushBold();
-        _chatLog.AppendText($"{_scenario.Captor.Name}: ");
-        _chatLog.Pop();
-        _chatLog.Pop();
+        _channels.Clear();
+        _chatLog.Clear();
+        // Seed BEFORE _tabs.SetAgents — until then ActiveAgentId is "" so the
+        // Append* helpers skip their live-render branch and only fill the cache.
+        foreach (var a in _scenario.Agents) _channels[a.Id] = new ChannelView(a);
+        var opLine = $"OPERATION {_scenario.Operation.Codename} :: {_scenario.Operation.Objective}";
+        foreach (var a in _scenario.Agents)
+        {
+            AppendSystemToChannel(a.Id, _scenario.Setup);
+            AppendSystemToChannel(a.Id, opLine);
+            BeginAgentBubble(a.Id);
+            AppendToChannelCache(a.Id, EscapeBb(a.OpeningTransmission));
+        }
+        _tabs.SetAgents(_scenario.Agents);
+        _tabs.UpdateFrom(_state);
+        var firstId = _scenario.Agents.Count > 0 ? _scenario.Agents[0].Id : "";
+        RenderChannel(firstId);
+        return firstId;
     }
 
-    private void AppendCaptorDelta(string delta)
+    private void AppendToChannelCache(string agentId, string bb)
     {
-        _chatLog.AppendText(delta);
+        if (!_channels.TryGetValue(agentId, out var ch)) return;
+        ch.Cache.Append(bb);
     }
 
-    private void MarkInterrupted()
+    private void AppendHandlerLine(string agentId, string line)
     {
-        _chatLog.PushColor(new Color(0.7f, 0.5f, 0.5f));
-        _chatLog.PushItalics();
-        _chatLog.AppendText("  [interrupted]");
-        _chatLog.Pop();
-        _chatLog.Pop();
+        var bb = $"\n\n[color=#d4a533][b]HANDLER:[/b][/color] {EscapeBb(line)}";
+        AppendToChannelCache(agentId, bb);
+        if (agentId == _tabs.ActiveAgentId) _chatLog.AppendText(bb);
     }
+
+    private void BeginAgentBubble(string agentId)
+    {
+        if (!_channels.TryGetValue(agentId, out var ch)) return;
+        ch.TxCounter += 1;
+        var time = DateTime.UtcNow.ToString("HHmm", CultureInfo.InvariantCulture) + "Z";
+        var header = $"\n\n[color=#1a1a1c][b]{ch.Def.Callsign}[/b][/color] / {ch.Def.City} / {time} / TX-{ch.TxCounter:D3}\n";
+        ch.Cache.Append(header);
+        if (agentId == _tabs.ActiveAgentId) _chatLog.AppendText(header);
+    }
+
+    private void AppendSystemToChannel(string agentId, string text)
+    {
+        var bb = $"\n\n[color=#4d4944][i]{EscapeBb(text)}[/i][/color]";
+        AppendToChannelCache(agentId, bb);
+        if (agentId == _tabs.ActiveAgentId) _chatLog.AppendText(bb);
+    }
+
+    private void MarkInterrupted(string agentId)
+    {
+        const string bb = " [color=#a07a7a][i] [interrupted][/i][/color]";
+        AppendToChannelCache(agentId, bb);
+        if (agentId == _tabs.ActiveAgentId) _chatLog.AppendText(bb);
+    }
+
+    private static string EscapeBb(string s) =>
+        s.IndexOf('[') < 0 ? s : s.Replace("[", "[lb]");
 
     // ── ui state ──
 
     private void SetStreamingUI(bool streaming)
     {
         _streaming = streaming;
-        if (streaming) _actionPanel.SetEnabled(false);
+        _actionPanel.SetEnabled(!streaming);
         _stopButton.Visible = streaming;
     }
 
-    private void UpdateBudgetLabel()
+    private void UpdateBudgetUI()
     {
         var remaining = _state.ActionsRemaining;
         var max = _state.MaxActions > 0 ? _state.MaxActions : _scenario.MaxActions;
-        _actionBudgetLabel.Text = max > 0
-            ? $"💬 {remaining} / {max} actions left"
-            : $"💬 {remaining} actions left";
-        if (remaining > 0 && remaining <= 5)
+        var used = max - remaining;
+        _punchcard.Set(used, max);
+        _budgetCount.Text = $"{remaining:D2}/{max:D2} DECISIONS";
+        if (!_budgetAdvisoryStamped && remaining > 0 && remaining <= 5)
         {
-            _actionBudgetLabel.AddThemeColorOverride("font_color", new Color(0.95f, 0.4f, 0.4f));
-        }
-        else
-        {
-            _actionBudgetLabel.RemoveThemeColorOverride("font_color");
+            _budgetAdvisoryStamped = true;
+            var aid = _tabs.ActiveAgentId;
+            if (!string.IsNullOrEmpty(aid))
+            {
+                AppendSystemToChannel(aid, "BUDGET ADVISORY: five decisions remaining before window closes.");
+            }
         }
     }
 
@@ -290,11 +365,12 @@ public partial class Game : Control
         if (_debugPanel != null) return;
         if (_state.Debug == null) return;
         _debugPanel = new DebugPanel { SizeFlagsHorizontal = SizeFlags.ExpandFill };
-        _leftColumn.AddChild(_debugPanel);
+        _rightColumn.AddChild(_debugPanel);
         _debugPanel.UpdateFrom(_state.Debug);
+        _debugPanel.SetActiveAgent(_tabs.ActiveAgentId);
     }
 
-    private void EndGame(string reason, string outcome)
+    private void EndGame(string reason)
     {
         if (_ended) return;
         _ended = true;
@@ -303,37 +379,40 @@ public partial class Game : Control
         SetStreamingUI(false);
         _actionPanel.SetEnabled(false);
 
-        int saved = 0, harmed = 0;
-        foreach (var h in _state.Hostages)
-        {
-            if (h.Status == "released") saved++;
-            else if (h.Status == "harmed") harmed++;
-        }
-
         _resolutionTitle.Text = OutcomeTitle(reason);
         _resolutionBody.Clear();
-        _resolutionBody.AppendText($"\n\nReason: [b]{reason}[/b]");
-        _resolutionBody.AppendText($"\nCaptor outcome: [b]{outcome}[/b]");
-        _resolutionBody.AppendText($"\n\nHostages saved: {saved} of {_state.Hostages.Count}");
-        if (harmed > 0) _resolutionBody.AppendText($"\nHostages harmed: {harmed}");
+        _resolutionBody.AppendText($"\n\nFile: [b]{_scenario.Operation.Codename}[/b]");
+        _resolutionBody.AppendText($"\nReason: [b]{ReasonLabel(reason)}[/b]");
         var max = _state.MaxActions > 0 ? _state.MaxActions : _scenario.MaxActions;
         var used = max - _state.ActionsRemaining;
-        _resolutionBody.AppendText($"\nActions used: {used} of {max}");
+        _resolutionBody.AppendText($"\nDecisions used: {used:D2} of {max:D2}");
+        _resolutionBody.AppendText("\n\n[b]ASSET REGISTRY[/b]");
+        foreach (var a in _state.Agents)
+        {
+            var name = _channels.TryGetValue(a.Id, out var ch) ? ch.Def.Callsign : a.Callsign;
+            var city = _channels.TryGetValue(a.Id, out var ch2) ? ch2.Def.City : a.City;
+            var status = a.Lost ? "[color=#9b2c2c]LOST[/color]" : "[color=#1a1a1c]ACTIVE[/color]";
+            var lastContact = a.LastReportActionCount > 0
+                ? $"last @ action {a.LastReportActionCount:D2}"
+                : "no contact";
+            _resolutionBody.AppendText($"\n  · {name} / {city} — {status} ({lastContact})");
+        }
         _resolutionOverlay.Visible = true;
     }
 
-    private static string OutcomeTitle(string reason)
+    private static string ReasonLabel(string reason) => reason switch
     {
-        return reason switch
-        {
-            "captor_surrendered" => "PEACEFUL RESOLUTION",
-            "all_released" => "PEACEFUL RESOLUTION",
-            "hostage_harmed" => "HOSTAGE HARMED",
-            "auto_breach" => "TACTICAL BREACH (forced)",
-            "budget_exhausted" => "OUT OF TIME — TACTICAL BREACH",
-            _ => "SCENARIO ENDED",
-        };
-    }
+        "budget_exhausted" => "decision window closed",
+        "all_lost" => "all assets lost",
+        _ => reason,
+    };
+
+    private static string OutcomeTitle(string reason) => reason switch
+    {
+        "budget_exhausted" => "WINDOW CLOSED",
+        "all_lost" => "NETWORK ROLLED UP",
+        _ => "OPERATION ENDED",
+    };
 
     private async void OnRestartPressed()
     {
@@ -342,16 +421,14 @@ public partial class Game : Control
             _resolutionOverlay.Visible = false;
             _ended = false;
             _streaming = false;
-            _chatLog.Clear();
+            _budgetAdvisoryStamped = false;
             _state = await _client.ResetAsync();
-            _hostagePanel.UpdateFrom(_state.Hostages);
-            UpdateBudgetLabel();
+            var firstId = SeedChannelsAndRenderFirst();
+            UpdateBudgetUI();
             if (_state.Debug != null) _debugPanel?.UpdateFrom(_state.Debug);
-            AppendChatSystem(_scenario.Setup);
-            AppendChatSystem("Demands: " + string.Join(" / ", _scenario.Captor.InitialDemands));
-            _actionBudgetLabel.RemoveThemeColorOverride("font_color");
+            _debugPanel?.SetActiveAgent(firstId);
             _actionPanel.ShowLoading();
-            await RefreshOptionsAsync();
+            await RefreshOptionsAsync(firstId);
         }
         catch (Exception e)
         {
@@ -370,77 +447,93 @@ public partial class Game : Control
     {
         SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
 
-        var bg = new ColorRect { Color = new Color(0.10f, 0.10f, 0.12f) };
+        var theme = new Theme();
+        if (HandlerFonts.Mono != null)
+        {
+            theme.DefaultFont = HandlerFonts.Mono;
+            theme.DefaultFontSize = 13;
+        }
+        Theme = theme;
+
+        var bg = new ColorRect { Color = DeskGrey };
         bg.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
         AddChild(bg);
 
-        var margin = new MarginContainer();
-        margin.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
-        margin.AddThemeConstantOverride("margin_left", 12);
-        margin.AddThemeConstantOverride("margin_right", 12);
-        margin.AddThemeConstantOverride("margin_top", 8);
-        margin.AddThemeConstantOverride("margin_bottom", 8);
-        AddChild(margin);
+        var col = new VBoxContainer();
+        col.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
+        col.AddThemeConstantOverride("separation", 0);
+        AddChild(col);
 
-        var col = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
-        margin.AddChild(col);
+        // Top classification banner.
+        col.AddChild(BuildClassificationBanner());
 
-        // top bar
-        var topBar = new HBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
+        // Top bar (paper).
+        var topBar = new PanelContainer();
+        var topBarBg = new StyleBoxFlat
+        {
+            BgColor = PaperCream,
+            ContentMarginLeft = 16, ContentMarginRight = 16,
+            ContentMarginTop = 8, ContentMarginBottom = 8,
+        };
+        topBar.AddThemeStyleboxOverride("panel", topBarBg);
         col.AddChild(topBar);
-        _actionBudgetLabel = new Label { Text = "💬 — actions left" };
-        _actionBudgetLabel.AddThemeFontSizeOverride("font_size", 22);
-        topBar.AddChild(_actionBudgetLabel);
-        topBar.AddChild(new Control { SizeFlagsHorizontal = SizeFlags.ExpandFill });
-        _titleLabel = new Label { Text = "Loading…" };
-        _titleLabel.AddThemeFontSizeOverride("font_size", 18);
-        topBar.AddChild(_titleLabel);
+        var topRow = new HBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
+        topRow.AddThemeConstantOverride("separation", 16);
+        topBar.AddChild(topRow);
 
-        col.AddChild(new HSeparator());
+        _punchcard = new BudgetPunchcard
+        {
+            CustomMinimumSize = new Vector2(0, 14),
+            SizeFlagsVertical = SizeFlags.ShrinkCenter,
+        };
+        topRow.AddChild(_punchcard);
 
-        // body
+        _budgetCount = new Label { Text = "—/— DECISIONS" };
+        _budgetCount.AddThemeFontSizeOverride("font_size", 13);
+        _budgetCount.AddThemeColorOverride("font_color", InkBlack);
+        topRow.AddChild(_budgetCount);
+
+        topRow.AddChild(new Control { SizeFlagsHorizontal = SizeFlags.ExpandFill });
+
+        _opLabel = new Label { Text = "Loading operation…" };
+        _opLabel.AddThemeFontSizeOverride("font_size", 13);
+        _opLabel.AddThemeColorOverride("font_color", InkBlack);
+        topRow.AddChild(_opLabel);
+
+        // 1px hairline rule under the top bar.
+        var rule = new ColorRect { Color = InkMuted, CustomMinimumSize = new Vector2(0, 1) };
+        col.AddChild(rule);
+
+        // Body.
         var body = new HBoxContainer
         {
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
             SizeFlagsVertical = SizeFlags.ExpandFill,
         };
-        body.AddThemeConstantOverride("separation", 12);
+        body.AddThemeConstantOverride("separation", 0);
         col.AddChild(body);
 
-        // left
-        _leftColumn = new VBoxContainer { CustomMinimumSize = new Vector2(300, 0) };
-        body.AddChild(_leftColumn);
-        var captorCard = new PanelContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
-        var captorBox = new VBoxContainer();
-        captorCard.AddChild(captorBox);
-        var captorHeader = new Label { Text = "Captor" };
-        captorHeader.AddThemeFontSizeOverride("font_size", 14);
-        captorHeader.AddThemeColorOverride("font_color", new Color(0.6f, 0.6f, 0.6f));
-        captorBox.AddChild(captorHeader);
-        _captorNameLabel = new Label { Text = "..." };
-        _captorNameLabel.AddThemeFontSizeOverride("font_size", 20);
-        captorBox.AddChild(_captorNameLabel);
-        _captorPersonaLabel = new RichTextLabel
+        // Left: dossier tabs.
+        _tabs = new DossierTabs();
+        var tabsHost = new PanelContainer { CustomMinimumSize = new Vector2(180, 0) };
+        var tabsBg = new StyleBoxFlat
         {
-            FitContent = true,
-            ScrollActive = false,
-            AutowrapMode = TextServer.AutowrapMode.WordSmart,
-            BbcodeEnabled = false,
-            CustomMinimumSize = new Vector2(0, 110),
+            BgColor = DeskGrey,
+            ContentMarginLeft = 8, ContentMarginRight = 4,
+            ContentMarginTop = 12, ContentMarginBottom = 12,
         };
-        _captorPersonaLabel.AddThemeFontSizeOverride("normal_font_size", 12);
-        captorBox.AddChild(_captorPersonaLabel);
-        _leftColumn.AddChild(captorCard);
+        tabsHost.AddThemeStyleboxOverride("panel", tabsBg);
+        tabsHost.AddChild(_tabs);
+        _tabs.ChannelSelected += OnChannelSelected;
+        body.AddChild(tabsHost);
 
-        _timelineFeed = new TimelineFeed { SizeFlagsVertical = SizeFlags.ExpandFill };
-        _leftColumn.AddChild(_timelineFeed);
-
-        // center
+        // Center: chat panel + action row.
         var center = new VBoxContainer
         {
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
             SizeFlagsVertical = SizeFlags.ExpandFill,
         };
+        center.AddThemeConstantOverride("separation", 0);
         body.AddChild(center);
 
         var chatPanel = new PanelContainer
@@ -448,7 +541,18 @@ public partial class Game : Control
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
             SizeFlagsVertical = SizeFlags.ExpandFill,
         };
+        var chatBg = new StyleBoxFlat
+        {
+            BgColor = PaperCream,
+            ContentMarginLeft = 22, ContentMarginRight = 22,
+            ContentMarginTop = 14, ContentMarginBottom = 14,
+            BorderColor = InkMuted,
+            BorderWidthLeft = 1, BorderWidthRight = 0,
+            BorderWidthTop = 0, BorderWidthBottom = 0,
+        };
+        chatPanel.AddThemeStyleboxOverride("panel", chatBg);
         center.AddChild(chatPanel);
+
         _chatLog = new RichTextLabel
         {
             BbcodeEnabled = true,
@@ -458,9 +562,14 @@ public partial class Game : Control
             AutowrapMode = TextServer.AutowrapMode.WordSmart,
         };
         _chatLog.AddThemeFontSizeOverride("normal_font_size", 14);
+        _chatLog.AddThemeFontSizeOverride("bold_font_size", 14);
+        _chatLog.AddThemeFontSizeOverride("italics_font_size", 14);
+        _chatLog.AddThemeColorOverride("default_color", InkBlack);
+        HandlerFonts.ApplyMonoToRichText(_chatLog);
         chatPanel.AddChild(_chatLog);
 
         var actionRow = new HBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
+        actionRow.AddThemeConstantOverride("separation", 8);
         center.AddChild(actionRow);
 
         _actionPanel = new ActionPanel { SizeFlagsHorizontal = SizeFlags.ExpandFill };
@@ -469,28 +578,64 @@ public partial class Game : Control
 
         _stopButton = new Button
         {
-            Text = "■ Stop",
+            Text = "■ ABORT TX",
             CustomMinimumSize = new Vector2(120, 0),
             Visible = false,
         };
         _stopButton.Pressed += OnStopPressed;
         actionRow.AddChild(_stopButton);
 
-        // right
-        var right = new VBoxContainer { CustomMinimumSize = new Vector2(300, 0) };
-        body.AddChild(right);
-        _hostagePanel = new HostageStatusPanel { SizeFlagsHorizontal = SizeFlags.ExpandFill };
-        right.AddChild(_hostagePanel);
+        // Right column: timeline feed + (optional) debug panel.
+        _rightColumn = new VBoxContainer { CustomMinimumSize = new Vector2(280, 0) };
+        var rightHost = new PanelContainer();
+        var rightBg = new StyleBoxFlat
+        {
+            BgColor = DeskGrey,
+            ContentMarginLeft = 8, ContentMarginRight = 8,
+            ContentMarginTop = 12, ContentMarginBottom = 12,
+        };
+        rightHost.AddThemeStyleboxOverride("panel", rightBg);
+        rightHost.AddChild(_rightColumn);
+        body.AddChild(rightHost);
 
-        // boot splash
+        _timelineFeed = new TimelineFeed { SizeFlagsHorizontal = SizeFlags.ExpandFill };
+        _rightColumn.AddChild(_timelineFeed);
+
+        // Bottom classification banner.
+        col.AddChild(BuildClassificationBanner());
+
+        // Boot splash.
         _bootSplash = BuildSplash();
         AddChild(_bootSplash);
 
-        // resolution overlay
+        // Resolution overlay.
         _resolutionOverlay = BuildResolutionOverlay();
         AddChild(_resolutionOverlay);
 
         _actionPanel.SetEnabled(false);
+    }
+
+    private PanelContainer BuildClassificationBanner()
+    {
+        var p = new PanelContainer { CustomMinimumSize = new Vector2(0, 22) };
+        var sb = new StyleBoxFlat
+        {
+            BgColor = ClassRed,
+            ContentMarginLeft = 8, ContentMarginRight = 8,
+            ContentMarginTop = 2, ContentMarginBottom = 2,
+        };
+        p.AddThemeStyleboxOverride("panel", sb);
+
+        var lbl = new Label
+        {
+            Text = "TOP SECRET // OPERATION IRON THRESHOLD // NOFORN",
+            HorizontalAlignment = HorizontalAlignment.Center,
+        };
+        lbl.AddThemeFontSizeOverride("font_size", 12);
+        lbl.AddThemeColorOverride("font_color", new Color(0.95f, 0.93f, 0.86f));
+        HandlerFonts.ApplyStencil(lbl);
+        p.AddChild(lbl);
+        return p;
     }
 
     private Control BuildSplash()
@@ -508,10 +653,12 @@ public partial class Game : Control
 
         var title = new Label
         {
-            Text = "SMALLVILLE",
+            Text = "STATION BERLIN-7",
             HorizontalAlignment = HorizontalAlignment.Center,
         };
         title.AddThemeFontSizeOverride("font_size", 32);
+        title.AddThemeColorOverride("font_color", PaperCream);
+        HandlerFonts.ApplyStencil(title);
         box.AddChild(title);
 
         _bootMessage = new Label
@@ -519,8 +666,8 @@ public partial class Game : Control
             Text = "Booting…",
             HorizontalAlignment = HorizontalAlignment.Center,
         };
-        _bootMessage.AddThemeFontSizeOverride("font_size", 14);
-        _bootMessage.AddThemeColorOverride("font_color", new Color(0.7f, 0.7f, 0.7f));
+        _bootMessage.AddThemeFontSizeOverride("font_size", 12);
+        _bootMessage.AddThemeColorOverride("font_color", new Color(0.70f, 0.66f, 0.60f));
         box.AddChild(_bootMessage);
 
         return splash;
@@ -545,25 +692,39 @@ public partial class Game : Control
         overlay.AddChild(center);
 
         var panel = new PanelContainer();
+        var panelBg = new StyleBoxFlat
+        {
+            BgColor = PaperCream,
+            BorderColor = InkBlack,
+            BorderWidthTop = 2, BorderWidthBottom = 2, BorderWidthLeft = 2, BorderWidthRight = 2,
+            ContentMarginLeft = 24, ContentMarginRight = 24,
+            ContentMarginTop = 24, ContentMarginBottom = 24,
+        };
+        panel.AddThemeStyleboxOverride("panel", panelBg);
         center.AddChild(panel);
 
-        var margin = new MarginContainer();
-        margin.AddThemeConstantOverride("margin_left", 24);
-        margin.AddThemeConstantOverride("margin_right", 24);
-        margin.AddThemeConstantOverride("margin_top", 24);
-        margin.AddThemeConstantOverride("margin_bottom", 24);
-        panel.AddChild(margin);
-
-        var box = new VBoxContainer { CustomMinimumSize = new Vector2(560, 0) };
+        var box = new VBoxContainer { CustomMinimumSize = new Vector2(640, 0) };
         box.AddThemeConstantOverride("separation", 12);
-        margin.AddChild(box);
+        panel.AddChild(box);
+
+        var classification = new Label
+        {
+            Text = "AFTER-ACTION REPORT // CLASSIFIED",
+            HorizontalAlignment = HorizontalAlignment.Center,
+        };
+        classification.AddThemeFontSizeOverride("font_size", 11);
+        classification.AddThemeColorOverride("font_color", ClassRed);
+        HandlerFonts.ApplyStencil(classification);
+        box.AddChild(classification);
 
         _resolutionTitle = new Label
         {
             Text = "...",
             HorizontalAlignment = HorizontalAlignment.Center,
         };
-        _resolutionTitle.AddThemeFontSizeOverride("font_size", 26);
+        _resolutionTitle.AddThemeFontSizeOverride("font_size", 28);
+        _resolutionTitle.AddThemeColorOverride("font_color", InkBlack);
+        HandlerFonts.ApplyStencil(_resolutionTitle);
         box.AddChild(_resolutionTitle);
 
         _resolutionBody = new RichTextLabel
@@ -571,15 +732,19 @@ public partial class Game : Control
             BbcodeEnabled = true,
             FitContent = true,
             ScrollActive = false,
-            CustomMinimumSize = new Vector2(0, 160),
+            CustomMinimumSize = new Vector2(0, 220),
         };
-        _resolutionBody.AddThemeFontSizeOverride("normal_font_size", 14);
+        _resolutionBody.AddThemeFontSizeOverride("normal_font_size", 13);
+        _resolutionBody.AddThemeFontSizeOverride("bold_font_size", 13);
+        _resolutionBody.AddThemeColorOverride("default_color", InkBlack);
+        HandlerFonts.ApplyMonoToRichText(_resolutionBody);
         box.AddChild(_resolutionBody);
 
         var buttonRow = new HBoxContainer { Alignment = BoxContainer.AlignmentMode.Center };
-        var restart = new Button { Text = "Restart", CustomMinimumSize = new Vector2(140, 40) };
+        buttonRow.AddThemeConstantOverride("separation", 12);
+        var restart = new Button { Text = "REOPEN FILE", CustomMinimumSize = new Vector2(160, 40) };
         restart.Pressed += OnRestartPressed;
-        var quit = new Button { Text = "Quit", CustomMinimumSize = new Vector2(140, 40) };
+        var quit = new Button { Text = "FILE & EXIT", CustomMinimumSize = new Vector2(160, 40) };
         quit.Pressed += OnQuitPressed;
         buttonRow.AddChild(restart);
         buttonRow.AddChild(quit);

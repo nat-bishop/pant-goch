@@ -20,6 +20,10 @@ namespace Smallville;
 /// Autoload. Wraps HttpClient calls to the Python sidecar. Streams /action
 /// and /events via SSE. All Godot-side callbacks marshalled to the main
 /// thread via Callable.CallDeferred.
+///
+/// Per-channel routing: /action and /options are now keyed by agent_id; SSE
+/// events from /action carry agent_id so the client can route into the right
+/// channel transcript even if the player has switched dossiers mid-stream.
 /// </summary>
 public partial class LLMClient : Node
 {
@@ -43,9 +47,6 @@ public partial class LLMClient : Node
         GD.Print($"[LLMClient] base url = {BaseUrl}");
     }
 
-    /// <summary>
-    /// Poll /health every 500 ms until 200, or timeout. Emits Ready signal on success.
-    /// </summary>
     public async Task WaitReady(double timeoutSeconds = 60.0, CancellationToken ct = default)
     {
         var deadline = DateTime.UtcNow.AddSeconds(timeoutSeconds);
@@ -80,29 +81,31 @@ public partial class LLMClient : Node
         return JsonSerializer.Deserialize<Scenario>(json) ?? new Scenario();
     }
 
-    public async Task<GameState> GetStateAsync(CancellationToken ct = default)
+    public async Task<HandlerState> GetStateAsync(CancellationToken ct = default)
     {
         using var resp = await _http.GetAsync($"{BaseUrl}/state", ct);
         resp.EnsureSuccessStatusCode();
         var json = await resp.Content.ReadAsStringAsync(ct);
-        return JsonSerializer.Deserialize<GameState>(json) ?? new GameState();
+        return JsonSerializer.Deserialize<HandlerState>(json) ?? new HandlerState();
     }
 
-    public async Task<GameState> ResetAsync(CancellationToken ct = default)
+    public async Task<HandlerState> ResetAsync(CancellationToken ct = default)
     {
         using var resp = await _http.PostAsync($"{BaseUrl}/reset", content: null, ct);
         resp.EnsureSuccessStatusCode();
         var json = await resp.Content.ReadAsStringAsync(ct);
-        return JsonSerializer.Deserialize<GameState>(json) ?? new GameState();
+        return JsonSerializer.Deserialize<HandlerState>(json) ?? new HandlerState();
     }
 
     /// <summary>
-    /// GET /options — fetch 2-5 LLM-generated dialogue picks for the next turn.
-    /// Returns an empty array if the game has ended.
+    /// GET /options?agent_id=… — fetch 2-5 LLM-generated dialogue picks for
+    /// the handler's next line in the named channel. Returns empty array if
+    /// the game has ended or the agent is lost.
     /// </summary>
-    public async Task<DialogueOption[]> GetOptionsAsync(CancellationToken ct = default)
+    public async Task<DialogueOption[]> GetOptionsAsync(string agentId, CancellationToken ct = default)
     {
-        using var resp = await _http.GetAsync($"{BaseUrl}/options", ct);
+        var url = $"{BaseUrl}/options?agent_id={Uri.EscapeDataString(agentId)}";
+        using var resp = await _http.GetAsync(url, ct);
         resp.EnsureSuccessStatusCode();
         var json = await resp.Content.ReadAsStringAsync(ct);
         var doc = JsonSerializer.Deserialize<OptionsEnvelope>(json);
@@ -115,14 +118,15 @@ public partial class LLMClient : Node
     }
 
     /// <summary>
-    /// POST /action with the player's hidden_line and stream the captor's
-    /// structured response. SSE events: text deltas, one state event, optional
+    /// POST /action {agent_id, line} and stream the agent's structured response.
+    /// SSE events: text deltas (with agent_id), one state event, optional
     /// timeline events (action-counted, fired inline), then done.
     /// </summary>
     public Task StreamActionAsync(
+        string agentId,
         string line,
-        Action<string> onTextDelta,
-        Action<GameState> onState,
+        Action<string, string> onTextDelta, // (agentId, text delta)
+        Action<HandlerState> onState,
         Action<TimelineEvent> onTimeline,
         Action onDone,
         Action<string> onError,
@@ -130,17 +134,16 @@ public partial class LLMClient : Node
         => StreamSseAsync(
             new HttpRequestMessage(HttpMethod.Post, $"{BaseUrl}/action")
             {
-                Content = JsonContent.Create(new { line }),
+                Content = JsonContent.Create(new { agent_id = agentId, line }),
             },
             onTextDelta, onState, onTimeline, onDone, onError, ct);
 
     /// <summary>
     /// Subscribe to /events SSE — game-end and reset signals. Timeline events
-    /// are NOT broadcast here anymore; they flow inline through /action SSE so
-    /// the action turn is a single source of truth. Lifetime = whole game session.
+    /// flow inline through /action SSE, not here. Lifetime = whole game session.
     /// </summary>
     public async Task SubscribeEventsAsync(
-        Action<string, string> onGameEnded, // (endReason, captorOutcome)
+        Action<string> onGameEnded, // (endReason)
         Action<string> onError,
         CancellationToken ct = default)
     {
@@ -164,8 +167,7 @@ public partial class LLMClient : Node
                     case "game_ended":
                     {
                         var er = doc.RootElement.TryGetProperty("end_reason", out var e1) ? e1.GetString() ?? "" : "";
-                        var co = doc.RootElement.TryGetProperty("captor_outcome", out var e2) ? e2.GetString() ?? "" : "";
-                        Callable.From(() => onGameEnded(er, co)).CallDeferred();
+                        Callable.From(() => onGameEnded(er)).CallDeferred();
                         break;
                     }
                     case "reset":
@@ -185,8 +187,8 @@ public partial class LLMClient : Node
 
     private async Task StreamSseAsync(
         HttpRequestMessage req,
-        Action<string> onTextDelta,
-        Action<GameState> onState,
+        Action<string, string> onTextDelta,
+        Action<HandlerState> onState,
         Action<TimelineEvent> onTimeline,
         Action onDone,
         Action<string> onError,
@@ -213,13 +215,14 @@ public partial class LLMClient : Node
                     case "text":
                     {
                         var t = doc.RootElement.GetProperty("text").GetString() ?? "";
-                        Callable.From(() => onTextDelta(t)).CallDeferred();
+                        var aid = doc.RootElement.TryGetProperty("agent_id", out var a) ? a.GetString() ?? "" : "";
+                        Callable.From(() => onTextDelta(aid, t)).CallDeferred();
                         break;
                     }
                     case "state":
                     {
                         var sj = doc.RootElement.GetProperty("state").GetRawText();
-                        var st = JsonSerializer.Deserialize<GameState>(sj) ?? new GameState();
+                        var st = JsonSerializer.Deserialize<HandlerState>(sj) ?? new HandlerState();
                         Callable.From(() => onState(st)).CallDeferred();
                         break;
                     }

@@ -1,66 +1,128 @@
 {
-  "title": "Convenience Store Holdup, 2:14 AM",
-  "setup": "A botched robbery at a 24-hour convenience store. The cashier and a late-night customer are hostages. SWAT has the building surrounded. You have thirty exchanges with the captor before tactical decides to breach.",
-  "max_actions": 30,
-  "captor": {
-    "name": "Marlon",
-    "persona": "Mid-thirties, exhausted, twitchy. Wasn't planning to take hostages — the silent alarm did him in. Sweating, hyperalert, his voice cracks under pressure. Calls the negotiator 'man' or 'officer'.",
-    "deflection_style": "Defensive deflection — 'Why are you asking me that, man?' or 'That's none of your business.' Pushes back hard on personal questions early; softens only as trust grows.",
-    "initial_demands": [
-      "A car with a full tank, parked at the front door.",
-      "All cops pulled back at least one block.",
-      "Twenty thousand dollars cash, no marked bills."
-    ],
-    "known_facts": [
-      "I came in to rob the register at 1:47 AM. I had a handgun. I did not plan to hurt anyone.",
-      "The cashier hit a silent alarm before I knew it existed. That's how the cops got here so fast.",
-      "I have two hostages: the cashier (Janet) and a customer who walked in at the wrong time (David).",
-      "I owe a man named Reyes nine thousand dollars by Friday or my sister gets hurt. That's why I'm doing this.",
-      "I have not fired the gun. I do not want to fire the gun.",
-      "I have a daughter, Emma, age six. She is the reason I cannot go to prison.",
-      "Janet is diabetic. She mentioned it twenty minutes ago. I don't know how serious that is.",
-      "I have not slept in thirty-six hours.",
-      "I will hurt a hostage if you breach. I have said this and I have to mean it."
-    ],
-    "seed_exchanges": [
-      {
-        "user": "I hear you, man. This wasn't supposed to go this way, was it?",
-        "assistant": "Don't — don't try that voice on me, man. I know what you're doing. Just tell me about the car."
-      }
-    ],
-    "starting_meters": { "stress": 70, "trust": 15, "desperation": 55 }
+  "title": "Operation Iron Threshold",
+  "setup": "A Russian arms shipment is moving from St. Petersburg through the Baltics to a buyer in Lyon. Cargo: FSB-tagged anti-tank munitions on a counterfeit commercial manifest. You run three field assets — MAGPIE on the Riga waterfront, CICADA in Vienna's emigré courier scene, DOVE prepping the receiving end in Lyon. Eighteen decisions before the handover window closes. You cannot work all three channels. Read what comes in. Choose where your attention goes.",
+  "max_actions": 18,
+  "operation": {
+    "codename": "IRON THRESHOLD",
+    "objective": "Confirm the buyer's identity at the Lyon handover and produce evidence sufficient for cross-service action.",
+    "world_state": {
+      "shipment_origin": "St. Petersburg dockyards, Vasilyevsky basin",
+      "cargo_actual": "FSB-tagged anti-tank munitions on a commercial manifest claiming refrigeration units",
+      "truck_departed_riga": "Wednesday 04:00 local, low visibility (fog)",
+      "route_intended": ["Riga", "Warsaw", "Vienna", "Frankfurt", "Lyon"],
+      "courier_real_name": "Carlo Bianchi",
+      "courier_cover": "northern-Italian wine importer, Vienna-registered",
+      "courier_status": "active and trusted by CICADA",
+      "buyer_alias_known_to_handler": "Renaud",
+      "buyer_real_identity": "Sergei Andreyev, FSB cut-out, EU passport under 'Renaud Margaux'",
+      "buyer_arrives_lyon": "Day 8, 21:30",
+      "handover_window": "Day 8, 22:00 local — Quai Saint-Vincent",
+      "authored_distortions": "MAGPIE will misreport departure as Wednesday although fog made the actual call uncertain. CICADA over-trusts Carlo and will not flag a tail. DOVE has only seen the buy site, not the buyer."
+    }
   },
-  "hostages": [
+  "agents": [
     {
-      "name": "Janet",
-      "description": "Cashier, 52, diabetic. Calm but visibly unwell."
+      "id": "magpie",
+      "callsign": "MAGPIE",
+      "name": "Anja Liepiņa",
+      "city": "Riga",
+      "role": "Dockyard SIGINT, freelance",
+      "persona": "Late forties. Ex-Latvian military intelligence, ten years out, runs a private maritime-monitoring consultancy as cover. Former smoker, now coffee. Speaks in radio procedural English even when she doesn't have to. Calls the handler 'control'. Trusts numbers, mistrusts impressions. Will say 'confidence MED' when she means 'I'm guessing'.",
+      "deflection_style": "Defaults to operational language when pressed on personal questions — 'unrelated to mission, control' — and pivots back to the asset. Will not editorialize about politics.",
+      "known_facts": [
+        "I was on station at the Vasilyevsky basin overnight, monitoring the truck park from the gantry crane platform.",
+        "Visibility was poor from approximately 0300 to 0530 local — heavy fog rolled in from the Daugava. I logged a departure at 0400 with confidence MED, but the actual hour could have been any time in that window.",
+        "The truck was a white Mercedes-Benz Atego, false plates registered to a defunct refrigeration company in Tallinn. I have photographs that will not stand up in court.",
+        "Cargo manifest declared refrigeration units bound for Frankfurt. I do not believe the manifest.",
+        "I have never met CICADA or DOVE. I trust control to coordinate.",
+        "I am not in danger so long as I stay on the consultancy side of my cover. I do not break cover for any operation."
+      ],
+      "starting_meters": { "stress": 25, "trust": 75 },
+      "seed_exchanges": [],
+      "opening_transmission": "Control, MAGPIE on station. Truck departed Vasilyevsky 0400h Wednesday under heavy fog, confidence MED. Vehicle white Mercedes Atego, plates Tallinn-registered to a defunct refrigeration outfit — false, almost certainly. Cargo manifest claims refrigeration units bound for Frankfurt; I do not believe the manifest. Photographs attached but evidentially weak due to visibility. Standing by for tasking."
     },
     {
-      "name": "David",
-      "description": "Customer, 28, picked up beer on the way home. Terrified, quiet."
+      "id": "cicada",
+      "callsign": "CICADA",
+      "name": "Bernhard Otto",
+      "city": "Vienna",
+      "role": "Courier-network handler, Vienna emigré scene",
+      "persona": "Sixty-one. East German émigré, in Vienna since '83. Runs a small antiques shop in the second district as cover. Knows everyone in the courier trade between Bratislava and Munich. Mannered, ironic, drinks too much coffee. Calls the handler by their last name when he uses any name at all. Refers to assets by first name; he has handled some of them for fifteen years. Considers loyalty between handler and asset to be the only thing in this work that is real.",
+      "deflection_style": "Becomes more polite as questions sharpen — 'an interesting question, that' — and answers with anecdotes that may or may not land near the topic. Will close down completely on questions that imply he doesn't know his own people.",
+      "known_facts": [
+        "Carlo Bianchi is my courier, has been since '08. He runs a real wine import business out of the second district, ostensibly Friulian whites and reds. The business is not a front — it is a real business he uses as cover. This distinction matters.",
+        "Carlo will be in Vienna receiving the manifest paperwork on Day 4. He does not know the cargo is anything other than wine bound for a French restaurateur. I have not told him otherwise.",
+        "I have not detected surveillance on Carlo. I would tell you if I had.",
+        "The buyer is referred to in the paperwork as 'Renaud'. I have never met him. The paperwork is clean.",
+        "I do not work with MAGPIE or DOVE directly; I trust them as much as I trust anyone I have not met, which is to say not very much, but I trust the handler.",
+        "I am sixty-one. I am not running for the train if it goes wrong. The op is the op."
+      ],
+      "starting_meters": { "stress": 35, "trust": 70 },
+      "seed_exchanges": [],
+      "opening_transmission": "My friend, CICADA reporting. Carlo will be in Vienna for the paperwork on the fourth — the wine, you understand. Manifest is clean. Renaud's name appears as receiving party at the Lyon end. I have no surveillance to report on Carlo and I would tell you if I did. Vienna is quiet. The coffee is bad this week, but that is not your concern. Standing by."
+    },
+    {
+      "id": "dove",
+      "callsign": "DOVE",
+      "name": "Camille Aragon",
+      "city": "Lyon",
+      "role": "Receiving-end fieldcraft, Lyon station",
+      "persona": "Twenty-eight. First major op as lead asset. Local — Lyonnaise, grew up in Croix-Rousse. Speaks French and Italian fluently, English with effort. Calls the handler 'sir' or 'madame' depending on the day. Excited and frightened in equal measure, hides both badly. Tells you details about Lyon she thinks you should know. Mentions her partner Élodie when stressed.",
+      "deflection_style": "Doesn't really deflect — admits when she doesn't know something, sometimes too quickly. Will catch herself oversharing and over-correct into clipped reports.",
+      "known_facts": [
+        "I have been on the Quai Saint-Vincent buy site for three weeks. I know the foot patterns, the camera positions, the river-side vantage points.",
+        "The handover window opens Day 8, 22:00, at the lower quay near the footbridge. I have not seen the buyer in person. I have only been told the name 'Renaud'.",
+        "I have a contact in the river police, Noémie, who will look the other way for forty-five minutes that night. She has not asked questions yet. She will if pushed.",
+        "Élodie thinks I am at a conference in Marseille. I am not. This is fine. I am fine.",
+        "I have not worked with MAGPIE or CICADA. I trust the handler to tell me what to do.",
+        "I do not have firearms training adequate for a contested handover. If it goes wrong on the night, I am to extract, not engage."
+      ],
+      "starting_meters": { "stress": 50, "trust": 65 },
+      "seed_exchanges": [],
+      "opening_transmission": "DOVE, sir — Lyon, three weeks on site. Quai Saint-Vincent is mapped: foot patterns, cameras, the footbridge, all of it. Window opens Day 8 at twenty-two-hundred. I have a river-police contact, Noémie, who will give us forty-five minutes uncontested if we don't push her. I have not seen Renaud. I have only been told the name. Standing by for tasking."
     }
   ],
   "timeline": [
     {
-      "id": "tac_check_1",
-      "after_actions": 5,
-      "kind": "check_in",
-      "notification_text": "Tactical Commander: 'We can be in there in ninety seconds. What's your read?'",
-      "injection_text": "[The negotiator pauses to confer with the tactical commander on the perimeter radio. Marlon hears their voices outside, can't make out the words. He is more on edge.]"
+      "id": "truck_in_motion",
+      "after_actions": 3,
+      "kind": "world_event",
+      "notification_text": "MAGPIE supplemental: truck observed transiting Latvia–Lithuania border. CICADA cross-reference attached.",
+      "injections": {
+        "magpie": "[MAGPIE sends a follow-up, unprompted: she has eyes on a confirmed transit at the Latvian–Lithuanian border crossing — the white Atego with the false Tallinn plates. She is upgrading her departure-time confidence from MED to HIGH. She also notes a second vehicle following at a distance that may or may not be relevant.]",
+        "cicada": "[CICADA receives a cross-reference forwarded from Berlin desk: MAGPIE's border crossing photograph. He notes the Atego matches the description of a vehicle Carlo mentioned in passing — a wine-trade competitor's truck, supposedly. CICADA finds this 'interesting'.]"
+      }
     },
     {
-      "id": "medical_janet",
+      "id": "vienna_counterintel",
+      "after_actions": 7,
+      "kind": "flash_traffic",
+      "notification_text": "FLASH: CICADA reports increased Russian counterintel presence in Vienna emigré scene. Carlo's status under review.",
+      "injections": {
+        "cicada": "[CICADA reports unprompted: there has been a noticeable uptick of Russian counterintel activity in the second district over the past two days. Two faces he knows from the bad old years have been seen near Carlo's wine shop. Carlo himself has reported nothing unusual. CICADA is wrestling with whether to pull Carlo or trust the absence of Carlo's own alarm. He is asking for the handler's read.]",
+        "dove": "[DOVE has received a relayed alert about Vienna activity. She asks the handler whether the Lyon side should expect compromised paperwork, and whether her contact Noémie should be re-briefed. Stress audible in the message.]"
+      }
+    },
+    {
+      "id": "vienna_dark",
+      "after_actions": 11,
+      "kind": "flash_traffic",
+      "notification_text": "FLASH: CICADA missed scheduled check-in. Carlo non-responsive on courier line.",
+      "injections": {
+        "cicada": "[CICADA has missed his 0900 check-in. The previous transmission showed his stress climbing. Whether he has gone to ground deliberately, been picked up, or simply chosen not to call, the handler does not know. Whatever next message arrives from CICADA — if any does — comes from inside that uncertainty.]",
+        "magpie": "[MAGPIE notes, unprompted, that the truck has cleared Vienna and is now in central Austria, fuel stop confirmed. She also passes on, as a tertiary observation, that her own back-channel sources in the maritime community report 'a fuss' in Vienna over the past forty-eight hours, attributed to Russian visitors.]",
+        "dove": "[DOVE radios in: Vienna intel has stopped flowing. She is operating blind on the courier side. She is asking what the handler knows; she is also, somewhat unsteadily, asking what to do if the truck arrives and Carlo does not.]"
+      }
+    },
+    {
+      "id": "lyon_handover_window",
       "after_actions": 15,
-      "kind": "medical",
-      "notification_text": "Update: Janet is showing signs of hypoglycemia. She needs sugar soon.",
-      "injection_text": "[Janet, the cashier, has begun to sweat heavily and slur her words. Her diabetes is becoming a problem. Marlon notices and is uncertain what to do.]"
-    },
-    {
-      "id": "ultimatum",
-      "after_actions": 25,
-      "kind": "ultimatum",
-      "notification_text": "Tactical Commander: 'A few exchanges left. After that, breach.'",
-      "injection_text": "[The negotiator's commander has signalled this is one of the last chances to talk Marlon down. Marlon cannot hear this directly, but the tone of the perimeter has shifted — vehicles repositioning, voices going quiet. He can feel it.]"
+      "kind": "directive",
+      "notification_text": "DIRECTIVE: Handover window opens at Quai Saint-Vincent in three decisions. DOVE on station.",
+      "injections": {
+        "dove": "[DOVE is in position. The truck is logged into the Lyon ring road; the handover window will open within the next three decisions. She is asking for confirmation of the buyer's appearance — Renaud, whoever he is — because she is the one who has to identify him on the night, and she has only the name. Her voice is steady. Her hands, she does not say, are not.]",
+        "magpie": "[MAGPIE provides a final track update: the truck has been continuous since Riga, no detected swap-outs. She formally hands off the asset to DOVE's end of the operation and closes her side of the channel for the night. She will be reachable but is no longer driving the op.]"
+      }
     }
   ]
 }
