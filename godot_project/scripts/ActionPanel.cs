@@ -1,84 +1,108 @@
+using System.Collections.Generic;
 using Godot;
 
 namespace Smallville;
 
 /// <summary>
-/// Free-text dialogue input. Player types a line and submits with Enter or
-/// the Send button; emits ActionSelected(line) which Game.cs forwards to
-/// /action.
+/// Tag-button dialogue picker. The server's options agent returns 2-5
+/// <see cref="DialogueOption"/>s; the panel renders one button per option,
+/// labeled with the option's short emotion/intent <c>tag</c>. The full
+/// <c>hidden_line</c> is what gets sent to the captor when a button fires.
 /// </summary>
 public partial class ActionPanel : PanelContainer
 {
-    [Signal] public delegate void ActionSelectedEventHandler(string line);
+    [Signal] public delegate void OptionSelectedEventHandler(string hiddenLine);
 
-    private LineEdit _input = null!;
-    private Button _sendButton = null!;
+    private VBoxContainer _root = null!;
+    private HBoxContainer _buttonRow = null!;
     private Label _statusLabel = null!;
+
+    private readonly List<Button> _buttons = new();
+    private bool _enabled;
 
     public override void _Ready()
     {
         Build();
     }
 
+    /// <summary>Replace the current button set with a new options list.</summary>
+    public void SetOptions(DialogueOption[] options)
+    {
+        ClearButtons();
+        foreach (var opt in options)
+        {
+            var btn = new Button
+            {
+                Text = opt.Tag,
+                CustomMinimumSize = new Vector2(0, 40),
+                SizeFlagsHorizontal = SizeFlags.ExpandFill,
+                TooltipText = opt.HiddenLine,  // for QA / debug; players generally won't hover
+            };
+            var hidden = opt.HiddenLine; // capture
+            btn.Pressed += () =>
+            {
+                if (!_enabled) return;
+                EmitSignal(SignalName.OptionSelected, hidden);
+            };
+            _buttonRow.AddChild(btn);
+            _buttons.Add(btn);
+        }
+        _statusLabel.Visible = false;
+    }
+
+    /// <summary>Enable or disable all option buttons.</summary>
     public void SetEnabled(bool enabled)
     {
-        _input.Editable = enabled;
-        _sendButton.Disabled = !enabled;
-        if (enabled) _statusLabel.Visible = false;
+        _enabled = enabled;
+        foreach (var b in _buttons) b.Disabled = !enabled;
     }
 
     public void GrabInputFocus()
     {
-        _input.GrabFocus();
+        if (_buttons.Count > 0) _buttons[0].GrabFocus();
     }
 
     public void ShowError(string message)
     {
+        ClearButtons();
         _statusLabel.Text = $"Error: {message}";
         _statusLabel.AddThemeColorOverride("font_color", new Color(0.95f, 0.4f, 0.4f));
         _statusLabel.Visible = true;
     }
 
-    private void Submit()
+    /// <summary>Clear buttons and show a placeholder while options are being fetched.</summary>
+    public void ShowLoading(string text = "Thinking…")
     {
-        if (!_input.Editable) return;
-        var line = _input.Text.Trim();
-        if (line.Length == 0) return;
-        _input.Text = "";
-        EmitSignal(SignalName.ActionSelected, line);
+        ClearButtons();
+        _statusLabel.Text = text;
+        _statusLabel.AddThemeColorOverride("font_color", new Color(0.65f, 0.65f, 0.65f));
+        _statusLabel.Visible = true;
     }
 
-    private void OnTextSubmitted(string _) => Submit();
-    private void OnSendPressed() => Submit();
+    private void ClearButtons()
+    {
+        foreach (var b in _buttons)
+        {
+            b.QueueFree();
+        }
+        _buttons.Clear();
+    }
 
     private void Build()
     {
-        var root = new VBoxContainer
+        _root = new VBoxContainer
         {
             CustomMinimumSize = new Vector2(0, 80),
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
         };
-        AddChild(root);
+        AddChild(_root);
 
-        var inputRow = new HBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
-        root.AddChild(inputRow);
-
-        _input = new LineEdit
+        _buttonRow = new HBoxContainer
         {
-            PlaceholderText = "What do you say?",
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
-            CustomMinimumSize = new Vector2(0, 40),
         };
-        _input.TextSubmitted += OnTextSubmitted;
-        inputRow.AddChild(_input);
-
-        _sendButton = new Button
-        {
-            Text = "Send",
-            CustomMinimumSize = new Vector2(80, 40),
-        };
-        _sendButton.Pressed += OnSendPressed;
-        inputRow.AddChild(_sendButton);
+        _buttonRow.AddThemeConstantOverride("separation", 8);
+        _root.AddChild(_buttonRow);
 
         _statusLabel = new Label
         {
@@ -86,6 +110,6 @@ public partial class ActionPanel : PanelContainer
             Visible = false,
             HorizontalAlignment = HorizontalAlignment.Center,
         };
-        root.AddChild(_statusLabel);
+        _root.AddChild(_statusLabel);
     }
 }

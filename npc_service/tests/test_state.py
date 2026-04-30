@@ -2,19 +2,23 @@
 
 Pure-Python — no LLM, no FastAPI, no llama-server.
 """
-from datetime import datetime, timedelta, timezone
-
 from npc_service.main import apply_response, check_end_conditions
 from npc_service.models import CaptorResponse, GameState, HostageState
 
 
-def _make_state(stress: int = 50, trust: int = 50, desperation: int = 50, time_offset_s: int = 0) -> GameState:
+def _make_state(
+    stress: int = 50,
+    trust: int = 50,
+    desperation: int = 50,
+    action_count: int = 0,
+    max_actions: int = 30,
+) -> GameState:
     return GameState(
-        scenario_start=datetime.now(timezone.utc) - timedelta(seconds=time_offset_s),
-        duration_seconds=600,
+        max_actions=max_actions,
         stress=stress,
         trust=trust,
         desperation=desperation,
+        action_count=action_count,
         hostages=[
             HostageState(name="Janet", description="hostage 1"),
             HostageState(name="David", description="hostage 2"),
@@ -80,11 +84,18 @@ def test_high_desperation_triggers_auto_breach():
     assert state.end_reason == "auto_breach"
 
 
-def test_timer_expiry_ends_game():
-    state = _make_state(time_offset_s=601)
+def test_action_budget_exhaustion_ends_game():
+    state = _make_state(action_count=30, max_actions=30)
     check_end_conditions(state)
     assert state.ended
-    assert state.end_reason == "timer_expired"
+    assert state.captor_outcome == "breached"
+    assert state.end_reason == "budget_exhausted"
+
+
+def test_under_budget_does_not_end():
+    state = _make_state(action_count=29, max_actions=30)
+    check_end_conditions(state)
+    assert not state.ended
 
 
 def test_already_ended_state_is_not_overwritten():

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
@@ -11,7 +10,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 HostageStatus = Literal["held", "released", "harmed"]
 EndReason = Literal[
-    "timer_expired",
+    "budget_exhausted",
     "captor_surrendered",
     "all_released",
     "hostage_harmed",
@@ -53,7 +52,7 @@ class HostageDef(BaseModel):
 
 class TimelineEvent(BaseModel):
     id: str
-    at_seconds: int = Field(ge=0)
+    after_actions: int = Field(ge=1)
     kind: Literal["check_in", "medical", "ultimatum", "other"]
     notification_text: str
     injection_text: str
@@ -62,7 +61,7 @@ class TimelineEvent(BaseModel):
 class Scenario(BaseModel):
     title: str
     setup: str
-    duration_seconds: int = Field(gt=0)
+    max_actions: int = Field(gt=0)
     captor: Captor
     hostages: list[HostageDef]
     timeline: list[TimelineEvent]
@@ -85,18 +84,18 @@ class Scenario(BaseModel):
         ids = [e.id for e in v]
         if len(set(ids)) != len(ids):
             raise ValueError("timeline event ids must be unique")
-        sorted_v = sorted(v, key=lambda e: e.at_seconds)
+        sorted_v = sorted(v, key=lambda e: e.after_actions)
         if [e.id for e in sorted_v] != ids:
-            raise ValueError("timeline events must be sorted by at_seconds")
+            raise ValueError("timeline events must be sorted by after_actions")
         return v
 
     @model_validator(mode="after")
-    def timeline_within_duration(self) -> "Scenario":
+    def timeline_within_budget(self) -> "Scenario":
         for evt in self.timeline:
-            if evt.at_seconds >= self.duration_seconds:
+            if evt.after_actions > self.max_actions:
                 raise ValueError(
-                    f"timeline event {evt.id} at_seconds={evt.at_seconds} "
-                    f"is past scenario duration {self.duration_seconds}"
+                    f"timeline event {evt.id} after_actions={evt.after_actions} "
+                    f"is past scenario max_actions {self.max_actions}"
                 )
         return self
 
@@ -130,6 +129,30 @@ class CaptorResponse(BaseModel):
     action_target: str | None = None
 
 
+class DialogueOption(BaseModel):
+    """One LLM-generated player dialogue option.
+
+    The player sees only `tag` (a short emotion/intent label like "Empathize");
+    `hidden_line` is the full sentence sent to the captor when chosen.
+    """
+
+    tag: str = Field(min_length=1, max_length=24)
+    hidden_line: str = Field(min_length=1, max_length=400)
+
+
+class OptionsResponse(BaseModel):
+    """Structured output the options agent must produce each call."""
+
+    options: list[DialogueOption] = Field(min_length=2, max_length=5)
+
+    @model_validator(mode="after")
+    def _tags_distinct(self) -> "OptionsResponse":
+        tags = [o.tag.strip().lower() for o in self.options]
+        if len(set(tags)) != len(tags):
+            raise ValueError("option tags must be distinct within a set")
+        return self
+
+
 # ───────────────────────── live game state (mutable, not a DTO) ─────────────────────────
 
 
@@ -142,22 +165,21 @@ class HostageState:
 
 @dataclass
 class GameState:
-    scenario_start: datetime
-    duration_seconds: int
+    max_actions: int
     stress: int
     trust: int
     desperation: int
     hostages: list[HostageState]
+    action_count: int = 0
+    fired_timeline_event_ids: set[str] = field(default_factory=set)
     ended: bool = False
     captor_outcome: str | None = None  # "surrendered" | "breached" | "harmed"
     end_reason: EndReason | None = None
-    last_event_ids: list[str] = field(default_factory=list)
 
     @classmethod
     def from_scenario(cls, scenario: Scenario) -> "GameState":
         return cls(
-            scenario_start=datetime.now(timezone.utc),
-            duration_seconds=scenario.duration_seconds,
+            max_actions=scenario.max_actions,
             stress=scenario.captor.starting_meters.stress,
             trust=scenario.captor.starting_meters.trust,
             desperation=scenario.captor.starting_meters.desperation,
@@ -172,9 +194,8 @@ class GameState:
                 return h
         return None
 
-    def time_remaining_seconds(self) -> int:
-        elapsed = (datetime.now(timezone.utc) - self.scenario_start).total_seconds()
-        return max(0, int(self.duration_seconds - elapsed))
+    def actions_remaining(self) -> int:
+        return max(0, self.max_actions - self.action_count)
 
     def public_view(self) -> dict:
         """Client-facing state. Never includes meters."""
@@ -183,7 +204,8 @@ class GameState:
                 {"name": h.name, "description": h.description, "status": h.status}
                 for h in self.hostages
             ],
-            "time_remaining_seconds": self.time_remaining_seconds(),
+            "actions_remaining": self.actions_remaining(),
+            "max_actions": self.max_actions,
             "ended": self.ended,
             "captor_outcome": self.captor_outcome,
             "end_reason": self.end_reason,

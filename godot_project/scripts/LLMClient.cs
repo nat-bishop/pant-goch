@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Net.Http.Json;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
 using Godot;
@@ -96,13 +97,33 @@ public partial class LLMClient : Node
     }
 
     /// <summary>
-    /// POST /action with the player's free-text line and stream the captor's
-    /// structured response. Text deltas, then exactly one state event, then done.
+    /// GET /options — fetch 2-5 LLM-generated dialogue picks for the next turn.
+    /// Returns an empty array if the game has ended.
+    /// </summary>
+    public async Task<DialogueOption[]> GetOptionsAsync(CancellationToken ct = default)
+    {
+        using var resp = await _http.GetAsync($"{BaseUrl}/options", ct);
+        resp.EnsureSuccessStatusCode();
+        var json = await resp.Content.ReadAsStringAsync(ct);
+        var doc = JsonSerializer.Deserialize<OptionsEnvelope>(json);
+        return doc?.Options ?? Array.Empty<DialogueOption>();
+    }
+
+    private class OptionsEnvelope
+    {
+        [JsonPropertyName("options")] public DialogueOption[] Options { get; set; } = Array.Empty<DialogueOption>();
+    }
+
+    /// <summary>
+    /// POST /action with the player's hidden_line and stream the captor's
+    /// structured response. SSE events: text deltas, one state event, optional
+    /// timeline events (action-counted, fired inline), then done.
     /// </summary>
     public Task StreamActionAsync(
         string line,
         Action<string> onTextDelta,
         Action<GameState> onState,
+        Action<TimelineEvent> onTimeline,
         Action onDone,
         Action<string> onError,
         CancellationToken ct = default)
@@ -111,7 +132,7 @@ public partial class LLMClient : Node
             {
                 Content = JsonContent.Create(new { line }),
             },
-            onTextDelta, onState, onDone, onError, ct);
+            onTextDelta, onState, onTimeline, onDone, onError, ct);
 
     /// <summary>
     /// POST /regenerate. Pops the last exchange server-side and re-streams.
@@ -120,19 +141,20 @@ public partial class LLMClient : Node
     public Task RegenerateAsync(
         Action<string> onTextDelta,
         Action<GameState> onState,
+        Action<TimelineEvent> onTimeline,
         Action onDone,
         Action<string> onError,
         CancellationToken ct = default)
         => StreamSseAsync(
             new HttpRequestMessage(HttpMethod.Post, $"{BaseUrl}/regenerate"),
-            onTextDelta, onState, onDone, onError, ct);
+            onTextDelta, onState, onTimeline, onDone, onError, ct);
 
     /// <summary>
-    /// Subscribe to /events SSE — timeline-event notifications and game-end signals.
-    /// Lifetime = whole game session. Returns a Task you can cancel via the token.
+    /// Subscribe to /events SSE — game-end and reset signals. Timeline events
+    /// are NOT broadcast here anymore; they flow inline through /action SSE so
+    /// the action turn is a single source of truth. Lifetime = whole game session.
     /// </summary>
     public async Task SubscribeEventsAsync(
-        Action<TimelineEvent> onTimelineEvent,
         Action<string, string> onGameEnded, // (endReason, captorOutcome)
         Action<string> onError,
         CancellationToken ct = default)
@@ -154,16 +176,6 @@ public partial class LLMClient : Node
                 var type = doc.RootElement.GetProperty("type").GetString();
                 switch (type)
                 {
-                    case "timeline_event":
-                    {
-                        var evJson = doc.RootElement.GetProperty("event").GetRawText();
-                        var ev = JsonSerializer.Deserialize<TimelineEvent>(evJson);
-                        if (ev != null)
-                        {
-                            Callable.From(() => onTimelineEvent(ev)).CallDeferred();
-                        }
-                        break;
-                    }
                     case "game_ended":
                     {
                         var er = doc.RootElement.TryGetProperty("end_reason", out var e1) ? e1.GetString() ?? "" : "";
@@ -190,6 +202,7 @@ public partial class LLMClient : Node
         HttpRequestMessage req,
         Action<string> onTextDelta,
         Action<GameState> onState,
+        Action<TimelineEvent> onTimeline,
         Action onDone,
         Action<string> onError,
         CancellationToken ct)
@@ -223,6 +236,16 @@ public partial class LLMClient : Node
                         var sj = doc.RootElement.GetProperty("state").GetRawText();
                         var st = JsonSerializer.Deserialize<GameState>(sj) ?? new GameState();
                         Callable.From(() => onState(st)).CallDeferred();
+                        break;
+                    }
+                    case "timeline":
+                    {
+                        var evJson = doc.RootElement.GetProperty("event").GetRawText();
+                        var ev = JsonSerializer.Deserialize<TimelineEvent>(evJson);
+                        if (ev != null)
+                        {
+                            Callable.From(() => onTimeline(ev)).CallDeferred();
+                        }
                         break;
                     }
                     case "done":

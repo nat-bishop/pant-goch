@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using Godot;
@@ -11,7 +10,7 @@ public partial class Game : Control
     private LLMClient _client = null!;
 
     // ── ui ──
-    private Label _timerLabel = null!;
+    private Label _actionBudgetLabel = null!;
     private Label _titleLabel = null!;
     private Label _captorNameLabel = null!;
     private RichTextLabel _captorPersonaLabel = null!;
@@ -21,6 +20,8 @@ public partial class Game : Control
     private Button _regenButton = null!;
     private HostageStatusPanel _hostagePanel = null!;
     private TimelineFeed _timelineFeed = null!;
+    private DebugPanel? _debugPanel;
+    private VBoxContainer _leftColumn = null!;
     private Control _bootSplash = null!;
     private Label _bootMessage = null!;
     private Control _resolutionOverlay = null!;
@@ -31,11 +32,10 @@ public partial class Game : Control
     private Scenario _scenario = new();
     private GameState _state = new();
     private CancellationTokenSource? _activeStreamCts;
+    private CancellationTokenSource? _optionsCts;
     private CancellationTokenSource? _eventsCts;
     private bool _streaming;
     private bool _ended;
-    private double _timeLeftSeconds;
-    private int _displayedSecond = -1;
 
     // ── lifecycle ──
 
@@ -47,20 +47,10 @@ public partial class Game : Control
         _ = BootAsync();
     }
 
-    public override void _Process(double delta)
-    {
-        if (_streaming || _ended || _scenario.DurationSeconds == 0) return;
-        _timeLeftSeconds = Mathf.Max(0, _timeLeftSeconds - delta);
-        UpdateTimerLabel();
-        if (_timeLeftSeconds <= 0 && !_ended)
-        {
-            EndGame("timer_expired", "breached");
-        }
-    }
-
     public override void _ExitTree()
     {
         _activeStreamCts?.Cancel();
+        _optionsCts?.Cancel();
         _eventsCts?.Cancel();
     }
 
@@ -74,26 +64,24 @@ public partial class Game : Control
             await _client.WaitReady(180.0);
 
             ShowBoot("Loading scenario…");
-            _scenario = await _client.GetScenarioAsync();
-            _state = await _client.GetStateAsync();
+            var scenarioTask = _client.GetScenarioAsync();
+            var stateTask = _client.GetStateAsync();
+            _scenario = await scenarioTask;
+            _state = await stateTask;
 
             _titleLabel.Text = _scenario.Title;
             _captorNameLabel.Text = _scenario.Captor.Name;
             _captorPersonaLabel.Text = _scenario.Captor.Persona;
             _hostagePanel.SetHostages(_scenario.Hostages);
             _hostagePanel.UpdateFrom(_state.Hostages);
-
-            _timeLeftSeconds = _state.TimeRemainingSeconds > 0
-                ? _state.TimeRemainingSeconds
-                : _scenario.DurationSeconds;
-            UpdateTimerLabel();
+            UpdateBudgetLabel();
+            MaybeMountDebugPanel();
 
             AppendChatSystem(_scenario.Setup);
             AppendChatSystem("Demands: " + string.Join(" / ", _scenario.Captor.InitialDemands));
 
             _eventsCts = new CancellationTokenSource();
             _ = _client.SubscribeEventsAsync(
-                onTimelineEvent: OnTimelineEvent,
                 onGameEnded: OnGameEnded,
                 onError: msg => GD.PrintErr($"[events] {msg}"),
                 ct: _eventsCts.Token);
@@ -104,7 +92,9 @@ public partial class Game : Control
             var debug = (System.Environment.GetEnvironmentVariable("DEBUG_AFFORDANCES") ?? "").ToLower();
             _regenButton.Visible = debug == "1" || debug == "true" || debug == "yes";
 
-            EnableActionInput();
+            // First-turn options. RefreshOptionsAsync re-enables the action panel on success.
+            _actionPanel.ShowLoading();
+            await RefreshOptionsAsync();
         }
         catch (Exception e)
         {
@@ -115,10 +105,10 @@ public partial class Game : Control
 
     // ── action flow ──
 
-    private void OnActionSelected(string line)
+    private void OnOptionSelected(string hiddenLine)
     {
         if (_ended) return;
-        _ = FireAction(line);
+        _ = FireAction(hiddenLine);
     }
 
     private async Task FireAction(string line)
@@ -137,6 +127,7 @@ public partial class Game : Control
                 line,
                 onTextDelta: AppendCaptorDelta,
                 onState: ApplyStateEvent,
+                onTimeline: OnTimelineEvent,
                 onDone: OnStreamDone,
                 onError: OnStreamError,
                 ct: ct);
@@ -152,8 +143,10 @@ public partial class Game : Control
     {
         _activeStreamCts?.Cancel();
         MarkInterrupted();
-        SetStreamingUI(false);
-        EnableActionInput();
+        // Cancellation discards the partial captor turn server-side, so HISTORY
+        // is unchanged and the next /options call gives picks against the same
+        // pre-stream state.
+        RecoverFromStream();
     }
 
     private void OnRegenPressed()
@@ -168,35 +161,64 @@ public partial class Game : Control
         _ = _client.RegenerateAsync(
             onTextDelta: AppendCaptorDelta,
             onState: ApplyStateEvent,
+            onTimeline: OnTimelineEvent,
             onDone: OnStreamDone,
             onError: OnStreamError,
             ct: ct);
     }
 
-    private void OnStreamDone()
-    {
-        SetStreamingUI(false);
-        EnableActionInput();
-    }
+    private void OnStreamDone() => RecoverFromStream();
 
     private void OnStreamError(string msg)
     {
         AppendChatSystem($"[error] {msg}");
-        SetStreamingUI(false);
-        EnableActionInput();
+        RecoverFromStream();
     }
 
-    private void EnableActionInput()
+    private void RecoverFromStream()
     {
-        _actionPanel.SetEnabled(true);
-        _actionPanel.GrabInputFocus();
+        SetStreamingUI(false);
+        if (_ended) return;
+        _actionPanel.ShowLoading();
+        _ = RefreshOptionsAsync();
+    }
+
+    private async Task RefreshOptionsAsync()
+    {
+        _optionsCts?.Cancel();
+        _optionsCts = new CancellationTokenSource();
+        var ct = _optionsCts.Token;
+        try
+        {
+            var options = await _client.GetOptionsAsync(ct);
+            if (ct.IsCancellationRequested || _ended) return;
+            if (options.Length == 0)
+            {
+                _actionPanel.ShowError("No options available.");
+                return;
+            }
+            _actionPanel.SetOptions(options);
+            _actionPanel.SetEnabled(true);
+            _actionPanel.GrabInputFocus();
+        }
+        catch (OperationCanceledException) { /* expected */ }
+        catch (Exception e)
+        {
+            GD.PrintErr($"[Game] /options failed: {e}");
+            _actionPanel.ShowError($"Options unavailable ({e.Message}).");
+        }
     }
 
     private void ApplyStateEvent(GameState s)
     {
         _state = s;
         _hostagePanel.UpdateFrom(s.Hostages);
-        if (s.TimeRemainingSeconds > 0) _timeLeftSeconds = s.TimeRemainingSeconds;
+        UpdateBudgetLabel();
+        if (s.Debug != null)
+        {
+            MaybeMountDebugPanel();
+            _debugPanel?.UpdateFrom(s.Debug);
+        }
         if (s.Ended)
         {
             EndGame(s.EndReason ?? "ended", s.CaptorOutcome ?? "ended");
@@ -269,13 +291,30 @@ public partial class Game : Control
         _stopButton.Visible = streaming;
     }
 
-    private void UpdateTimerLabel()
+    private void UpdateBudgetLabel()
     {
-        var t = (int)Math.Ceiling(_timeLeftSeconds);
-        if (t == _displayedSecond) return;
-        _displayedSecond = t;
-        _timerLabel.Text = $"⏱  {t / 60:D2}:{t % 60:D2}";
-        if (t < 60) _timerLabel.AddThemeColorOverride("font_color", new Color(0.95f, 0.4f, 0.4f));
+        var remaining = _state.ActionsRemaining;
+        var max = _state.MaxActions > 0 ? _state.MaxActions : _scenario.MaxActions;
+        _actionBudgetLabel.Text = max > 0
+            ? $"💬 {remaining} / {max} actions left"
+            : $"💬 {remaining} actions left";
+        if (remaining > 0 && remaining <= 5)
+        {
+            _actionBudgetLabel.AddThemeColorOverride("font_color", new Color(0.95f, 0.4f, 0.4f));
+        }
+        else
+        {
+            _actionBudgetLabel.RemoveThemeColorOverride("font_color");
+        }
+    }
+
+    private void MaybeMountDebugPanel()
+    {
+        if (_debugPanel != null) return;
+        if (_state.Debug == null) return;
+        _debugPanel = new DebugPanel { SizeFlagsHorizontal = SizeFlags.ExpandFill };
+        _leftColumn.AddChild(_debugPanel);
+        _debugPanel.UpdateFrom(_state.Debug);
     }
 
     private void EndGame(string reason, string outcome)
@@ -283,6 +322,7 @@ public partial class Game : Control
         if (_ended) return;
         _ended = true;
         _activeStreamCts?.Cancel();
+        _optionsCts?.Cancel();
         SetStreamingUI(false);
         _actionPanel.SetEnabled(false);
 
@@ -293,17 +333,19 @@ public partial class Game : Control
             else if (h.Status == "harmed") harmed++;
         }
 
-        _resolutionTitle.Text = OutcomeTitle(reason, outcome);
+        _resolutionTitle.Text = OutcomeTitle(reason);
         _resolutionBody.Clear();
         _resolutionBody.AppendText($"\n\nReason: [b]{reason}[/b]");
         _resolutionBody.AppendText($"\nCaptor outcome: [b]{outcome}[/b]");
         _resolutionBody.AppendText($"\n\nHostages saved: {saved} of {_state.Hostages.Count}");
         if (harmed > 0) _resolutionBody.AppendText($"\nHostages harmed: {harmed}");
-        _resolutionBody.AppendText($"\nTime elapsed: {(_scenario.DurationSeconds - (int)_timeLeftSeconds) / 60} min");
+        var max = _state.MaxActions > 0 ? _state.MaxActions : _scenario.MaxActions;
+        var used = max - _state.ActionsRemaining;
+        _resolutionBody.AppendText($"\nActions used: {used} of {max}");
         _resolutionOverlay.Visible = true;
     }
 
-    private static string OutcomeTitle(string reason, string outcome)
+    private static string OutcomeTitle(string reason)
     {
         return reason switch
         {
@@ -311,7 +353,7 @@ public partial class Game : Control
             "all_released" => "PEACEFUL RESOLUTION",
             "hostage_harmed" => "HOSTAGE HARMED",
             "auto_breach" => "TACTICAL BREACH (forced)",
-            "timer_expired" => "TIME UP — TACTICAL BREACH",
+            "budget_exhausted" => "OUT OF TIME — TACTICAL BREACH",
             _ => "SCENARIO ENDED",
         };
     }
@@ -324,16 +366,15 @@ public partial class Game : Control
             _ended = false;
             _streaming = false;
             _chatLog.Clear();
-            await _client.ResetAsync();
-            _state = await _client.GetStateAsync();
+            _state = await _client.ResetAsync();
             _hostagePanel.UpdateFrom(_state.Hostages);
-            _timeLeftSeconds = _scenario.DurationSeconds;
-            _displayedSecond = -1;
-            UpdateTimerLabel();
+            UpdateBudgetLabel();
+            if (_state.Debug != null) _debugPanel?.UpdateFrom(_state.Debug);
             AppendChatSystem(_scenario.Setup);
             AppendChatSystem("Demands: " + string.Join(" / ", _scenario.Captor.InitialDemands));
-            _timerLabel.RemoveThemeColorOverride("font_color");
-            EnableActionInput();
+            _actionBudgetLabel.RemoveThemeColorOverride("font_color");
+            _actionPanel.ShowLoading();
+            await RefreshOptionsAsync();
         }
         catch (Exception e)
         {
@@ -370,9 +411,9 @@ public partial class Game : Control
         // top bar
         var topBar = new HBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
         col.AddChild(topBar);
-        _timerLabel = new Label { Text = "⏱  00:00" };
-        _timerLabel.AddThemeFontSizeOverride("font_size", 22);
-        topBar.AddChild(_timerLabel);
+        _actionBudgetLabel = new Label { Text = "💬 — actions left" };
+        _actionBudgetLabel.AddThemeFontSizeOverride("font_size", 22);
+        topBar.AddChild(_actionBudgetLabel);
         topBar.AddChild(new Control { SizeFlagsHorizontal = SizeFlags.ExpandFill });
         _titleLabel = new Label { Text = "Loading…" };
         _titleLabel.AddThemeFontSizeOverride("font_size", 18);
@@ -390,8 +431,8 @@ public partial class Game : Control
         col.AddChild(body);
 
         // left
-        var left = new VBoxContainer { CustomMinimumSize = new Vector2(300, 0) };
-        body.AddChild(left);
+        _leftColumn = new VBoxContainer { CustomMinimumSize = new Vector2(300, 0) };
+        body.AddChild(_leftColumn);
         var captorCard = new PanelContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
         var captorBox = new VBoxContainer();
         captorCard.AddChild(captorBox);
@@ -412,10 +453,10 @@ public partial class Game : Control
         };
         _captorPersonaLabel.AddThemeFontSizeOverride("normal_font_size", 12);
         captorBox.AddChild(_captorPersonaLabel);
-        left.AddChild(captorCard);
+        _leftColumn.AddChild(captorCard);
 
         _timelineFeed = new TimelineFeed { SizeFlagsVertical = SizeFlags.ExpandFill };
-        left.AddChild(_timelineFeed);
+        _leftColumn.AddChild(_timelineFeed);
 
         // center
         var center = new VBoxContainer
@@ -446,7 +487,7 @@ public partial class Game : Control
         center.AddChild(actionRow);
 
         _actionPanel = new ActionPanel { SizeFlagsHorizontal = SizeFlags.ExpandFill };
-        _actionPanel.ActionSelected += OnActionSelected;
+        _actionPanel.OptionSelected += OnOptionSelected;
         actionRow.AddChild(_actionPanel);
 
         _stopButton = new Button

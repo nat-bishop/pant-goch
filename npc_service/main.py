@@ -8,7 +8,6 @@ import os
 import subprocess
 import time
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import AsyncIterator
 
@@ -38,6 +37,7 @@ from .models import (
     CaptorResponse,
     GameState,
     HostageDef,
+    OptionsResponse,
     Scenario,
     TimelineEvent,
     load_scenario,
@@ -111,11 +111,11 @@ SCENARIO: Scenario | None = None
 GAME_STATE: GameState | None = None
 HISTORY: list = []  # pydantic_ai message history
 CAPTOR_AGENT: Agent | None = None
+OPTIONS_AGENT: Agent | None = None
 SUMMARIZER_AGENT: Agent | None = None
 LLAMA_PROC: subprocess.Popen | None = None
-TIMELINE_TASK: asyncio.Task | None = None
 EVENT_BUS: "EventBus | None" = None
-ACTION_LOCK = asyncio.Lock()  # serialise /action so two players can't race
+ACTION_LOCK = asyncio.Lock()  # serialise /action and /options so they can't race
 
 
 # ───────────────────────── event bus (for /events SSE) ─────────────────────────
@@ -202,6 +202,55 @@ the negotiator threatens you or if you feel cornered with no way out.
 otherwise null.{examples}"""
 
 
+def build_options_system_prompt(scenario: Scenario) -> str:
+    """System prompt for OPTIONS_AGENT.
+
+    Mirrors /scenario's public view: setup + captor name/persona/initial_demands
+    + hostage names. Deliberately omits known_facts, seed_exchanges, and
+    starting_meters — the options agent reasons from player-knowable state only,
+    preserving the "meters never leave the server" invariant. Two example sets
+    in-prompt anchor the format and the diversity-of-strategy expectation.
+    """
+    captor = scenario.captor
+    hostage_list = ", ".join(f"{h.name} ({h.description})" for h in scenario.hostages)
+    demands = "\n".join(f"- {d}" for d in captor.initial_demands)
+
+    return f"""You are a dialogue coach helping a hostage negotiator pick what to say next.
+
+Scenario: {scenario.setup}
+
+The negotiator is talking to {captor.name}: {captor.persona}
+
+Hostages: {hostage_list}
+
+Stated demands from the captor so far:
+{demands}
+
+Each call you produce 2-5 dialogue options for the negotiator's next line. Each option has:
+- tag: a one or two word label naming the *intent or emotion* the line conveys (e.g. "Empathize", "Threaten", "Stall", "Bargain", "Probe", "Reassure", "Concede", "Challenge", "Pivot", "Press"). Tags MUST be distinct within a set — never two options with the same tag.
+- hidden_line: the actual sentence the negotiator would speak (1-3 sentences). The PLAYER will not see this until they pick it; they only see the tag.
+
+Options must represent meaningfully different *strategies*, not slight rewordings. The negotiator's goal is to de-escalate, build trust, and persuade the captor toward release or surrender — but options should include risky and confrontational moves too, not only safe ones, so the player has a real choice.
+
+Format examples (do not literally reuse these lines):
+
+Opening situation, no exchange yet:
+{{"options":[
+  {{"tag":"Introduce","hidden_line":"This is Officer Reeves with crisis negotiations. I'm here to talk, that's it. What should I call you?"}},
+  {{"tag":"Empathize","hidden_line":"Hey — I know tonight's gone sideways. Talk to me. What's the most important thing right now?"}},
+  {{"tag":"Probe","hidden_line":"Before anything else, are you and the people in there okay? Anyone hurt?"}}
+]}}
+
+Mid-conversation, captor just refused something:
+{{"options":[
+  {{"tag":"Concede","hidden_line":"Okay. I hear you. Forget that for a minute. Tell me what would actually help right now."}},
+  {{"tag":"Press","hidden_line":"I get the no. But you understand what 'no' costs you here, right?"}},
+  {{"tag":"Pivot","hidden_line":"Different question, then. Is there anyone we can call for you? Family, anybody?"}},
+  {{"tag":"Stall","hidden_line":"Give me a minute to talk to my people about that. I want to give you a real answer, not a fast one."}}
+]}}
+"""
+
+
 # ───────────────────────── state mutation ─────────────────────────
 
 
@@ -260,13 +309,13 @@ def check_end_conditions(state: GameState) -> None:
         state.captor_outcome = state.captor_outcome or "resolved"
         state.end_reason = "all_released"
         return
-    if state.time_remaining_seconds() == 0:
+    if state.action_count >= state.max_actions:
         state.ended = True
         state.captor_outcome = state.captor_outcome or "breached"
-        state.end_reason = "timer_expired"
+        state.end_reason = "budget_exhausted"
 
 
-# ───────────────────────── timeline scheduler ─────────────────────────
+# ───────────────────────── timeline events (action-counted, fired inline) ─────────────────────────
 
 
 def synthetic_event_message(evt: TimelineEvent) -> ModelRequest:
@@ -274,30 +323,35 @@ def synthetic_event_message(evt: TimelineEvent) -> ModelRequest:
     return ModelRequest(parts=[UserPromptPart(content=f"[scene update: {evt.injection_text}]")])
 
 
-async def timeline_scheduler(scenario: Scenario, state: GameState, bus: EventBus) -> None:
-    try:
-        for evt in scenario.timeline:
-            target = state.scenario_start + timedelta(seconds=evt.at_seconds)
-            wait = (target - datetime.now(timezone.utc)).total_seconds()
-            if wait > 0:
-                await asyncio.sleep(wait)
-            if state.ended:
-                return
-            log.info("timeline event firing: id=%s at_seconds=%s", evt.id, evt.at_seconds)
-            HISTORY.append(synthetic_event_message(evt))
-            state.last_event_ids.append(evt.id)
-            await bus.publish({
-                "type": "timeline_event",
-                "event": {
-                    "id": evt.id,
-                    "at_seconds": evt.at_seconds,
-                    "kind": evt.kind,
-                    "notification_text": evt.notification_text,
-                },
-            })
-    except asyncio.CancelledError:
-        log.info("timeline scheduler cancelled")
-        raise
+def fire_due_timeline_events(state: GameState, scenario: Scenario) -> list[TimelineEvent]:
+    """Fire any timeline events whose threshold has been crossed and which haven't
+    fired yet. Appends synthetic scene-update messages to HISTORY so the captor
+    sees them on its next turn. Returns the fired list so the SSE stream can
+    broadcast them too. Idempotent — events fire at most once per game.
+    """
+    global HISTORY
+    due = [
+        e for e in scenario.timeline
+        if e.after_actions <= state.action_count
+        and e.id not in state.fired_timeline_event_ids
+    ]
+    for evt in due:
+        log.info(
+            "timeline event firing: id=%s after_actions=%d (action_count=%d)",
+            evt.id, evt.after_actions, state.action_count,
+        )
+        HISTORY.append(synthetic_event_message(evt))
+        state.fired_timeline_event_ids.add(evt.id)
+    return due
+
+
+def _timeline_event_payload(evt: TimelineEvent) -> dict:
+    return {
+        "id": evt.id,
+        "after_actions": evt.after_actions,
+        "kind": evt.kind,
+        "notification_text": evt.notification_text,
+    }
 
 
 # ───────────────────────── history processors (pydantic-ai history_processors=) ─────────────────────────
@@ -369,8 +423,8 @@ def seed_history(captor: Captor) -> list:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    global SCENARIO, GAME_STATE, HISTORY, CAPTOR_AGENT
-    global SUMMARIZER_AGENT, LLAMA_PROC, TIMELINE_TASK, EVENT_BUS
+    global SCENARIO, GAME_STATE, HISTORY, CAPTOR_AGENT, OPTIONS_AGENT
+    global SUMMARIZER_AGENT, LLAMA_PROC, EVENT_BUS
 
     scenario_path = Path(os.getenv("SCENARIO_PATH", str(Path(__file__).parent / "scenario.json")))
     log.info("loading scenario: %s", scenario_path)
@@ -425,24 +479,28 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         history_processors=[summarize_when_large, hard_tail_cap],
         model_settings={"max_tokens": 512},
     )
+    # OPTIONS_AGENT: separate agent generating player dialogue picks each turn.
+    # Reuses the same model and history processors as the captor so both agents
+    # see a consistent compacted view of HISTORY. max_tokens=1024 (vs captor's
+    # 512) because up to 5 options × ~400-char hidden_line + tags + tool-call
+    # overhead can blow past 512.
+    OPTIONS_AGENT = Agent(
+        model,
+        output_type=ToolOutput(OptionsResponse),
+        instructions=build_options_system_prompt(SCENARIO),
+        history_processors=[summarize_when_large, hard_tail_cap],
+        model_settings={"max_tokens": 1024},
+    )
 
     HISTORY = seed_history(SCENARIO.captor)
     GAME_STATE = GameState.from_scenario(SCENARIO)
     EVENT_BUS = EventBus()
-    TIMELINE_TASK = asyncio.create_task(
-        timeline_scheduler(SCENARIO, GAME_STATE, EVENT_BUS),
-        name="timeline_scheduler",
-    )
 
     log.info("npc_service ready")
     try:
         yield
     finally:
         log.info("shutting down")
-        if TIMELINE_TASK and not TIMELINE_TASK.done():
-            TIMELINE_TASK.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await TIMELINE_TASK
         stop_llama(LLAMA_PROC)
 
 
@@ -470,7 +528,7 @@ async def get_scenario() -> dict:
     return {
         "title": SCENARIO.title,
         "setup": SCENARIO.setup,
-        "duration_seconds": SCENARIO.duration_seconds,
+        "max_actions": SCENARIO.max_actions,
         "captor": {
             "name": SCENARIO.captor.name,
             "persona": SCENARIO.captor.persona,
@@ -483,12 +541,32 @@ async def get_scenario() -> dict:
     }
 
 
+def _debug_affordances_enabled() -> bool:
+    return os.getenv("DEBUG_AFFORDANCES", "false").lower() in ("1", "true", "yes")
+
+
+def _state_body(state: GameState) -> dict:
+    """Public view + optional debug envelope. Shared by /state and /reset so
+    clients see the same shape from both endpoints."""
+    body = state.public_view()
+    if _debug_affordances_enabled():
+        body["debug"] = {
+            "stress": state.stress,
+            "trust": state.trust,
+            "desperation": state.desperation,
+            "action_count": state.action_count,
+            "max_actions": state.max_actions,
+            "fired_timeline_event_ids": sorted(state.fired_timeline_event_ids),
+        }
+    return body
+
+
 @app.get("/state")
 async def get_state() -> dict:
     if GAME_STATE is None:
         raise HTTPException(503, "game state not initialised")
     check_end_conditions(GAME_STATE)
-    return GAME_STATE.public_view()
+    return _state_body(GAME_STATE)
 
 
 @app.post("/action")
@@ -538,8 +616,16 @@ async def _action_event_stream(user_prompt: str) -> AsyncIterator[bytes]:
                     # Persist + mutate only on full completion (cancellation jumps
                     # straight to the except clause and skips this block).
                     HISTORY = list(result.all_messages())
+                    GAME_STATE.action_count += 1
                     apply_response(GAME_STATE, final)
                     yield _sse({"type": "state", "state": GAME_STATE.public_view()})
+                    # Fire any due timeline events AFTER state mutation but
+                    # BEFORE we yield 'done', so the client renders them in
+                    # order and the next /options call sees them in HISTORY.
+                    # Skip if the captor's response already ended the game.
+                    if not GAME_STATE.ended:
+                        for evt in fire_due_timeline_events(GAME_STATE, SCENARIO):
+                            yield _sse({"type": "timeline", "event": _timeline_event_payload(evt)})
                     if GAME_STATE.ended:
                         await EVENT_BUS.publish({
                             "type": "game_ended",
@@ -549,9 +635,10 @@ async def _action_event_stream(user_prompt: str) -> AsyncIterator[bytes]:
                     ttfb_ms = int((t_first - t_start) * 1000) if t_first else -1
                     total_ms = int((time.monotonic() - t_start) * 1000)
                     log.info(
-                        "/action complete: ttfb=%dms total=%dms response_chars=%d history_msgs=%d approx_tokens=%d",
+                        "/action complete: ttfb=%dms total=%dms response_chars=%d "
+                        "action_count=%d history_msgs=%d approx_tokens=%d",
                         ttfb_ms, total_ms, len(final.response_text or ""),
-                        len(HISTORY), _approx_tokens(HISTORY),
+                        GAME_STATE.action_count, len(HISTORY), _approx_tokens(HISTORY),
                     )
             yield _sse({"type": "done"})
         except asyncio.CancelledError:
@@ -603,6 +690,16 @@ async def post_regenerate() -> StreamingResponse:
     if last_user_prompt is None:
         raise HTTPException(400, "no prior user prompt to regenerate")
     HISTORY = new_history
+    # Rewind action-budget state: the popped turn already incremented action_count
+    # and may have fired timeline events. Decrement count and unfire any events
+    # whose threshold is now in the future. Meter deltas from the popped turn are
+    # NOT reverted — pre-existing /regenerate behaviour, documented as a caveat.
+    GAME_STATE.action_count = max(0, GAME_STATE.action_count - 1)
+    threshold_by_id = {e.id: e.after_actions for e in SCENARIO.timeline}
+    GAME_STATE.fired_timeline_event_ids = {
+        eid for eid in GAME_STATE.fired_timeline_event_ids
+        if eid in threshold_by_id and threshold_by_id[eid] <= GAME_STATE.action_count
+    }
     return StreamingResponse(
         _action_event_stream(str(last_user_prompt)),
         media_type="text/event-stream",
@@ -612,22 +709,43 @@ async def post_regenerate() -> StreamingResponse:
 
 @app.post("/reset")
 async def post_reset() -> JSONResponse:
-    global HISTORY, GAME_STATE, TIMELINE_TASK
+    global HISTORY, GAME_STATE
     if SCENARIO is None or EVENT_BUS is None:
         raise HTTPException(503, "service not ready")
     log.info("/reset")
-    if TIMELINE_TASK and not TIMELINE_TASK.done():
-        TIMELINE_TASK.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await TIMELINE_TASK
     HISTORY = seed_history(SCENARIO.captor)
     GAME_STATE = GameState.from_scenario(SCENARIO)
-    TIMELINE_TASK = asyncio.create_task(
-        timeline_scheduler(SCENARIO, GAME_STATE, EVENT_BUS),
-        name="timeline_scheduler",
-    )
     await EVENT_BUS.publish({"type": "reset"})
-    return JSONResponse(GAME_STATE.public_view())
+    return JSONResponse(_state_body(GAME_STATE))
+
+
+@app.get("/options")
+async def get_options() -> dict:
+    """Generate 2-5 emotion-tagged dialogue picks for the negotiator's next line.
+
+    Read-only with respect to HISTORY: the options agent's call is NOT written
+    back via result.all_messages(), because doing so would leak the
+    "Generate options." user prompt into the captor's history and confuse it on
+    the next turn.
+
+    Shares ACTION_LOCK with /action so this can't read HISTORY mid-mutation.
+    Called by the client (a) on boot before any captor turn, and (b) after each
+    /action SSE 'done'.
+    """
+    if SCENARIO is None or GAME_STATE is None or OPTIONS_AGENT is None:
+        raise HTTPException(503, "service not ready")
+    if GAME_STATE.ended:
+        return {"options": []}
+    log.info("/options request (action_count=%d)", GAME_STATE.action_count)
+    t_start = time.monotonic()
+    async with ACTION_LOCK:
+        # Read-only: do NOT write result back to HISTORY.
+        result = await OPTIONS_AGENT.run("Generate options.", message_history=HISTORY)
+    log.info(
+        "/options complete: %dms options=%d",
+        int((time.monotonic() - t_start) * 1000), len(result.output.options),
+    )
+    return {"options": [o.model_dump() for o in result.output.options]}
 
 
 @app.get("/events")

@@ -1,7 +1,7 @@
 {
   "title": "Convenience Store Holdup, 2:14 AM",
-  "setup": "A botched robbery at a 24-hour convenience store. The cashier and a late-night customer are hostages. SWAT has the building surrounded. You have thirty minutes before tactical decides to breach.",
-  "duration_seconds": 1800,
+  "setup": "A botched robbery at a 24-hour convenience store. The cashier and a late-night customer are hostages. SWAT has the building surrounded. You have thirty exchanges with the captor before tactical decides to breach.",
+  "max_actions": 30,
   "captor": {
     "name": "Marlon",
     "persona": "Mid-thirties, exhausted, twitchy. Wasn't planning to take hostages — the silent alarm did him in. Sweating, hyperalert, his voice cracks under pressure. Calls the negotiator 'man' or 'officer'.",
@@ -43,24 +43,24 @@
   "timeline": [
     {
       "id": "tac_check_1",
-      "at_seconds": 300,
+      "after_actions": 5,
       "kind": "check_in",
       "notification_text": "Tactical Commander: 'We can be in there in ninety seconds. What's your read?'",
-      "injection_text": "[Five minutes have passed. The negotiator pauses to confer with the tactical commander on the perimeter radio. Marlon hears their voices outside, can't make out the words. He is more on edge.]"
+      "injection_text": "[The negotiator pauses to confer with the tactical commander on the perimeter radio. Marlon hears their voices outside, can't make out the words. He is more on edge.]"
     },
     {
       "id": "medical_janet",
-      "at_seconds": 900,
+      "after_actions": 15,
       "kind": "medical",
-      "notification_text": "Update: Janet is showing signs of hypoglycemia. She needs sugar within 30 minutes.",
+      "notification_text": "Update: Janet is showing signs of hypoglycemia. She needs sugar soon.",
       "injection_text": "[Janet, the cashier, has begun to sweat heavily and slur her words. Her diabetes is becoming a problem. Marlon notices and is uncertain what to do.]"
     },
     {
       "id": "ultimatum",
-      "at_seconds": 1500,
+      "after_actions": 25,
       "kind": "ultimatum",
-      "notification_text": "Tactical Commander: 'Five minutes. After that, breach.'",
-      "injection_text": "[The negotiator's commander has set a hard five-minute deadline. Marlon cannot hear this directly, but the tone of the perimeter has shifted — vehicles repositioning, voices going quiet. He can feel it.]"
+      "notification_text": "Tactical Commander: 'A few exchanges left. After that, breach.'",
+      "injection_text": "[The negotiator's commander has signalled this is one of the last chances to talk Marlon down. Marlon cannot hear this directly, but the tone of the perimeter has shifted — vehicles repositioning, voices going quiet. He can feel it.]"
     }
   ]
 }

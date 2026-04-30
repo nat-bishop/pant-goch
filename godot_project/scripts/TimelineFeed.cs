@@ -38,7 +38,7 @@ public partial class TimelineFeed : PanelContainer
         var inner = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
         box.AddChild(inner);
 
-        var kind = new Label { Text = $"[{evt.Kind.ToUpper()}]  t+{evt.AtSeconds / 60:D2}:{evt.AtSeconds % 60:D2}" };
+        var kind = new Label { Text = $"[{evt.Kind.ToUpper()}]  @ action {evt.AfterActions}" };
         kind.AddThemeFontSizeOverride("font_size", 11);
         kind.AddThemeColorOverride("font_color", KindColor(evt.Kind));
         inner.AddChild(kind);
