@@ -96,13 +96,10 @@ public partial class LLMClient : Node
     }
 
     /// <summary>
-    /// POST /action with the chosen player line + hidden type/detail tags
-    /// and stream the captor's structured response. Text deltas, then exactly
-    /// one state event, then done.
+    /// POST /action with the player's free-text line and stream the captor's
+    /// structured response. Text deltas, then exactly one state event, then done.
     /// </summary>
     public Task StreamActionAsync(
-        string actionType,
-        string detail,
         string line,
         Action<string> onTextDelta,
         Action<GameState> onState,
@@ -112,32 +109,9 @@ public partial class LLMClient : Node
         => StreamSseAsync(
             new HttpRequestMessage(HttpMethod.Post, $"{BaseUrl}/action")
             {
-                Content = JsonContent.Create(new { type = actionType, detail, line }),
+                Content = JsonContent.Create(new { line }),
             },
             onTextDelta, onState, onDone, onError, ct);
-
-    /// <summary>
-    /// POST /options. Asks the sidecar to generate 3 contextual negotiator
-    /// dialogue options based on the current chat history. Throws on non-200
-    /// or invalid response — caller surfaces the error.
-    /// </summary>
-    public async Task<PlayerOption[]> GetOptionsAsync(CancellationToken ct = default)
-    {
-        using var resp = await _http.PostAsync($"{BaseUrl}/options", content: null, ct);
-        var json = await resp.Content.ReadAsStringAsync(ct);
-        if (!resp.IsSuccessStatusCode)
-        {
-            throw new System.Net.Http.HttpRequestException(
-                $"/options returned {(int)resp.StatusCode}: {json}");
-        }
-        var parsed = JsonSerializer.Deserialize<OptionsResponse>(json);
-        if (parsed?.Options == null || parsed.Options.Length == 0)
-        {
-            throw new System.Net.Http.HttpRequestException(
-                $"/options returned empty options: {json}");
-        }
-        return parsed.Options;
-    }
 
     /// <summary>
     /// POST /regenerate. Pops the last exchange server-side and re-streams.

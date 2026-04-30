@@ -3,20 +3,17 @@ using Godot;
 namespace Smallville;
 
 /// <summary>
-/// Dynamic dialogue-option UI. Each turn the panel is fed 3 PlayerOption
-/// objects from the sidecar's /options endpoint and renders one button per
-/// line. On press it emits ActionSelected(type, detail, line) — type and
-/// detail come from the option's hidden tags.
+/// Free-text dialogue input. Player types a line and submits with Enter or
+/// the Send button; emits ActionSelected(line) which Game.cs forwards to
+/// /action.
 /// </summary>
 public partial class ActionPanel : PanelContainer
 {
-    [Signal] public delegate void ActionSelectedEventHandler(string type, string detail, string line);
+    [Signal] public delegate void ActionSelectedEventHandler(string line);
 
-    private VBoxContainer _root = null!;
-    private Label _header = null!;
-    private VBoxContainer _buttonsBox = null!;
+    private LineEdit _input = null!;
+    private Button _sendButton = null!;
     private Label _statusLabel = null!;
-    private bool _enabled = false;
 
     public override void _Ready()
     {
@@ -25,73 +22,63 @@ public partial class ActionPanel : PanelContainer
 
     public void SetEnabled(bool enabled)
     {
-        _enabled = enabled;
-        ApplyEnabled(_buttonsBox);
+        _input.Editable = enabled;
+        _sendButton.Disabled = !enabled;
+        if (enabled) _statusLabel.Visible = false;
     }
 
-    public void ShowLoading()
+    public void GrabInputFocus()
     {
-        ClearButtons();
-        _statusLabel.Text = "Generating options…";
-        _statusLabel.RemoveThemeColorOverride("font_color");
-        _statusLabel.Visible = true;
-        _enabled = false;
+        _input.GrabFocus();
     }
 
     public void ShowError(string message)
     {
-        ClearButtons();
-        _statusLabel.Text = $"Options error: {message}";
+        _statusLabel.Text = $"Error: {message}";
         _statusLabel.AddThemeColorOverride("font_color", new Color(0.95f, 0.4f, 0.4f));
         _statusLabel.Visible = true;
-        _enabled = false;
     }
 
-    public void SetOptions(PlayerOption[] options)
+    private void Submit()
     {
-        ClearButtons();
-        _statusLabel.Visible = false;
-        _statusLabel.RemoveThemeColorOverride("font_color");
-        foreach (var opt in options)
-        {
-            var captured = opt;
-            var b = new Button
-            {
-                Text = captured.Line,
-                SizeFlagsHorizontal = SizeFlags.ExpandFill,
-                CustomMinimumSize = new Vector2(0, 40),
-                Alignment = HorizontalAlignment.Left,
-                AutowrapMode = TextServer.AutowrapMode.WordSmart,
-                ClipText = false,
-            };
-            b.Pressed += () =>
-            {
-                if (!_enabled) return;
-                EmitSignal(
-                    SignalName.ActionSelected,
-                    captured.ActionType,
-                    captured.Detail,
-                    captured.Line);
-            };
-            _buttonsBox.AddChild(b);
-        }
-        _enabled = true;
+        if (!_input.Editable) return;
+        var line = _input.Text.Trim();
+        if (line.Length == 0) return;
+        _input.Text = "";
+        EmitSignal(SignalName.ActionSelected, line);
     }
+
+    private void OnTextSubmitted(string _) => Submit();
+    private void OnSendPressed() => Submit();
 
     private void Build()
     {
-        _root = new VBoxContainer
+        var root = new VBoxContainer
         {
-            CustomMinimumSize = new Vector2(0, 110),
+            CustomMinimumSize = new Vector2(0, 80),
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
         };
-        AddChild(_root);
+        AddChild(root);
 
-        _header = new Label { Text = "Your move:" };
-        _root.AddChild(_header);
+        var inputRow = new HBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
+        root.AddChild(inputRow);
 
-        _buttonsBox = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
-        _root.AddChild(_buttonsBox);
+        _input = new LineEdit
+        {
+            PlaceholderText = "What do you say?",
+            SizeFlagsHorizontal = SizeFlags.ExpandFill,
+            CustomMinimumSize = new Vector2(0, 40),
+        };
+        _input.TextSubmitted += OnTextSubmitted;
+        inputRow.AddChild(_input);
+
+        _sendButton = new Button
+        {
+            Text = "Send",
+            CustomMinimumSize = new Vector2(80, 40),
+        };
+        _sendButton.Pressed += OnSendPressed;
+        inputRow.AddChild(_sendButton);
 
         _statusLabel = new Label
         {
@@ -99,31 +86,6 @@ public partial class ActionPanel : PanelContainer
             Visible = false,
             HorizontalAlignment = HorizontalAlignment.Center,
         };
-        _statusLabel.AddThemeColorOverride("font_color", new Color(0.7f, 0.7f, 0.7f));
-        _root.AddChild(_statusLabel);
-    }
-
-    private void ClearButtons()
-    {
-        foreach (var child in _buttonsBox.GetChildren())
-        {
-            _buttonsBox.RemoveChild(child);
-            child.QueueFree();
-        }
-    }
-
-    private void ApplyEnabled(Node n)
-    {
-        foreach (var child in n.GetChildren())
-        {
-            if (child is Button b)
-            {
-                b.Disabled = !_enabled;
-            }
-            else
-            {
-                ApplyEnabled(child);
-            }
-        }
+        root.AddChild(_statusLabel);
     }
 }

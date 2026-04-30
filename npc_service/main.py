@@ -19,8 +19,6 @@ from pydantic_ai import Agent, NativeOutput
 from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
-    ModelResponse,
-    TextPart,
     UserPromptPart,
 )
 from pydantic_ai.models.openai import OpenAIChatModel
@@ -39,7 +37,6 @@ from .models import (
     CaptorResponse,
     GameState,
     HostageDef,
-    OptionsResponse,
     Scenario,
     TimelineEvent,
     load_scenario,
@@ -79,7 +76,6 @@ SCENARIO: Scenario | None = None
 GAME_STATE: GameState | None = None
 HISTORY: list = []  # pydantic_ai message history
 CAPTOR_AGENT: Agent | None = None
-OPTIONS_AGENT: Agent | None = None
 SUMMARIZER_AGENT: Agent | None = None
 LLAMA_PROC: subprocess.Popen | None = None
 TIMELINE_TASK: asyncio.Task | None = None
@@ -169,60 +165,6 @@ trust and a path out (medical attention, safe passage). You will hurt a hostage 
 the negotiator threatens you or if you feel cornered with no way out.
 - action_target: name of the hostage if action requires one ("Janet" or "David"), \
 otherwise null.{examples}"""
-
-
-def build_options_prompt(scenario: Scenario) -> str:
-    """System prompt for OPTIONS_AGENT: writes 3 candidate negotiator lines.
-
-    Deliberately POV-flipped from build_system_prompt — this agent is the
-    negotiator's writing room, not the captor. It only sees the chat history
-    (no meters), so the options stay honest about what the player can know.
-    """
-    captor = scenario.captor
-    hostage_list = ", ".join(f"{h.name} ({h.description})" for h in scenario.hostages)
-    demands = "\n".join(f"- {d}" for d in captor.initial_demands)
-
-    return f"""You are scripting dialogue options for a hostage negotiator.
-
-The negotiator is talking to {captor.name}: {captor.persona}
-
-Hostages: {hostage_list}.
-
-The captor's stated demands:
-{demands}
-
-Scene: {scenario.setup}
-
-Given the conversation so far, write exactly 3 distinct things the negotiator \
-could say next. Each option must:
-
-- Be a single short line (1-2 sentences) phrased as natural spoken dialogue. \
-No stage directions, no quote marks, no labels.
-- Take a clearly different strategic angle from the other two — pick from \
-empathy, offering something concrete, refusing/pushing back, or threatening \
-escalation. Vary the angles across the three.
-- Be tagged with the dominant action_type and (for offers) a detail.
-
-Tags you may use:
-- action_type: "offer" | "refuse" | "empathize" | "threaten"
-- detail (only for "offer"): "vehicle" | "money" | "safe_passage" | "medical"
-- detail for any other action_type: empty string ""
-
-Return JSON with three options. If the captor just made a specific request, \
-at least one option should respond directly to that request."""
-
-
-# ───────────────────────── action -> prompt rendering ─────────────────────────
-
-
-def render_action(req: ActionRequest) -> str:
-    """The player's chosen line, sent verbatim to the captor as a user message.
-
-    `type` and `detail` come along for the ride (logged, surfaced to clients)
-    but are not part of the captor's prompt — the captor reads tone and
-    substance from the words alone.
-    """
-    return req.line
 
 
 # ───────────────────────── state mutation ─────────────────────────
@@ -390,7 +332,7 @@ def seed_history(captor: Captor) -> list:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    global SCENARIO, GAME_STATE, HISTORY, CAPTOR_AGENT, OPTIONS_AGENT
+    global SCENARIO, GAME_STATE, HISTORY, CAPTOR_AGENT
     global SUMMARIZER_AGENT, LLAMA_PROC, TIMELINE_TASK, EVENT_BUS
 
     scenario_path = Path(os.getenv("SCENARIO_PATH", str(Path(__file__).parent / "scenario.json")))
@@ -443,14 +385,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         instructions=build_system_prompt(SCENARIO.captor, SCENARIO.hostages),
         history_processors=[summarize_when_large, hard_tail_cap],
     )
-    # Same model, but POV-flipped: writes 3 candidate negotiator lines for the
-    # player to pick from. Shares HISTORY (read-only) so options track context.
-    OPTIONS_AGENT = Agent(
-        model,
-        output_type=NativeOutput(OptionsResponse),
-        instructions=build_options_prompt(SCENARIO),
-        history_processors=[summarize_when_large, hard_tail_cap],
-    )
 
     HISTORY = seed_history(SCENARIO.captor)
     GAME_STATE = GameState.from_scenario(SCENARIO)
@@ -483,7 +417,7 @@ async def health() -> dict:
     return {
         "ok": True,
         "scenario_loaded": SCENARIO is not None,
-        "agent_ready": CAPTOR_AGENT is not None and OPTIONS_AGENT is not None,
+        "agent_ready": CAPTOR_AGENT is not None,
     }
 
 
@@ -525,61 +459,14 @@ async def post_action(req: ActionRequest) -> StreamingResponse:
     if not req.line.strip():
         raise HTTPException(422, "line must be a non-empty player utterance")
 
-    user_prompt = render_action(req)
-    log.info(
-        "/action type=%s detail=%r -> prompt=%r",
-        req.type, req.detail, user_prompt,
-    )
+    user_prompt = req.line
+    log.info("/action prompt=%r", user_prompt)
 
     return StreamingResponse(
         _action_event_stream(user_prompt),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
-
-
-@app.post("/options")
-async def post_options() -> OptionsResponse:
-    """Generate 3 candidate negotiator lines based on the current chat history.
-
-    Fail loudly: validation errors and model errors propagate as HTTP errors;
-    no canned-fallback options. Shares ACTION_LOCK so HISTORY is stable
-    against concurrent /action calls.
-    """
-    if OPTIONS_AGENT is None or GAME_STATE is None:
-        raise HTTPException(503, "service not ready")
-    if GAME_STATE.ended:
-        raise HTTPException(409, f"scenario already ended ({GAME_STATE.end_reason})")
-
-    async with ACTION_LOCK:
-        try:
-            result = await asyncio.wait_for(
-                OPTIONS_AGENT.run(
-                    "Write 3 dialogue options for the negotiator now.",
-                    message_history=HISTORY,
-                ),
-                timeout=ACTION_STREAM_TIMEOUT_SECONDS,
-            )
-        except asyncio.TimeoutError:
-            log.warning(
-                "/options stalled past %.1fs", ACTION_STREAM_TIMEOUT_SECONDS,
-            )
-            raise HTTPException(
-                504,
-                f"options generation stalled after {ACTION_STREAM_TIMEOUT_SECONDS:.0f}s",
-            )
-        except ValidationError as e:
-            log.warning("options response failed validation: %s", e)
-            raise HTTPException(502, f"validation_error: {e}")
-        except Exception as e:
-            log.exception("/options failed")
-            raise HTTPException(502, str(e))
-
-    log.info(
-        "/options -> %s",
-        [(o.action_type, o.detail, o.line) for o in result.output.options],
-    )
-    return result.output
 
 
 async def _action_event_stream(user_prompt: str) -> AsyncIterator[bytes]:
