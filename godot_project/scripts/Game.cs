@@ -57,6 +57,12 @@ public partial class Game : Control
 
     private readonly Dictionary<string, ChannelView> _channels = new();
 
+    // Per-channel cache of the most recently fetched options. Switching tabs
+    // renders from this cache instantly — no /options refetch — so the picks
+    // stay visible until that channel's HISTORY actually mutates (an action
+    // fires on it, or a timeline event injects into it).
+    private readonly Dictionary<string, DialogueOption[]> _channelOptions = new();
+
     // ── lifecycle ──
 
     public override void _Ready()
@@ -133,6 +139,9 @@ public partial class Game : Control
         SetStreamingUI(true);
         AppendHandlerLine(agentId, line);
         BeginAgentBubble(agentId);
+        // Options for this channel are being consumed; the next visit must
+        // refetch even if the user switches away mid-stream.
+        _channelOptions.Remove(agentId);
 
         try
         {
@@ -192,6 +201,7 @@ public partial class Game : Control
         {
             var options = await _client.GetOptionsAsync(agentId, ct);
             if (ct.IsCancellationRequested || _ended) return;
+            _channelOptions[agentId] = options;
             if (agentId != _tabs.ActiveAgentId) return;  // user switched mid-fetch
             if (options.Length == 0)
             {
@@ -233,6 +243,10 @@ public partial class Game : Control
         foreach (var aid in evt.AffectedAgents)
         {
             AppendSystemToChannel(aid, $"[scene update] {evt.NotificationText}");
+            // Scene-update mutated this channel's HISTORY; cached options for
+            // it are now stale. Active channel will be refreshed by the
+            // post-stream RecoverFromStream cycle.
+            _channelOptions.Remove(aid);
             if (aid != active) _tabs.MarkUnread(aid);
         }
     }
@@ -252,7 +266,14 @@ public partial class Game : Control
         }
         RenderChannel(agentId);
         _debugPanel?.SetActiveAgent(agentId);
-        if (!_ended)
+        if (_ended) return;
+        if (_channelOptions.TryGetValue(agentId, out var cached) && cached.Length > 0)
+        {
+            _actionPanel.SetOptions(cached);
+            _actionPanel.SetEnabled(true);
+            _actionPanel.GrabInputFocus();
+        }
+        else
         {
             _actionPanel.ShowLoading();
             _ = RefreshOptionsAsync(agentId);
@@ -274,6 +295,7 @@ public partial class Game : Control
     private string SeedChannelsAndRenderFirst()
     {
         _channels.Clear();
+        _channelOptions.Clear();
         _chatLog.Clear();
         // Seed BEFORE _tabs.SetAgents — until then ActiveAgentId is "" so the
         // Append* helpers skip their live-render branch and only fill the cache.

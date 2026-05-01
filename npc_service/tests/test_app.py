@@ -30,10 +30,11 @@ def _stub_options(payload):
     """Override OPTIONS_AGENT to return `payload` (an OptionsResponse or raw
     dict that may fail validation). Use as a context manager.
 
-    OPTIONS_AGENT uses ToolOutput, so the fake response is tool-call args.
+    OPTIONS_AGENT uses PromptedOutput, so the fake response is JSON text that
+    PromptedOutput parses client-side into the typed model.
     """
     args = payload.model_dump() if hasattr(payload, "model_dump") else payload
-    return main.OPTIONS_AGENT.override(model=TestModel(custom_output_args=args))
+    return main.OPTIONS_AGENT.override(model=TestModel(custom_output_text=json.dumps(args)))
 
 
 def _stub_agent(agent_id: str, payload: AgentReport | dict):

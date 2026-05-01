@@ -15,7 +15,7 @@ import logfire
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import ValidationError
-from pydantic_ai import Agent, ToolOutput
+from pydantic_ai import Agent, PromptedOutput, ToolOutput
 from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
@@ -456,14 +456,24 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Reuses the same model and history processors so it sees a consistent
     # compacted view of the active channel's HISTORY. max_tokens=1536 covers
     # the worst case (5 options × ~400-char hidden_line + 24-char tags + JSON
-    # + tool-call envelope ≈ 1100-1400 tokens) with margin.
+    # envelope ≈ 1100-1400 tokens) with margin so the last option never
+    # truncates into invalid JSON.
+    # PromptedOutput (NOT ToolOutput): llama.cpp's peg-gemma4 tool-call grammar
+    # generator emits a malformed `thought ::=` rule (duplicated, second copy
+    # with LHS stripped) on the OptionsResponse schema, crashing GBNF install.
+    # PromptedOutput sends no `tools=[...]` so peg-gemma4 isn't activated at
+    # all; the schema lives in the system prompt and Pydantic AI parses the
+    # JSON response client-side. output_retries=2 covers the rare bad-JSON
+    # turn. The per-agent AGENTS above keep ToolOutput — their flat
+    # AgentReport schema doesn't trip the bug.
     OPTIONS_AGENT = Agent(
         model,
         name="options",
-        output_type=ToolOutput(OptionsResponse),
+        output_type=PromptedOutput(OptionsResponse),
         instructions=build_options_system_prompt(SCENARIO),
         history_processors=[summarize_when_large],
         model_settings={"max_tokens": 1536},
+        output_retries=2,
     )
 
     HISTORIES = {a.id: seed_history(a) for a in SCENARIO.agents}
