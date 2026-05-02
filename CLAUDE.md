@@ -1,81 +1,116 @@
 # CLAUDE.md
 
-Spy-handler game. Single fixed scenario (Operation Iron Threshold). Three field assets in different European cities, one shared op clock, one global decision budget. Three-process tree:
+Inbox — single-surface epistolary game. The player inhabits their sister Tess's email account while she's on a 72-hour psychiatric hold. Three-process tree:
 
 ```
-Godot 4.6 (C#) ──spawn──► npc_service (FastAPI/Pydantic AI) ──spawn──► llama-server (llama.cpp)
-              ◄──HTTP/SSE──                                 ◄──OpenAI /v1──
+Browser (Vite + React + TS) ──HTTP/SSE──► npc_service (FastAPI/Pydantic AI) ──spawn──► llama-server (llama.cpp)
+                            ◄──────────                                     ◄──OpenAI /v1──
 ```
 
-`make run` boots the whole tree; `make llama` / `make sidecar` / `make godot` run the layers separately. Tests: `cd npc_service && uv run pytest` (state mutation, history processors, FastAPI smoke + per-channel SSE; uses Pydantic-AI `TestModel` instead of llama-server).
+`make run` boots sidecar + web in parallel (sidecar spawns llama). `make sidecar` / `make web` / `make llama` run layers separately. Tests: `cd npc_service && uv run pytest` (47 tests; spine + FastAPI smoke with TestModel).
 
 ## Game premise
 
-Player runs N=3 field agents (MAGPIE/Riga, CICADA/Vienna, DOVE/Lyon) over a shared operation. Reports arrive on the operation's clock — driven by the global `action_count`, not wall-clock. Each agent has a distinct persona; reports are LLM-generated. The handler picks one agent at a time and spends one decision; other channels stay silent that turn but may receive scripted scene-updates from the timeline. Pressure is *who do you spend attention on*. End state is the action budget exhausted + an after-action report.
+Player has been given access to Tess's inbox by hospital social worker Janet Rivera. Tess asked Janet to ask the player (her older brother) to triage anything urgent until she's back. **Scope: triage, not speak for her.** That bounding gives the unsent-draft mechanic its weight.
+
+The arc moves from grief and quiet dread toward earned hopefulness. The reveal is *recontextualization*, not a horror twist — Tess had quietly built a life (Thursday writing group, food-pantry shifts, a friendship with Maya, a class she registered for) that the brother didn't know about.
 
 ## File map
 
 ```
-npc_service/                  uv project root — pyproject.toml, uv.lock, .venv, scenario.json, .logfire/
-  src/npc_service/            installed editable into .venv via `uv sync` (src layout)
-    main.py        FastAPI app, N agent agents + options agent wiring, per-channel SSE,
-                   action-counted timeline with per-agent injections, history processors
-    models.py      Pydantic scenario schema (Operation, AgentDef, TimelineEvent.injections),
-                   AgentReport (text only), HandlerState (per-agent dict)
-    launcher.py    llama-server subprocess + Windows Job Object for cleanup
-    config.py      pydantic-settings Settings (env + .env at workspace root)
-  scenario.json    Operation Iron Threshold — 3 agents, 4 timeline events, 18 max_actions
-  tests/           pytest suite (32 tests; channel isolation, injection routing, SSE smoke)
-godot_project/scripts/
-  Game.cs              scene controller — boot, channel switching, per-channel chat cache,
-                       FLASH TRAFFIC banner on timeline, after-action overlay
-  LLMClient.cs         HTTP + SSE client (autoload). /action and /options keyed by agent_id;
-                       SSE events echo agent_id so client routes deltas to the right channel
-  SidecarHost.cs       spawns Python + holds the parent Job Object (autoload)
-  ActionPanel.cs       raised paper "decision cards" — hover reveals hidden_line,
-                       *CONFIRMED* stamp on selection, RECEIVING TRANSMISSION cross-stamp
-                       during streaming
-  DossierTabs.cs       left-edge filing-cabinet tabs — one per agent. Click to switch
-                       channel; emits ChannelSelected. Inactive tabs show ●NEW on unread
-  BudgetPunchcard.cs   row of ●/○ dots in the top bar (custom-drawn _Draw)
-  TimelineFeed.cs      right column FLASH TRAFFIC log
-  HandlerFonts.cs      static font loader (IBM Plex Mono + Stardos Stencil from
-                       assets/fonts/)
-  Scenario.cs / AgentDef.cs / Operation.cs / HandlerState.cs (with AgentStateView) /
-    TimelineEvent.cs / DialogueOption.cs / ChatMessage.cs
-godot_project/assets/fonts/   IBM Plex Mono Regular/Bold + Stardos Stencil Regular/Bold (OFL)
+npc_service/                  uv project root — pyproject.toml, scenario.yaml, .logfire/
+  src/npc_service/
+    main.py        FastAPI app: lifespan, agent wiring, all endpoints (boot,
+                   inbox, thread, open, send, archive, draft, search, coda).
+                   Owns the SSE streaming for /send, /draft, /coda.
+    models.py      Pydantic schemas. Authoring (KnowledgeAtomDef, QualityDef,
+                   NPCDossier with VoiceBands, Beat tagged-union with type
+                   discriminator, Thread state machine, Predicate/Effect
+                   tagged unions); runtime (Email, Reply, InboxState); HTTP DTOs.
+    spine.py       Deterministic spine. Predicate evaluation, effect
+                   application, beat scheduler, thread state machine evaluator,
+                   voice-band selection, full-text search, coda fragment
+                   selector. No LLM calls — pure code-owned state mutation.
+    agents.py      The four LLM agents (EMAIL, TEXTURE, VOICE_FIDELITY, CODA),
+                   their system prompts, and per-call user-prompt builders.
+    launcher.py    llama-server subprocess + Windows Job Object for cleanup.
+    config.py      pydantic-settings.
+  scenario.yaml    Inbox content layer. Atoms, qualities, NPC dossiers (Maya
+                   with three voice bands, Tess voice-only), threads (6),
+                   beats (14: 3 anchored boot, 3 anchored arrivals, 6 rendered
+                   Maya beats, the unsent draft, the coda), archive corpus
+                   (8 emails for search). All anchored prose lives here.
+  tests/
+    test_spine.py  31 tests — predicate/effect, beat scheduler, thread state
+                   machine (warm/ambivalent/cold trajectories), voice band
+                   selection, search, coda fragment selector, end conditions.
+    test_app.py    16 FastAPI tests — lifespan boot, all endpoints, three
+                   draft branches end-to-end with TestModel.
+
+web/                          Vite + React + TypeScript at workspace root
+  src/
+    main.tsx, App.tsx
+    api.ts                    fetch + native EventSource SSE wrapper
+    store.ts                  single Zustand store (server is source of truth;
+                              store is render cache, refresh after mutations)
+    hooks/useStreamSend.ts    shared SSE-drive helper used by EmailComposer and
+                              DraftEditor; refreshes inbox + reopens thread on done
+    fonts.css, index.css      IBM Plex Mono via @font-face; Tailwind base
+    components/
+      InboxHeader.tsx         persistent search bar + close-session button
+      FolderTabs.tsx          Inbox/Drafts/Sent/Archive with unread badges
+      InboxList.tsx           folder content
+      ThreadView.tsx          email chain + composer or DraftEditor
+      EmailComposer.tsx       free-form reply with 'got it.' placeholder
+      DraftEditor.tsx         three equal-weight buttons; reveal editor on edit
+      SearchResults.tsx       free; doesn't advance actions.elapsed
+      Coda.tsx                interleaves SSE fragments + framing lines
+  public/fonts/               IBMPlexMono Regular + Bold
 ```
 
-## Game loop (per turn)
+## Game loop
 
 ```
-client click in channel X ─► POST /action {agent_id: X, line: hidden_line}
-                         ◄─ SSE: {text, agent_id} ×N → {state} → [{timeline} ×M] → {done, agent_id}
-client                   ─► GET /options?agent_id=X    (read-only over HISTORIES[X])
-                         ◄─ JSON: {options: [{tag, hidden_line}, ...]}   2-5 picks
+Boot:  scenario.yaml → InboxState → fire 3 in_boot_inbox beats →
+       client GET /inbox shows Janet, class-reg, old Maya email
+
+Player action (open / archive / send): action_count++ → tick scheduler →
+       fire due beats (anchored ship verbatim; rendered → EMAIL_AGENT) →
+       evaluate thread transitions → check end conditions → SSE state
+
+Reply path:  POST /send → TEXTURE_AGENT scores warmth+honesty → spine
+             writes warmth.maya, register.maya (drift halfway), honesty.global →
+             append Reply → action_count++ → tick → may fire Maya rendered
+             beats with the new voice band
+
+Draft path:  POST /draft/{id}/decision (send_unchanged | edit_and_send | hold)
+             edit_and_send → VOICE_FIDELITY_AGENT scores against Tess's dossier
+             → spine writes voice_fidelity, voice_fidelity_rationale →
+             flow into maya.response_to_draft's spec
+             hold → no Maya beat fires; thread continues prior trajectory
+
+End:    coda fires when (action_count >= 16 AND maya in {warm,ambivalent,cold})
+        OR action_count >= 18. Coda fragments selected deterministically;
+        CODA_AGENT only writes 6-10 framing lines.
 ```
-
-Boot: client renders each agent's `opening_transmission` directly into that channel's chat (no LLM call). Server seeds each `HISTORIES[id]` with the same line as a scene-update so the agent treats it as their own prior context. Then the client calls `/options` for the first channel and presents picks.
-
-Channel switching: zero-cost client-side render of the cached BBCode transcript + a fresh `/options?agent_id=X` for the new channel. No server roundtrip beyond `/options`.
-
-Pacing: **action-counted** (`max_actions` global budget; `TimelineEvent.after_actions` against the same global counter). No wall-clock anywhere in game logic. Reading is free; only successful `/action` increments the counter.
 
 ## Things that look removable but aren't
 
-- **`--jinja` and `--reasoning off`** on llama-server (`launcher.py:_build_command`). Without `--jinja`, Gemma's chat template is wrong; without `--reasoning off`, Gemma 4 E-models burn the entire generation budget inside the thinking channel. Don't switch to `--reasoning-budget 0` — different PEG parse error per llama.cpp PR #21697.
-- **`ToolOutput(AgentReport)` with `max_tokens=512`** (per agent). With current llama.cpp tool calling works cleanly; turns are bounded and parse first try. `NativeOutput` was previously shipped on the captor with an unbounded response_text and cascaded turn-over-turn into 19K-token generations.
-- **`seed_history(agent)` returns a single scene-update message, not a `ModelResponse`.** A `ModelResponse` with the opening text would teach the model to emit plain text instead of tool-calling structured output. The opening transmission is treated as scene context the agent "said previously." The *client* renders the actual prose into the chat at boot.
-- **`HISTORIES[X] = …`, `action_count++`, `last_report_action_count`, and `fire_due_timeline_events(…)` only run after the stream loop completes** in `_action_event_stream`. `CancelledError` jumps to `finally`, so partial agent turns from interrupted streams are discarded by design — no global counter advance, no last-contact mutation.
-- **`HttpCompletionOption.ResponseHeadersRead`** on the C# `HttpClient.SendAsync`. Without it, HttpClient buffers the entire body before returning, breaking SSE.
-- **`X-Accel-Buffering: no`** on `/action` and `/events` responses. Same reason on the server side.
-- **Windows Job Object cleanup** (`SidecarHost.cs`, `launcher.py`). Godot holds a `KILL_ON_JOB_CLOSE` job; Python holds a nested one for llama-server. Only reliable cleanup path when Godot dies abruptly and skips `_ExitTree()`. New subprocesses must inherit the job (`close_fds=True`) or be enrolled explicitly.
-- **`/options` discards `result.all_messages()`.** Writing them back would leak the "Generate options for asset X." user prompt into that channel's history and confuse the agent next turn. `ACTION_LOCK` is global across channels for read-coherence with HISTORIES mutations.
-- **Action budget is global, not per-agent.** `HANDLER_STATE.action_count` increments by 1 on each successful `/action` regardless of which channel. Timeline events schedule against the same global counter — the operation moves in op-time, not in any single conversation's time.
-- **Tags are UX-only.** `DialogueOption.tag` is never read server-side; `hidden_line` IS the handler input the agent sees.
-- **Timeline events fire per-channel via `TimelineEvent.injections: dict[agent_id, str]`.** Each event can address one or many agents; only addressed channels get scene-updates appended to their HISTORY. Validator at scenario-load enforces every key resolves to a known agent_id. Events fire AFTER the active agent's N-th turn but BEFORE the next `/options` — generalised across N HISTORIES.
-- **One `Agent(name=f"agent_{id}", …)` per asset persona.** Each gets its own `summarize_when_large` history processor over its own HISTORY — independent compaction per channel. Logfire spans show per-agent runs distinctly.
-- **One shared `OPTIONS_AGENT`, parameterised via the user prompt.** The active agent's callsign + city goes in the per-call prompt (not the system prompt) so the prefix cache stays warm across channel switches. Sharing one agent across channels saves boot cost and keeps Logfire spans simple.
-- **`opening_transmission` lives in scenario.json AND is rendered by the client.** The string lives once in the scenario; the server seeds it into HISTORIES as a scene-update; the client GETs `/scenario` and pulls the same string to render into the chat at boot. The agent never speaks the text aloud (no LLM call) — the player just sees it as their first message in that channel.
-- **`HandlerState.from_scenario()` keys agents by `id` in a dict.** `for a in state.agents.values()` gives you all agents; `state.agents[agent_id]` indexes one. Don't iterate the scenario's `Scenario.agents` list and look up state by index — agent_id is the stable key across reset.
-- **DossierTabs `MarkUnread(agentId)` no-ops on the active channel.** Active is read-by-construction; only inactive channels carry the `●NEW` mark. `SetActive(id)` clears unread for the new active.
+- **`when:` not `on:`** in ThreadTransition. PyYAML 1.1 parses bare `on:` as the boolean `True`, silently swallowing transition predicates. Don't rename back without switching to a YAML 1.2 loader.
+- **`--jinja` and `--reasoning off`** on llama-server (`launcher.py`). Without `--jinja`, Gemma's chat template is wrong; without `--reasoning off`, Gemma 4 E-models burn the entire generation budget inside the thinking channel. Don't switch to `--reasoning-budget 0` — different PEG parse error per llama.cpp PR #21697.
+- **`ToolOutput(...)` with `max_tokens` cap on every agent.** Tool-calling parses cleanly on Gemma 4 E4B; turns are bounded. NativeOutput unbounded text fields previously cascaded into 19K-token generations.
+- **EMAIL_AGENT outputs `{prose}` only — no `claimed_facts`, no `requested_state_changes`.** The prose-rendering LLM never touches state. Only TEXTURE_AGENT and VOICE_FIDELITY_AGENT (the *judging* agents) write state, and only to continuous quality fields. Atom mutations come exclusively from beat.effects. Eliminates the LLM-as-state-actor risk class.
+- **The thread state machine is invisible to the LLM.** EMAIL_AGENT sees the dossier, voice band, transcript, and beat spec — it does not know which transition just fired or which beat is queued next. Prevents the model from "playing along" with the spine and drifting.
+- **Trajectory predicates use averages over `state.replies`, not last-reply scores.** `avg_quality_gte` reads every reply in the thread and averages — that's how a cold trajectory survives a late warmth rush. Removing this re-enables the cheap "be cold then nice at the end" tactic.
+- **`register.maya` drifts halfway toward each reply's warmth on every send.** This is the per-reply visible feedback loop — Maya's *next* email comes back in a different voice band. Without this, the texture mechanic is invisible until the coda.
+- **All three DraftEditor buttons are styled equally.** Holding must read as a real, respectful option in the UI, not a cancel affordance. Janet's permission scope ("triage anything urgent") makes holding the in-bounds choice; sending is the one that exceeds scope.
+- **Tess never speaks live.** Her dossier seeds VOICE_FIDELITY_AGENT and authors the unsent draft prose. The archive emails (search corpus) are her secondary voice exhibit. No rendered beat ever invokes EMAIL_AGENT against Tess's dossier.
+- **Action counter increments only on opens, archives, and sends.** Search and re-reads are free. Reading existing material can never be punished — that would defeat the search-as-recontextualization mechanic.
+- **Boot inbox sits in scenario.yaml as `in_boot_inbox: true` beats.** They fire on the first scheduler tick at action_count=0. Three of them: Janet (newest), class registration auto-reminder (yesterday), Maya's old "hey are you ok" (3 days ago, sent before the hold).
+- **`maya.draft_to_her_visible` is gated on `player_replied_to: maya.first_email`.** The draft surfaces in the Drafts folder only after the player has engaged with Maya at least once. Until then, Drafts is empty.
+- **`maya.response_to_draft` only fires on `unsent_draft_disposition in [sent_unchanged, sent_edited]`.** Held → Maya never sees the draft, thread continues on its prior trajectory.
+- **`HttpCompletionOption.ResponseHeadersRead`** equivalent for fetch is automatic in browsers; SSE works as long as the server emits proper `text/event-stream` with no Content-Length and no chunked-buffering proxies.
+- **`X-Accel-Buffering: no`** on `/send`, `/draft/.../decision`, and `/coda` responses. Same reason as before — prevents reverse proxies from buffering the stream.
+- **`ACTION_LOCK` global mutex** serializes mutating endpoints so the spine's state mutations stay coherent. Search and read endpoints don't acquire it.
+- **`/scenario` exposes only `title`, `premise`, `max_actions`** to the client. Dossiers, beats, atoms, thread state machines stay server-side — the client doesn't need them and surfacing them would risk leaking authoring metadata.
+- **Effects and predicates are tagged-union Pydantic models, not strings.** YAML authoring is slightly more verbose, but every effect and every predicate is type-checked at load time and cross-references (atom ids, quality ids, beat ids, thread ids) are validated by `Scenario._cross_references`.

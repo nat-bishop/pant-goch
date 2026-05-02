@@ -1,3 +1,9 @@
+"""FastAPI surface for Inbox.
+
+The four LLM agents (see agents.py) are constructed in lifespan against one
+shared model handle. The deterministic spine (spine.py) owns all state
+mutation; agents return prose / scores only.
+"""
 from __future__ import annotations
 
 import asyncio
@@ -6,7 +12,7 @@ import json
 import logging
 import os
 import subprocess
-import time
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncIterator
@@ -14,17 +20,17 @@ from typing import AsyncIterator
 import logfire
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import ValidationError
-from pydantic_ai import Agent, PromptedOutput, ToolOutput
-from pydantic_ai.messages import (
-    ModelMessage,
-    ModelRequest,
-    ModelResponse,
-    UserPromptPart,
-)
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
+from .agents import (
+    AgentBundle,
+    build_agents,
+    build_coda_user_prompt,
+    build_email_user_prompt,
+    build_texture_user_prompt,
+    build_voice_fidelity_user_prompt,
+)
 from .config import Settings
 from .launcher import (
     LlamaStartupError,
@@ -34,16 +40,37 @@ from .launcher import (
     wait_healthy,
 )
 from .models import (
-    ActionRequest,
-    AgentDef,
-    AgentReport,
-    AgentState,
-    HandlerState,
-    Operation,
-    OptionsResponse,
+    AnchoredBeat,
+    ArchiveRequest,
+    Beat,
+    CodaBeat,
+    DraftDecisionRequest,
+    DraftVisibleBeat,
+    Email,
+    InboxState,
+    OpenRequest,
+    RenderedBeat,
+    Reply,
     Scenario,
-    TimelineEvent,
+    SceneUpdateBeat,
+    SendRequest,
+    TextureScore,
+    VoiceFidelityScore,
     load_scenario,
+)
+from .spine import (
+    apply_effect,
+    apply_texture_score,
+    apply_voice_fidelity,
+    check_end_conditions,
+    evaluate_thread_transitions,
+    find_due_beats,
+    initialize_boot_inbox,
+    render_thread_transcript,
+    search_inbox,
+    select_coda_fragments,
+    select_voice_band,
+    thread_id_from_beat_id,
 )
 
 
@@ -55,12 +82,7 @@ logging.basicConfig(
 logging.getLogger("httpx").setLevel(logging.WARNING)
 log = logging.getLogger("npc_service")
 
-# Logfire: load the write token from the credentials file next to this module
-# rather than relying on CWD-based discovery. Godot spawns the sidecar with
-# cwd=project root (see SidecarHost.cs), not npc_service/, so the default
-# `.logfire/` lookup misses the file. send_to_logfire='if-token-present' keeps
-# the SDK silent when neither the file nor LOGFIRE_TOKEN exists.
-# src layout: src/npc_service/main.py → npc_service project root is parents[2].
+# Logfire credentials live next to the npc_service project root.
 _logfire_creds = Path(__file__).resolve().parents[2] / ".logfire" / "logfire_credentials.json"
 _logfire_token = os.getenv("LOGFIRE_TOKEN")
 if not _logfire_token and _logfire_creds.is_file():
@@ -71,270 +93,24 @@ logfire.configure(
     send_to_logfire="if-token-present",
     token=_logfire_token,
     console=False,
+    # Single-player local game with no PII; default scrubbing would redact
+    # email bodies and rationales — exactly the prose we want to inspect.
+    scrubbing=False,
 )
 logfire.instrument_pydantic_ai()
 logfire.instrument_httpx(capture_all=True)
 logging.getLogger().addHandler(logfire.LogfireLoggingHandler())
 
-EVENTS_KEEPALIVE_SECONDS = 15.0
-EXTERNAL_LLAMA_PROBE_TIMEOUT_SECONDS = 2.0
-SUMMARY_TRIGGER_FRAC = _BOOT_SETTINGS.summary_trigger_frac
-SUMMARY_TRIGGER_TOKENS: int = _BOOT_SETTINGS.summary_trigger_tokens
-LLAMA_CTX_TOKENS: int = 0
-SUMMARY_KEEP_TAIL = _BOOT_SETTINGS.summary_keep_tail
-ACTION_STREAM_TIMEOUT_SECONDS = _BOOT_SETTINGS.action_stream_timeout_seconds
-OPTIONS_TIMEOUT_SECONDS = _BOOT_SETTINGS.options_timeout_seconds
-
 
 # ───────────────────────── globals (set in lifespan) ─────────────────────────
 
+
 SCENARIO: Scenario | None = None
-HANDLER_STATE: HandlerState | None = None
-HISTORIES: dict[str, list[ModelMessage]] = {}
-AGENTS: dict[str, Agent] = {}
-OPTIONS_AGENT: Agent | None = None
-SUMMARIZER_AGENT: Agent | None = None
+STATE: InboxState | None = None
+AGENTS: AgentBundle | None = None
 LLAMA_PROC: subprocess.Popen | None = None
-EVENT_BUS: "EventBus | None" = None
-ACTION_LOCK = asyncio.Lock()  # serialise /action and /options across all channels
-
-
-# ───────────────────────── event bus (for /events SSE) ─────────────────────────
-
-
-class EventBus:
-    def __init__(self) -> None:
-        self._subscribers: set[asyncio.Queue] = set()
-        self._lock = asyncio.Lock()
-
-    async def subscribe(self) -> asyncio.Queue:
-        q: asyncio.Queue = asyncio.Queue(maxsize=64)
-        async with self._lock:
-            self._subscribers.add(q)
-        return q
-
-    async def unsubscribe(self, q: asyncio.Queue) -> None:
-        async with self._lock:
-            self._subscribers.discard(q)
-
-    async def publish(self, payload: dict) -> None:
-        async with self._lock:
-            stale = []
-            for q in self._subscribers:
-                try:
-                    q.put_nowait(payload)
-                except asyncio.QueueFull:
-                    stale.append(q)
-            for q in stale:
-                self._subscribers.discard(q)
-
-
-# ───────────────────────── system prompts ─────────────────────────
-
-
-def build_agent_system_prompt(agent: AgentDef, op: Operation) -> str:
-    facts = "\n".join(f"- {f}" for f in agent.known_facts)
-
-    examples = ""
-    if agent.seed_exchanges:
-        ex = agent.seed_exchanges[0]
-        example_response = AgentReport(report_text=ex.assistant)
-        examples = (
-            f"\nExample. Handler says: {ex.user}\n"
-            f"Your structured response:\n{example_response.model_dump_json()}\n"
-        )
-
-    return f"""You are {agent.callsign} ({agent.name}), a field asset reporting to your handler.
-
-Cover / role: {agent.role}
-City: {agent.city}
-
-{agent.persona}
-
-Operation codename: {op.codename}
-Objective: {op.objective}
-
-You know these things to be true. Speak only from this knowledge — if asked \
-about anything outside it, deflect in character ({agent.deflection_style}). \
-Never invent names, places, times, or events that are not in your knowledge:
-{facts}
-
-Each turn the handler sends you a message over the secure channel. Read it and \
-respond with a 1-3 sentence report_text IN CHARACTER, addressing what the \
-handler said. Use the voice of your persona. Do not narrate scene; speak as \
-yourself, on the radio, to the handler.{examples}"""
-
-
-def build_options_system_prompt(scenario: Scenario) -> str:
-    """System prompt for OPTIONS_AGENT — generic across channels; the active
-    agent's identity goes in the per-call user prompt to keep the prefix
-    cache warm.
-    """
-    op = scenario.operation
-    roster = "\n".join(
-        f"- {a.callsign} ({a.name}), {a.role}, {a.city}"
-        for a in scenario.agents
-    )
-
-    return f"""You are a dialogue coach helping a covert-operations handler decide what to say next \
-to one of their field assets over a secure channel.
-
-Operation: {op.codename} — {op.objective}
-
-Brief: {scenario.setup}
-
-Asset roster:
-{roster}
-
-Each call, you produce 2-5 dialogue options for the handler's next line to a SPECIFIC asset \
-(named in the user prompt). Each option has:
-- tag: a one or two word label naming the *intent or stance* the line conveys (e.g. "Probe", \
-"Reassure", "Press", "Pivot", "Direct", "Acknowledge", "Hedge", "Verify", "Stand Down"). \
-Tags MUST be distinct within a set — never two options with the same tag.
-- hidden_line: the actual sentence the handler would speak (1-3 sentences). The PLAYER will \
-not see this until they pick it; they only see the tag.
-
-Options must represent meaningfully different *strategies*, not slight rewordings. The handler's \
-goal is to keep the operation moving and the assets safe and trusting — but options should \
-include risky, confrontational, and command-style moves too, not only safe ones, so the \
-player has a real choice.
-
-Format example (do not literally reuse these lines):
-
-{{"options":[
-  {{"tag":"Verify","hidden_line":"Walk me through the timestamps once more — slow."}},
-  {{"tag":"Reassure","hidden_line":"You're doing the work I sent you to do. Hold position."}},
-  {{"tag":"Press","hidden_line":"You're sure that's a separate vehicle and not a tail?"}},
-  {{"tag":"Hedge","hidden_line":"Stand down for the next exchange. We re-task once Vienna comes back up."}}
-]}}
-"""
-
-
-# ───────────────────────── state mutation ─────────────────────────
-
-
-def check_end_conditions(state: HandlerState) -> None:
-    if state.ended:
-        return
-    if state.action_count >= state.max_actions:
-        state.ended = True
-        state.end_reason = "budget_exhausted"
-
-
-# ───────────────────────── scene-update injections ─────────────────────────
-
-
-def synthetic_event_message(text: str) -> ModelRequest:
-    """Inject a scene-update as a user-role message the agent sees on their next turn."""
-    return ModelRequest(parts=[UserPromptPart(content=f"[scene update: {text}]")])
-
-
-def fire_due_timeline_events(state: HandlerState, scenario: Scenario) -> list[TimelineEvent]:
-    """Fire timeline events whose threshold has been crossed and which haven't fired.
-
-    For each event, append synthetic scene-update messages to each addressed
-    agent's HISTORY based on event.injections. Idempotent — events fire at most
-    once per game.
-    """
-    due = [
-        e for e in scenario.timeline
-        if e.after_actions <= state.action_count
-        and e.id not in state.fired_timeline_event_ids
-    ]
-    for evt in due:
-        log.info(
-            "timeline event firing: id=%s after_actions=%d (action_count=%d) injections=%s",
-            evt.id, evt.after_actions, state.action_count, sorted(evt.injections),
-        )
-        for agent_id, text in evt.injections.items():
-            HISTORIES[agent_id].append(synthetic_event_message(text))
-        state.fired_timeline_event_ids.add(evt.id)
-    return due
-
-
-def _timeline_event_payload(evt: TimelineEvent) -> dict:
-    return {
-        "id": evt.id,
-        "after_actions": evt.after_actions,
-        "kind": evt.kind,
-        "notification_text": evt.notification_text,
-        "affected_agents": sorted(evt.injections),
-    }
-
-
-# ───────────────────────── history processors (per-agent compaction) ─────────────────────────
-
-
-def _approx_tokens(messages: list[ModelMessage]) -> int:
-    """Approximate prompt-token count of `messages` if sent as message_history."""
-    for i in range(len(messages) - 1, -1, -1):
-        msg = messages[i]
-        if isinstance(msg, ModelResponse) and msg.usage is not None:
-            tail_chars = sum(len(str(m)) for m in messages[i + 1:])
-            return msg.usage.input_tokens + msg.usage.output_tokens + tail_chars // 4
-    return sum(len(str(m)) for m in messages) // 4
-
-
-def _pct_of_ctx(tokens: int) -> str:
-    if LLAMA_CTX_TOKENS <= 0:
-        return str(tokens)
-    return f"{tokens} ({100 * tokens // LLAMA_CTX_TOKENS}% of {LLAMA_CTX_TOKENS})"
-
-
-async def summarize_when_large(messages: list[ModelMessage]) -> list[ModelMessage]:
-    """Fold the oldest messages of a single agent's HISTORY into a recap when it grows too big."""
-    if SUMMARIZER_AGENT is None:
-        return messages
-    approx = _approx_tokens(messages)
-    if approx < SUMMARY_TRIGGER_TOKENS:
-        return messages
-    if len(messages) <= SUMMARY_KEEP_TAIL:
-        return messages
-    head = messages[:-SUMMARY_KEEP_TAIL]
-    tail = messages[-SUMMARY_KEEP_TAIL:]
-    if len(head) < 6:
-        return messages
-
-    log.info(
-        "history compaction: firing — input=%s threshold=%s folding %d msgs into recap, keeping %d verbatim",
-        _pct_of_ctx(approx), _pct_of_ctx(SUMMARY_TRIGGER_TOKENS), len(head), len(tail),
-    )
-    t0 = time.monotonic()
-    summary = await SUMMARIZER_AGENT.run(
-        "Produce the recap now.", message_history=head
-    )
-    summary_usage = summary.usage()
-    recap_msg = ModelRequest(parts=[
-        UserPromptPart(content=f"[recap of earlier transmissions]\n{summary.output}")
-    ])
-    out = [recap_msg, *tail]
-    log.info(
-        "history compaction: recap done in %.2fs — summarizer input_tokens=%d output_tokens=%d "
-        "recap_chars=%d post_compaction=%s (was %s)",
-        time.monotonic() - t0,
-        summary_usage.input_tokens, summary_usage.output_tokens,
-        len(summary.output),
-        _pct_of_ctx(_approx_tokens(out)), _pct_of_ctx(approx),
-    )
-    return out
-
-
-# ───────────────────────── seeding histories ─────────────────────────
-
-
-def seed_history(agent: AgentDef) -> list[ModelMessage]:
-    """Seed an agent's HISTORY with their opening transmission as a scene-update.
-
-    Returns the agent's initial HISTORY: a single scene-update UserPromptPart
-    informing them of their own prior transmission to the handler. NOT a
-    ModelResponse with the opening text — that would teach the model to emit
-    plain text instead of tool-calling structured output (CLAUDE.md). The agent
-    treats this as scene context; the *client* renders agent.opening_transmission
-    directly into the chat as the agent's first line.
-    """
-    return [synthetic_event_message(
-        f"Your prior transmission to the handler was: \"{agent.opening_transmission}\""
-    )]
+ACTION_LOCK = asyncio.Lock()  # serialises mutating endpoints
+EXTERNAL_LLAMA_PROBE_TIMEOUT_SECONDS = 2.0  # tests set this to 0.1 for fast boot
 
 
 # ───────────────────────── lifespan ─────────────────────────
@@ -342,15 +118,10 @@ def seed_history(agent: AgentDef) -> list[ModelMessage]:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    global SCENARIO, HANDLER_STATE, HISTORIES, AGENTS, OPTIONS_AGENT
-    global SUMMARIZER_AGENT, LLAMA_PROC, EVENT_BUS
-    global SUMMARY_TRIGGER_TOKENS, LLAMA_CTX_TOKENS
+    global SCENARIO, STATE, AGENTS, LLAMA_PROC
 
     settings = Settings()
-
-    # scenario.json lives at the npc_service project root (parents[2] from this
-    # module under src/npc_service/main.py), not next to the source.
-    scenario_path = settings.scenario_path or Path(__file__).resolve().parents[2] / "scenario.json"
+    scenario_path = settings.scenario_path or Path(__file__).resolve().parents[2] / "scenario.yaml"
     log.info("loading scenario: %s", scenario_path)
     SCENARIO = load_scenario(scenario_path)
 
@@ -367,82 +138,27 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     else:
         log.info("LAUNCH_LLAMA=false — assuming llama-server is managed externally")
         try:
-            await wait_healthy(host=cfg.host, port=cfg.port, timeout=EXTERNAL_LLAMA_PROBE_TIMEOUT_SECONDS)
+            await wait_healthy(
+                host=cfg.host, port=cfg.port,
+                timeout=EXTERNAL_LLAMA_PROBE_TIMEOUT_SECONDS,
+            )
         except LlamaStartupError as e:
             log.warning("llama-server not reachable yet: %s — sidecar will boot anyway", e)
 
-    LLAMA_CTX_TOKENS = cfg.ctx
-    if SUMMARY_TRIGGER_TOKENS <= 0:
-        SUMMARY_TRIGGER_TOKENS = int(LLAMA_CTX_TOKENS * SUMMARY_TRIGGER_FRAC)
-    log.info(
-        "history compaction config: ctx=%d trigger=%d (%.0f%% of ctx) keep_tail=%d",
-        LLAMA_CTX_TOKENS, SUMMARY_TRIGGER_TOKENS,
-        100 * SUMMARY_TRIGGER_TOKENS / LLAMA_CTX_TOKENS if LLAMA_CTX_TOKENS else 0,
-        SUMMARY_KEEP_TAIL,
-    )
-
     base_url = settings.llama_base_url or f"http://{cfg.host}:{cfg.port}/v1"
     model_name = "gemma-4-e4b"
-    log.info("building Pydantic AI agents: model=%s base_url=%s", model_name, base_url)
+    log.info("building agents: model=%s base_url=%s", model_name, base_url)
     model = OpenAIChatModel(
         model_name,
         provider=OpenAIProvider(base_url=base_url, api_key="not-needed"),
     )
-    SUMMARIZER_AGENT = Agent(
-        model,
-        name="summarizer",
-        instructions=(
-            "Summarize the transmissions between the handler and this asset so far in 4-6 short bullets. "
-            "Cover: asset's emotional state, intel reported, commitments made or refused, current orders, "
-            "and any threads still open. Plain text, no preamble."
-        ),
+    AGENTS = build_agents(model)
+
+    await _bootstrap_state()
+    log.info(
+        "npc_service ready: %d boot emails, %d pending beats",
+        len(STATE.emails), len(STATE.pending_beats),
     )
-
-    # One Agent per asset persona. Each gets its own ToolOutput(AgentReport)
-    # + max_tokens=512 + summarize_when_large processor. Same shape as the
-    # single-captor architecture, just N×. name= surfaces in Logfire spans so
-    # each agent's runs are filterable.
-    AGENTS = {
-        a.id: Agent(
-            model,
-            name=f"agent_{a.id}",
-            output_type=ToolOutput(AgentReport),
-            instructions=build_agent_system_prompt(a, SCENARIO.operation),
-            history_processors=[summarize_when_large],
-            model_settings={"max_tokens": 512},
-        )
-        for a in SCENARIO.agents
-    }
-
-    # Single shared OPTIONS_AGENT, parameterized via user prompt per call.
-    # Reuses the same model and history processors so it sees a consistent
-    # compacted view of the active channel's HISTORY. max_tokens=1536 covers
-    # the worst case (5 options × ~400-char hidden_line + 24-char tags + JSON
-    # envelope ≈ 1100-1400 tokens) with margin so the last option never
-    # truncates into invalid JSON.
-    # PromptedOutput (NOT ToolOutput): llama.cpp's peg-gemma4 tool-call grammar
-    # generator emits a malformed `thought ::=` rule (duplicated, second copy
-    # with LHS stripped) on the OptionsResponse schema, crashing GBNF install.
-    # PromptedOutput sends no `tools=[...]` so peg-gemma4 isn't activated at
-    # all; the schema lives in the system prompt and Pydantic AI parses the
-    # JSON response client-side. output_retries=2 covers the rare bad-JSON
-    # turn. The per-agent AGENTS above keep ToolOutput — their flat
-    # AgentReport schema doesn't trip the bug.
-    OPTIONS_AGENT = Agent(
-        model,
-        name="options",
-        output_type=PromptedOutput(OptionsResponse),
-        instructions=build_options_system_prompt(SCENARIO),
-        history_processors=[summarize_when_large],
-        model_settings={"max_tokens": 1536},
-        output_retries=2,
-    )
-
-    HISTORIES = {a.id: seed_history(a) for a in SCENARIO.agents}
-    HANDLER_STATE = HandlerState.from_scenario(SCENARIO)
-    EVENT_BUS = EventBus()
-
-    log.info("npc_service ready: agents=%s", sorted(AGENTS))
     try:
         yield
     finally:
@@ -450,8 +166,145 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         stop_llama(LLAMA_PROC)
 
 
-app = FastAPI(lifespan=lifespan, title="npc_service")
+app = FastAPI(lifespan=lifespan, title="npc_service (Inbox)")
 logfire.instrument_fastapi(app, capture_headers=False)
+
+
+# ───────────────────────── beat firing ─────────────────────────
+
+
+async def _fire_beat(beat: Beat, in_response_to: str | None) -> Email | None:
+    # `in_response_to` chains rendered Maya replies onto the player's send so
+    # the next beat reads the right transcript.
+    assert STATE is not None and SCENARIO is not None and AGENTS is not None
+    if beat.id in STATE.fired_beat_ids:
+        return None
+
+    with logfire.span("fire_beat", beat_id=beat.id, beat_type=type(beat).__name__):
+        email: Email | None = None
+        if isinstance(beat, (AnchoredBeat, DraftVisibleBeat)):
+            sent_at_label = (
+                "(unsent draft)" if isinstance(beat, DraftVisibleBeat)
+                else (beat.sent_at or "just now")
+            )
+            email = Email(
+                id=f"email_{uuid.uuid4().hex[:8]}",
+                beat_id=beat.id,
+                thread_id=beat.thread,
+                folder=beat.folder,
+                sender=beat.from_,
+                recipient=beat.to,
+                subject=beat.subject,
+                body=beat.authored_prose.strip(),
+                sent_at_label=sent_at_label,
+                sent_at_action=STATE.action_count,
+            )
+        elif isinstance(beat, RenderedBeat):
+            email = await _render_beat_email(beat, in_response_to)
+        elif isinstance(beat, SceneUpdateBeat):
+            email = None
+        elif isinstance(beat, CodaBeat):
+            return None  # /coda owns this beat type, not the scheduler
+
+        if email is not None:
+            STATE.emails.append(email)
+
+        for eff in beat.effects:
+            apply_effect(eff, STATE, SCENARIO)
+        STATE.fired_beat_ids.add(beat.id)
+        return email
+
+
+async def _render_beat_email(beat: RenderedBeat, in_response_to: str | None) -> Email:
+    assert STATE is not None and SCENARIO is not None and AGENTS is not None
+    npc = SCENARIO.npc_by_id[beat.npc]
+    transcript = render_thread_transcript(STATE, beat.thread)
+    extra_context = _extra_context_for_beat(beat)
+    user_prompt = build_email_user_prompt(beat, npc, STATE, transcript, extra_context)
+    band = select_voice_band(npc, STATE)
+    band_name = band.name if band else None
+
+    with logfire.span(
+        "render_beat",
+        beat_id=beat.id,
+        npc=beat.npc,
+        band=band_name,
+        extra_keys=sorted(extra_context.keys()),
+    ) as span:
+        result = await AGENTS.email_agent.run(user_prompt)
+        usage = result.usage()
+        span.set_attribute("input_tokens", usage.input_tokens)
+        span.set_attribute("output_tokens", usage.output_tokens)
+
+    return Email(
+        id=f"email_{uuid.uuid4().hex[:8]}",
+        beat_id=beat.id,
+        thread_id=beat.thread,
+        folder="Inbox",
+        sender=beat.from_,
+        recipient=beat.to,
+        subject=beat.subject,
+        body=result.output.prose.strip(),
+        sent_at_label="just now",
+        sent_at_action=STATE.action_count,
+        in_reply_to_beat=in_response_to,
+        voice_band_used=band_name,
+    )
+
+
+def _extra_context_for_beat(beat: RenderedBeat) -> dict[str, str]:
+    """Slice has exactly one beat that takes extra inputs:
+    maya.response_to_draft reads disposition + truth-disclosure + the
+    edited-or-original draft text + any voice_fidelity_rationale."""
+    assert STATE is not None
+    out: dict[str, str] = {}
+    if beat.id != "maya.response_to_draft":
+        return out
+    out["unsent_draft_disposition"] = str(STATE.atoms.get("unsent_draft_disposition", "pending"))
+    out["knowledge.maya_knows_truth"] = str(STATE.atoms.get("knowledge.maya_knows_truth", "unknown"))
+    if STATE.voice_fidelity_rationale:
+        out["voice_fidelity_rationale"] = STATE.voice_fidelity_rationale
+        out["voice_fidelity"] = f"{STATE.voice_fidelity:.2f}" if STATE.voice_fidelity is not None else "n/a"
+    # Pull the most recent player-authored Maya-bound send (the draft they actually sent).
+    sent_drafts = [e for e in STATE.emails if e.sender.startswith("you") and "Maya" in e.recipient]
+    if sent_drafts:
+        out["draft_text_sent"] = sent_drafts[-1].body
+    return out
+
+
+# ───────────────────────── scheduler tick ─────────────────────────
+
+
+async def _tick(in_response_to: str | None = None) -> list[Email]:
+    """Run the spine: thread state machine + beat scheduler. Returns the
+    list of newly-emitted emails this tick (for SSE).
+    """
+    assert STATE is not None and SCENARIO is not None
+    new_emails: list[Email] = []
+
+    with logfire.span("tick", in_response_to=in_response_to) as span:
+        # First evaluate thread transitions; they may schedule beats or fire one.
+        fired_by_transitions = evaluate_thread_transitions(STATE, SCENARIO)
+        for bf in fired_by_transitions:
+            e = await _fire_beat(bf.beat, in_response_to=in_response_to)
+            if e is not None:
+                new_emails.append(e)
+
+        # Then walk the scheduler.
+        for bf in find_due_beats(STATE, SCENARIO):
+            e = await _fire_beat(bf.beat, in_response_to=in_response_to)
+            if e is not None:
+                new_emails.append(e)
+
+        # Re-evaluate transitions in case a fired beat changed state.
+        for bf in evaluate_thread_transitions(STATE, SCENARIO):
+            e = await _fire_beat(bf.beat, in_response_to=in_response_to)
+            if e is not None:
+                new_emails.append(e)
+
+        check_end_conditions(STATE)
+        span.set_attribute("new_email_count", len(new_emails))
+        return new_emails
 
 
 # ───────────────────────── endpoints ─────────────────────────
@@ -462,7 +315,7 @@ async def health() -> dict:
     return {
         "ok": True,
         "scenario_loaded": SCENARIO is not None,
-        "agents_ready": sorted(AGENTS),
+        "state_initialised": STATE is not None,
     }
 
 
@@ -470,246 +323,413 @@ async def health() -> dict:
 async def get_scenario() -> dict:
     if SCENARIO is None:
         raise HTTPException(503, "scenario not loaded")
-    # Public view: omit known_facts, seed_exchanges, deflection_style, and
-    # operation.world_state. Include opening_transmission so the client can
-    # render the agent's first line into the chat at boot.
     return {
         "title": SCENARIO.title,
-        "setup": SCENARIO.setup,
+        "premise": SCENARIO.premise,
         "max_actions": SCENARIO.max_actions,
-        "operation": {
-            "codename": SCENARIO.operation.codename,
-            "objective": SCENARIO.operation.objective,
-        },
-        "agents": [
-            {
-                "id": a.id,
-                "callsign": a.callsign,
-                "name": a.name,
-                "city": a.city,
-                "role": a.role,
-                "persona": a.persona,
-                "opening_transmission": a.opening_transmission,
-            }
-            for a in SCENARIO.agents
-        ],
     }
 
 
 @app.get("/state")
 async def get_state() -> dict:
-    if HANDLER_STATE is None:
-        raise HTTPException(503, "handler state not initialised")
-    check_end_conditions(HANDLER_STATE)
-    return HANDLER_STATE.public_view()
+    if STATE is None:
+        raise HTTPException(503, "state not initialised")
+    return STATE.public_view()
 
 
-@app.post("/action")
-async def post_action(req: ActionRequest) -> StreamingResponse:
-    if not AGENTS or HANDLER_STATE is None:
-        raise HTTPException(503, "service not ready")
-    if HANDLER_STATE.ended:
-        raise HTTPException(409, f"scenario already ended ({HANDLER_STATE.end_reason})")
-    if req.agent_id not in AGENTS:
-        raise HTTPException(404, f"unknown agent_id: {req.agent_id}")
-    if not req.line.strip():
-        raise HTTPException(422, "line must be a non-empty handler utterance")
+@app.get("/inbox")
+async def get_inbox() -> dict:
+    """Folder summary. The client uses this for the inbox list view."""
+    if STATE is None:
+        raise HTTPException(503, "state not initialised")
+    folders: dict[str, list[dict]] = {"Inbox": [], "Drafts": [], "Sent": [], "Archive": []}
+    for e in STATE.emails:
+        folders.setdefault(e.folder, []).append(_email_summary(e))
+    # Sort within each folder by sent_at_action desc (newest first).
+    for k in folders:
+        folders[k].sort(key=lambda x: -x["sent_at_action"])
+    return {"folders": folders, "state": STATE.public_view()}
 
-    log.info("/action agent=%s prompt=%r", req.agent_id, req.line)
 
+@app.get("/thread/{thread_id}")
+async def get_thread(thread_id: str) -> dict:
+    """All emails in a thread, ordered by sent_at_action."""
+    if STATE is None or SCENARIO is None:
+        raise HTTPException(503, "state not initialised")
+    if thread_id not in SCENARIO.thread_by_id:
+        raise HTTPException(404, f"unknown thread: {thread_id}")
+    emails = [_email_full(e) for e in STATE.emails if e.thread_id == thread_id]
+    emails.sort(key=lambda x: x["sent_at_action"])
+    return {"thread_id": thread_id, "emails": emails}
+
+
+@app.post("/open")
+async def post_open(req: OpenRequest) -> dict:
+    """First-read advances the action counter and ticks the scheduler."""
+    if STATE is None:
+        raise HTTPException(503, "state not initialised")
+    if STATE.ended:
+        raise HTTPException(409, f"session ended ({STATE.end_reason})")
+
+    async with ACTION_LOCK:
+        email = next((e for e in STATE.emails if e.id == req.email_id), None)
+        if email is None:
+            raise HTTPException(404, f"unknown email_id: {req.email_id}")
+        already_read = email.is_read
+        email.is_read = True
+        if already_read:
+            return {"state": STATE.public_view(), "new_emails": []}
+        STATE.action_count += 1
+        new_emails = await _tick(in_response_to=email.id)
+        return {
+            "state": STATE.public_view(),
+            "new_emails": [_email_full(e) for e in new_emails],
+        }
+
+
+@app.post("/archive")
+async def post_archive(req: ArchiveRequest) -> dict:
+    if STATE is None:
+        raise HTTPException(503, "state not initialised")
+    if STATE.ended:
+        raise HTTPException(409, f"session ended ({STATE.end_reason})")
+
+    async with ACTION_LOCK:
+        email = next((e for e in STATE.emails if e.id == req.email_id), None)
+        if email is None:
+            raise HTTPException(404, f"unknown email_id: {req.email_id}")
+        if email.folder == "Archive":
+            return {"state": STATE.public_view(), "new_emails": []}
+        email.folder = "Archive"
+        email.is_read = True
+        STATE.action_count += 1
+        new_emails = await _tick(in_response_to=email.id)
+        return {
+            "state": STATE.public_view(),
+            "new_emails": [_email_full(e) for e in new_emails],
+        }
+
+
+@app.post("/send")
+async def post_send(req: SendRequest) -> StreamingResponse:
+    if STATE is None or AGENTS is None or SCENARIO is None:
+        raise HTTPException(503, "state not initialised")
+    if STATE.ended:
+        raise HTTPException(409, f"session ended ({STATE.end_reason})")
     return StreamingResponse(
-        _action_event_stream(req.agent_id, req.line),
+        _send_stream(req),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 
-async def _action_event_stream(agent_id: str, user_prompt: str) -> AsyncIterator[bytes]:
-    """SSE generator for /action. Streams text deltas, then state, then done.
+async def _send_stream(req: SendRequest) -> AsyncIterator[bytes]:
+    assert STATE is not None and SCENARIO is not None and AGENTS is not None
+    body = req.body if req.body.strip() else "got it."  # placeholder fallback
 
-    Lock is global across all channels so /options never reads HISTORIES mid-mutation.
-    """
-    assert HANDLER_STATE is not None and EVENT_BUS is not None and SCENARIO is not None
-    agent = AGENTS[agent_id]
+    thread_id = thread_id_from_beat_id(req.in_reply_to)
 
-    async with ACTION_LOCK:
-        last_text = ""
-        t_start = time.monotonic()
-        t_first: float | None = None
-        try:
-            async with asyncio.timeout(ACTION_STREAM_TIMEOUT_SECONDS):
-                async with agent.run_stream(
-                    user_prompt, message_history=HISTORIES[agent_id]
-                ) as result:
-                    async for partial in result.stream_output():
-                        text = getattr(partial, "report_text", "") or ""
-                        if text and text != last_text:
-                            if t_first is None:
-                                t_first = time.monotonic()
-                            delta = text[len(last_text):]
-                            yield _sse({"type": "text", "agent_id": agent_id, "text": delta})
-                            last_text = text
-
-                    final = await result.get_output()
-                    # CancelledError skips this block — partial turns discarded.
-                    HISTORIES[agent_id] = list(result.all_messages())
-                    HANDLER_STATE.action_count += 1
-                    HANDLER_STATE.agents[agent_id].last_report_action_count = HANDLER_STATE.action_count
-                    check_end_conditions(HANDLER_STATE)
-                    yield _sse({"type": "state", "state": HANDLER_STATE.public_view()})
-                    # Fire any due timeline events AFTER state mutation but
-                    # BEFORE we yield 'done', so the client renders them in
-                    # order and the next /options call sees them in HISTORIES.
-                    if not HANDLER_STATE.ended:
-                        for evt in fire_due_timeline_events(HANDLER_STATE, SCENARIO):
-                            yield _sse({"type": "timeline", "event": _timeline_event_payload(evt)})
-                    if HANDLER_STATE.ended:
-                        await EVENT_BUS.publish({
-                            "type": "game_ended",
-                            "end_reason": HANDLER_STATE.end_reason,
-                        })
-                    ttfb_ms = int((t_first - t_start) * 1000) if t_first else -1
-                    total_ms = int((time.monotonic() - t_start) * 1000)
-                    usage = result.usage()
-                    log.info(
-                        "/action complete: agent=%s ttfb=%dms total=%dms response_chars=%d "
-                        "input_tokens=%s output_tokens=%d action_count=%d history_msgs=%d "
-                        "history_tokens=%s",
-                        agent_id, ttfb_ms, total_ms, len(final.report_text or ""),
-                        _pct_of_ctx(usage.input_tokens), usage.output_tokens,
-                        HANDLER_STATE.action_count, len(HISTORIES[agent_id]),
-                        _pct_of_ctx(_approx_tokens(HISTORIES[agent_id])),
-                    )
-            yield _sse({"type": "done", "agent_id": agent_id})
-        except asyncio.CancelledError:
-            log.info("/action cancelled by client (partial discarded) agent=%s", agent_id)
-            raise
-        except TimeoutError:
-            log.warning(
-                "/action stalled past %.1fs — likely context exhaustion (agent=%s)",
-                ACTION_STREAM_TIMEOUT_SECONDS, agent_id,
+    with logfire.span("send_stream", recipient=req.recipient, thread_id=thread_id):
+        async with ACTION_LOCK:
+            send_email = Email(
+                id=f"email_{uuid.uuid4().hex[:8]}",
+                beat_id=None,
+                thread_id=thread_id,
+                folder="Sent",
+                sender="you",
+                recipient=req.recipient,
+                subject=_reply_subject(req.in_reply_to),
+                body=body,
+                sent_at_label="just now",
+                sent_at_action=STATE.action_count,
+                in_reply_to_beat=req.in_reply_to,
+                is_read=True,
             )
-            yield _sse({
-                "type": "error",
-                "agent_id": agent_id,
-                "message": (
-                    f"model stalled after {ACTION_STREAM_TIMEOUT_SECONDS:.0f}s — "
-                    "likely context exhaustion. Try /reset."
-                ),
-            })
-        except ValidationError as e:
-            log.warning("agent=%s response failed validation: %s", agent_id, e)
-            yield _sse({"type": "error", "agent_id": agent_id, "message": f"validation_error: {e}"})
-        except Exception as e:
-            log.exception("/action stream failed agent=%s", agent_id)
-            yield _sse({"type": "error", "agent_id": agent_id, "message": str(e)})
+            STATE.emails.append(send_email)
+            yield _sse({"type": "send_recorded", "email": _email_full(send_email)})
+
+            recipient_npc = _infer_recipient_npc_id(req.recipient)
+            recipient_blurb = _persona_blurb_for_recipient(req.recipient, recipient_npc)
+            transcript = render_thread_transcript(STATE, thread_id) if thread_id else ""
+            try:
+                tex_result = await AGENTS.texture_agent.run(
+                    build_texture_user_prompt(recipient_blurb, transcript, body)
+                )
+                tex = tex_result.output
+                logfire.info(
+                    "texture scored",
+                    warmth=tex.warmth,
+                    honesty=tex.honesty,
+                    rationale=tex.rationale,
+                )
+            except Exception:
+                logfire.exception("texture scoring failed; defaulting to neutral")
+                tex = TextureScore(warmth=0.0, honesty=0.0, rationale="scorer-failed")
+
+            # 3. Apply texture and append Reply.
+            STATE.replies.append(Reply(
+                id=f"reply_{uuid.uuid4().hex[:8]}",
+                thread_id=thread_id,
+                beat_responded_to=req.in_reply_to,
+                recipient=req.recipient,
+                body=body,
+                warmth=tex.warmth,
+                honesty=tex.honesty,
+                rationale=tex.rationale,
+                sent_at_action=STATE.action_count,
+            ))
+            apply_texture_score(STATE, SCENARIO, recipient_npc, tex.warmth, tex.honesty)
+            yield _sse({"type": "texture", "warmth": tex.warmth, "honesty": tex.honesty})
+
+            # 4. Advance counter, tick scheduler.
+            STATE.action_count += 1
+            new_emails = await _tick(in_response_to=send_email.id)
+            for ne in new_emails:
+                yield _sse({"type": "new_email", "email": _email_full(ne)})
+            yield _sse({"type": "state", "state": STATE.public_view()})
+            yield _sse({"type": "done"})
+
+
+def _reply_subject(in_reply_to: str | None) -> str:
+    if STATE is None or in_reply_to is None:
+        return "(no subject)"
+    target = next((e for e in STATE.emails if e.beat_id == in_reply_to), None)
+    if target is None:
+        return "(no subject)"
+    s = target.subject
+    return s if s.lower().startswith("re:") else f"Re: {s}"
+
+
+def _persona_blurb_for_recipient(recipient: str, npc_id: str | None) -> str:
+    if SCENARIO is None:
+        return f"a recipient: {recipient}"
+    if npc_id is not None:
+        n = SCENARIO.npc_by_id[npc_id]
+        return f"{n.display_name} — {n.relationship_to_owner}"
+    for key, val in SCENARIO.persona_blurbs.items():
+        if key in recipient:
+            return val
+    return f"a recipient: {recipient}"
+
+
+def _infer_recipient_npc_id(recipient: str) -> str | None:
+    if SCENARIO is None:
+        return None
+    for n in SCENARIO.npcs:
+        if n.display_name in recipient or n.id in recipient.lower():
+            return n.id
+    return None
+
+
+@app.post("/draft/{draft_id}/decision")
+async def post_draft_decision(draft_id: str, req: DraftDecisionRequest) -> StreamingResponse:
+    if STATE is None or AGENTS is None or SCENARIO is None:
+        raise HTTPException(503, "state not initialised")
+    if STATE.ended:
+        raise HTTPException(409, f"session ended ({STATE.end_reason})")
+    return StreamingResponse(
+        _draft_decision_stream(draft_id, req),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+async def _draft_decision_stream(draft_id: str, req: DraftDecisionRequest) -> AsyncIterator[bytes]:
+    assert STATE is not None and SCENARIO is not None and AGENTS is not None
+
+    with logfire.span("draft_decision", action=req.action, draft_id=draft_id):
+        async with ACTION_LOCK:
+            draft_email = next((e for e in STATE.emails if e.id == draft_id), None)
+            if draft_email is None:
+                yield _sse({"type": "error", "message": f"unknown draft: {draft_id}"})
+                return
+            if draft_email.folder != "Drafts":
+                yield _sse({"type": "error", "message": "email is not a draft"})
+                return
+            if STATE.atoms.get("unsent_draft_disposition") != "pending":
+                yield _sse({"type": "error", "message": "draft decision already made"})
+                return
+
+            if req.action == "hold":
+                STATE.atoms["unsent_draft_disposition"] = "held"
+                STATE.action_count += 1
+                yield _sse({"type": "draft_held"})
+                new_emails = await _tick(in_response_to=draft_email.id)
+                for ne in new_emails:
+                    yield _sse({"type": "new_email", "email": _email_full(ne)})
+                yield _sse({"type": "state", "state": STATE.public_view()})
+                yield _sse({"type": "done"})
+                return
+
+            # send_unchanged or edit_and_send
+            original = draft_email.body
+            if req.action == "edit_and_send":
+                edited = (req.body or "").strip()
+                tess = SCENARIO.npc_by_id["tess"]
+                try:
+                    vf_result = await AGENTS.voice_fidelity_agent.run(
+                        build_voice_fidelity_user_prompt(tess, original, edited)
+                    )
+                    vf = vf_result.output
+                    logfire.info(
+                        "voice fidelity scored",
+                        voice_fidelity=vf.voice_fidelity,
+                        rationale=vf.rationale,
+                    )
+                except Exception:
+                    logfire.exception("voice fidelity scoring failed; defaulting to 0.5")
+                    vf = VoiceFidelityScore(voice_fidelity=0.5, rationale="scorer-failed")
+                apply_voice_fidelity(STATE, vf.voice_fidelity, vf.rationale)
+                yield _sse({
+                    "type": "voice_fidelity",
+                    "voice_fidelity": vf.voice_fidelity,
+                    "rationale": vf.rationale,
+                })
+                STATE.atoms["unsent_draft_disposition"] = "sent_edited"
+                sent_body = edited
+            else:  # send_unchanged
+                STATE.atoms["unsent_draft_disposition"] = "sent_unchanged"
+                sent_body = original
+
+            # Emit a Sent email — the player sent this on Tess's behalf. Thread
+            # follows the draft's thread so Maya's reply chains correctly.
+            sent_email = Email(
+                id=f"email_{uuid.uuid4().hex[:8]}",
+                beat_id=None,
+                thread_id=draft_email.thread_id,
+                folder="Sent",
+                sender="you (sent on behalf of Tess)",
+                recipient=draft_email.recipient,
+                subject="(forwarded draft)",
+                body=sent_body,
+                sent_at_label="just now",
+                sent_at_action=STATE.action_count,
+                in_reply_to_beat=draft_email.beat_id,
+                is_read=True,
+            )
+            STATE.emails.append(sent_email)
+            yield _sse({"type": "draft_sent", "email": _email_full(sent_email)})
+
+            # Mark the original draft as no longer pending — we keep it in Drafts
+            # for visibility but flag it as resolved.
+            draft_email.is_read = True
+
+            STATE.action_count += 1
+            new_emails = await _tick(in_response_to=sent_email.id)
+            for ne in new_emails:
+                yield _sse({"type": "new_email", "email": _email_full(ne)})
+            yield _sse({"type": "state", "state": STATE.public_view()})
+            yield _sse({"type": "done"})
+
+
+@app.get("/search")
+async def get_search(q: str) -> dict:
+    """Free; does not advance actions. Substring search over inbox + archive."""
+    if STATE is None or SCENARIO is None:
+        raise HTTPException(503, "state not initialised")
+    hits = search_inbox(STATE, SCENARIO, q)
+    return {"q": q, "hits": hits}
+
+
+@app.get("/coda")
+async def get_coda() -> StreamingResponse:
+    if STATE is None or AGENTS is None or SCENARIO is None:
+        raise HTTPException(503, "state not initialised")
+    return StreamingResponse(
+        _coda_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+async def _coda_stream() -> AsyncIterator[bytes]:
+    assert STATE is not None and SCENARIO is not None and AGENTS is not None
+    with logfire.span("coda_stream") as span:
+        async with ACTION_LOCK:
+            if STATE.coda_emitted:
+                yield _sse({"type": "error", "message": "coda already emitted"})
+                return
+            if not STATE.ended:
+                # check_end_conditions runs every tick, so STATE.ended being false
+                # here means neither budget nor natural-terminal condition fired.
+                # Don't let a stray client force the coda mid-game.
+                yield _sse({"type": "error", "message": "session has not ended yet"})
+                return
+            fragments = select_coda_fragments(STATE, SCENARIO)
+            if not fragments:
+                yield _sse({"type": "error", "message": "no coda fragments"})
+                return
+            for i, frag in enumerate(fragments):
+                yield _sse({"type": "fragment", "index": i, "label": frag.label, "excerpt": frag.excerpt})
+
+            try:
+                user_prompt = build_coda_user_prompt(fragments, STATE)
+                result = await AGENTS.coda_agent.run(user_prompt)
+                usage = result.usage()
+                span.set_attribute("input_tokens", usage.input_tokens)
+                span.set_attribute("output_tokens", usage.output_tokens)
+                for i, line in enumerate(result.output.framing_lines):
+                    yield _sse({"type": "framing", "index": i, "line": line})
+            except Exception as e:
+                logfire.exception("coda generation failed")
+                yield _sse({"type": "error", "message": str(e)})
+                return
+
+            STATE.coda_emitted = True
+            STATE.ended = True
+            STATE.end_reason = STATE.end_reason or "coda_emitted"
+            yield _sse({"type": "done"})
 
 
 @app.post("/reset")
 async def post_reset() -> JSONResponse:
-    global HISTORIES, HANDLER_STATE
-    if SCENARIO is None or EVENT_BUS is None:
-        raise HTTPException(503, "service not ready")
+    """Re-initialise state; useful for testing."""
+    if SCENARIO is None:
+        raise HTTPException(503, "scenario not loaded")
     log.info("/reset")
-    HISTORIES = {a.id: seed_history(a) for a in SCENARIO.agents}
-    HANDLER_STATE = HandlerState.from_scenario(SCENARIO)
-    await EVENT_BUS.publish({"type": "reset"})
-    return JSONResponse(HANDLER_STATE.public_view())
+    await _bootstrap_state()
+    assert STATE is not None
+    return JSONResponse(STATE.public_view())
 
 
-@app.get("/options")
-async def get_options(agent_id: str) -> dict:
-    """Generate 2-5 dialogue picks for the handler's next line in a specific channel.
-
-    Read-only with respect to HISTORIES[agent_id]: the options agent's call is
-    NOT written back via result.all_messages(), because doing so would leak the
-    "Generate options for asset X." user prompt into the channel's history and
-    confuse the agent on the next turn.
-
-    Shares ACTION_LOCK with /action so this can't read HISTORIES mid-mutation.
-    On any failure (validation, timeout, model error) returns
-    `{"options": []}` so the Godot client falls into its existing
-    "No options available." path instead of breaking the UX.
-    """
-    if SCENARIO is None or HANDLER_STATE is None or OPTIONS_AGENT is None:
-        raise HTTPException(503, "service not ready")
-    if agent_id not in HISTORIES:
-        raise HTTPException(404, f"unknown agent_id: {agent_id}")
-    if HANDLER_STATE.ended:
-        return {"options": []}
-    action_count = HANDLER_STATE.action_count
-    actions_remaining = HANDLER_STATE.actions_remaining()
-    agent_def = next(a for a in SCENARIO.agents if a.id == agent_id)
-    log.info("/options request agent=%s (action_count=%d)", agent_id, action_count)
-    t_start = time.monotonic()
-    # User prompt names the active asset only — the live action_count is
-    # deliberately NOT included so the prefix-cache stays valid across calls
-    # for the same channel. Pacing is already encoded in HISTORIES (timeline
-    # scene-updates fire on the same clock).
-    user_prompt = (
-        f"Generate options for the handler's next line to {agent_def.callsign} "
-        f"({agent_def.name}, {agent_def.city})."
-    )
-    with logfire.span(
-        "options_request",
-        agent_id=agent_id,
-        action_count=action_count,
-        actions_remaining=actions_remaining,
-        history_msgs=len(HISTORIES[agent_id]),
-    ) as span:
-        try:
-            async with ACTION_LOCK:
-                async with asyncio.timeout(OPTIONS_TIMEOUT_SECONDS):
-                    # Read-only: do NOT write result back to HISTORIES.
-                    result = await OPTIONS_AGENT.run(user_prompt, message_history=HISTORIES[agent_id])
-        except (TimeoutError, ValidationError) as e:
-            span.set_attribute("error", type(e).__name__)
-            log.warning("/options failed agent=%s (%s): %s", agent_id, type(e).__name__, e)
-            return {"options": []}
-        except Exception as e:
-            span.set_attribute("error", type(e).__name__)
-            log.exception("/options crashed agent=%s: %s", agent_id, e)
-            return {"options": []}
-        usage = result.usage()
-        span.set_attribute("options_count", len(result.output.options))
-        span.set_attribute("output_tokens", usage.output_tokens)
-        log.info(
-            "/options complete: agent=%s %dms options=%d input_tokens=%s output_tokens=%d",
-            agent_id, int((time.monotonic() - t_start) * 1000), len(result.output.options),
-            _pct_of_ctx(usage.input_tokens), usage.output_tokens,
-        )
-        return {"options": [o.model_dump() for o in result.output.options]}
+async def _bootstrap_state() -> None:
+    """Init state from scenario, fire boot inbox, then any beats already due."""
+    global STATE
+    assert SCENARIO is not None
+    STATE = InboxState.from_scenario(SCENARIO)
+    for bf in initialize_boot_inbox(STATE, SCENARIO):
+        await _fire_beat(bf.beat, in_response_to=None)
+    for bf in find_due_beats(STATE, SCENARIO):
+        await _fire_beat(bf.beat, in_response_to=None)
 
 
-@app.get("/events")
-async def get_events() -> StreamingResponse:
-    if EVENT_BUS is None:
-        raise HTTPException(503, "service not ready")
-
-    async def stream() -> AsyncIterator[bytes]:
-        q = await EVENT_BUS.subscribe()
-        try:
-            yield _sse({"type": "connected"})
-            while True:
-                try:
-                    payload = await asyncio.wait_for(q.get(), timeout=EVENTS_KEEPALIVE_SECONDS)
-                except asyncio.TimeoutError:
-                    yield b": keepalive\n\n"
-                    continue
-                yield _sse(payload)
-        except asyncio.CancelledError:
-            raise
-        finally:
-            await EVENT_BUS.unsubscribe(q)
-
-    return StreamingResponse(
-        stream(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
+# ───────────────────────── DTO helpers ─────────────────────────
 
 
-# ───────────────────────── helpers ─────────────────────────
+def _email_summary(email: Email) -> dict:
+    """Compact email row for inbox list views."""
+    return {
+        "id": email.id,
+        "from": email.sender,
+        "to": email.recipient,
+        "subject": email.subject,
+        "sent_at": email.sent_at_label,
+        "sent_at_action": email.sent_at_action,
+        "is_read": email.is_read,
+        "preview": email.body[:140] + ("…" if len(email.body) > 140 else ""),
+        "folder": email.folder,
+        "thread_id": email.thread_id,
+    }
+
+
+def _email_full(email: Email) -> dict:
+    return {
+        **_email_summary(email),
+        "body": email.body,
+        "beat_id": email.beat_id,
+        "in_reply_to_beat": email.in_reply_to_beat,
+        "voice_band_used": email.voice_band_used,
+    }
 
 
 def _sse(payload: dict) -> bytes:

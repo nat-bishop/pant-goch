@@ -8,17 +8,24 @@ LLAMA_PORT  := 8080
 
 .PHONY: help
 help:
-	@echo "Smallville targets:"
-	@echo "  make run             One-shot: Godot spawns Python spawns llama-server"
+	@echo "Inbox targets:"
+	@echo "  make run             Boot sidecar (spawns llama) + web dev server in parallel"
 	@echo "  make download-model  Fetch the Gemma 4 E4B Q8_0 GGUF (~8 GB)"
 	@echo "  make llama           Run llama-server               (terminal 1)"
 	@echo "  make sidecar         Run Python sidecar, no llama   (terminal 2)"
-	@echo "  make godot           Run Godot with --no-sidecar    (terminal 3)"
+	@echo "  make web             Run Vite dev server            (terminal 3)"
+	@echo "  make test            Run pytest"
+	@echo "  make typecheck       Run TS typecheck on web/"
 	@echo "  make clean           Remove __pycache__ and logs/*.log"
 
+# `run` boots sidecar and web in parallel. The sidecar spawns llama-server
+# itself (LAUNCH_LLAMA=true is the default). Trap kills both on Ctrl-C.
 .PHONY: run
 run: $(MODEL)
-	godot --path godot_project
+	@echo "Starting sidecar (spawns llama) and web in parallel. Browser: http://localhost:5173"
+	@(cd npc_service && uv run python -m npc_service) & \
+	(cd web && npm run dev) & \
+	wait
 
 $(MODEL):
 	mkdir -p models
@@ -35,9 +42,17 @@ llama: $(MODEL)
 sidecar:
 	cd npc_service && LAUNCH_LLAMA=false uv run python -m npc_service
 
-.PHONY: godot
-godot:
-	godot --path godot_project --no-sidecar
+.PHONY: web
+web:
+	cd web && npm run dev
+
+.PHONY: test
+test:
+	cd npc_service && uv run pytest
+
+.PHONY: typecheck
+typecheck:
+	cd web && npm run typecheck
 
 .PHONY: clean
 clean:

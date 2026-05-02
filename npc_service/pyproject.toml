@@ -1,7 +1,7 @@
 [project]
 name = "npc-service"
-version = "0.1.0"
-description = "Hostage-negotiation NPC sidecar (FastAPI + Pydantic AI + llama-server)"
+version = "0.2.0"
+description = "Inbox — single-surface epistolary game sidecar (FastAPI + Pydantic AI + llama-server)"
 requires-python = ">=3.11,<3.13"
 dependencies = [
     "fastapi>=0.115,<0.116",
@@ -11,6 +11,7 @@ dependencies = [
     "pydantic-settings>=2.5,<3",
     "httpx>=0.28,<0.29",
     "logfire[fastapi,httpx]>=4.0,<5",
+    "pyyaml>=6.0,<7",
 ]
 
 [build-system]

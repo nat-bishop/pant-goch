@@ -1,295 +1,288 @@
-"""FastAPI smoke tests + end-to-end agent/options agent tests.
-
-`LAUNCH_LLAMA=false` skips spawning llama-server; the model is overridden with
-TestModel so /action and /agent.run() flow without any external dependencies.
+"""FastAPI smoke tests with Pydantic AI's TestModel — no llama-server, no
+real LLM. Verifies wiring: lifespan boots, boot inbox emits, /open advances
+the action counter, /send runs the texture scorer end-to-end, /draft branches
+the three paths, and /coda emits an inbox montage.
 """
 import json
+from contextlib import ExitStack
+from typing import Iterable
 
 import pytest
 from fastapi.testclient import TestClient
-from pydantic import ValidationError
 from pydantic_ai.models.test import TestModel
 
 import npc_service.main as main
-from npc_service.models import AgentReport, DialogueOption, OptionsResponse
 
 
 @pytest.fixture
-def app(monkeypatch):
-    """Boot the app with no llama-server. Yields the live module so tests can
-    reach into globals (AGENTS, HANDLER_STATE) for overrides + assertions."""
+def client(monkeypatch):
+    """Boot the app with no llama-server and override every agent with a
+    TestModel that returns canned structured outputs.
+
+    `Agent.override(model=...)` is a context manager — the override only
+    holds while the context is active. We push all four onto an ExitStack
+    so they live for the whole test.
+    """
     monkeypatch.setenv("LAUNCH_LLAMA", "false")
     monkeypatch.setattr(main, "EXTERNAL_LLAMA_PROBE_TIMEOUT_SECONDS", 0.1)
-    with TestClient(main.app) as client:
-        assert main.AGENTS  # at least one agent built
-        assert main.HANDLER_STATE is not None
-        yield client
+    with TestClient(main.app) as c:
+        assert main.AGENTS is not None
+        with ExitStack() as stack:
+            stack.enter_context(main.AGENTS.email_agent.override(model=_test_model_for_email()))
+            stack.enter_context(main.AGENTS.texture_agent.override(model=_test_model_for_texture(1.0, 1.0)))
+            stack.enter_context(main.AGENTS.voice_fidelity_agent.override(model=_test_model_for_voice_fidelity()))
+            stack.enter_context(main.AGENTS.coda_agent.override(model=_test_model_for_coda()))
+            yield c
 
 
-def _stub_options(payload):
-    """Override OPTIONS_AGENT to return `payload` (an OptionsResponse or raw
-    dict that may fail validation). Use as a context manager.
-
-    OPTIONS_AGENT uses PromptedOutput, so the fake response is JSON text that
-    PromptedOutput parses client-side into the typed model.
-    """
-    args = payload.model_dump() if hasattr(payload, "model_dump") else payload
-    return main.OPTIONS_AGENT.override(model=TestModel(custom_output_text=json.dumps(args)))
+def _test_model_for_email() -> TestModel:
+    return TestModel(custom_output_args={"prose": "(test rendered email body — Maya is responding warmly)"})
 
 
-def _stub_agent(agent_id: str, payload: AgentReport | dict):
-    args = payload.model_dump() if hasattr(payload, "model_dump") else payload
-    return main.AGENTS[agent_id].override(model=TestModel(custom_output_args=args))
+def _test_model_for_texture(warmth: float, honesty: float) -> TestModel:
+    return TestModel(custom_output_args={"warmth": warmth, "honesty": honesty, "rationale": "(test)"})
 
 
-# ───────────────────────── /health, /scenario, /state ─────────────────────────
+def _test_model_for_voice_fidelity() -> TestModel:
+    return TestModel(custom_output_args={
+        "voice_fidelity": 0.85,
+        "rationale": "kept the lowercase but tightened the ending",
+    })
 
 
-def test_health_reports_ready(app):
-    r = app.get("/health")
+def _test_model_for_coda() -> TestModel:
+    return TestModel(custom_output_args={
+        "framing_lines": [
+            "There are emails she did not write.",
+            "There is a thing left in the drafts folder.",
+            "Outside, it is Thursday.",
+        ],
+    })
+
+
+# ───────────────────────── boot + endpoints ─────────────────────────
+
+
+def test_health(client):
+    r = client.get("/health")
+    assert r.status_code == 200
+    assert r.json()["scenario_loaded"] is True
+
+
+def test_scenario(client):
+    r = client.get("/scenario")
     assert r.status_code == 200
     j = r.json()
-    assert j["ok"] is True
-    assert j["scenario_loaded"] is True
-    assert sorted(j["agents_ready"]) == ["cicada", "dove", "magpie"]
+    assert j["title"] == "Inbox"
+    assert "premise" in j
 
 
-def test_scenario_omits_internal_fields(app):
-    r = app.get("/scenario")
+def test_boot_inbox_has_three_emails(client):
+    r = client.get("/inbox")
     assert r.status_code == 200
     j = r.json()
-    assert "title" in j
-    assert "operation" in j
-    # public view: never expose authoring-only fields
-    assert "world_state" not in j["operation"]
-    for a in j["agents"]:
-        assert "known_facts" not in a
-        assert "seed_exchanges" not in a
-        assert "deflection_style" not in a
-        # opening_transmission IS exposed — the client renders it on boot
-        assert "opening_transmission" in a
+    inbox = j["folders"]["Inbox"]
+    senders = [e["from"] for e in inbox]
+    # Janet (intake), Maya (old), and the class registration auto-reminder.
+    assert any("Janet" in s for s in senders)
+    assert any("Maya" in s for s in senders)
+    assert any("Northbridge" in s for s in senders)
 
 
-def test_state_response_shape(app):
-    r = app.get("/state")
+def test_state_starts_at_zero(client):
+    r = client.get("/state").json()
+    assert r["action_count"] == 0
+    assert r["max_actions"] == 18
+    assert r["ended"] is False
+
+
+def test_open_advances_action_counter(client):
+    inbox = client.get("/inbox").json()
+    janet_email = next(e for e in inbox["folders"]["Inbox"] if "Janet" in e["from"])
+    r = client.post("/open", json={"email_id": janet_email["id"]})
     assert r.status_code == 200
-    j = r.json()
-    assert "agents" in j
-    for a in j["agents"]:
-        assert "id" in a
-        assert "last_report_action_count" in a
+    state = r.json()["state"]
+    assert state["action_count"] == 1
 
 
-# ───────────────────────── /action validation ─────────────────────────
+def test_open_idempotent_after_first_read(client):
+    inbox = client.get("/inbox").json()
+    daniel_email = next((e for e in inbox["folders"]["Inbox"] if "Daniel" in e["from"]), None)
+    if daniel_email is None:
+        pytest.skip("daniel hasn't arrived yet at boot")
+    client.post("/open", json={"email_id": daniel_email["id"]})
+    state_after_first = client.get("/state").json()
+    client.post("/open", json={"email_id": daniel_email["id"]})
+    state_after_second = client.get("/state").json()
+    assert state_after_first["action_count"] == state_after_second["action_count"]
 
 
-def test_action_rejects_empty_line(app):
-    r = app.post("/action", json={"agent_id": "magpie", "line": "   "})
-    assert r.status_code == 422
-
-
-def test_action_rejects_unknown_agent(app):
-    r = app.post("/action", json={"agent_id": "ghost", "line": "hello"})
-    assert r.status_code == 404
-
-
-def test_action_rejects_missing_agent_id(app):
-    r = app.post("/action", json={"line": "hello"})
-    assert r.status_code == 422
-
-
-# ───────────────────────── agent persona structured output ─────────────────────────
-
-
-async def test_agent_persona_emits_validated_report():
-    """Direct agent.run() under TestModel — no FastAPI involved.
-
-    Confirms the wiring `ToolOutput(AgentReport)` produces a validated
-    AgentReport whose fields flow through unchanged.
-    """
-    from pydantic_ai import Agent, ToolOutput
-
-    fake = AgentReport(report_text="Confidence MED, control. Standing by.")
-    agent = Agent(
-        TestModel(custom_output_args=fake.model_dump()),
-        output_type=ToolOutput(AgentReport),
-        instructions="be MAGPIE",
-    )
-    result = await agent.run("Status?")
-
-    assert isinstance(result.output, AgentReport)
-    assert result.output.report_text == "Confidence MED, control. Standing by."
-
-
-async def test_options_agent_emits_validated_response():
-    """Direct agent.run() under TestModel — confirms ToolOutput(OptionsResponse)
-    parses faked tool-call args back into the typed model unchanged.
-    """
-    from pydantic_ai import Agent, ToolOutput
-
-    fake = OptionsResponse(options=[
-        DialogueOption(tag="Reassure", hidden_line="Hold position."),
-        DialogueOption(tag="Probe", hidden_line="Walk me through the timing."),
-        DialogueOption(tag="Hedge", hidden_line="Stand down for the next exchange."),
-    ])
-    agent = Agent(
-        TestModel(custom_output_args=fake.model_dump()),
-        output_type=ToolOutput(OptionsResponse),
-        instructions="be the dialogue coach",
-    )
-    result = await agent.run("Generate options for MAGPIE.")
-
-    assert isinstance(result.output, OptionsResponse)
-    assert [o.tag for o in result.output.options] == ["Reassure", "Probe", "Hedge"]
-    assert result.output.options[1].hidden_line == "Walk me through the timing."
-
-
-def test_dialogue_option_tag_uniqueness_rejects_duplicates():
-    with pytest.raises(ValidationError):
-        OptionsResponse(options=[
-            DialogueOption(tag="Probe", hidden_line="A"),
-            DialogueOption(tag="probe", hidden_line="B"),
-        ])
-
-
-# ───────────────────────── /options ─────────────────────────
-
-
-def test_options_endpoint_returns_options(app):
-    """/options returns 2-5 picks from a fixture-backed OPTIONS_AGENT."""
-    fake = OptionsResponse(options=[
-        DialogueOption(tag="Reassure", hidden_line="Hold position."),
-        DialogueOption(tag="Press", hidden_line="Are you sure that's not a tail?"),
-    ])
-    with _stub_options(fake):
-        r = app.get("/options", params={"agent_id": "magpie"})
+def test_archive_advances_counter(client):
+    inbox = client.get("/inbox").json()
+    e = inbox["folders"]["Inbox"][0]
+    initial = client.get("/state").json()["action_count"]
+    r = client.post("/archive", json={"email_id": e["id"]})
     assert r.status_code == 200
-    j = r.json()
-    assert len(j["options"]) == 2
-    assert [o["tag"] for o in j["options"]] == ["Reassure", "Press"]
+    assert r.json()["state"]["action_count"] == initial + 1
 
 
-def test_options_endpoint_rejects_unknown_agent(app):
-    r = app.get("/options", params={"agent_id": "ghost"})
-    assert r.status_code == 404
-
-
-def test_options_endpoint_requires_agent_id(app):
-    r = app.get("/options")
-    assert r.status_code == 422
-
-
-def test_options_endpoint_returns_empty_when_ended(app):
-    main.HANDLER_STATE.ended = True
-    main.HANDLER_STATE.end_reason = "budget_exhausted"
-    try:
-        r = app.get("/options", params={"agent_id": "magpie"})
-    finally:
-        main.HANDLER_STATE.ended = False
-        main.HANDLER_STATE.end_reason = None
+def test_search_does_not_advance_counter(client):
+    initial = client.get("/state").json()["action_count"]
+    r = client.get("/search", params={"q": "writing group"})
     assert r.status_code == 200
-    assert r.json() == {"options": []}
+    assert client.get("/state").json()["action_count"] == initial
 
 
-def test_options_endpoint_does_not_mutate_history(app):
-    """CLAUDE.md invariant: /options is read-only over HISTORIES[agent_id]."""
-    fake = OptionsResponse(options=[
-        DialogueOption(tag="Reassure", hidden_line="Hold position."),
-        DialogueOption(tag="Probe", hidden_line="Walk me through it."),
-    ])
-    before = list(main.HISTORIES["magpie"])
-    with _stub_options(fake):
-        r = app.get("/options", params={"agent_id": "magpie"})
-    assert r.status_code == 200
-    assert main.HISTORIES["magpie"] == before
+def test_search_finds_results(client):
+    r = client.get("/search", params={"q": "writing group"}).json()
+    assert len(r["hits"]) >= 1
+    assert any("writing group" in h["body"].lower() or "writing group" in h["subject"].lower() for h in r["hits"])
 
 
-def test_options_endpoint_returns_empty_on_validation_error(app):
-    bad = {"options": [{"tag": "Probe", "hidden_line": "Talk to me."}]}  # min_length=2
-    with _stub_options(bad):
-        r = app.get("/options", params={"agent_id": "magpie"})
-    assert r.status_code == 200
-    assert r.json() == {"options": []}
+# ───────────────────────── send + texture scoring ─────────────────────────
 
 
-# ───────────────────────── /action SSE channel isolation ─────────────────────────
+def test_send_runs_texture_and_advances_counter(client):
+    inbox = client.get("/inbox").json()
+    maya_email = next(e for e in inbox["folders"]["Inbox"] if "Maya" in e["from"])
+    initial = client.get("/state").json()["action_count"]
+
+    events = list(_consume_sse(client.stream("POST", "/send", json={
+        "in_reply_to": maya_email["beat_id"] if "beat_id" in maya_email else None,
+        "recipient": "Maya Chen",
+        "body": "thinking of u, im here",
+    })))
+
+    types = [e["type"] for e in events]
+    assert "send_recorded" in types
+    assert "texture" in types
+    assert "done" in types
+
+    state_after = client.get("/state").json()
+    assert state_after["action_count"] == initial + 1
 
 
-def _parse_sse(body: str) -> list[dict]:
-    """Parse an SSE response body into a list of decoded JSON payloads."""
-    out = []
-    for line in body.splitlines():
-        if line.startswith("data: "):
-            out.append(json.loads(line[len("data: "):]))
-    return out
+# ───────────────────────── draft mechanic — three branches ─────────────────────────
 
 
-def test_action_streams_text_and_state_for_active_agent(app):
-    fake = AgentReport(report_text="Confidence MED.")
-    with _stub_agent("magpie", fake):
-        r = app.post("/action", json={"agent_id": "magpie", "line": "Status?"})
-    assert r.status_code == 200
-    payloads = _parse_sse(r.text)
-    types = [p["type"] for p in payloads]
-    assert "state" in types
-    assert types[-1] == "done"
-    # all SSE events scoped to magpie
-    for p in payloads:
-        if "agent_id" in p:
-            assert p["agent_id"] == "magpie"
+def test_draft_does_not_appear_until_player_replies_to_maya(client):
+    """The draft is gated on player_replied_to: maya.first_email."""
+    inbox = client.get("/inbox").json()
+    drafts = inbox["folders"]["Drafts"]
+    assert drafts == [], f"expected no drafts at boot, got {drafts}"
 
 
-def test_action_isolates_histories_per_agent(app):
-    """A turn against MAGPIE must not append messages to CICADA's or DOVE's HISTORY."""
-    seed_cicada = list(main.HISTORIES["cicada"])
-    seed_dove = list(main.HISTORIES["dove"])
-    seed_magpie_len = len(main.HISTORIES["magpie"])
+def test_draft_held_branch(client):
+    _reply_to_maya_to_unlock_draft(client, "thanks for writing.")
+    drafts = _get_drafts(client)
+    assert len(drafts) == 1, f"expected the draft to surface; got {drafts}"
+    draft = drafts[0]
 
-    fake = AgentReport(report_text="copy.")
-    with _stub_agent("magpie", fake):
-        r = app.post("/action", json={"agent_id": "magpie", "line": "x"})
-    assert r.status_code == 200
+    events = list(_consume_sse(
+        client.stream("POST", f"/draft/{draft['id']}/decision", json={"action": "hold"})
+    ))
+    types = [e["type"] for e in events]
+    assert "draft_held" in types
+    assert "done" in types
 
-    assert main.HISTORIES["cicada"] == seed_cicada
-    assert main.HISTORIES["dove"] == seed_dove
-    # magpie's history grew (user prompt + tool-call response)
-    assert len(main.HISTORIES["magpie"]) > seed_magpie_len
-
-
-def test_action_increments_global_action_count(app):
-    """One action against any channel increments the global counter by exactly 1."""
-    before = main.HANDLER_STATE.action_count
-    fake = AgentReport(report_text="copy.")
-    with _stub_agent("cicada", fake):
-        r = app.post("/action", json={"agent_id": "cicada", "line": "x"})
-    assert r.status_code == 200
-    assert main.HANDLER_STATE.action_count == before + 1
+    # Atom set, no maya.response_to_draft beat fired.
+    state = client.get("/state").json()
+    assert "maya" in state["thread_states"]
+    # maya.response_to_draft only fires on send paths.
+    inbox = client.get("/inbox").json()
+    maya_emails = [e for e in inbox["folders"]["Inbox"] if "Maya" in e["from"]]
+    rendered_response_to_draft = [e for e in maya_emails if e.get("beat_id") == "maya.response_to_draft"]
+    assert rendered_response_to_draft == []
 
 
-def test_action_updates_last_report_action_count_for_correct_agent(app):
-    """A turn against CICADA records last_report_action_count for CICADA only."""
-    before = main.HANDLER_STATE.agents["cicada"].last_report_action_count
-    dove_before = main.HANDLER_STATE.agents["dove"].last_report_action_count
-    fake = AgentReport(report_text="copy.")
-    with _stub_agent("cicada", fake):
-        r = app.post("/action", json={"agent_id": "cicada", "line": "x"})
-    assert r.status_code == 200
-    assert main.HANDLER_STATE.agents["cicada"].last_report_action_count == before + 1
-    assert main.HANDLER_STATE.agents["dove"].last_report_action_count == dove_before
+def test_draft_send_unchanged_branch(client):
+    _reply_to_maya_to_unlock_draft(client, "hey, i'm taking care of things")
+    drafts = _get_drafts(client)
+    draft = drafts[0]
+
+    events = list(_consume_sse(
+        client.stream("POST", f"/draft/{draft['id']}/decision", json={"action": "send_unchanged"})
+    ))
+    types = [e["type"] for e in events]
+    assert "draft_sent" in types
+
+    # The send appears in Sent folder.
+    inbox = client.get("/inbox").json()
+    sent = inbox["folders"]["Sent"]
+    assert any("on behalf of Tess" in e["from"] for e in sent)
 
 
-# ───────────────────────── /reset ─────────────────────────
+def test_draft_edit_and_send_runs_voice_fidelity(client):
+    _reply_to_maya_to_unlock_draft(client, "thanks for the message")
+    drafts = _get_drafts(client)
+    draft = drafts[0]
+
+    events = list(_consume_sse(client.stream(
+        "POST", f"/draft/{draft['id']}/decision",
+        json={"action": "edit_and_send", "body": "hey - im handling some things for tess. she's safe."},
+    )))
+    types = [e["type"] for e in events]
+    assert "voice_fidelity" in types, f"expected voice_fidelity event; got {types}"
+    vf_event = next(e for e in events if e["type"] == "voice_fidelity")
+    assert 0.0 <= vf_event["voice_fidelity"] <= 1.0
 
 
-def test_reset_clears_all_histories_and_state(app):
-    fake = AgentReport(report_text="x")
-    with _stub_agent("magpie", fake):
-        app.post("/action", json={"agent_id": "magpie", "line": "x"})
-    assert main.HANDLER_STATE.action_count == 1
+# ───────────────────────── coda ─────────────────────────
 
-    r = app.post("/reset")
-    assert r.status_code == 200
-    assert main.HANDLER_STATE.action_count == 0
-    # all three histories should be back to seed length (1 scene-update each)
-    for hist in main.HISTORIES.values():
-        assert len(hist) == 1
+
+def test_coda_emits_fragments_and_framing(client):
+    # Drive minimal state so the coda has something to montage.
+    _reply_to_maya_to_unlock_draft(client, "im here")
+    # /coda is gated on STATE.ended — flip it directly. End-condition triggering
+    # itself is covered by test_spine.py's check_end_conditions tests.
+    main.STATE.ended = True
+    main.STATE.end_reason = "test"
+    events = list(_consume_sse(client.stream("GET", "/coda")))
+    types = [e["type"] for e in events]
+    assert "fragment" in types
+    assert "framing" in types
+    assert "done" in types
+
+
+def test_coda_refused_before_end_conditions(client):
+    """Stray clients can't force the coda mid-game."""
+    _reply_to_maya_to_unlock_draft(client, "hi")
+    assert main.STATE.ended is False
+    events = list(_consume_sse(client.stream("GET", "/coda")))
+    types = [e["type"] for e in events]
+    assert "error" in types
+    assert "fragment" not in types
+
+
+# ───────────────────────── helpers ─────────────────────────
+
+
+def _reply_to_maya_to_unlock_draft(client, body: str) -> None:
+    """Send one reply to Maya's boot email so the draft becomes visible."""
+    inbox = client.get("/inbox").json()
+    maya_email = next(e for e in inbox["folders"]["Inbox"] if "Maya" in e["from"])
+    list(_consume_sse(client.stream("POST", "/send", json={
+        "in_reply_to": maya_email.get("beat_id") or "maya.first_email",
+        "recipient": "Maya Chen",
+        "body": body,
+    })))
+
+
+def _get_drafts(client) -> list[dict]:
+    return client.get("/inbox").json()["folders"]["Drafts"]
+
+
+def _consume_sse(response_cm) -> Iterable[dict]:
+    with response_cm as r:
+        assert r.status_code == 200, r.text
+        buffer = ""
+        for chunk in r.iter_text():
+            buffer += chunk
+            while "\n\n" in buffer:
+                block, _, buffer = buffer.partition("\n\n")
+                for line in block.split("\n"):
+                    if line.startswith("data: "):
+                        try:
+                            yield json.loads(line[6:])
+                        except json.JSONDecodeError:
+                            continue
