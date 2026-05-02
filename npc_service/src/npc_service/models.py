@@ -8,7 +8,6 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 
-EndReason = Literal["budget_exhausted", "all_lost"]
 TimelineKind = Literal["world_event", "flash_traffic", "directive"]
 
 
@@ -20,11 +19,6 @@ class SeedExchange(BaseModel):
     assistant: str
 
 
-class AgentMeters(BaseModel):
-    stress: int = Field(ge=0, le=100)
-    trust: int = Field(ge=0, le=100)
-
-
 class AgentDef(BaseModel):
     id: str = Field(min_length=1, pattern=r"^[a-z][a-z0-9_]*$")
     callsign: str = Field(min_length=1)
@@ -34,7 +28,6 @@ class AgentDef(BaseModel):
     persona: str
     deflection_style: str
     known_facts: list[str] = Field(min_length=1)
-    starting_meters: AgentMeters
     seed_exchanges: list[SeedExchange] = Field(default_factory=list)
     # The agent's first transmission, rendered to the player at boot AND seeded
     # into HISTORIES[id] as a scene-update so the agent treats it as their own
@@ -136,16 +129,9 @@ class ActionRequest(BaseModel):
 
 
 class AgentReport(BaseModel):
-    """Structured output the agent persona must produce each turn.
-
-    Defaults on every field so partial validation succeeds during streaming.
-    Range constraints fire on the final fully-validated output. No action
-    enum at MVP — agents speak, meters move, op runs on its clock.
-    """
+    """Structured output the agent persona must produce each turn."""
 
     report_text: str = ""
-    stress_delta: int = Field(default=0, ge=-20, le=20)
-    trust_delta: int = Field(default=0, ge=-20, le=20)
 
 
 class DialogueOption(BaseModel):
@@ -178,11 +164,6 @@ class OptionsResponse(BaseModel):
 @dataclass
 class AgentState:
     id: str
-    callsign: str
-    city: str
-    stress: int
-    trust: int
-    lost: bool = False
     last_report_action_count: int = 0
 
 
@@ -193,36 +174,23 @@ class HandlerState:
     action_count: int = 0
     fired_timeline_event_ids: set[str] = field(default_factory=set)
     ended: bool = False
-    end_reason: EndReason | None = None
+    end_reason: str | None = None
 
     @classmethod
     def from_scenario(cls, scenario: Scenario) -> "HandlerState":
         return cls(
             max_actions=scenario.max_actions,
-            agents={
-                a.id: AgentState(
-                    id=a.id,
-                    callsign=a.callsign,
-                    city=a.city,
-                    stress=a.starting_meters.stress,
-                    trust=a.starting_meters.trust,
-                )
-                for a in scenario.agents
-            },
+            agents={a.id: AgentState(id=a.id) for a in scenario.agents},
         )
 
     def actions_remaining(self) -> int:
         return max(0, self.max_actions - self.action_count)
 
     def public_view(self) -> dict:
-        """Client-facing state. Per-agent meters omitted unless DEBUG envelope is added."""
         return {
             "agents": [
                 {
                     "id": a.id,
-                    "callsign": a.callsign,
-                    "city": a.city,
-                    "lost": a.lost,
                     "last_report_action_count": a.last_report_action_count,
                 }
                 for a in self.agents.values()

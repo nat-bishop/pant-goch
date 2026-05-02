@@ -48,9 +48,7 @@ class Settings(BaseSettings):
     # ───────── pydantic-ai wiring (override only when pointing at remote llama) ─────────
     llama_base_url: str | None = None
 
-    # ───────── scenario + debug ─────────
     scenario_path: Path | None = None
-    debug_affordances: bool = False
 
     # ───────── history compaction (rarely tuned at runtime) ─────────
     # summarize_when_large fires when input would exceed this share of LLAMA_CTX.

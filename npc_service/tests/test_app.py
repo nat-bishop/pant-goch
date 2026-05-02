@@ -65,24 +65,19 @@ def test_scenario_omits_internal_fields(app):
     for a in j["agents"]:
         assert "known_facts" not in a
         assert "seed_exchanges" not in a
-        assert "starting_meters" not in a
         assert "deflection_style" not in a
         # opening_transmission IS exposed — the client renders it on boot
         assert "opening_transmission" in a
 
 
-def test_state_omits_per_agent_meters_by_default(app):
+def test_state_response_shape(app):
     r = app.get("/state")
     assert r.status_code == 200
     j = r.json()
     assert "agents" in j
     for a in j["agents"]:
-        assert "stress" not in a
-        assert "trust" not in a
         assert "id" in a
-        assert "callsign" in a
-        assert "lost" in a
-    assert "debug" not in j
+        assert "last_report_action_count" in a
 
 
 # ───────────────────────── /action validation ─────────────────────────
@@ -103,15 +98,6 @@ def test_action_rejects_missing_agent_id(app):
     assert r.status_code == 422
 
 
-def test_action_rejects_lost_agent(app):
-    main.HANDLER_STATE.agents["magpie"].lost = True
-    try:
-        r = app.post("/action", json={"agent_id": "magpie", "line": "hello"})
-    finally:
-        main.HANDLER_STATE.agents["magpie"].lost = False
-    assert r.status_code == 409
-
-
 # ───────────────────────── agent persona structured output ─────────────────────────
 
 
@@ -123,11 +109,7 @@ async def test_agent_persona_emits_validated_report():
     """
     from pydantic_ai import Agent, ToolOutput
 
-    fake = AgentReport(
-        report_text="Confidence MED, control. Standing by.",
-        stress_delta=-1,
-        trust_delta=2,
-    )
+    fake = AgentReport(report_text="Confidence MED, control. Standing by.")
     agent = Agent(
         TestModel(custom_output_args=fake.model_dump()),
         output_type=ToolOutput(AgentReport),
@@ -137,8 +119,6 @@ async def test_agent_persona_emits_validated_report():
 
     assert isinstance(result.output, AgentReport)
     assert result.output.report_text == "Confidence MED, control. Standing by."
-    assert result.output.stress_delta == -1
-    assert result.output.trust_delta == 2
 
 
 async def test_options_agent_emits_validated_response():
@@ -211,16 +191,6 @@ def test_options_endpoint_returns_empty_when_ended(app):
     assert r.json() == {"options": []}
 
 
-def test_options_endpoint_returns_empty_for_lost_agent(app):
-    main.HANDLER_STATE.agents["magpie"].lost = True
-    try:
-        r = app.get("/options", params={"agent_id": "magpie"})
-    finally:
-        main.HANDLER_STATE.agents["magpie"].lost = False
-    assert r.status_code == 200
-    assert r.json() == {"options": []}
-
-
 def test_options_endpoint_does_not_mutate_history(app):
     """CLAUDE.md invariant: /options is read-only over HISTORIES[agent_id]."""
     fake = OptionsResponse(options=[
@@ -255,7 +225,7 @@ def _parse_sse(body: str) -> list[dict]:
 
 
 def test_action_streams_text_and_state_for_active_agent(app):
-    fake = AgentReport(report_text="Confidence MED.", stress_delta=1, trust_delta=0)
+    fake = AgentReport(report_text="Confidence MED.")
     with _stub_agent("magpie", fake):
         r = app.post("/action", json={"agent_id": "magpie", "line": "Status?"})
     assert r.status_code == 200
@@ -275,7 +245,7 @@ def test_action_isolates_histories_per_agent(app):
     seed_dove = list(main.HISTORIES["dove"])
     seed_magpie_len = len(main.HISTORIES["magpie"])
 
-    fake = AgentReport(report_text="copy.", stress_delta=0, trust_delta=0)
+    fake = AgentReport(report_text="copy.")
     with _stub_agent("magpie", fake):
         r = app.post("/action", json={"agent_id": "magpie", "line": "x"})
     assert r.status_code == 200
@@ -289,30 +259,30 @@ def test_action_isolates_histories_per_agent(app):
 def test_action_increments_global_action_count(app):
     """One action against any channel increments the global counter by exactly 1."""
     before = main.HANDLER_STATE.action_count
-    fake = AgentReport(report_text="copy.", stress_delta=0, trust_delta=0)
+    fake = AgentReport(report_text="copy.")
     with _stub_agent("cicada", fake):
         r = app.post("/action", json={"agent_id": "cicada", "line": "x"})
     assert r.status_code == 200
     assert main.HANDLER_STATE.action_count == before + 1
 
 
-def test_action_applies_meters_to_correct_agent(app):
-    cicada_stress_before = main.HANDLER_STATE.agents["cicada"].stress
-    dove_stress_before = main.HANDLER_STATE.agents["dove"].stress
-    fake = AgentReport(report_text="under pressure.", stress_delta=10, trust_delta=-5)
+def test_action_updates_last_report_action_count_for_correct_agent(app):
+    """A turn against CICADA records last_report_action_count for CICADA only."""
+    before = main.HANDLER_STATE.agents["cicada"].last_report_action_count
+    dove_before = main.HANDLER_STATE.agents["dove"].last_report_action_count
+    fake = AgentReport(report_text="copy.")
     with _stub_agent("cicada", fake):
         r = app.post("/action", json={"agent_id": "cicada", "line": "x"})
     assert r.status_code == 200
-    assert main.HANDLER_STATE.agents["cicada"].stress == cicada_stress_before + 10
-    # dove untouched
-    assert main.HANDLER_STATE.agents["dove"].stress == dove_stress_before
+    assert main.HANDLER_STATE.agents["cicada"].last_report_action_count == before + 1
+    assert main.HANDLER_STATE.agents["dove"].last_report_action_count == dove_before
 
 
 # ───────────────────────── /reset ─────────────────────────
 
 
 def test_reset_clears_all_histories_and_state(app):
-    fake = AgentReport(report_text="x", stress_delta=5, trust_delta=-5)
+    fake = AgentReport(report_text="x")
     with _stub_agent("magpie", fake):
         app.post("/action", json={"agent_id": "magpie", "line": "x"})
     assert main.HANDLER_STATE.action_count == 1

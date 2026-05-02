@@ -4,7 +4,7 @@ namespace Smallville;
 
 /// <summary>
 /// Public view of one field asset, returned by /scenario. Server omits
-/// known_facts, seed_exchanges, starting_meters, deflection_style.
+/// known_facts, seed_exchanges, deflection_style.
 /// <see cref="OpeningTransmission"/> is the agent's first line, rendered into
 /// the chat at boot — not a player-typed message.
 /// </summary>

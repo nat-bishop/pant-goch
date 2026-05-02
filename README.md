@@ -1,8 +1,11 @@
-# Smallville — Hostage Negotiation MVP
+# Smallville — spy-handler MVP
 
-Single-scenario hostage negotiation game. Player negotiates with one
-LLM-driven captor holding two hostages. ~30-minute scenario; resolution
-computed from real game state, not LLM-narrated.
+Single-scenario spy-handler game (*Operation Iron Threshold*). The
+player runs three field assets — MAGPIE in Riga, CICADA in Vienna,
+DOVE in Lyon — over a shared 18-decision operation. One LLM persona
+per asset; channel switching is free; only sending an order spends a
+decision. Scripted timeline events fire on the global op clock and
+inject scene-updates into the addressed channels.
 
 ## Architecture
 
@@ -14,19 +17,16 @@ computed from real game state, not LLM-narrated.
 └──────────┘          └──────────────┘          └──────────────┘
 ```
 
-- **Godot** spawns one child (Python). On exit, kills the entire process
-  tree (Python + llama-server cascade).
-- **npc_service** owns llama-server lifecycle. One Pydantic AI `Agent`
-  with `output_type=CaptorResponse` (structured output enforced).
-- **Hidden state** lives server-side: stress / trust / desperation
-  meters (0–100). Player never sees numbers — only the captor's
-  behaviour.
-- **CaptorResponse** (text + meter deltas + optional action) is the
-  single bridge from LLM to game state. Even if `response_text` is
-  gibberish, the game progresses coherently.
-- **Timeline events** (asyncio task in lifespan) inject scripted scene
-  updates at fixed timestamps so the world moves whether or not the
-  player acts.
+- **Godot** spawns one child (Python). On exit, the entire process
+  tree (Python + llama-server) is killed via Windows Job Objects.
+- **npc_service** owns llama-server lifecycle and runs one Pydantic AI
+  `Agent` per asset persona (plus one shared dialogue-options agent).
+  Each agent has its own message HISTORY; per-channel SSE streams the
+  active agent's reply.
+- **Timeline events** fire when the global `action_count` crosses
+  authored thresholds. Each event can poke any subset of channels,
+  appending a scene-update to those agents' HISTORIES so the next
+  reply on those channels reflects the world having moved.
 
 ## Prerequisites
 
@@ -36,12 +36,12 @@ computed from real game state, not LLM-narrated.
 - Godot 4.6 mono (works with 4.4+; .NET edition required).
 - `llama-server` from llama.cpp ([releases](https://github.com/ggerganov/llama.cpp/releases))
   or built locally with CUDA support.
-- ~10 GB free disk for the Q8_0 GGUF (auto-downloaded on first run).
+- ~8 GB free disk for the Q8_0 GGUF (auto-downloaded on first run).
 
 ## Run end-to-end (dev)
 
-Three terminals make iteration fastest. The single-bootstrap "double-click
-the game and everything starts" path also works (see below).
+`make run` boots all three layers; `make llama` / `make sidecar` /
+`make godot` run them separately for iteration.
 
 ### Terminal 1 — llama-server
 
@@ -49,7 +49,7 @@ the game and everything starts" path also works (see below).
 llama-server \
   -m models/gemma-4-E4B-it-Q8_0.gguf \
   --host 127.0.0.1 --port 8080 \
-  -c 8192 --jinja --reasoning off -ngl 99
+  -c 32768 --jinja --reasoning off -ngl 99
 ```
 
 Two flags are non-negotiable for Gemma 4:
@@ -59,8 +59,9 @@ Two flags are non-negotiable for Gemma 4:
   this flag, the model burns its entire generation budget inside a
   hidden `<think>` block and returns empty content.
 
-Download the GGUF directly (the `-hf` shorthand 404s for this repo on
-recent llama.cpp builds):
+If you don't have the GGUF, the bundled launcher (`make llama` / the
+auto-spawn path) downloads it from Hugging Face on first run. To grab
+it manually:
 
 ```bash
 mkdir -p models
@@ -68,9 +69,7 @@ curl -L -o models/gemma-4-E4B-it-Q8_0.gguf \
   https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-Q8_0.gguf
 ```
 
-(~8 GB.)
-
-Verify with:
+Smoke test:
 
 ```bash
 curl -s -X POST http://localhost:8080/v1/chat/completions \
@@ -82,21 +81,23 @@ curl -s -X POST http://localhost:8080/v1/chat/completions \
 
 ```bash
 cd npc_service
-uv sync                                  # one-time
+uv sync                                   # one-time
 LAUNCH_LLAMA=false uv run python -m npc_service
 ```
 
-Smoke-test:
+Smoke test:
 
 ```bash
 curl -s http://127.0.0.1:8000/health
+curl -s http://127.0.0.1:8000/scenario | jq .
 curl -N -X POST http://127.0.0.1:8000/action \
   -H "Content-Type: application/json" \
-  -d '{"type":"empathize","detail":""}'
+  -d '{"agent_id":"magpie","line":"Status?"}'
 ```
 
-Expect a stream of `data: {"type":"text","text":"..."}` lines arriving
-smoothly, then `{"type":"state",...}`, then `{"type":"done"}`. If text
+Expect `data: {"type":"text","agent_id":"magpie","text":"..."}` lines
+arriving smoothly, then `{"type":"state",...}`, optional
+`{"type":"timeline",...}` events, then `{"type":"done"}`. If text
 arrives in big bursts, something is buffering.
 
 ### Terminal 3 — Godot
@@ -108,7 +109,7 @@ godot --path godot_project --no-sidecar
 ```
 
 `--no-sidecar` tells Godot to skip auto-spawning Python (since you're
-running it yourself in Terminal 2).
+running it yourself).
 
 ### Single-bootstrap mode (the ship path)
 
@@ -116,100 +117,115 @@ running it yourself in Terminal 2).
 godot --path godot_project
 ```
 
-Godot spawns Python; Python spawns llama-server. Watch the Godot console
-for `[npc] ...` log lines (Python forwarded), then `[npc:err] ...` from
-llama-server. First run takes 90 s+ for cold model load; subsequent
-runs are fast.
+Godot spawns Python; Python spawns llama-server. Watch the Godot
+console for `[npc] ...` log lines. First run takes 90 s+ for cold
+model load; subsequent runs are fast.
+
+## Tests
+
+```bash
+cd npc_service && uv run pytest
+```
+
+32 tests: scenario loading, end-condition logic, per-agent history
+isolation, timeline injection routing, FastAPI smoke + per-channel
+SSE. Uses Pydantic-AI `TestModel`, so no llama-server needed.
 
 ## Verification checklist
 
 After llama-server, sidecar, and Godot are all up:
 
-- [ ] **Streaming** — click Empathize. First captor character appears
-      within ~2 s; subsequent characters arrive smoothly (not in
-      multi-second bursts). Bursty = SSE buffering somewhere.
-- [ ] **State mutation** — repeatedly Empathize + Offer → Vehicle. The
-      hostage status panel should eventually flip one hostage to
-      "RELEASED" (green badge) when trust accumulates.
-- [ ] **Timeline event** — wait 5 minutes (or edit `at_seconds` in
-      `scenario.json` to 10). The "Comms" panel on the left shows the
-      tactical-commander notification AND Marlon's next response
-      references the perimeter activity.
-- [ ] **Action cancellation** — click Empathize, then immediately click
-      Threaten while the response is streaming. The Empathize response
-      cuts off with `[interrupted]`; the Threaten response starts
-      cleanly. Marlon's next turn does not reference the cut-off line.
-- [ ] **Stop** — click Empathize, then Stop while streaming. Same
-      cancellation behaviour.
-- [ ] **Auto-breach** — set `starting_meters.desperation: 95` in
-      `scenario.json`, restart, then Threaten once. Resolution screen
-      fires within seconds with reason "auto_breach".
-- [ ] **Reset** — click Restart on the resolution screen. Hostages
-      back to held, time reset, fresh history.
+- [ ] **Boot** — three dossier tabs (MAGPIE, CICADA, DOVE) render in
+      the left column. Each tab's chat opens with that agent's
+      `opening_transmission` rendered as their first line. The action
+      panel shows 2–5 decision cards for the active channel.
+- [ ] **Streaming** — pick a card. First agent character appears
+      within ~2 s; subsequent characters arrive smoothly. Bursty =
+      SSE buffering somewhere.
+- [ ] **Channel switch** — click another dossier tab. Cached
+      transcript renders instantly; fresh `/options` call fetches
+      that channel's picks. No action budget cost.
+- [ ] **Timeline event** — play through to action 3 (`truck_in_motion`
+      fires). The TimelineFeed shows FLASH TRAFFIC; MAGPIE and CICADA
+      receive different scene-updates; their `●NEW` badges appear if
+      they're not the active channel.
+- [ ] **Action cancellation** — click a card, then immediately switch
+      tabs while the response is streaming. The interrupted line gets
+      `[interrupted]`; the global `action_count` does NOT advance
+      (partial turns are discarded by design).
+- [ ] **Budget exhaustion** — play to 18 actions. Resolution overlay
+      shows `WINDOW CLOSED`, decisions used, and per-asset last-contact.
+- [ ] **Reset** — click `REOPEN FILE` on the resolution screen. Fresh
+      HISTORIES; tabs reset; budget back to 18.
 
 ## Project layout
 
 ```
 smallville/
-├── README.md                  ← this file
-├── npc_service/               ← Python sidecar
-│   ├── main.py                ← FastAPI app, agent, SSE, timeline scheduler
-│   ├── models.py              ← Pydantic DTOs + GameState
-│   ├── launcher.py            ← llama-server subprocess management
-│   ├── scenario.json          ← authored scenario data
+├── README.md                 ← this file
+├── CLAUDE.md                 ← architecture invariants for AI assistants
+├── npc_service/              ← Python sidecar (uv project)
+│   ├── src/npc_service/
+│   │   ├── main.py           ← FastAPI app + agents + SSE + timeline firing
+│   │   ├── models.py         ← Pydantic scenario schema + DTOs + HandlerState
+│   │   ├── launcher.py       ← llama-server subprocess + Job Object
+│   │   └── config.py         ← pydantic-settings (env + .env)
+│   ├── scenario.json         ← Operation Iron Threshold (3 agents, 4 events, 18 actions)
+│   ├── tests/                ← pytest suite
 │   ├── pyproject.toml
-│   ├── README.md              ← endpoints + env vars + troubleshooting
-│   └── ...
-└── godot_project/             ← Godot 4 / C# UI
+│   └── README.md             ← endpoints + env vars + troubleshooting
+└── godot_project/
     ├── project.godot
-    ├── game.tscn              ← single scene
-    ├── Smallville.csproj
-    └── scripts/
-        ├── Game.cs            ← scene controller
-        ├── LLMClient.cs       ← HTTP + SSE
-        ├── SidecarHost.cs     ← spawns + kills python
-        ├── ActionPanel.cs     ← 4-button action UI
-        ├── HostageStatusPanel.cs
-        ├── TimelineFeed.cs
-        └── (DTOs) Scenario, Captor, Hostage, GameState, TimelineEvent, ChatMessage
+    ├── scripts/
+    │   ├── Game.cs           ← scene controller, channel routing, end overlay
+    │   ├── LLMClient.cs      ← HTTP + SSE client (autoload)
+    │   ├── SidecarHost.cs    ← spawns Python (autoload)
+    │   ├── DossierTabs.cs    ← left-edge channel tabs
+    │   ├── ActionPanel.cs    ← decision cards (hover-reveal hidden_line)
+    │   ├── TimelineFeed.cs   ← right-column FLASH TRAFFIC log
+    │   ├── BudgetPunchcard.cs← top-bar ●/○ remaining-decisions strip
+    │   └── (DTOs) Scenario.cs / AgentDef.cs / Operation.cs / HandlerState.cs /
+    │              TimelineEvent.cs / DialogueOption.cs / ChatMessage.cs
+    └── assets/fonts/         ← IBM Plex Mono + Stardos Stencil (OFL)
 ```
 
-See `npc_service/README.md` for env var reference, full endpoint table,
-and ship-time bundling notes.
+See `npc_service/README.md` for env var reference, full endpoint
+table, and ship-time bundling notes. See `CLAUDE.md` for the
+architecture invariants ("things that look removable but aren't")
+that AI assistants editing this code should treat as load-bearing.
 
 ## Authoring a new scenario
 
-`npc_service/scenario.json` is the only file to edit. Schema (validated
-strictly at sidecar startup):
+`npc_service/scenario.json` is the only file to edit. Schema
+(validated strictly at sidecar startup — see `models.py`):
 
-- `title`, `setup`, `duration_seconds`
-- `captor`: `name`, `persona`, `deflection_style`, `initial_demands[]`,
-  `known_facts[]` (the *only* facts the captor may reference),
-  `seed_exchanges[]` (used as in-prompt example dialogue, *not* injected
-  into history — see `npc_service/README.md` for why),
-  `starting_meters`
-- `hostages`: exactly 2, each with `name` + `description`
-- `timeline`: 3-4 events, each with `at_seconds`, `kind`,
-  `notification_text` (shown in UI feed), `injection_text` (injected as
-  scene update into captor history)
-
-The placeholder scenario is a 2:14 AM convenience-store holdup with
-Marlon as the captor and a deliberately-tied medical event for Janet
-that gives the "medical" offer-detail real weight.
+- `title`, `setup`, `max_actions` (global decision budget)
+- `operation`: `codename`, `objective`, optional `world_state` (author
+  crib sheet — never sent to any model)
+- `agents`: exactly 3, each with `id`, `callsign`, `name`, `city`,
+  `role`, `persona`, `deflection_style`, `known_facts[]`,
+  `opening_transmission`, optional `seed_exchanges[]` (used as
+  in-prompt examples in the system prompt; *not* injected into
+  history — see `npc_service/README.md` for why)
+- `timeline`: 3–4 events, each with `id`, `after_actions` (threshold
+  on the global counter), `kind` (`world_event` /
+  `flash_traffic` / `directive`), `notification_text` (shown in the
+  TimelineFeed), and `injections: {agent_id: text}` (per-channel
+  scene-update strings appended to the addressed agents' HISTORIES).
 
 ## Troubleshooting
 
-- **Captor outputs prose, not JSON** — Gemma not following the
-  structured-output protocol. See `npc_service/README.md` →
-  Troubleshooting; consider `PromptedOutput` mode or smaller-context
-  retries.
+- **Agent outputs prose, not structured output** — usually llama-server
+  was started without `--jinja`. The bundled launcher sets it; if you
+  run llama-server yourself, include it.
+- **Empty agent responses / 18K-token "responses"** — `--reasoning off`
+  is missing. Gemma 4 E-models default to thinking-on and burn their
+  budget inside a hidden `<think>` block.
 - **Streaming chunky in Godot** — verify `HttpCompletionOption.ResponseHeadersRead`
-  is on the SSE call (it is — `LLMClient.cs:170`).
+  on the C# `HttpClient.SendAsync` (it is — `LLMClient.cs`).
 - **`No module named npc_service`** — run `uv sync` from `npc_service/`
-  to install the package editable into the venv. The src layout means
-  `python -m npc_service` only resolves the package via the venv, not
-  via CWD.
+  to install the package editable. The src layout means
+  `python -m npc_service` only resolves via the venv, not via CWD.
 - **Port 8000 already in use** — set `NPC_SERVICE_PORT=8042` (or any
   free port) on the sidecar AND `NPC_SERVICE_URL=http://127.0.0.1:8042`
   on the Godot side.
-Im not concerned about LLM consistency or memory, I can make that work as I am good at agent engineering. Howerver I am concerned with the other concerns like learning curve, and hwo llms have unbounded input when games want the opposite, small input slowly increasing. Im also not so worried abouyt the speed, we are running a fast local model. Also we definitly dont need the LLM to be the game system, but we do need to do something that is only possible with the things LLMs are good at. I dont want it to seem like an 'ai game'.  For the new genres, i like the idea of a social engineering or similar type game, but it needs to pass the test of 'this game would be worse if it was a human playing the ai's role. One big thing I would love is if the game wasnt just a glorified chatbot. I have tried making a game where the LLM does game mechanics but the inconsistency ruins it if its the core mechanic (scribblenauts style game). I do see potential in a game where failure is fun and interesting and we can make the LLM be interesting so consistency doesnt matter as much. Think about this and different directions. Consider board games that might be better if they had llms (but not for everything neccesarily). Think about both single player and multiplayer. Think about the constraints llms have (my llm is quite fast and local so free but not instant), and the things they can do which werent possible before.

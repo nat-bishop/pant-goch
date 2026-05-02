@@ -7,7 +7,7 @@ namespace Smallville;
 /// Left-edge dossier tabs: one per agent. Clicking a tab emits
 /// <see cref="ChannelSelected"/>. Inactive tabs show an unread mark when their
 /// channel has scene-update injections the player hasn't viewed since the last
-/// switch. Lost agents render as silent (greyed, no click).
+/// switch.
 ///
 /// Visual aim: filing-cabinet tabs. Active tab is wider with an amber accent
 /// strip on its left edge and shows the agent's full callsign, city, and
@@ -20,7 +20,6 @@ public partial class DossierTabs : VBoxContainer
     private static readonly Color InkBlack = new(0.10f, 0.10f, 0.11f);
     private static readonly Color PaperCream = new(0.94f, 0.90f, 0.82f);
     private static readonly Color PaperCreamMuted = new(0.86f, 0.83f, 0.76f);
-    private static readonly Color PaperCreamDim = new(0.78f, 0.75f, 0.69f);
     private static readonly Color SignalAmber = new(0.83f, 0.65f, 0.20f);
     private static readonly Color ClassRed = new(0.61f, 0.17f, 0.17f);
     private static readonly Color InkMuted = new(0.30f, 0.28f, 0.26f);
@@ -76,14 +75,12 @@ public partial class DossierTabs : VBoxContainer
         foreach (var a in state.Agents)
         {
             if (!_rows.TryGetValue(a.Id, out var row)) continue;
-            row.SetLost(a.Lost);
             row.SetLastContact(a.LastReportActionCount);
         }
     }
 
     private void OnTabPressed(string agentId)
     {
-        if (_rows.TryGetValue(agentId, out var row) && row.IsLost) return;
         if (agentId == _activeAgentId) return;
         SetActive(agentId);
         EmitSignal(SignalName.ChannelSelected, agentId);
@@ -111,8 +108,6 @@ public partial class DossierTabs : VBoxContainer
         private bool _active;
         private int _lastContactCount = -1;
 
-        public bool IsLost { get; private set; }
-
         public TabRow(AgentDef def, System.Action<string> onPressed)
         {
             _def = def;
@@ -132,14 +127,6 @@ public partial class DossierTabs : VBoxContainer
         }
 
         public void SetUnread(bool unread) => _newBadge.Visible = unread && !_active;
-
-        public void SetLost(bool lost)
-        {
-            if (IsLost == lost) return;
-            IsLost = lost;
-            Disabled = lost;
-            ApplyStyle();
-        }
 
         public void SetLastContact(int actionCount)
         {
@@ -228,7 +215,6 @@ public partial class DossierTabs : VBoxContainer
         private void ApplyStyle()
         {
             var fill = _active ? PaperCream : PaperCreamMuted;
-            if (IsLost) fill = PaperCreamDim;
 
             var box = new StyleBoxFlat
             {
@@ -249,8 +235,7 @@ public partial class DossierTabs : VBoxContainer
             AddThemeStyleboxOverride("focus", box);
             AddThemeStyleboxOverride("disabled", box);
 
-            var textColor = IsLost ? new Color(InkMuted, 0.5f) : InkBlack;
-            _callsign.AddThemeColorOverride("font_color", textColor);
+            _callsign.AddThemeColorOverride("font_color", InkBlack);
         }
     }
 }

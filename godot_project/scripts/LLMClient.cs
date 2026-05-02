@@ -100,7 +100,7 @@ public partial class LLMClient : Node
     /// <summary>
     /// GET /options?agent_id=… — fetch 2-5 LLM-generated dialogue picks for
     /// the handler's next line in the named channel. Returns empty array if
-    /// the game has ended or the agent is lost.
+    /// the game has ended.
     /// </summary>
     public async Task<DialogueOption[]> GetOptionsAsync(string agentId, CancellationToken ct = default)
     {

@@ -138,11 +138,7 @@ def build_agent_system_prompt(agent: AgentDef, op: Operation) -> str:
     examples = ""
     if agent.seed_exchanges:
         ex = agent.seed_exchanges[0]
-        example_response = AgentReport(
-            report_text=ex.assistant,
-            stress_delta=-2,
-            trust_delta=1,
-        )
+        example_response = AgentReport(report_text=ex.assistant)
         examples = (
             f"\nExample. Handler says: {ex.user}\n"
             f"Your structured response:\n{example_response.model_dump_json()}\n"
@@ -164,28 +160,15 @@ Never invent names, places, times, or events that are not in your knowledge:
 {facts}
 
 Each turn the handler sends you a message over the secure channel. Read it and \
-respond with these fields:
-
-- report_text: 1-3 sentences IN CHARACTER, addressing what the handler said. \
-Use the voice of your persona. Do not narrate scene; speak as yourself, on the \
-radio, to the handler.
-- stress_delta: integer in -20..+20. How the handler's message affected your \
-stress. Reassurance lowers it; demands or alarming intel raise it; threats \
-spike it.
-- trust_delta: integer in -20..+20. How the handler's message affected your \
-trust in them. Coherent direction and acknowledgement raise it; contradictions, \
-risk-shifting onto you, or going dark on prior commitments lower it.{examples}"""
+respond with a 1-3 sentence report_text IN CHARACTER, addressing what the \
+handler said. Use the voice of your persona. Do not narrate scene; speak as \
+yourself, on the radio, to the handler.{examples}"""
 
 
 def build_options_system_prompt(scenario: Scenario) -> str:
-    """System prompt for OPTIONS_AGENT.
-
-    Stays generic across all channels — the active agent's identity is provided
-    in the per-call user prompt so the prefix stays cache-warm. Mirrors
-    /scenario's public view: setup + op codename/objective + agent roster.
-    Deliberately omits known_facts, seed_exchanges, starting_meters — the
-    options agent reasons from player-knowable state only, preserving the
-    "meters never leave the server" invariant.
+    """System prompt for OPTIONS_AGENT — generic across channels; the active
+    agent's identity goes in the per-call user prompt to keep the prefix
+    cache warm.
     """
     op = scenario.operation
     roster = "\n".join(
@@ -230,29 +213,8 @@ Format example (do not literally reuse these lines):
 # ───────────────────────── state mutation ─────────────────────────
 
 
-def _clamp(v: int, lo: int, hi: int) -> int:
-    return max(lo, min(hi, v))
-
-
-def apply_report(state: HandlerState, agent_id: str, r: AgentReport) -> None:
-    """Atomic mutation of agent state from a fully-validated report."""
-    a = state.agents[agent_id]
-    a.stress = _clamp(a.stress + r.stress_delta, 0, 100)
-    a.trust = _clamp(a.trust + r.trust_delta, 0, 100)
-    a.last_report_action_count = state.action_count
-    log.info(
-        "agent[%s] meters: stress=%d trust=%d (after report at action_count=%d)",
-        agent_id, a.stress, a.trust, state.action_count,
-    )
-    check_end_conditions(state)
-
-
 def check_end_conditions(state: HandlerState) -> None:
     if state.ended:
-        return
-    if all(a.lost for a in state.agents.values()):
-        state.ended = True
-        state.end_reason = "all_lost"
         return
     if state.action_count >= state.max_actions:
         state.ended = True
@@ -508,7 +470,7 @@ async def health() -> dict:
 async def get_scenario() -> dict:
     if SCENARIO is None:
         raise HTTPException(503, "scenario not loaded")
-    # Public view: omit known_facts, seed_exchanges, starting_meters,
+    # Public view: omit known_facts, seed_exchanges, deflection_style, and
     # operation.world_state. Include opening_transmission so the client can
     # render the agent's first line into the chat at boot.
     return {
@@ -534,32 +496,12 @@ async def get_scenario() -> dict:
     }
 
 
-def _debug_affordances_enabled() -> bool:
-    return Settings().debug_affordances
-
-
-def _state_body(state: HandlerState) -> dict:
-    """Public view + optional debug envelope. Shared by /state and /reset."""
-    body = state.public_view()
-    if _debug_affordances_enabled():
-        body["debug"] = {
-            "agents": [
-                {"id": a.id, "stress": a.stress, "trust": a.trust}
-                for a in state.agents.values()
-            ],
-            "action_count": state.action_count,
-            "max_actions": state.max_actions,
-            "fired_timeline_event_ids": sorted(state.fired_timeline_event_ids),
-        }
-    return body
-
-
 @app.get("/state")
 async def get_state() -> dict:
     if HANDLER_STATE is None:
         raise HTTPException(503, "handler state not initialised")
     check_end_conditions(HANDLER_STATE)
-    return _state_body(HANDLER_STATE)
+    return HANDLER_STATE.public_view()
 
 
 @app.post("/action")
@@ -570,8 +512,6 @@ async def post_action(req: ActionRequest) -> StreamingResponse:
         raise HTTPException(409, f"scenario already ended ({HANDLER_STATE.end_reason})")
     if req.agent_id not in AGENTS:
         raise HTTPException(404, f"unknown agent_id: {req.agent_id}")
-    if HANDLER_STATE.agents[req.agent_id].lost:
-        raise HTTPException(409, f"agent {req.agent_id} is lost — channel closed")
     if not req.line.strip():
         raise HTTPException(422, "line must be a non-empty handler utterance")
 
@@ -611,12 +551,12 @@ async def _action_event_stream(agent_id: str, user_prompt: str) -> AsyncIterator
                             last_text = text
 
                     final = await result.get_output()
-                    # Persist + mutate only on full completion (cancellation jumps
-                    # straight to the except clause and skips this block).
+                    # CancelledError skips this block — partial turns discarded.
                     HISTORIES[agent_id] = list(result.all_messages())
                     HANDLER_STATE.action_count += 1
-                    apply_report(HANDLER_STATE, agent_id, final)
-                    yield _sse({"type": "state", "state": _state_body(HANDLER_STATE)})
+                    HANDLER_STATE.agents[agent_id].last_report_action_count = HANDLER_STATE.action_count
+                    check_end_conditions(HANDLER_STATE)
+                    yield _sse({"type": "state", "state": HANDLER_STATE.public_view()})
                     # Fire any due timeline events AFTER state mutation but
                     # BEFORE we yield 'done', so the client renders them in
                     # order and the next /options call sees them in HISTORIES.
@@ -674,7 +614,7 @@ async def post_reset() -> JSONResponse:
     HISTORIES = {a.id: seed_history(a) for a in SCENARIO.agents}
     HANDLER_STATE = HandlerState.from_scenario(SCENARIO)
     await EVENT_BUS.publish({"type": "reset"})
-    return JSONResponse(_state_body(HANDLER_STATE))
+    return JSONResponse(HANDLER_STATE.public_view())
 
 
 @app.get("/options")
@@ -696,8 +636,6 @@ async def get_options(agent_id: str) -> dict:
     if agent_id not in HISTORIES:
         raise HTTPException(404, f"unknown agent_id: {agent_id}")
     if HANDLER_STATE.ended:
-        return {"options": []}
-    if HANDLER_STATE.agents[agent_id].lost:
         return {"options": []}
     action_count = HANDLER_STATE.action_count
     actions_remaining = HANDLER_STATE.actions_remaining()

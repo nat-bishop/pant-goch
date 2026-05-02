@@ -1,18 +1,15 @@
-"""Unit tests for state mutation, end-condition logic, and timeline injection routing.
+"""Unit tests for end-condition logic, timeline injection routing, and history seeding.
 
 Pure-Python — no LLM, no FastAPI, no llama-server.
 """
 import npc_service.main as main
 from npc_service.main import (
-    apply_report,
     check_end_conditions,
     fire_due_timeline_events,
     seed_history,
 )
 from npc_service.models import (
     AgentDef,
-    AgentMeters,
-    AgentReport,
     AgentState,
     HandlerState,
     Operation,
@@ -25,8 +22,6 @@ def _make_agent_def(
     id: str = "magpie",
     callsign: str = "MAGPIE",
     city: str = "Riga",
-    stress: int = 25,
-    trust: int = 75,
 ) -> AgentDef:
     return AgentDef(
         id=id,
@@ -37,7 +32,6 @@ def _make_agent_def(
         persona="test persona",
         deflection_style="dry",
         known_facts=["fact one"],
-        starting_meters=AgentMeters(stress=stress, trust=trust),
         opening_transmission="opening line",
     )
 
@@ -45,17 +39,14 @@ def _make_agent_def(
 def _make_state(
     action_count: int = 0,
     max_actions: int = 18,
-    agents: list[tuple[str, int, int]] | None = None,
+    agent_ids: list[str] | None = None,
 ) -> HandlerState:
-    if agents is None:
-        agents = [("magpie", 25, 75), ("cicada", 35, 70), ("dove", 50, 65)]
+    if agent_ids is None:
+        agent_ids = ["magpie", "cicada", "dove"]
     return HandlerState(
         max_actions=max_actions,
         action_count=action_count,
-        agents={
-            id_: AgentState(id=id_, callsign=id_.upper(), city=id_, stress=s, trust=t)
-            for id_, s, t in agents
-        },
+        agents={id_: AgentState(id=id_) for id_ in agent_ids},
     )
 
 
@@ -74,37 +65,6 @@ def _make_scenario(timeline: list[TimelineEvent], max_actions: int = 18) -> Scen
     )
 
 
-# ───────────────────────── apply_report ─────────────────────────
-
-
-def test_apply_report_clamps_meters_to_0_100():
-    state = _make_state(agents=[("magpie", 10, 95), ("cicada", 35, 70), ("dove", 50, 65)])
-    apply_report(state, "magpie", AgentReport(stress_delta=-20, trust_delta=20))
-    assert state.agents["magpie"].stress == 0
-    assert state.agents["magpie"].trust == 100
-    # other agents untouched
-    assert state.agents["cicada"].stress == 35
-    assert state.agents["dove"].trust == 65
-
-
-def test_apply_report_updates_last_report_action_count():
-    state = _make_state(action_count=5)
-    apply_report(state, "cicada", AgentReport(stress_delta=2))
-    assert state.agents["cicada"].last_report_action_count == 5
-    # the other agents' last_report_action_count stays at default 0
-    assert state.agents["magpie"].last_report_action_count == 0
-
-
-def test_apply_report_isolates_per_agent_meters():
-    """Mutating MAGPIE must not bleed into CICADA or DOVE."""
-    state = _make_state()
-    apply_report(state, "magpie", AgentReport(stress_delta=10, trust_delta=-5))
-    assert state.agents["magpie"].stress == 35  # 25 + 10
-    assert state.agents["magpie"].trust == 70   # 75 - 5
-    assert state.agents["cicada"].stress == 35  # unchanged
-    assert state.agents["dove"].trust == 65     # unchanged
-
-
 # ───────────────────────── end conditions ─────────────────────────
 
 
@@ -121,30 +81,13 @@ def test_under_budget_does_not_end():
     assert not state.ended
 
 
-def test_all_agents_lost_ends_game():
-    state = _make_state()
-    for a in state.agents.values():
-        a.lost = True
-    check_end_conditions(state)
-    assert state.ended
-    assert state.end_reason == "all_lost"
-
-
-def test_partial_agents_lost_does_not_end():
-    state = _make_state()
-    state.agents["magpie"].lost = True
-    state.agents["cicada"].lost = True
-    check_end_conditions(state)
-    assert not state.ended
-
-
 def test_already_ended_state_is_not_overwritten():
-    state = _make_state(action_count=18, max_actions=18)
+    state = _make_state(action_count=5, max_actions=18)
     state.ended = True
-    state.end_reason = "all_lost"
+    state.end_reason = "budget_exhausted"
     check_end_conditions(state)
     # re-running end checks must not flip a settled outcome
-    assert state.end_reason == "all_lost"
+    assert state.end_reason == "budget_exhausted"
 
 
 # ───────────────────────── timeline injection routing ─────────────────────────

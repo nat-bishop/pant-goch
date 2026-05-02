@@ -37,7 +37,6 @@ public partial class Game : Control
     private ActionPanel _actionPanel = null!;
     private Button _stopButton = null!;
     private TimelineFeed _timelineFeed = null!;
-    private DebugPanel? _debugPanel;
     private VBoxContainer _rightColumn = null!;
     private Control _bootSplash = null!;
     private Label _bootMessage = null!;
@@ -99,8 +98,6 @@ public partial class Game : Control
 
             var firstId = SeedChannelsAndRenderFirst();
             UpdateBudgetUI();
-            MaybeMountDebugPanel();
-            _debugPanel?.SetActiveAgent(firstId);
 
             _eventsCts = new CancellationTokenSource();
             _ = _client.SubscribeEventsAsync(
@@ -225,11 +222,6 @@ public partial class Game : Control
         _state = s;
         _tabs.UpdateFrom(s);
         UpdateBudgetUI();
-        if (s.Debug != null)
-        {
-            MaybeMountDebugPanel();
-            _debugPanel?.UpdateFrom(s.Debug);
-        }
         if (s.Ended)
         {
             EndGame(s.EndReason ?? "ended");
@@ -265,7 +257,6 @@ public partial class Game : Control
             _activeStreamCts?.Cancel();
         }
         RenderChannel(agentId);
-        _debugPanel?.SetActiveAgent(agentId);
         if (_ended) return;
         if (_channelOptions.TryGetValue(agentId, out var cached) && cached.Length > 0)
         {
@@ -382,16 +373,6 @@ public partial class Game : Control
         }
     }
 
-    private void MaybeMountDebugPanel()
-    {
-        if (_debugPanel != null) return;
-        if (_state.Debug == null) return;
-        _debugPanel = new DebugPanel { SizeFlagsHorizontal = SizeFlags.ExpandFill };
-        _rightColumn.AddChild(_debugPanel);
-        _debugPanel.UpdateFrom(_state.Debug);
-        _debugPanel.SetActiveAgent(_tabs.ActiveAgentId);
-    }
-
     private void EndGame(string reason)
     {
         if (_ended) return;
@@ -401,40 +382,25 @@ public partial class Game : Control
         SetStreamingUI(false);
         _actionPanel.SetEnabled(false);
 
-        _resolutionTitle.Text = OutcomeTitle(reason);
+        var budgetExhausted = reason == "budget_exhausted";
+        _resolutionTitle.Text = budgetExhausted ? "WINDOW CLOSED" : "OPERATION ENDED";
         _resolutionBody.Clear();
         _resolutionBody.AppendText($"\n\nFile: [b]{_scenario.Operation.Codename}[/b]");
-        _resolutionBody.AppendText($"\nReason: [b]{ReasonLabel(reason)}[/b]");
+        _resolutionBody.AppendText($"\nReason: [b]{(budgetExhausted ? "decision window closed" : reason)}[/b]");
         var max = _state.MaxActions > 0 ? _state.MaxActions : _scenario.MaxActions;
         var used = max - _state.ActionsRemaining;
         _resolutionBody.AppendText($"\nDecisions used: {used:D2} of {max:D2}");
         _resolutionBody.AppendText("\n\n[b]ASSET REGISTRY[/b]");
         foreach (var a in _state.Agents)
         {
-            var name = _channels.TryGetValue(a.Id, out var ch) ? ch.Def.Callsign : a.Callsign;
-            var city = _channels.TryGetValue(a.Id, out var ch2) ? ch2.Def.City : a.City;
-            var status = a.Lost ? "[color=#9b2c2c]LOST[/color]" : "[color=#1a1a1c]ACTIVE[/color]";
+            var def = _channels[a.Id].Def;
             var lastContact = a.LastReportActionCount > 0
                 ? $"last @ action {a.LastReportActionCount:D2}"
                 : "no contact";
-            _resolutionBody.AppendText($"\n  · {name} / {city} — {status} ({lastContact})");
+            _resolutionBody.AppendText($"\n  · {def.Callsign} / {def.City} — {lastContact}");
         }
         _resolutionOverlay.Visible = true;
     }
-
-    private static string ReasonLabel(string reason) => reason switch
-    {
-        "budget_exhausted" => "decision window closed",
-        "all_lost" => "all assets lost",
-        _ => reason,
-    };
-
-    private static string OutcomeTitle(string reason) => reason switch
-    {
-        "budget_exhausted" => "WINDOW CLOSED",
-        "all_lost" => "NETWORK ROLLED UP",
-        _ => "OPERATION ENDED",
-    };
 
     private async void OnRestartPressed()
     {
@@ -447,8 +413,6 @@ public partial class Game : Control
             _state = await _client.ResetAsync();
             var firstId = SeedChannelsAndRenderFirst();
             UpdateBudgetUI();
-            if (_state.Debug != null) _debugPanel?.UpdateFrom(_state.Debug);
-            _debugPanel?.SetActiveAgent(firstId);
             _actionPanel.ShowLoading();
             await RefreshOptionsAsync(firstId);
         }
