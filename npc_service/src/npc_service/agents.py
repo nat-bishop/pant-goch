@@ -100,7 +100,6 @@ Score warmth on a -3..3 integer scale:
   -1  curt, distant
   -3  cold, dismissive
 
-The empty-default placeholder reply "got it." should score warmth: -1 or 0.
 A reply naming a specific concern shared in the recipient's prior emails scores high warmth.
 
 Also write a one-sentence rationale (kept for telemetry, not shown to player).

@@ -9,10 +9,7 @@ import {
   getInbox,
   getScenario,
   getThread,
-  postArchive,
   postOpen,
-  postSleep,
-  postWait,
 } from "./api";
 
 export type View =
@@ -21,7 +18,7 @@ export type View =
 
 interface Store {
   bootError: string | null;
-  scenario: { title: string; premise: string; max_hours: number } | null;
+  scenario: { title: string; premise: string } | null;
   state: GameState | null;
   folders: Record<string, Email[]>;
   view: View;
@@ -32,18 +29,13 @@ interface Store {
   goFolder(folder: string): void;
   openThread(threadId: string, folderReturnTo: string): Promise<void>;
   back(): void;
-
-  archiveEmail(emailId: string): Promise<void>;
-  waitHours(): Promise<Email[]>;
-  sleep(): Promise<Email[]>;
-  _afterMutation(): Promise<void>;
 }
 
 export const useStore = create<Store>()((set, get) => ({
   bootError: null,
   scenario: null,
   state: null,
-  folders: { Inbox: [], Sent: [], Archive: [] },
+  folders: { Inbox: [], Sent: [] },
   view: { kind: "folder", folder: "Inbox" },
   threadEmails: null,
 
@@ -80,7 +72,12 @@ export const useStore = create<Store>()((set, get) => ({
       .filter((e) => !e.is_read && e.folder === "Inbox")
       .map((e) => e.id);
     if (unreadIds.length > 0) {
-      await Promise.all(unreadIds.map((id) => postOpen(id)));
+      // Each /open advances calibration server-side and may surface new
+      // emails. Sequential awaits so each tick sees the previous read's
+      // calibration bump.
+      for (const id of unreadIds) {
+        await postOpen(id);
+      }
       await get().refreshInbox();
       set({
         threadEmails: t.emails.map((e) =>
@@ -94,31 +91,6 @@ export const useStore = create<Store>()((set, get) => ({
     const { view } = get();
     if (view.kind === "thread") {
       set({ view: { kind: "folder", folder: view.folderReturnTo }, threadEmails: null });
-    }
-  },
-
-  async archiveEmail(emailId) {
-    await postArchive(emailId);
-    await get()._afterMutation();
-  },
-
-  async waitHours() {
-    const r = await postWait();
-    await get()._afterMutation();
-    return r.new_emails;
-  },
-
-  async sleep() {
-    const r = await postSleep();
-    await get()._afterMutation();
-    return r.new_emails;
-  },
-
-  async _afterMutation() {
-    await get().refreshInbox();
-    const { view } = get();
-    if (view.kind === "thread") {
-      await get().openThread(view.threadId, view.folderReturnTo);
     }
   },
 }));

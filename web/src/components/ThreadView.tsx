@@ -4,7 +4,7 @@ import { Email } from "../api";
 import { stripAddress } from "../util/email";
 
 export function ThreadView() {
-  const { threadEmails, view, back, archiveEmail } = useStore();
+  const { threadEmails, view, back } = useStore();
 
   if (view.kind !== "thread" || !threadEmails) return null;
 
@@ -35,11 +35,7 @@ export function ThreadView() {
       <div className="flex-1 overflow-y-auto px-8 py-6">
         <div className="mx-auto max-w-3xl">
           {threadEmails.map((email) => (
-            <EmailCard
-              key={email.id}
-              email={email}
-              onArchive={() => archiveEmail(email.id)}
-            />
+            <EmailCard key={email.id} email={email} />
           ))}
 
           {composeTarget && (
@@ -54,13 +50,7 @@ export function ThreadView() {
   );
 }
 
-function EmailCard({
-  email,
-  onArchive,
-}: {
-  email: Email;
-  onArchive: () => Promise<void>;
-}) {
+function EmailCard({ email }: { email: Email }) {
   const sentByPlayer = email.from === "you";
   const senderName = sentByPlayer ? "you" : stripAddress(email.from);
   const recipientName = stripAddress(email.to);
@@ -77,18 +67,7 @@ function EmailCard({
         <span className="shrink-0 text-xs text-muted">{email.sent_at}</span>
       </header>
 
-      <div className="prose-email text-ink">{email.body}</div>
-
-      {email.folder === "Inbox" && !sentByPlayer && (
-        <div className="mt-5 flex gap-3 border-t border-line pt-3 text-xs">
-          <button
-            onClick={onArchive}
-            className="text-muted hover:text-ink"
-          >
-            archive
-          </button>
-        </div>
-      )}
+      <div className="prose-email whitespace-pre-wrap text-ink">{email.body}</div>
     </article>
   );
 }

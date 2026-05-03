@@ -12,8 +12,12 @@ export function EmailComposer({ inReplyTo, recipient }: Props) {
   const [body, setBody] = useState("");
   const { busy, error, run } = useStreamSend();
 
+  const trimmed = body.trim();
+  const canSend = !busy && trimmed.length > 0;
+
   const onSend = async () => {
-    await run(streamSend({ in_reply_to: inReplyTo, recipient, body }));
+    if (!canSend) return;
+    await run(streamSend({ in_reply_to: inReplyTo, recipient, body: trimmed }));
     setBody("");
   };
 
@@ -30,18 +34,15 @@ export function EmailComposer({ inReplyTo, recipient }: Props) {
       <textarea
         value={body}
         onChange={(e) => setBody(e.target.value)}
-        placeholder="got it."
+        placeholder="Type your reply…"
         rows={6}
         className="w-full resize-y rounded border border-line bg-paper-hover/40 px-3 py-2 text-base leading-relaxed placeholder-muted focus:border-ink focus:outline-none"
         disabled={busy}
       />
-      <div className="mt-3 flex items-center justify-between">
-        <span className="text-xs italic text-muted">
-          {body.trim() === "" ? "(empty — sends 'got it.')" : ""}
-        </span>
+      <div className="mt-3 flex items-center justify-end">
         <button
           onClick={onSend}
-          disabled={busy}
+          disabled={!canSend}
           className="rounded border border-warm bg-warm px-5 py-1.5 text-xs font-bold tracking-wide text-paper hover:bg-warm/90 disabled:opacity-50"
         >
           {busy ? "sending…" : "send"}

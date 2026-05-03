@@ -3,6 +3,11 @@
 The two LLM agents (see agents.py) are constructed in lifespan against one
 shared model handle. The deterministic spine (spine.py) owns all state
 mutation; agents return prose / scores only.
+
+Two verbs only: `/open` and `/send`. Both advance calibration (the doom
+counter) and tick the scheduler. There's no clock — beats fire on calibration
+thresholds and reply counts. See spine.schedule_npc_reply for how reply
+asynchrony falls out of authoring rather than waiting.
 """
 from __future__ import annotations
 
@@ -40,7 +45,6 @@ from .launcher import (
 )
 from .models import (
     AnchoredBeat,
-    ArchiveRequest,
     Beat,
     Email,
     InboxState,
@@ -53,10 +57,9 @@ from .models import (
     load_scenario,
 )
 from .spine import (
-    advance_time,
+    apply_calibration_delta,
     apply_effect,
     apply_texture_score,
-    check_end_conditions,
     find_due_beats,
     initialize_boot_inbox,
     render_thread_transcript,
@@ -64,13 +67,6 @@ from .spine import (
     select_voice_band,
     thread_id_from_beat_id,
 )
-
-
-# Time costs per verb (game-time hours). Reading is free; sending takes a
-# realistic 15 minutes; waiting and sleeping are deliberate clock pushes.
-SEND_HOURS = 0.25
-WAIT_HOURS = 2.0
-SLEEP_HOURS = 8.0
 
 
 _BOOT_SETTINGS = Settings()
@@ -107,6 +103,7 @@ logging.getLogger().addHandler(logfire.LogfireLoggingHandler())
 SCENARIO: Scenario | None = None
 STATE: InboxState | None = None
 AGENTS: AgentBundle | None = None
+SETTINGS: Settings | None = None  # populated at lifespan boot; read by hot-path endpoints
 LLAMA_PROC: subprocess.Popen | None = None
 ACTION_LOCK = asyncio.Lock()  # serialises mutating endpoints
 EXTERNAL_LLAMA_PROBE_TIMEOUT_SECONDS = 2.0  # tests set this to 0.1 for fast boot
@@ -117,9 +114,10 @@ EXTERNAL_LLAMA_PROBE_TIMEOUT_SECONDS = 2.0  # tests set this to 0.1 for fast boo
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    global SCENARIO, STATE, AGENTS, LLAMA_PROC
+    global SCENARIO, STATE, AGENTS, SETTINGS, LLAMA_PROC
 
     settings = Settings()
+    SETTINGS = settings
     scenario_path = settings.scenario_path or Path(__file__).resolve().parents[2] / "scenario.yaml"
     log.info("loading scenario: %s", scenario_path)
     SCENARIO = load_scenario(scenario_path)
@@ -192,7 +190,6 @@ async def _fire_beat(beat: Beat, in_response_to: str | None) -> Email | None:
                 subject=beat.subject,
                 body=beat.authored_prose.strip(),
                 sent_at_label=beat.sent_at or "just now",
-                sent_at_hours=STATE.game_time_hours,
             )
         elif isinstance(beat, RenderedBeat):
             email = await _render_beat_email(beat, in_response_to)
@@ -235,7 +232,6 @@ async def _render_beat_email(beat: RenderedBeat, in_response_to: str | None) -> 
         subject=beat.subject,
         body=result.output.prose.strip(),
         sent_at_label="just now",
-        sent_at_hours=STATE.game_time_hours,
         in_reply_to_beat=in_response_to,
         voice_band_used=band_name,
     )
@@ -256,8 +252,6 @@ async def _tick(in_response_to: str | None = None) -> list[Email]:
             e = await _fire_beat(bf.beat, in_response_to=in_response_to)
             if e is not None:
                 new_emails.append(e)
-
-        check_end_conditions(STATE)
         span.set_attribute("new_email_count", len(new_emails))
         return new_emails
 
@@ -281,7 +275,6 @@ async def get_scenario() -> dict:
     return {
         "title": SCENARIO.title,
         "premise": SCENARIO.premise,
-        "max_hours": SCENARIO.max_hours,
     }
 
 
@@ -297,31 +290,33 @@ async def get_inbox() -> dict:
     """Folder summary. The client uses this for the inbox list view."""
     if STATE is None:
         raise HTTPException(503, "state not initialised")
-    folders: dict[str, list[dict]] = {"Inbox": [], "Sent": [], "Archive": []}
+    folders: dict[str, list[dict]] = {"Inbox": [], "Sent": []}
     for e in STATE.emails:
         folders.setdefault(e.folder, []).append(_email_summary(e))
-    # Sort within each folder by sent_at_hours desc (newest first).
+    # Newest first within each folder. Append order is emit order; reverse it.
     for k in folders:
-        folders[k].sort(key=lambda x: -x["sent_at_hours"])
+        folders[k].reverse()
     return {"folders": folders, "state": STATE.public_view()}
 
 
 @app.get("/thread/{thread_id}")
 async def get_thread(thread_id: str) -> dict:
-    """All emails in a thread, ordered by sent_at_hours."""
+    """All emails in a thread, in emit order."""
     if STATE is None or SCENARIO is None:
         raise HTTPException(503, "state not initialised")
     if thread_id not in SCENARIO.thread_by_id:
         raise HTTPException(404, f"unknown thread: {thread_id}")
     emails = [_email_full(e) for e in STATE.emails if e.thread_id == thread_id]
-    emails.sort(key=lambda x: x["sent_at_hours"])
     return {"thread_id": thread_id, "emails": emails}
 
 
 @app.post("/open")
 async def post_open(req: OpenRequest) -> dict:
-    """First-read marks the email as read. Free — does not advance the clock."""
-    if STATE is None:
+    """Mark email read. Bumps calibration by OPEN_CALIBRATION_DELTA and ticks
+    the scheduler — opening is calibration-positive in the fiction (the
+    Program reads what you read).
+    """
+    if STATE is None or SCENARIO is None or SETTINGS is None:
         raise HTTPException(503, "state not initialised")
     if STATE.ended:
         raise HTTPException(409, f"session ended ({STATE.end_reason})")
@@ -331,53 +326,7 @@ async def post_open(req: OpenRequest) -> dict:
         if email is None:
             raise HTTPException(404, f"unknown email_id: {req.email_id}")
         email.is_read = True
-        return {"state": STATE.public_view(), "new_emails": []}
-
-
-@app.post("/archive")
-async def post_archive(req: ArchiveRequest) -> dict:
-    """Move email to Archive. Free — does not advance the clock."""
-    if STATE is None:
-        raise HTTPException(503, "state not initialised")
-    if STATE.ended:
-        raise HTTPException(409, f"session ended ({STATE.end_reason})")
-
-    async with ACTION_LOCK:
-        email = next((e for e in STATE.emails if e.id == req.email_id), None)
-        if email is None:
-            raise HTTPException(404, f"unknown email_id: {req.email_id}")
-        email.folder = "Archive"
-        email.is_read = True
-        return {"state": STATE.public_view(), "new_emails": []}
-
-
-@app.post("/wait")
-async def post_wait() -> dict:
-    """Advance the world clock by WAIT_HOURS, tick the scheduler."""
-    if STATE is None:
-        raise HTTPException(503, "state not initialised")
-    if STATE.ended:
-        raise HTTPException(409, f"session ended ({STATE.end_reason})")
-
-    async with ACTION_LOCK:
-        advance_time(STATE, WAIT_HOURS)
-        new_emails = await _tick(in_response_to=None)
-        return {
-            "state": STATE.public_view(),
-            "new_emails": [_email_full(e) for e in new_emails],
-        }
-
-
-@app.post("/sleep")
-async def post_sleep() -> dict:
-    """Advance the world clock by SLEEP_HOURS (overnight), tick the scheduler."""
-    if STATE is None:
-        raise HTTPException(503, "state not initialised")
-    if STATE.ended:
-        raise HTTPException(409, f"session ended ({STATE.end_reason})")
-
-    async with ACTION_LOCK:
-        advance_time(STATE, SLEEP_HOURS)
+        apply_calibration_delta(STATE, SCENARIO, SETTINGS.open_calibration_delta)
         new_emails = await _tick(in_response_to=None)
         return {
             "state": STATE.public_view(),
@@ -391,6 +340,8 @@ async def post_send(req: SendRequest) -> StreamingResponse:
         raise HTTPException(503, "state not initialised")
     if STATE.ended:
         raise HTTPException(409, f"session ended ({STATE.end_reason})")
+    if not req.body.strip():
+        raise HTTPException(400, "body is required")
     return StreamingResponse(
         _send_stream(req),
         media_type="text/event-stream",
@@ -399,14 +350,13 @@ async def post_send(req: SendRequest) -> StreamingResponse:
 
 
 async def _send_stream(req: SendRequest) -> AsyncIterator[bytes]:
-    assert STATE is not None and SCENARIO is not None and AGENTS is not None
-    body = req.body if req.body.strip() else "got it."  # placeholder fallback
-
+    assert STATE is not None and SCENARIO is not None and AGENTS is not None and SETTINGS is not None
+    body = req.body.strip()
     thread_id = thread_id_from_beat_id(req.in_reply_to)
 
     with logfire.span("send_stream", recipient=req.recipient, thread_id=thread_id):
         async with ACTION_LOCK:
-            advance_time(STATE, SEND_HOURS)
+            apply_calibration_delta(STATE, SCENARIO, SETTINGS.send_calibration_delta)
 
             send_email = Email(
                 id=f"email_{uuid.uuid4().hex[:8]}",
@@ -418,7 +368,6 @@ async def _send_stream(req: SendRequest) -> AsyncIterator[bytes]:
                 subject=_reply_subject(req.in_reply_to),
                 body=body,
                 sent_at_label="just now",
-                sent_at_hours=STATE.game_time_hours,
                 in_reply_to_beat=req.in_reply_to,
                 is_read=True,
             )
@@ -450,7 +399,6 @@ async def _send_stream(req: SendRequest) -> AsyncIterator[bytes]:
                 body=body,
                 warmth=tex.warmth,
                 rationale=tex.rationale,
-                sent_at_hours=STATE.game_time_hours,
             ))
             apply_texture_score(STATE, SCENARIO, recipient_npc, tex.warmth)
             yield _sse({"type": "texture", "warmth": tex.warmth})
@@ -458,8 +406,10 @@ async def _send_stream(req: SendRequest) -> AsyncIterator[bytes]:
             if recipient_npc is not None:
                 schedule_npc_reply(STATE, SCENARIO, recipient_npc)
 
-            # Time has advanced by SEND_HOURS, so a time-gated bounce that
-            # just crossed its threshold can fire on this tick.
+            # Calibration just bumped, so any anchored beat whose
+            # quality_gte threshold the player just crossed fires this tick.
+            # The just-queued NPC reply normally won't — its threshold sits
+            # above the current value (see schedule_npc_reply).
             new_emails = await _tick(in_response_to=send_email.id)
             for ne in new_emails:
                 yield _sse({"type": "new_email", "email": _email_full(ne)})
@@ -527,7 +477,6 @@ def _email_summary(email: Email) -> dict:
         "to": email.recipient,
         "subject": email.subject,
         "sent_at": email.sent_at_label,
-        "sent_at_hours": email.sent_at_hours,
         "is_read": email.is_read,
         "preview": email.body[:140] + ("…" if len(email.body) > 140 else ""),
         "folder": email.folder,

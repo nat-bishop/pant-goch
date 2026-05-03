@@ -1,5 +1,5 @@
 """The deterministic spine: predicate/effect evaluation, beat scheduler,
-voice-band selector, time helpers, and NPC-reply scheduler.
+voice-band selector, calibration application, and NPC-reply scheduler.
 
 No LLM calls live here — only code-owned state mutation.
 
@@ -20,8 +20,8 @@ from .models import (
     AnchoredBeat,
     Any_,
     Beat,
+    BeatFired,
     Effect,
-    Email,
     InboxState,
     NPCDossier,
     Not_,
@@ -31,42 +31,50 @@ from .models import (
     Predicate,
     QualityGte,
     QualityLt,
-    RenderedBeat,
-    Reply,
     Scenario,
-    ScheduleBeat,
     SetQuality,
-    TimeHoursGte,
     VoiceBand,
 )
 
 
 log = logging.getLogger("npc_service.spine")
 
+CALIBRATION_QUALITY = "calibration"
+
 
 # ───────────────────────── predicate evaluation ─────────────────────────
 
 
-def evaluate_predicate(pred: Predicate, state: InboxState) -> bool:
+def evaluate_predicate(
+    pred: Predicate,
+    state: InboxState,
+    extra_fired: frozenset[str] | set[str] = frozenset(),
+) -> bool:
+    """`extra_fired` is a tick-local set of beat ids that are about to fire
+    on this same tick. BeatFired predicates check both `state.fired_beat_ids`
+    and `extra_fired`, so a Not(BeatFired) precondition can express mutual
+    exclusion between two beats that become eligible simultaneously.
+    `find_due_beats` is the only caller that passes a non-empty value.
+    """
     if isinstance(pred, QualityGte):
         v = state.qualities.get(pred.quality)
         return v is not None and v >= pred.value
     if isinstance(pred, QualityLt):
         v = state.qualities.get(pred.quality)
         return v is not None and v < pred.value
-    if isinstance(pred, TimeHoursGte):
-        return state.game_time_hours >= pred.value
     if isinstance(pred, PlayerRepliedTo):
         return any(r.beat_responded_to == pred.beat for r in state.replies)
     if isinstance(pred, PlayerRepliesToThreadGte):
         n = sum(1 for r in state.replies if r.thread_id == pred.thread)
         return n >= pred.value
+    if isinstance(pred, BeatFired):
+        return pred.beat in state.fired_beat_ids or pred.beat in extra_fired
     if isinstance(pred, All):
-        return all(evaluate_predicate(p, state) for p in pred.of)
+        return all(evaluate_predicate(p, state, extra_fired) for p in pred.of)
     if isinstance(pred, Any_):
-        return any(evaluate_predicate(p, state) for p in pred.of)
+        return any(evaluate_predicate(p, state, extra_fired) for p in pred.of)
     if isinstance(pred, Not_):
-        return not evaluate_predicate(pred.of, state)
+        return not evaluate_predicate(pred.of, state, extra_fired)
     raise TypeError(f"unhandled predicate: {type(pred).__name__}")
 
 
@@ -87,19 +95,6 @@ def apply_effect(eff: Effect, state: InboxState, scenario: Scenario) -> None:
         new = _clamp_quality(new, eff.quality, scenario)
         state.qualities[eff.quality] = new
         log.debug("effect set_quality %s %s %s -> %s", eff.quality, eff.op, eff.value, new)
-        return
-    if isinstance(eff, ScheduleBeat):
-        target_time = state.game_time_hours + eff.after_hours
-        for pb in state.pending_beats:
-            if pb.beat_id == eff.beat:
-                if target_time < pb.earliest_time_hours:
-                    pb.earliest_time_hours = target_time
-                return
-        if eff.beat in state.fired_beat_ids:
-            log.debug("schedule_beat %s ignored (already fired)", eff.beat)
-            return
-        state.pending_beats.append(PendingBeat(beat_id=eff.beat, earliest_time_hours=target_time))
-        log.debug("scheduled %s for time>=%.2fh", eff.beat, target_time)
         return
     raise TypeError(f"unhandled effect: {type(eff).__name__}")
 
@@ -143,11 +138,24 @@ def apply_texture_score(
         state.qualities[register_id] = _clamp_quality(new_r, register_id, scenario)
 
 
-# ───────────────────────── time advancement ─────────────────────────
+# ───────────────────────── calibration ─────────────────────────
 
 
-def advance_time(state: InboxState, hours: float) -> None:
-    state.game_time_hours += hours
+def apply_calibration_delta(state: InboxState, scenario: Scenario, delta: float) -> None:
+    """Bump the calibration quality by `delta`, clamped via the standard
+    SetQuality path. Reaching the max ends the session — terminals are
+    authored to fire well before then, so this is a safety net rather than
+    the expected end.
+    """
+    apply_effect(
+        SetQuality(quality=CALIBRATION_QUALITY, op="add", value=delta),
+        state, scenario,
+    )
+    new = state.qualities[CALIBRATION_QUALITY]
+    q = scenario.quality_by_id.get(CALIBRATION_QUALITY)
+    if not state.ended and q is not None and q.max is not None and new >= q.max:
+        state.ended = True
+        state.end_reason = "calibration_complete"
 
 
 # ───────────────────────── beat scheduler ─────────────────────────
@@ -165,51 +173,48 @@ class BeatToFire:
 
 def initialize_boot_inbox(state: InboxState, scenario: Scenario) -> list[BeatToFire]:
     """Called once at game boot. Returns the in_boot_inbox beats in scenario
-    order. The caller should fire them immediately.
+    order. The caller should fire them immediately. (Auto-pending of other
+    anchored beats happens in `InboxState.from_scenario`.)
     """
     return [BeatToFire(beat=b) for b in scenario.beats if getattr(b, "in_boot_inbox", False)]
 
 
 def find_due_beats(state: InboxState, scenario: Scenario) -> list[BeatToFire]:
-    """Return all beats whose preconditions and `earliest_time_hours` are
-    now satisfied. Each beat fires at most once.
+    """Return all pending beats whose preconditions (authored + runtime) all
+    pass on this tick. Pending beats survive to the next tick when not yet
+    eligible. Each beat fires at most once.
+
+    Pending beats are evaluated in scenario authoring order — that's how
+    authors break ties when two beats sharing a tick reference each other
+    via BeatFired (e.g., terminal_warm and terminal_standard).
     """
     due: list[BeatToFire] = []
+    pending_by_id = {pb.beat_id: pb for pb in state.pending_beats}
+    consumed: set[str] = set()
+    just_due_ids: set[str] = set()
 
-    # Pass A: explicitly-scheduled (pending) beats.
-    still_pending: list[PendingBeat] = []
-    for pb in state.pending_beats:
-        if pb.beat_id in state.fired_beat_ids:
+    for beat in scenario.beats:
+        pb = pending_by_id.get(beat.id)
+        if pb is None:
             continue
-        beat = scenario.beat_by_id.get(pb.beat_id)
-        if beat is None:
-            log.warning("scheduled beat %s not in scenario", pb.beat_id)
+        consumed.add(beat.id)
+        if beat.id in state.fired_beat_ids:
             continue
-        if state.game_time_hours < pb.earliest_time_hours:
-            still_pending.append(pb)
-            continue
-        if not all(evaluate_predicate(p, state) for p in beat.preconditions):
-            still_pending.append(pb)
+        all_preds = list(beat.preconditions) + list(pb.runtime_preconditions)
+        if not all(evaluate_predicate(p, state, just_due_ids) for p in all_preds):
             continue
         due.append(BeatToFire(beat=beat))
+        just_due_ids.add(beat.id)
+
+    still_pending: list[PendingBeat] = []
+    for pb in state.pending_beats:
+        if pb.beat_id in just_due_ids or pb.beat_id in state.fired_beat_ids:
+            continue
+        if pb.beat_id not in scenario.beat_by_id:
+            log.warning("pending beat %s not in scenario", pb.beat_id)
+            continue
+        still_pending.append(pb)
     state.pending_beats = still_pending
-
-    # Pass B: beats whose preconditions are now true on their own. Skip beats
-    # that are in_boot_inbox (already fired by initialize_boot_inbox), already
-    # fired, or already in the due list. Beats with NO preconditions are
-    # excluded so they don't fire forever — those are scheduled explicitly via
-    # boot or by `schedule_npc_reply`.
-    due_ids = {bf.beat.id for bf in due}
-    for beat in scenario.beats:
-        if beat.id in state.fired_beat_ids or beat.id in due_ids:
-            continue
-        if getattr(beat, "in_boot_inbox", False):
-            continue
-        if not beat.preconditions:
-            continue
-        if all(evaluate_predicate(p, state) for p in beat.preconditions):
-            due.append(BeatToFire(beat=beat))
-
     return due
 
 
@@ -217,8 +222,14 @@ def schedule_npc_reply(state: InboxState, scenario: Scenario, npc_id: str) -> bo
     """Player just sent to an NPC — schedule that NPC's next reply.
 
     Walks scenario.beats in order, finds the first un-fired beat where the
-    beat's thread is the NPC's thread AND preconditions pass. Schedules it
-    for `current_time + midpoint(npc.reply_latency_hours)`.
+    beat's thread is the NPC's thread AND its authored preconditions pass.
+    Adds it to `pending_beats` with a runtime predicate
+    `quality_gte(calibration, current + midpoint(reply_delay_calibration))`.
+
+    The calibration-threshold delay must exceed `SEND_CALIBRATION_DELTA` so a
+    single send doesn't satisfy its own queued reply — this is what makes
+    Aria feel asynchronous without a wait verb. A second `/send` (or several
+    `/open`s) ticks calibration past the threshold and the reply lands.
 
     If a reply for this NPC is already pending, leaves the existing schedule
     alone — when the pending beat renders, it sees the full transcript
@@ -234,7 +245,6 @@ def schedule_npc_reply(state: InboxState, scenario: Scenario, npc_id: str) -> bo
     if npc_thread_id is None:
         return False
 
-    # If anything is already pending for this NPC's thread, don't re-schedule.
     pending_thread_ids = {
         scenario.beat_by_id[pb.beat_id].thread
         for pb in state.pending_beats
@@ -250,13 +260,22 @@ def schedule_npc_reply(state: InboxState, scenario: Scenario, npc_id: str) -> bo
             continue
         if not all(evaluate_predicate(p, state) for p in beat.preconditions):
             continue
-        latency_lo, latency_hi = npc.reply_latency_hours
-        latency = (latency_lo + latency_hi) / 2.0
-        target_time = state.game_time_hours + latency
+        delay_lo, delay_hi = npc.reply_delay_calibration
+        delay = (delay_lo + delay_hi) / 2.0
+        cur_cal = state.qualities.get(CALIBRATION_QUALITY, 0.0)
+        threshold = cur_cal + delay
         state.pending_beats.append(
-            PendingBeat(beat_id=beat.id, earliest_time_hours=target_time)
+            PendingBeat(
+                beat_id=beat.id,
+                runtime_preconditions=[
+                    QualityGte(quality=CALIBRATION_QUALITY, value=threshold)
+                ],
+            )
         )
-        log.info("scheduled npc reply %s for %s at time>=%.2fh", beat.id, npc_id, target_time)
+        log.info(
+            "scheduled npc reply %s for %s at calibration>=%.2f",
+            beat.id, npc_id, threshold,
+        )
         return True
     return False
 
@@ -275,7 +294,6 @@ def select_voice_band(npc: NPCDossier, state: InboxState) -> VoiceBand | None:
     for band in npc.voice_bands:
         if band.register_min <= register <= band.register_max:
             return band
-    # Fallback to the first band; should not happen if bands cover the full range.
     return npc.voice_bands[0]
 
 
@@ -311,15 +329,3 @@ def thread_id_from_beat_id(beat_id: str | None) -> str | None:
     if not beat_id:
         return None
     return beat_id.split(".", 1)[0] if "." in beat_id else beat_id
-
-
-# ───────────────────────── end conditions ─────────────────────────
-
-
-def check_end_conditions(state: InboxState) -> None:
-    """The session ends when the world clock reaches `max_hours`."""
-    if state.ended:
-        return
-    if state.game_time_hours >= state.max_hours:
-        state.ended = True
-        state.end_reason = "time_exhausted"

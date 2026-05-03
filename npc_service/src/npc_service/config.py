@@ -53,6 +53,14 @@ class Settings(BaseSettings):
 
     scenario_path: Path | None = None
 
+    # ───────── calibration progression ─────────
+    # Both tunables live here so play feel can be adjusted from .env without
+    # editing scenario or spine. The reply-delay range is per-NPC (in
+    # NPCDossier.reply_delay_calibration) and must exceed SEND_CALIBRATION_DELTA
+    # so a single send doesn't satisfy its own queued reply.
+    send_calibration_delta: float = 5.0
+    open_calibration_delta: float = 1.0
+
     # ───────── history compaction (rarely tuned at runtime) ─────────
     # summarize_when_large fires when input would exceed this share of LLAMA_CTX.
     summary_trigger_frac: float = 0.8

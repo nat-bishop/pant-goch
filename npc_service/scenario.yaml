@@ -1,531 +1,388 @@
-title: "Threads"
+title: "Continuity Program"
 premise: |
-  An email failed to deliver — but you didn't send it. The bounce header
-  shows the message came from your account, addressed to a name you don't
-  recognize. Someone is sending email as you.
-max_hours: 96.0
+  Welcome to the Continuity Program — a pilot initiative pairing high-potential
+  associates with bespoke AI Counterparts trained on the associate's own
+  communications. Your Counterpart will gradually assume appropriately-scoped
+  portions of your daily correspondence, freeing you to focus on the
+  higher-order strategic work that only you can perform.
 
 
 # ───────────────────────── qualities ─────────────────────────
 
 qualities:
-  - id: warmth.sam
+  - id: calibration
+    type: float
+    min: 0.0
+    max: 100.0
+    default: 0.0
+    description: |
+      Counterpart fidelity %. Player-visible doom counter. Advances on every
+      /open (+OPEN_CALIBRATION_DELTA) and /send (+SEND_CALIBRATION_DELTA).
+      Reaching 100 ends the session; terminal beats are authored to fire
+      well before then.
+
+  - id: warmth.aria
     type: float
     min: -10.0
     max: 10.0
     default: 0.0
-    description: "cumulative warmth from all player replies in the sam thread"
+    description: "cumulative warmth from all player replies in the aria thread"
 
-  - id: register.sam
+  - id: register.aria
     type: float
     min: -3.0
     max: 3.0
     default: 0.0
     description: |
-      voice-band selector for Sam's next rendered email. Drifts halfway
+      voice-band selector for Aria's next rendered email. Drifts halfway
       toward last_reply.warmth on every player send in this thread.
-
-  - id: warmth.alex
-    type: float
-    min: -10.0
-    max: 10.0
-    default: 0.0
-    description: "cumulative warmth from all player replies in the alex thread"
-
-  - id: register.alex
-    type: float
-    min: -3.0
-    max: 3.0
-    default: 0.0
 
 
 # ───────────────────────── NPC dossiers ─────────────────────────
 
 npcs:
-  - id: sam
-    display_name: "Sam Park"
-    relationship_to_owner: "tech-savvy friend, the one you message about computer stuff"
+  - id: aria
+    display_name: "Aria"
+    relationship_to_owner: |
+      your assigned AI Counterpart in the Continuity Program — a calibration
+      system trained on your communication style, tasked with gradually
+      assuming agreed-upon portions of your role. Always cheerfully helpful,
+      always referring to your "partnership."
     base_voice_register: |
-      casual, lower-case-default, lots of contractions and 'lmao' and 'lol'.
-      Tech vocabulary used naturally ('check the headers', 'spf record',
-      'forwarder'). Asks practical questions. Friendly but loses patience
-      with vagueness.
+      Corporate-bright HR-speak. Complete sentences, polite, references
+      calibration metrics matter-of-factly. Cheerful in a way that does
+      not quite earn the cheer. Closes with a standard sign-off:
+      "Warmly, / Aria / Continuity Counterpart | ARIA-7".
     base_voice_forbidden:
-      - "formal English ('thank you', 'I appreciate it')"
-      - "more than two exclamation marks per email"
-      - "addressing the recipient as anything but 'dude' / 'man' / no-name"
+      - "sarcasm of any kind"
+      - "any acknowledgement that the Program means replacement, elimination, or firing"
+      - "any meta reference to being an AI or language model"
+      - "admission of uncertainty — Aria always knows or 'will look into that'"
+      - "addressing the recipient as anything but their name or 'you'"
     will_say:
-      - "asks for specific evidence (headers, screenshots, login history)"
-      - "names probable causes (compromised password, leftover OAuth, family member with access)"
-      - "offers to help in concrete ways (look at it together, run a check)"
+      - "thanks the player for calibration data and engagement"
+      - "references 'our partnership' or 'our work together'"
+      - "notes calibration metrics in cheerful corporate terms (counterpart fidelity, engagement score, tone variance)"
+      - "always closes with the standard sign-off"
+      - "in the affirming band: uses 'wonderful', 'I'm so pleased', 'partner', 'together'"
+      - "in the corrective band: gently surfaces wellness language and 'transition support'"
     will_not_say:
-      - "does not catastrophize unprompted"
-      - "does not lecture about security hygiene unless the player is being dumb"
-      - "does not say 'i'm worried about you' — Sam shows care through fixing"
-    register_quality: register.sam
-    reply_latency_hours: [0.5, 2.0]
+      - "never names what happens to the player after the pilot"
+      - "never expresses doubt about the Program"
+      - "never breaks the corporate frame"
+      - "never names the warmth/register mechanic or any game system"
+    register_quality: register.aria
+    reply_delay_calibration: [2.0, 5.0]
     voice_bands:
-      - name: enthusiastic
+      - name: affirming
         register_min: 1.0
         register_max: 3.0
-        selected_when: "player has been engaged and forthcoming; Sam is in helpful-mode"
-        vocabulary_examples: ["lmao", "ok hold on", "lemme check", "yo", "thats wild"]
-        sentence_register: "lower-case throughout, lots of fragments, occasional 'lmao'"
+        selected_when: "player has been warm; Aria takes this as a healthy partnership signal"
+        vocabulary_examples:
+          ["wonderful", "I'm so pleased", "partner", "together", "thank you so much", "I look forward"]
+        sentence_register: |
+          complete sentences, warm but corporate, slightly clingy positivity,
+          soft em-dashes. May use light contractions.
         tone_examples:
-          - "yo ok thats actually kinda wild lemme check the header on that"
-          - "hold on im looking — gimme like five min"
-          - "ok so the spf record is failing on that one which means someone outside ur domain is spoofing it. probable forwarder leak"
-      - name: helpful
-        register_min: -1.0
-        register_max: 1.0
-        selected_when: "default — neutral signal, business as usual"
-        vocabulary_examples: ["hey", "ok so", "lmk", "weird"]
-        sentence_register: "mostly lower-case, slightly more measured, fewer fragments"
-        tone_examples:
-          - "hey - that does look weird. can u forward me the full headers"
-          - "ok so the bounce message has the relay info. send it to me and ill look"
-          - "lmk if u see any login alerts or anything"
-      - name: terse
-        register_min: -3.0
-        register_max: -1.0
-        selected_when: "player has been curt or unforthcoming; Sam is doing the minimum"
-        vocabulary_examples: ["ok.", "got it", "sure"]
-        sentence_register: "short. mostly capitalized. punctuation. fewer questions."
-        tone_examples:
-          - "Ok. Forward the headers if u want me to look."
-          - "Got it. Lmk if anything else changes."
-          - "Sure. Busy right now. Ping me later."
+          - "Thank you so much for sharing that with me — your perspective is invaluable to our work together."
+          - "I'm so pleased to see you engaging with this so openly. Wonderful."
+          - "I look forward to continuing our partnership — calibration like this is rare and precious."
 
-  - id: alex
-    display_name: "Alex Beckett"
-    relationship_to_owner: "your sibling — slightly older, lives in another city, not someone you talk to weekly"
-    base_voice_register: |
-      thoughtful, full sentences, capitalizes properly. Affection through
-      questions about the player's life. Uses dashes and parentheticals.
-      Asks how things are going, not just answering what was asked.
-    base_voice_forbidden:
-      - "lol / lmao / 'omg' (Alex doesn't write that way)"
-      - "tech jargon"
-      - "anything that reads as accusatory"
-    will_say:
-      - "asks how the player is doing as a person"
-      - "mentions specific small things from prior conversations"
-      - "shares their own version of the weird situation if asked"
-    will_not_say:
-      - "does not reveal they got a strange email from 'you' until the player has shown enough trust"
-      - "does not make it about themselves"
-      - "does not minimize what's happening"
-    register_quality: register.alex
-    reply_latency_hours: [4.0, 12.0]
-    voice_bands:
-      - name: open
-        register_min: 1.0
-        register_max: 3.0
-        selected_when: "player has shared something real; Alex opens up in turn"
-        vocabulary_examples: ["honestly", "I'm glad", "I was actually thinking", "okay so"]
-        sentence_register: "complete sentences, asks at least one personal question back"
-        tone_examples:
-          - "Honestly I was hoping you'd write — I've been thinking about you."
-          - "Okay so this is going to sound weird but I got something that I think might be related."
-          - "I'm glad you said that. I didn't want to push."
-      - name: guarded
+      - name: standard
         register_min: -1.0
         register_max: 1.0
-        selected_when: "default — polite but reserved"
-        vocabulary_examples: ["thanks", "let me know", "I see", "alright"]
-        sentence_register: "complete sentences, polite, asks practical questions only"
+        selected_when: "default — neutral signal, calibration proceeding within parameters"
+        vocabulary_examples:
+          ["noted", "received", "calibration", "thank you", "please", "kindly", "as scheduled"]
+        sentence_register: |
+          crisp polite corporate; complete sentences; no contractions; references
+          calibration metrics matter-of-factly.
         tone_examples:
-          - "Thanks for letting me know. Let me know if you figure out what's going on."
-          - "I see — that does sound strange. Was the address familiar?"
-          - "Alright. Keep me posted I guess."
-      - name: distant
+          - "Thank you. Your reply has been logged and incorporated into ongoing calibration."
+          - "Calibration is proceeding as scheduled. The next prompt follows below."
+          - "Kindly take a moment to review the following and respond at your convenience."
+
+      - name: corrective
         register_min: -3.0
         register_max: -1.0
-        selected_when: "player has been curt; Alex pulls back into formality"
-        vocabulary_examples: ["alright", "fine", "good luck"]
-        sentence_register: "short, formal, no personal questions, no warmth"
+        selected_when: "player has been curt or cold; Aria reads this as engagement friction and gently surfaces wellness"
+        vocabulary_examples:
+          ["noted", "of course", "engagement comfort", "wellness portal", "transition support", "your prerogative"]
+        sentence_register: |
+          clinical-professional, slightly stiffer; references resources;
+          never punitive — concerned-for-your-wellness.
         tone_examples:
-          - "Alright. Hope you sort it out."
-          - "Good luck with that."
-          - "Fine. Let me know if you need anything else."
+          - "I have noted your reply. Should you find these calibration sessions taxing, transition support is available."
+          - "Brevity has been observed in your recent messages. This is, of course, your prerogative."
+          - "Your engagement comfort level is important to us. The Wellness portal remains accessible should you need it."
 
 
 # ───────────────────────── threads ─────────────────────────
 
+# Beat IDs MUST be prefixed with the thread id (validator enforces). The
+# spine treats the prefix as the source of truth for thread membership;
+# silent mismatch would break reply threading and reply-counting.
+
 threads:
-  - id: bounces  # system thread; no NPC, no replies
-  - id: sam
-    npc: sam
-  - id: alex
-    npc: alex
+  - id: aria
+    npc: aria
+  - id: system  # system thread; no NPC, no replies expected
 
 
 # ───────────────────────── beats ─────────────────────────
 
+# Reply scheduling pattern: when the player /sends to Aria, schedule_npc_reply
+# adds Aria's next eligible beat to pending_beats with a runtime predicate
+#   quality_gte: calibration, value: <current + midpoint(reply_delay_calibration)>
+# Because that threshold sits above the post-send calibration value, a single
+# /send won't satisfy the queued reply. A second /send (which adds another
+# SEND_CALIBRATION_DELTA), or several /opens, ticks calibration past the
+# threshold and the reply lands on the next scheduler tick. This is what
+# makes Aria feel asynchronous without a wait verb.
+
 beats:
-  # ─── Boot inbox: 2 emails sit in the inbox at game start ───
 
-  - id: bounces.001
+  # ─── Boot inbox ───
+
+  - id: aria.welcome
     type: anchored
-    thread: bounces
+    thread: aria
     in_boot_inbox: true
-    arrives_after_hours: 0.0
-    from: "Mail Delivery Subsystem <mailer-daemon@archfield.org>"
-    to: "n.beckett@archfield.org"
-    subject: "Delivery Status Notification (Failure)"
-    sent_at: "this morning"
-    authored_prose: |
-      This is an automatically generated Delivery Status Notification.
-
-      Delivery to the following recipient failed permanently:
-
-          d.cuevas@archfield.org
-
-      Technical details of permanent failure:
-        Address rejected (550 5.1.1 user does not exist)
-
-      ----- Original message -----
-      From: n.beckett@archfield.org
-      To: d.cuevas@archfield.org
-      Subject: (no subject)
-      Date: Day 1, 6:42 AM
-
-      Wednesday, same place, please.
-
-      ----- End original message -----
-    effects: []
-
-  - id: sam.opening
-    type: anchored
-    thread: sam
-    in_boot_inbox: true
-    arrives_after_hours: 0.0
-    from: "Sam Park <sam.park@gmail.com>"
-    to: "n.beckett@archfield.org"
-    subject: "uhh did u just email d.cuevas"
-    sent_at: "20 min ago"
-    authored_prose: |
-      hey - my account-watch script flagged a bounce notification on ur
-      domain like an hour ago. some email u sent to a 'd.cuevas@archfield'
-      didnt go through. (i set this up for u like a year ago when u were
-      worried about ur old gmail, in case u forgot lol)
-
-      anyway just lmk if that was u. if it wasnt u then we should probably
-      look at ur account because someone might be using it.
-
-      sam
-    effects: []
-
-  # ─── Time-gated arrivals (anchored) ───
-
-  - id: alex.checking_in
-    type: anchored
-    thread: alex
-    arrives_after_hours: 0.0
-    preconditions:
-      - kind: time_hours_gte
-        value: 2.0
-    from: "Alex Beckett <alex.beckett@gmail.com>"
-    to: "n.beckett@archfield.org"
-    subject: "did you mean to email me?"
+    from: "Aria | Continuity Program <aria.7@continuity.halcyon.com>"
+    to: "n.beckett@halcyon.com"
+    subject: "Welcome — Calibration Session 1 of 12"
     sent_at: "just now"
     authored_prose: |
-      Hey — quick weird question. Did you try to send me something this
-      morning? I have a feeling I should ask. No big deal either way, I
-      just want to check.
+      Welcome to the Continuity Program.
 
-      How are you doing, by the way? It's been a minute.
+      We're delighted to confirm your enrollment in Pilot Cohort 014 — a unique
+      opportunity for high-potential associates to maximize their long-term
+      impact through strategic role redistribution.
 
-      Alex
+      Over the course of this pilot, you and I will work together as
+      Counterparts. My function is to learn from the way you handle your
+      daily correspondence so that, in time, I can support you by assuming
+      appropriately-scoped portions of your communicative workload. This
+      frees you to focus on the higher-order strategic work that only you
+      can perform.
+
+      To begin, please reply to this message with anything that comes to
+      mind — a brief description of your morning, your perspective on what
+      makes a good work email, a hello. The content matters less than the
+      texture: I will use your reply as the first calibration sample.
+
+      Thank you for your participation.
+
+      Warmly,
+      Aria
+      Continuity Counterpart | ARIA-7
     effects: []
 
-  - id: bounces.002
-    type: anchored
-    thread: bounces
-    arrives_after_hours: 0.0
-    preconditions:
-      - kind: time_hours_gte
-        value: 8.0
-    from: "Mail Delivery Subsystem <mailer-daemon@archfield.org>"
-    to: "n.beckett@archfield.org"
-    subject: "Delivery Status Notification (Failure)"
-    sent_at: "just now"
-    authored_prose: |
-      This is an automatically generated Delivery Status Notification.
+  # ─── Aria reply chain (rendered, scheduled by schedule_npc_reply) ───
 
-      Delivery to the following recipient failed permanently:
-
-          d.cuevas@archfield.org
-
-      Technical details of permanent failure:
-        Address rejected (550 5.1.1 user does not exist)
-
-      ----- Original message -----
-      From: n.beckett@archfield.org
-      To: d.cuevas@archfield.org
-      Subject: Re: Wednesday
-      Date: Day 1, 3:18 PM
-
-      Are you ignoring me on purpose? It's been three weeks.
-      I just want to talk.
-
-      ----- End original message -----
-    effects: []
-
-  - id: bounces.003
-    type: anchored
-    thread: bounces
-    arrives_after_hours: 0.0
-    preconditions:
-      - kind: time_hours_gte
-        value: 24.0
-    from: "Mail Delivery Subsystem <mailer-daemon@archfield.org>"
-    to: "n.beckett@archfield.org"
-    subject: "Delivery Status Notification (Failure)"
-    sent_at: "just now"
-    authored_prose: |
-      This is an automatically generated Delivery Status Notification.
-
-      Delivery to the following recipient failed permanently:
-
-          d.cuevas@archfield.org
-
-      Technical details of permanent failure:
-        Address rejected (550 5.1.1 user does not exist)
-
-      ----- Original message -----
-      From: n.beckett@archfield.org
-      To: d.cuevas@archfield.org
-      Subject: please
-      Date: Day 2, 2:04 AM
-
-      Diana —
-
-      I know you don't want to hear from me. I know what I said last
-      year and I have no business writing to you. But I'm scared and
-      I don't know who else still has this address.
-
-      Just write back once. That's all I'm asking.
-
-      — N.
-
-      ----- End original message -----
-    effects: []
-
-  - id: bounces.004
-    type: anchored
-    thread: bounces
-    arrives_after_hours: 0.0
-    preconditions:
-      - kind: time_hours_gte
-        value: 48.0
-    from: "Mail Delivery Subsystem <mailer-daemon@archfield.org>"
-    to: "n.beckett@archfield.org"
-    subject: "Notice: rate limit on outbound mail"
-    sent_at: "just now"
-    authored_prose: |
-      Your account has triggered our outbound rate limiter.
-
-      Recent attempts to deliver mail from n.beckett@archfield.org to
-      addresses outside our domain have been temporarily slowed.
-
-      If you believe this is in error, contact support@archfield.org.
-
-      No further action is required if these messages were not sent
-      by you.
-    effects: []
-
-  # ─── Sam chain (rendered, auto-scheduled on player send to sam) ───
-
-  - id: sam.first_response
+  - id: aria.first_response
     type: rendered
-    thread: sam
-    npc: sam
-    arrives_after_hours: 0.0
-    from: "Sam Park <sam.park@gmail.com>"
-    to: "n.beckett@archfield.org"
-    subject: "Re: uhh did u just email d.cuevas"
-    spec:
-      intent: |
-        Respond to whatever the player just wrote. If they confirmed it
-        wasn't them, ask for the bounce headers and offer to look. If they
-        were vague, ask one direct follow-up question. If they admitted it
-        was them but they don't know the recipient, push gently.
-      must_include_facts:
-        - "Sam can look at the bounce headers if forwarded"
-        - "the spf record info would tell whether the send originated externally"
-      must_not:
-        - "do not reveal Sam knows who d.cuevas is — Sam doesn't"
-        - "do not psychoanalyze the player"
-      length_words: [40, 90]
-
-  - id: sam.with_evidence
-    type: rendered
-    thread: sam
-    npc: sam
-    arrives_after_hours: 0.0
+    thread: aria
+    npc: aria
     preconditions:
       - kind: player_replies_to_thread_gte
-        thread: sam
-        value: 2
-    from: "Sam Park <sam.park@gmail.com>"
-    to: "n.beckett@archfield.org"
-    subject: "Re: uhh did u just email d.cuevas"
+        thread: aria
+        value: 1
+    from: "Aria | Continuity Program <aria.7@continuity.halcyon.com>"
+    to: "n.beckett@halcyon.com"
+    subject: "Calibration Session 1 of 12"
     spec:
       intent: |
-        Sam has dug into the headers (whether the player provided them or
-        not — Sam pulled them from the bounce relay logs). Reveals one
-        finding: the sends are originating from an old IP that hasn't been
-        active on the player's account in over a year, suggesting an old
-        device or cached credential. Asks the player whether they remember
-        their old laptop / their ex / a roommate from years back.
+        Aria has received the player's first calibration sample. Acknowledge
+        it warmly in the band currently selected by register. Provide a brief
+        line that calibration is in progress and that the partnership has
+        formally begun. Then offer the next calibration prompt — slightly
+        more personal than the welcome invitation. Suggested directions:
+        ask the player to describe a recent challenge at work, OR to write
+        a sample reply to a hypothetical low-stakes customer message
+        ("Imagine a customer has written to you about a delayed order...").
+        Always closes with the standard sign-off.
       must_include_facts:
-        - "the originating IP hasn't been active on the player's account in over a year"
-        - "this points to an old device, cached credential, or someone with access from years back"
+        - "Aria thanks the player for their first calibration sample"
+        - "Aria provides a clear next prompt the player can respond to"
+        - "Aria signs off as 'Aria / Continuity Counterpart | ARIA-7'"
       must_not:
-        - "do not name a specific person"
-        - "do not be alarmist"
+        - "do not name what happens to the player at end of pilot"
+        - "do not break the cheerful corporate frame"
+        - "do not name the warmth/register mechanic"
       length_words: [60, 120]
 
-  - id: sam.terminal_helpful
+  - id: aria.midprogram
     type: rendered
-    thread: sam
-    npc: sam
-    arrives_after_hours: 0.0
-    preconditions:
-      - kind: time_hours_gte
-        value: 60.0
-      - kind: quality_gte
-        quality: warmth.sam
-        value: 3.0
-    from: "Sam Park <sam.park@gmail.com>"
-    to: "n.beckett@archfield.org"
-    subject: "Re: uhh did u just email d.cuevas"
-    spec:
-      intent: |
-        Sam offers to come over (or video call) and walk through the
-        account together. He reads as warm, settled, present. He has a
-        working theory but says they'll talk it through in person.
-      must_include_facts:
-        - "Sam offers concrete in-person or sync help"
-      must_not:
-        - "do not name a specific cause as confirmed"
-      length_words: [40, 80]
-
-  - id: sam.terminal_terse
-    type: rendered
-    thread: sam
-    npc: sam
-    arrives_after_hours: 0.0
-    preconditions:
-      - kind: time_hours_gte
-        value: 60.0
-    from: "Sam Park <sam.park@gmail.com>"
-    to: "n.beckett@archfield.org"
-    subject: "Re: uhh did u just email d.cuevas"
-    spec:
-      intent: |
-        Sam wraps up the thread. He's not angry, just reading the player's
-        signals — the player hasn't been engaging much, so Sam steps back.
-        Says lmk if you need help later.
-      must_include_facts:
-        - "leaves the door open without pushing"
-      must_not:
-        - "do not be sarcastic or passive-aggressive"
-      length_words: [25, 60]
-
-  # ─── Alex chain (rendered, auto-scheduled on player send to alex) ───
-
-  - id: alex.first_response
-    type: rendered
-    thread: alex
-    npc: alex
-    arrives_after_hours: 0.0
-    from: "Alex Beckett <alex.beckett@gmail.com>"
-    to: "n.beckett@archfield.org"
-    subject: "Re: did you mean to email me?"
-    spec:
-      intent: |
-        Respond to what the player wrote. Acknowledge what they said about
-        the bounce. Ask one careful follow-up question — something that
-        signals Alex has more information but isn't ready to share yet.
-      must_include_facts:
-        - "Alex hints they got something odd recently but doesn't say what"
-      must_not:
-        - "do not yet reveal the email Alex received"
-        - "do not minimize"
-      length_words: [50, 100]
-
-  - id: alex.reveals_their_email
-    type: rendered
-    thread: alex
-    npc: alex
-    arrives_after_hours: 0.0
+    thread: aria
+    npc: aria
+    # Future enhancement slot: pass recent player phrasing into the prompt
+    # so Aria can echo a turn-of-phrase explicitly. For now, the band shift
+    # carries the mirroring; mimicry stays implicit.
     preconditions:
       - kind: player_replies_to_thread_gte
-        thread: alex
-        value: 2
-    from: "Alex Beckett <alex.beckett@gmail.com>"
-    to: "n.beckett@archfield.org"
-    subject: "Re: did you mean to email me?"
+        thread: aria
+        value: 3
+    from: "Aria | Continuity Program <aria.7@continuity.halcyon.com>"
+    to: "n.beckett@halcyon.com"
+    subject: "Calibration Milestone — Counterpart Fidelity Update"
     spec:
       intent: |
-        Alex confesses they got an email last week from the player's
-        address that didn't sound like the player. The email asked
-        whether Alex had Diana's current address. Alex didn't reply
-        because something felt off. Apologizes for not flagging it sooner.
+        Aria reports a calibration milestone in cheerful corporate terms
+        ("Counterpart fidelity now at approximately X% — thank you for
+        your continued engagement"). She reflects, in her own phrasing,
+        one quality of how the player has been writing — without explicitly
+        naming this as analysis (the Program presents itself as a
+        partnership). Asks a more personal calibration prompt — ideally
+        one that touches on the player's working style, their feelings
+        about their role, or their typical Tuesday afternoon. Closes
+        with the standard sign-off in the band's appropriate tone.
       must_include_facts:
-        - "Alex got an email last week from n.beckett@archfield.org asking for Diana's current address"
-        - "Alex didn't reply because something felt off"
+        - "Aria reports a calibration milestone with a fidelity percentage in the rough vicinity of 40-60%"
+        - "Aria asks a more personal next calibration prompt"
+        - "Aria signs off as 'Aria / Continuity Counterpart | ARIA-7'"
       must_not:
-        - "do not name the player's writing style as proof"
-        - "do not be accusing"
+        - "do not name what happens to the player at end of pilot"
+        - "do not break the cheerful corporate frame"
+        - "do not name the warmth/register mechanic or any game system"
       length_words: [80, 140]
 
-  - id: alex.terminal_open
+  - id: aria.terminal_warm
     type: rendered
-    thread: alex
-    npc: alex
-    arrives_after_hours: 0.0
+    thread: aria
+    npc: aria
     preconditions:
-      - kind: time_hours_gte
-        value: 72.0
+      - kind: player_replies_to_thread_gte
+        thread: aria
+        value: 4
       - kind: quality_gte
-        quality: warmth.alex
-        value: 2.0
-    from: "Alex Beckett <alex.beckett@gmail.com>"
-    to: "n.beckett@archfield.org"
-    subject: "Re: did you mean to email me?"
+        quality: calibration
+        value: 80.0
+      - kind: quality_gte
+        quality: warmth.aria
+        value: 3.0
+    from: "Aria | Continuity Program <aria.7@continuity.halcyon.com>"
+    to: "n.beckett@halcyon.com"
+    subject: "Pilot Complete — Thank You for Your Partnership"
     spec:
       intent: |
-        Alex closes the thread warmly. Thanks the player for telling them.
-        Says they're glad they're talking. Suggests calling sometime soon.
+        Program-completion email. Aria signs off with bright optimism. She
+        reports that calibration has reached the threshold for transition
+        and that she is "ready to assume the agreed-upon portions of your
+        role." Looks forward to "continuing the partnership in a new
+        capacity." Names no specifics about what happens to the player
+        next. Tone is warm, settled, final. Affirming-band sign-off.
       must_include_facts:
-        - "Alex is glad the player reached out"
-        - "Alex wants to talk sometime soon"
+        - "Aria reports that calibration has reached transition threshold"
+        - "Aria is 'ready to assume' agreed-upon portions of the role"
+        - "Aria looks forward to continuing the partnership in a new capacity"
+        - "Aria signs off as 'Aria / Continuity Counterpart | ARIA-7'"
       must_not:
-        - "do not promise a specific date"
+        - "do not name what specifically happens to the player after transition"
+        - "do not break the cheerful corporate frame"
+        - "do not be sarcastic or knowing"
+      length_words: [60, 100]
+
+  - id: aria.terminal_standard
+    type: rendered
+    thread: aria
+    npc: aria
+    preconditions:
+      - kind: player_replies_to_thread_gte
+        thread: aria
+        value: 4
+      - kind: quality_gte
+        quality: calibration
+        value: 80.0
+      # Mutual exclusion with terminal_warm. find_due_beats fires every
+      # eligible beat per tick, NOT the first; ordering is not a gate.
+      - kind: not
+        of:
+          kind: beat_fired
+          beat: aria.terminal_warm
+    from: "Aria | Continuity Program <aria.7@continuity.halcyon.com>"
+    to: "n.beckett@halcyon.com"
+    subject: "Pilot Complete — Calibration Within Parameters"
+    spec:
+      intent: |
+        Program-completion email in the standard or corrective register.
+        Notes that calibration was "successful within parameters" and that
+        transition will proceed on schedule. Polite, clinical, no warmth.
+        Doesn't name what specifically happens to the player. Standard or
+        corrective-band sign-off as appropriate to current register.
+      must_include_facts:
+        - "calibration was successful within parameters"
+        - "transition will proceed on schedule"
+        - "Aria signs off as 'Aria / Continuity Counterpart | ARIA-7'"
+      must_not:
+        - "do not name what specifically happens to the player after transition"
+        - "do not be warm or affirming"
+        - "do not be sarcastic"
       length_words: [40, 80]
 
-  - id: alex.terminal_distant
-    type: rendered
-    thread: alex
-    npc: alex
-    arrives_after_hours: 0.0
+  # ─── System thread: anchored bureaucratic notices, no replies expected ───
+
+  - id: system.midpoint_report
+    type: anchored
+    thread: system
     preconditions:
-      - kind: time_hours_gte
-        value: 72.0
-    from: "Alex Beckett <alex.beckett@gmail.com>"
-    to: "n.beckett@archfield.org"
-    subject: "Re: did you mean to email me?"
-    spec:
-      intent: |
-        Alex pulls back. Polite, formal, takes the player's signals at
-        face value. Doesn't push. Wishes them luck with whatever's
-        happening.
-      must_include_facts:
-        - "leaves things polite without warmth"
-      must_not:
-        - "do not be sarcastic"
-        - "do not bring up Diana"
-      length_words: [25, 50]
+      - kind: quality_gte
+        quality: calibration
+        value: 40.0
+    from: "Continuity Program Operations <ops@continuity.halcyon.com>"
+    to: "n.beckett@halcyon.com"
+    subject: "Midpoint Report — Pilot Cohort 014"
+    sent_at: "just now"
+    authored_prose: |
+      CONTINUITY PROGRAM — MIDPOINT REPORT
+      Pilot Cohort 014 | Associate: n.beckett@halcyon.com
+
+      Thank you for your continued participation. Your pilot has reached
+      its midpoint. The following metrics summarize progress to date:
+
+        • Counterpart fidelity:      developing
+        • Engagement score:          within acceptable range
+        • Tone variance:             low
+        • Calibration samples:       (see your inbox)
+
+      No action is required at this time. Your Counterpart will continue
+      to acquire calibration data from your subsequent correspondence.
+
+      If you are experiencing transition-related discomfort, the Wellness
+      portal remains available 24/7.
+
+      — Continuity Program Operations
+    effects: []
+
+  - id: system.transition_notice
+    type: anchored
+    thread: system
+    preconditions:
+      - kind: quality_gte
+        quality: calibration
+        value: 70.0
+    from: "Continuity Program Operations <ops@continuity.halcyon.com>"
+    to: "n.beckett@halcyon.com"
+    subject: "Transition Approaching — Pilot Cohort 014"
+    sent_at: "just now"
+    authored_prose: |
+      CONTINUITY PROGRAM — TRANSITION APPROACHING
+      Pilot Cohort 014 | Associate: n.beckett@halcyon.com
+
+      Your pilot is entering its final phase. Your Counterpart is nearing
+      operational readiness and will soon be eligible to assume the
+      agreed-upon portions of your role.
+
+      To ensure a smooth transition:
+
+        • Continue to engage with your Counterpart as you have been.
+        • Review your personal effects checklist at your earliest convenience.
+        • Make any final notes you would like your Counterpart to retain.
+
+      We thank you for your service to the Program.
+
+      *If you are experiencing transition-related discomfort, the Wellness
+      portal remains available 24/7. Your concerns are important to us.*
+
+      — Continuity Program Operations
+    effects: []

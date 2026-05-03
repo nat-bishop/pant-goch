@@ -1,7 +1,7 @@
 """FastAPI smoke tests with Pydantic AI's TestModel — no llama-server, no
-real LLM. Verifies wiring: lifespan boots, boot inbox emits, /open is free,
-/send advances the clock and runs the texture scorer end-to-end, /wait and
-/sleep advance the clock and surface scheduled beats.
+real LLM. Verifies wiring: lifespan boots, boot inbox emits, /open advances
+calibration, /send rejects empty bodies and runs the texture scorer
+end-to-end, and consecutive verbs surface scheduled NPC replies.
 """
 import json
 from contextlib import ExitStack
@@ -54,59 +54,68 @@ def test_scenario(client):
     r = client.get("/scenario")
     assert r.status_code == 200
     j = r.json()
-    assert j["title"] == "Threads"
-    assert j["max_hours"] == 96.0
+    assert j["title"] == "Continuity Program"
     assert "premise" in j
+    assert "max_hours" not in j  # time mechanic dropped
 
 
 def test_state_starts_at_zero(client):
     r = client.get("/state").json()
-    assert r["game_time_hours"] == 0.0
-    assert r["max_hours"] == 96.0
+    assert r["calibration"] == 0.0
     assert r["ended"] is False
+    assert "game_time_hours" not in r  # time mechanic dropped
 
 
-def test_boot_inbox_has_two_emails(client):
+def test_boot_inbox_has_one_email(client):
     r = client.get("/inbox")
     assert r.status_code == 200
     j = r.json()
     inbox = j["folders"]["Inbox"]
-    senders = [e["from"] for e in inbox]
-    # The inciting bounce + Sam's opening message.
-    assert any("mailer-daemon" in s for s in senders), senders
-    assert any("Sam" in s for s in senders), senders
-    assert len(inbox) == 2
+    assert len(inbox) == 1
+    assert any("Aria" in e["from"] for e in inbox), [e["from"] for e in inbox]
+    assert "Archive" not in j["folders"]
 
 
-# ───────────────────────── free verbs (no clock advance) ─────────────────────────
+# ───────────────────────── /open advances calibration ─────────────────────────
 
 
-def test_open_is_free(client):
+def test_open_advances_calibration(client):
     inbox = client.get("/inbox").json()
-    sam_email = next(e for e in inbox["folders"]["Inbox"] if "Sam" in e["from"])
-    r = client.post("/open", json={"email_id": sam_email["id"]})
+    welcome = inbox["folders"]["Inbox"][0]
+    initial = client.get("/state").json()["calibration"]
+    r = client.post("/open", json={"email_id": welcome["id"]})
     assert r.status_code == 200
-    state = r.json()["state"]
-    assert state["game_time_hours"] == 0.0
+    cal_after = r.json()["state"]["calibration"]
+    assert cal_after == pytest.approx(initial + 1.0)  # OPEN_CALIBRATION_DELTA default
 
 
-def test_archive_is_free(client):
+def test_open_marks_email_read(client):
     inbox = client.get("/inbox").json()
-    bounce_email = next(e for e in inbox["folders"]["Inbox"] if "mailer-daemon" in e["from"])
-    initial = client.get("/state").json()["game_time_hours"]
-    r = client.post("/archive", json={"email_id": bounce_email["id"]})
-    assert r.status_code == 200
-    assert r.json()["state"]["game_time_hours"] == initial
+    welcome = inbox["folders"]["Inbox"][0]
+    client.post("/open", json={"email_id": welcome["id"]})
+    inbox_after = client.get("/inbox").json()
+    welcome_after = inbox_after["folders"]["Inbox"][0]
+    assert welcome_after["is_read"] is True
 
 
-# ───────────────────────── send + texture scoring ─────────────────────────
+# ───────────────────────── /send ─────────────────────────
 
 
-def test_send_advances_clock_and_runs_texture(client):
+def test_send_rejects_empty_body(client):
+    r = client.post("/send", json={
+        "in_reply_to": "aria.welcome",
+        "recipient": "Aria",
+        "body": "   ",
+    })
+    assert r.status_code == 400
+
+
+def test_send_advances_calibration_and_runs_texture(client):
+    initial = client.get("/state").json()["calibration"]
     events = list(_consume_sse(client.stream("POST", "/send", json={
-        "in_reply_to": "sam.opening",
-        "recipient": "Sam Park",
-        "body": "yeah no idea who that is - can you check?",
+        "in_reply_to": "aria.welcome",
+        "recipient": "Aria",
+        "body": "happy to start - looking forward to our partnership.",
     })))
 
     types = [e["type"] for e in events]
@@ -114,59 +123,56 @@ def test_send_advances_clock_and_runs_texture(client):
     assert "texture" in types
     assert "done" in types
 
-    state_after = client.get("/state").json()
-    # Clock should have advanced by SEND_HOURS = 0.25.
-    assert state_after["game_time_hours"] == pytest.approx(0.25)
+    cal_after = client.get("/state").json()["calibration"]
+    # Send should advance by SEND_CALIBRATION_DELTA = 5.0.
+    assert cal_after == pytest.approx(initial + 5.0)
 
 
-def test_send_to_sam_schedules_a_reply(client):
+def test_send_to_aria_schedules_a_reply(client):
     list(_consume_sse(client.stream("POST", "/send", json={
-        "in_reply_to": "sam.opening",
-        "recipient": "Sam Park",
-        "body": "yeah no idea who that is",
+        "in_reply_to": "aria.welcome",
+        "recipient": "Aria",
+        "body": "happy to be here",
     })))
-    # Pending now includes sam.first_response, scheduled at send_time + 1.25h.
     pending_ids = {pb.beat_id for pb in main.STATE.pending_beats}
-    assert "sam.first_response" in pending_ids
+    assert "aria.first_response" in pending_ids
 
 
-# ───────────────────────── wait + sleep ─────────────────────────
-
-
-def test_wait_advances_clock(client):
-    initial = client.get("/state").json()["game_time_hours"]
-    r = client.post("/wait")
-    assert r.status_code == 200
-    assert r.json()["state"]["game_time_hours"] == pytest.approx(initial + 2.0)
-
-
-def test_sleep_advances_clock(client):
-    initial = client.get("/state").json()["game_time_hours"]
-    r = client.post("/sleep")
-    assert r.status_code == 200
-    assert r.json()["state"]["game_time_hours"] == pytest.approx(initial + 8.0)
-
-
-def test_wait_surfaces_scheduled_npc_reply(client):
-    """Send to Sam, then wait long enough — Sam's reply lands."""
+def test_aria_reply_lands_after_second_send(client):
+    """Single /send queues Aria's reply with calibration threshold above the
+    post-send value (delay > SEND_DELTA-side); a second /send ticks
+    calibration past the threshold and the reply lands."""
     list(_consume_sse(client.stream("POST", "/send", json={
-        "in_reply_to": "sam.opening",
-        "recipient": "Sam Park",
-        "body": "what's going on",
+        "in_reply_to": "aria.welcome",
+        "recipient": "Aria",
+        "body": "happy to be here",
     })))
-    # Sam's latency midpoint is 1.25h; one /wait (2h) is enough.
-    r = client.post("/wait")
-    new_emails = r.json()["new_emails"]
-    sam_reply = next((e for e in new_emails if e.get("beat_id") == "sam.first_response"), None)
-    assert sam_reply is not None, f"expected sam.first_response in new_emails; got {new_emails}"
+    # First send: pending should still hold aria.first_response.
+    assert any(pb.beat_id == "aria.first_response" for pb in main.STATE.pending_beats)
+
+    # Second send: calibration ticks past the threshold; reply fires.
+    events2 = list(_consume_sse(client.stream("POST", "/send", json={
+        "in_reply_to": "aria.welcome",
+        "recipient": "Aria",
+        "body": "another note for you",
+    })))
+    new_email_events = [e for e in events2 if e["type"] == "new_email"]
+    fired_beat_ids = {e["email"]["beat_id"] for e in new_email_events}
+    assert "aria.first_response" in fired_beat_ids
 
 
-def test_wait_surfaces_time_gated_anchored_beat(client):
-    """Alex's checking_in beat is time-gated at 2h; one /wait should fire it."""
-    r = client.post("/wait")
+def test_open_surfaces_calibration_gated_anchored_beat(client):
+    """system.midpoint_report is gated on calibration >= 40. A series of
+    /opens (or /sends) ticks calibration past the threshold; the next
+    scheduler tick fires the beat."""
+    welcome = client.get("/inbox").json()["folders"]["Inbox"][0]
+    # Crank calibration directly to just below the threshold so the test
+    # doesn't have to click 39 times.
+    main.STATE.qualities["calibration"] = 39.5
+    r = client.post("/open", json={"email_id": welcome["id"]})
     new_emails = r.json()["new_emails"]
-    alex_email = next((e for e in new_emails if e.get("beat_id") == "alex.checking_in"), None)
-    assert alex_email is not None, f"expected alex.checking_in in new_emails; got {new_emails}"
+    fired_beat_ids = {e["beat_id"] for e in new_emails}
+    assert "system.midpoint_report" in fired_beat_ids
 
 
 # ───────────────────────── helpers ─────────────────────────

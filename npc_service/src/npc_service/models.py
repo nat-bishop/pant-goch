@@ -7,7 +7,7 @@ Three layers:
 - **Runtime state** (mutable, owned by the spine): Email, Reply, InboxState.
   The LLM never writes any of this directly — only via beat effects
   (deterministic) or texture scorer outputs (continuous warmth quality).
-- **HTTP DTOs**: OpenRequest, SendRequest, ArchiveRequest, etc.
+- **HTTP DTOs**: OpenRequest, SendRequest.
 
 Effects and predicates are tagged-union Pydantic models, not strings. YAML
 authoring is slightly more verbose; in exchange, every effect and every
@@ -37,20 +37,11 @@ class SetQuality(BaseModel):
     value: float
 
 
-class ScheduleBeat(BaseModel):
-    """Schedule a beat to fire after N more hours have elapsed.
-
-    The scheduler still checks preconditions; this just sets the earliest
-    `game_time_hours` value at which the beat is eligible.
-    """
-
-    kind: Literal["schedule_beat"] = "schedule_beat"
-    beat: str
-    after_hours: float = Field(default=0.0, ge=0.0)
-
-
+# Only one effect type for now; kept as a discriminated union so adding a
+# second effect later doesn't require touching call sites that already
+# pattern-match on `kind`.
 Effect = Annotated[
-    Union[SetQuality, ScheduleBeat],
+    Union[SetQuality],
     Field(discriminator="kind"),
 ]
 
@@ -70,13 +61,6 @@ class QualityLt(BaseModel):
     value: float
 
 
-class TimeHoursGte(BaseModel):
-    """True iff the world clock has reached `value` hours."""
-
-    kind: Literal["time_hours_gte"] = "time_hours_gte"
-    value: float = Field(ge=0.0)
-
-
 class PlayerRepliedTo(BaseModel):
     """True iff the player has sent a reply addressed to (in response to) the
     given beat."""
@@ -91,6 +75,17 @@ class PlayerRepliesToThreadGte(BaseModel):
     kind: Literal["player_replies_to_thread_gte"] = "player_replies_to_thread_gte"
     thread: str
     value: int = Field(ge=1)
+
+
+class BeatFired(BaseModel):
+    """True iff the named beat has already fired (lives in `state.fired_beat_ids`).
+
+    Use under `Not_` to express mutual exclusion between two beats whose
+    other preconditions overlap.
+    """
+
+    kind: Literal["beat_fired"] = "beat_fired"
+    beat: str
 
 
 class All(BaseModel):
@@ -118,9 +113,9 @@ Predicate = Annotated[
     Union[
         QualityGte,
         QualityLt,
-        TimeHoursGte,
         PlayerRepliedTo,
         PlayerRepliesToThreadGte,
+        BeatFired,
         All,
         Any_,
         Not_,
@@ -176,10 +171,12 @@ class NPCDossier(BaseModel):
     will_say: list[str] = Field(default_factory=list)
     will_not_say: list[str] = Field(default_factory=list)
     voice_bands: list[VoiceBand] = Field(default_factory=list)
-    register_quality: str | None = None  # which quality drives band selection (e.g. "register.sam")
-    # Min/max delay (in game-time hours) before this NPC sends their next reply
+    register_quality: str | None = None  # which quality drives band selection
+    # Min/max delay (in calibration units) before this NPC sends their next reply
     # after the player writes to them. Sampled at the midpoint for determinism.
-    reply_latency_hours: tuple[float, float] = (1.0, 4.0)
+    # The delay must exceed SEND_CALIBRATION_DELTA so a single /send doesn't
+    # immediately satisfy its own queued reply — see schedule_npc_reply.
+    reply_delay_calibration: tuple[float, float] = (2.0, 5.0)
 
 
 class BeatSpec(BaseModel):
@@ -192,14 +189,12 @@ class BeatSpec(BaseModel):
 
 
 # Beat is a tagged union on `type`. Each variant carries the fields that make
-# sense for it. Common to all: id, thread, preconditions, arrives_after_hours,
-# effects.
+# sense for it. Common to all: id, thread, preconditions, in_boot_inbox, effects.
 
 class _BeatBase(BaseModel):
     id: str = Field(min_length=1, pattern=r"^[a-z][a-z0-9_.]*$")
     thread: str
     preconditions: list[Predicate] = Field(default_factory=list)
-    arrives_after_hours: float = Field(default=0.0, ge=0.0)
     in_boot_inbox: bool = False
     effects: list[Effect] = Field(default_factory=list)
 
@@ -212,8 +207,8 @@ class AnchoredBeat(_BeatBase):
     to: str = "you"
     subject: str
     authored_prose: str
-    sent_at: str = ""  # in-fiction timestamp label (e.g. "3 days ago")
-    folder: Literal["Inbox", "Sent", "Archive"] = "Inbox"
+    sent_at: str = ""  # in-fiction timestamp label (e.g. "just now")
+    folder: Literal["Inbox", "Sent"] = "Inbox"
 
     model_config = {"populate_by_name": True}
 
@@ -240,7 +235,7 @@ Beat = Annotated[
 
 class Thread(BaseModel):
     id: str = Field(min_length=1, pattern=r"^[a-z][a-z0-9_]*$")
-    npc: str | None = None  # dossier id; None for system threads (e.g. bounces)
+    npc: str | None = None  # dossier id; None for system threads (e.g. system)
 
 
 class Scenario(BaseModel):
@@ -258,7 +253,6 @@ class Scenario(BaseModel):
 
     title: str
     premise: str
-    max_hours: float = Field(default=96.0, gt=0.0)
 
     qualities: list[QualityDef]
     npcs: list[NPCDossier]
@@ -328,10 +322,18 @@ class Scenario(BaseModel):
         for beat in self.beats:
             if beat.thread not in thread_ids:
                 raise ValueError(f"beat {beat.id}: unknown thread {beat.thread!r}")
+            # The spine treats the beat-id prefix as the source of truth for
+            # thread membership (see `thread_id_from_beat_id`). Fail loudly
+            # here so authoring mistakes don't silently break reply threading.
+            id_prefix = beat.id.split(".", 1)[0] if "." in beat.id else beat.id
+            if id_prefix != beat.thread:
+                raise ValueError(
+                    f"beat {beat.id}: id prefix {id_prefix!r} must equal thread {beat.thread!r}"
+                )
             if isinstance(beat, RenderedBeat) and beat.npc not in npc_ids:
                 raise ValueError(f"beat {beat.id}: unknown npc {beat.npc!r}")
             for eff in beat.effects:
-                _check_effect_refs(eff, beat.id, quality_ids, beat_ids)
+                _check_effect_refs(eff, beat.id, quality_ids)
             for pred in beat.preconditions:
                 _check_predicate_refs(
                     pred, f"beat {beat.id}", quality_ids, thread_ids, beat_ids
@@ -343,8 +345,6 @@ class Scenario(BaseModel):
                     f"npc {npc.id}: register_quality {npc.register_quality!r} is not a known quality"
                 )
 
-        # NPC threads: every NPC referenced by any thread must exist (and vice versa
-        # is not required — system threads with npc=None are fine).
         for thread in self.threads:
             if thread.npc is not None and thread.npc not in npc_ids:
                 raise ValueError(f"thread {thread.id}: unknown npc {thread.npc!r}")
@@ -356,12 +356,9 @@ def _check_effect_refs(
     eff: Effect,
     where: str,
     quality_ids: set[str],
-    beat_ids: set[str],
 ) -> None:
     if isinstance(eff, SetQuality) and eff.quality not in quality_ids:
         raise ValueError(f"{where}: SetQuality references unknown quality {eff.quality!r}")
-    if isinstance(eff, ScheduleBeat) and eff.beat not in beat_ids:
-        raise ValueError(f"{where}: ScheduleBeat references unknown beat {eff.beat!r}")
 
 
 def _check_predicate_refs(
@@ -377,6 +374,8 @@ def _check_predicate_refs(
         raise ValueError(f"{where}: PlayerRepliedTo references unknown beat {pred.beat!r}")
     if isinstance(pred, PlayerRepliesToThreadGte) and pred.thread not in thread_ids:
         raise ValueError(f"{where}: PlayerRepliesToThreadGte references unknown thread {pred.thread!r}")
+    if isinstance(pred, BeatFired) and pred.beat not in beat_ids:
+        raise ValueError(f"{where}: BeatFired references unknown beat {pred.beat!r}")
     if isinstance(pred, (All, Any_)):
         for sub in pred.of:
             _check_predicate_refs(sub, where, quality_ids, thread_ids, beat_ids)
@@ -412,7 +411,6 @@ class Email:
     subject: str
     body: str
     sent_at_label: str
-    sent_at_hours: float
     is_read: bool = False
     in_reply_to_beat: str | None = None
     voice_band_used: str | None = None
@@ -429,13 +427,19 @@ class Reply:
     body: str
     warmth: float
     rationale: str
-    sent_at_hours: float
 
 
 @dataclass
 class PendingBeat:
+    """A beat queued to fire when its preconditions become satisfied.
+
+    `runtime_preconditions` are added at scheduling time (e.g. by
+    `schedule_npc_reply` to encode a calibration-based reply delay) and
+    AND'd with the beat's authored preconditions.
+    """
+
     beat_id: str
-    earliest_time_hours: float  # game_time_hours must be >= this for the beat to fire
+    runtime_preconditions: list[Predicate] = field(default_factory=list)
 
 
 @dataclass
@@ -444,8 +448,6 @@ class InboxState:
     writes to it directly except through TEXTURE_AGENT outputs that target
     specific quality fields."""
 
-    max_hours: float
-    game_time_hours: float = 0.0
     qualities: dict[str, float] = field(default_factory=dict)
     fired_beat_ids: set[str] = field(default_factory=set)
     pending_beats: list[PendingBeat] = field(default_factory=list)
@@ -462,16 +464,20 @@ class InboxState:
                 qualities[q.id] = 0.0
             elif isinstance(q.default, (int, float)):
                 qualities[q.id] = float(q.default)
-        return cls(
-            max_hours=scenario.max_hours,
-            qualities=qualities,
-        )
+        state = cls(qualities=qualities)
+        # Auto-pend every anchored beat that doesn't ship in the boot inbox.
+        # Their authored preconditions are evaluated as runtime predicates by
+        # `find_due_beats`. Rendered per-NPC reply beats stay out — those are
+        # added to pending only by `schedule_npc_reply` on player send.
+        for beat in scenario.beats:
+            if isinstance(beat, AnchoredBeat) and not beat.in_boot_inbox:
+                state.pending_beats.append(PendingBeat(beat_id=beat.id))
+        return state
 
     # The view exposed to the client. Hides internal scheduler state.
     def public_view(self) -> dict:
         return {
-            "game_time_hours": self.game_time_hours,
-            "max_hours": self.max_hours,
+            "calibration": self.qualities.get("calibration", 0.0),
             "ended": self.ended,
             "end_reason": self.end_reason,
             "unread_counts": self._unread_counts(),
@@ -498,11 +504,7 @@ class OpenRequest(BaseModel):
 class SendRequest(BaseModel):
     in_reply_to: str | None = None  # email id, optional
     recipient: str = Field(min_length=1)
-    body: str  # may be empty placeholder; texture scorer handles it
-
-
-class ArchiveRequest(BaseModel):
-    email_id: str = Field(min_length=1)
+    body: str  # rejected as 400 if empty/whitespace
 
 
 class TextureScore(BaseModel):

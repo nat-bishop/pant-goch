@@ -9,7 +9,6 @@ export interface Email {
   to: string;
   subject: string;
   sent_at: string;
-  sent_at_hours: number;
   is_read: boolean;
   preview: string;
   folder: string;
@@ -26,8 +25,7 @@ export interface InboxResponse {
 }
 
 export interface GameState {
-  game_time_hours: number;
-  max_hours: number;
+  calibration: number;
   ended: boolean;
   end_reason: string | null;
   unread_counts: Record<string, number>;
@@ -41,7 +39,7 @@ export interface ThreadResponse {
 export async function getScenario() {
   const r = await fetch(`${API}/scenario`);
   if (!r.ok) throw new Error(`scenario: ${r.status}`);
-  return (await r.json()) as { title: string; premise: string; max_hours: number };
+  return (await r.json()) as { title: string; premise: string };
 }
 
 export async function getInbox(): Promise<InboxResponse> {
@@ -63,28 +61,6 @@ export async function postOpen(emailId: string) {
     body: JSON.stringify({ email_id: emailId }),
   });
   if (!r.ok) throw new Error(`open: ${r.status}`);
-  return r.json() as Promise<{ state: GameState; new_emails: Email[] }>;
-}
-
-export async function postArchive(emailId: string) {
-  const r = await fetch(`${API}/archive`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email_id: emailId }),
-  });
-  if (!r.ok) throw new Error(`archive: ${r.status}`);
-  return r.json() as Promise<{ state: GameState; new_emails: Email[] }>;
-}
-
-export async function postWait() {
-  const r = await fetch(`${API}/wait`, { method: "POST" });
-  if (!r.ok) throw new Error(`wait: ${r.status}`);
-  return r.json() as Promise<{ state: GameState; new_emails: Email[] }>;
-}
-
-export async function postSleep() {
-  const r = await fetch(`${API}/sleep`, { method: "POST" });
-  if (!r.ok) throw new Error(`sleep: ${r.status}`);
   return r.json() as Promise<{ state: GameState; new_emails: Email[] }>;
 }
 

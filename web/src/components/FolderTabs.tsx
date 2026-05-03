@@ -1,6 +1,6 @@
 import { useStore } from "../store";
 
-const FOLDERS = ["Inbox", "Sent", "Archive"] as const;
+const FOLDERS = ["Inbox", "Sent"] as const;
 
 export function FolderTabs() {
   const { view, state, goFolder } = useStore();
