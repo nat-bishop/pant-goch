@@ -30,15 +30,12 @@ export function InboxList({ folder }: Props) {
     <ul className="h-full overflow-y-auto px-2 py-1">
       {emails.map((e) => {
         const unread = !e.is_read && folder === "Inbox";
-        const isDraft = folder === "Drafts";
         const sender = displaySender(e, folder);
         return (
           <li
             key={e.id}
             onClick={() => onClick(e)}
-            className={`group flex cursor-pointer items-center gap-3 rounded-sm border-b border-line/60 px-4 py-2.5 hover:bg-paper-hover ${
-              isDraft ? "bg-warm/5" : ""
-            }`}
+            className="group flex cursor-pointer items-center gap-3 rounded-sm border-b border-line/60 px-4 py-2.5 hover:bg-paper-hover"
           >
             <span
               className={`h-1.5 w-1.5 shrink-0 rounded-full ${unread ? "bg-warm" : "bg-transparent"}`}
@@ -75,6 +72,6 @@ export function InboxList({ folder }: Props) {
 }
 
 function displaySender(email: Email, folder: string): string {
-  const raw = folder === "Drafts" || folder === "Sent" ? email.to : email.from;
+  const raw = folder === "Sent" ? email.to : email.from;
   return stripAddress(raw);
 }

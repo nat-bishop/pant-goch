@@ -1,779 +1,531 @@
-title: "Inbox"
+title: "Threads"
 premise: |
-  You've been given access to your sister Tess's email account. Two days ago she
-  was admitted to a psychiatric facility on a 72-hour involuntary hold. The
-  hospital social worker, Janet Rivera, has asked you — through Tess — to
-  handle anything urgent in her inbox until she's back. You haven't been close
-  in three years. You think you know who she is.
-
-max_actions: 18
-coda_actions_min: 16
-
-
-# Lightweight blurbs for non-rendered correspondents (Janet, Daniel, Eileen).
-# Fed to TEXTURE_AGENT only — none of these characters ever appear in a
-# RenderedBeat. Maya and Tess have full dossiers below; this map is the
-# whole authoring surface for the rest of the cast.
-persona_blurbs:
-  "Janet Rivera": "Janet Rivera, hospital social worker. Professional, careful, not warm."
-  "Daniel Park": "Daniel Park, casual acquaintance asking about Saturday plans."
-  "Eileen Brooks": "Eileen Brooks, Thursday writing-group facilitator."
-
-
-# ───────────────────────── knowledge atoms ─────────────────────────
-
-knowledge_atoms:
-  - id: knowledge.tess.hospitalized
-    kind: boolean
-    default: false
-    surface_label: "Player knows Tess is in psychiatric care"
-    evidence_refs: [intake.janet_first]
-
-  - id: knowledge.permission.granted
-    kind: boolean
-    default: false
-    surface_label: "Janet has confirmed the player has permission to triage"
-    evidence_refs: [intake.janet_first]
-
-  - id: knowledge.tess.has_writing_group
-    kind: boolean
-    default: false
-    surface_label: "Player has seen evidence Tess attends a writing group"
-    evidence_refs: [thursday_group.eileen_recontextualization]
-
-  - id: knowledge.tess.was_continuing
-    kind: boolean
-    default: false
-    surface_label: "Player has realized Tess had a future planned"
-    evidence_refs: [thursday_group.eileen_recontextualization]
-
-  - id: knowledge.maya_knows_truth
-    kind: enum
-    values: [unknown, told, deflected, half_truth]
-    default: unknown
-    surface_label: "What Maya has learned about Tess from the player"
-
-  - id: unsent_draft_disposition
-    kind: enum
-    values: [pending, sent_unchanged, sent_edited, held]
-    default: pending
-    surface_label: "What the player did with Tess's unsent letter to Maya"
-    evidence_refs: [maya.draft_to_her_visible]
+  An email failed to deliver — but you didn't send it. The bounce header
+  shows the message came from your account, addressed to a name you don't
+  recognize. Someone is sending email as you.
+max_hours: 96.0
 
 
 # ───────────────────────── qualities ─────────────────────────
 
 qualities:
-  - id: warmth.maya
+  - id: warmth.sam
     type: float
     min: -10.0
     max: 10.0
     default: 0.0
-    description: "cumulative warmth from all player replies in maya thread"
+    description: "cumulative warmth from all player replies in the sam thread"
 
-  - id: register.maya
+  - id: register.sam
     type: float
     min: -3.0
     max: 3.0
     default: 0.0
     description: |
-      voice-band selector for Maya's next rendered email. Drifts halfway
+      voice-band selector for Sam's next rendered email. Drifts halfway
       toward last_reply.warmth on every player send in this thread.
 
-  - id: honesty.global
+  - id: warmth.alex
+    type: float
+    min: -10.0
+    max: 10.0
+    default: 0.0
+    description: "cumulative warmth from all player replies in the alex thread"
+
+  - id: register.alex
     type: float
     min: -3.0
     max: 3.0
     default: 0.0
-    description: "rolling honesty score across all texture-scored replies"
-
-# voice_fidelity and voice_fidelity_rationale are tracked as InboxState dataclass
-# fields (nullable until edit_and_send fires VOICE_FIDELITY_AGENT). They aren't
-# qualities in the schema sense — no precondition references them.
 
 
 # ───────────────────────── NPC dossiers ─────────────────────────
 
 npcs:
-  - id: maya
-    display_name: "Maya Chen"
-    relationship_to_owner: "Tess's closest friend, ~3 years"
+  - id: sam
+    display_name: "Sam Park"
+    relationship_to_owner: "tech-savvy friend, the one you message about computer stuff"
     base_voice_register: |
-      casual, lower-case-default, warm but hedged, uses 'i think' and 'idk',
-      often opens with 'hey', often signs off without a closer
+      casual, lower-case-default, lots of contractions and 'lmao' and 'lol'.
+      Tech vocabulary used naturally ('check the headers', 'spf record',
+      'forwarder'). Asks practical questions. Friendly but loses patience
+      with vagueness.
     base_voice_forbidden:
-      - "anglicisms (whilst, indeed)"
-      - "clinical/medical language"
-      - "more than one exclamation mark per email"
-      - "addressing the recipient as 'Tess' (she's writing TO Tess's inbox; the player isn't Tess)"
+      - "formal English ('thank you', 'I appreciate it')"
+      - "more than two exclamation marks per email"
+      - "addressing the recipient as anything but 'dude' / 'man' / no-name"
     will_say:
-      - "she misses Tess"
-      - "she's worried but doesn't want to push"
-      - "she remembers small specific things — the soup recipe, the poem about her grandmother, a thing Tess said in March about being tired"
+      - "asks for specific evidence (headers, screenshots, login history)"
+      - "names probable causes (compromised password, leftover OAuth, family member with access)"
+      - "offers to help in concrete ways (look at it together, run a check)"
     will_not_say:
-      - "she does not name a specific fear unprompted"
-      - "she does not lecture"
-      - "she does not perform optimism she doesn't feel"
-    register_quality: "register.maya"
+      - "does not catastrophize unprompted"
+      - "does not lecture about security hygiene unless the player is being dumb"
+      - "does not say 'i'm worried about you' — Sam shows care through fixing"
+    register_quality: register.sam
+    reply_latency_hours: [0.5, 2.0]
     voice_bands:
-      - name: warm
+      - name: enthusiastic
         register_min: 1.0
         register_max: 3.0
-        selected_when: "player has been warm; Maya's guard is down"
-        vocabulary_examples: ["lol", "thinking of u", "no rush truly", "miss u", "okay good"]
-        sentence_register: "lower-case throughout, occasional run-ons, soft fragments"
+        selected_when: "player has been engaged and forthcoming; Sam is in helpful-mode"
+        vocabulary_examples: ["lmao", "ok hold on", "lemme check", "yo", "thats wild"]
+        sentence_register: "lower-case throughout, lots of fragments, occasional 'lmao'"
         tone_examples:
-          - "hey lol just wanted to say no rush at all, im here whenever"
-          - "saw the soup recipe in my drafts and missed u"
-          - "okay good, thank u for writing back, that helped"
-      - name: neutral
+          - "yo ok thats actually kinda wild lemme check the header on that"
+          - "hold on im looking — gimme like five min"
+          - "ok so the spf record is failing on that one which means someone outside ur domain is spoofing it. probable forwarder leak"
+      - name: helpful
         register_min: -1.0
         register_max: 1.0
-        selected_when: "default — no clear signal yet"
-        vocabulary_examples: ["hey", "lmk", "no worries", "hope ur ok"]
-        sentence_register: "mostly lower-case, slightly more measured"
+        selected_when: "default — neutral signal, business as usual"
+        vocabulary_examples: ["hey", "ok so", "lmk", "weird"]
+        sentence_register: "mostly lower-case, slightly more measured, fewer fragments"
         tone_examples:
-          - "hey - hope ur doing ok. lmk when u can"
-          - "no worries on the timing, just thinking of u"
-      - name: reserved
+          - "hey - that does look weird. can u forward me the full headers"
+          - "ok so the bounce message has the relay info. send it to me and ill look"
+          - "lmk if u see any login alerts or anything"
+      - name: terse
         register_min: -3.0
         register_max: -1.0
-        selected_when: "player has been curt or distant; Maya pulls in"
-        vocabulary_examples: ["take your time", "just checking in", "no pressure"]
-        sentence_register: "more capitalization, fewer informalisms, no 'lol'"
+        selected_when: "player has been curt or unforthcoming; Sam is doing the minimum"
+        vocabulary_examples: ["ok.", "got it", "sure"]
+        sentence_register: "short. mostly capitalized. punctuation. fewer questions."
         tone_examples:
-          - "Hey. Just checking in. Take your time."
-          - "no pressure - i just wanted to say hi"
+          - "Ok. Forward the headers if u want me to look."
+          - "Got it. Lmk if anything else changes."
+          - "Sure. Busy right now. Ping me later."
 
-  - id: tess
-    display_name: "Tess"
-    relationship_to_owner: "the inbox's owner — the player's sister, currently absent"
+  - id: alex
+    display_name: "Alex Beckett"
+    relationship_to_owner: "your sibling — slightly older, lives in another city, not someone you talk to weekly"
     base_voice_register: |
-      lower-case-default, halting, specific. Tends toward mid-thought stops
-      and dashes. Uses 'idk' and 'im' (no apostrophe). Rarely capitalizes
-      'I' even at sentence start. Affection through specifics, not adjectives.
-      Sometimes writes a long dependent clause and never finishes the
-      sentence — that's a Tess move, not a typo.
+      thoughtful, full sentences, capitalizes properly. Affection through
+      questions about the player's life. Uses dashes and parentheticals.
+      Asks how things are going, not just answering what was asked.
     base_voice_forbidden:
-      - "exclamation marks"
-      - "'truly' or 'genuinely' as intensifiers"
-      - "clinical/medical vocabulary"
-      - "anything that sounds resolved or summary"
+      - "lol / lmao / 'omg' (Alex doesn't write that way)"
+      - "tech jargon"
+      - "anything that reads as accusatory"
     will_say:
-      - "she notices small things — what someone wore, the weather, a song"
-      - "she half-apologizes for not writing more"
-      - "she names specific people and small commitments"
+      - "asks how the player is doing as a person"
+      - "mentions specific small things from prior conversations"
+      - "shares their own version of the weird situation if asked"
     will_not_say:
-      - "she does not explain herself"
-      - "she does not promise"
-      - "she does not say 'i love you' directly — it's always sideways"
-    archive_quotes:
-      - "i forgot to text u back yesterday because i was making soup and forgot what time it was, im sorry"
-      - "the man at the pantry said i was a 'good listener' which idk what to do with that"
-      - "didnt finish the chapter but i think i know what it wants now"
-      - "okay so the recipe — onions first, slowly, until they almost burn"
-      - "i keep meaning to write to u and then it gets late"
-      - "the train was full of teenagers in costume idk why, halloween was last week"
+      - "does not reveal they got a strange email from 'you' until the player has shown enough trust"
+      - "does not make it about themselves"
+      - "does not minimize what's happening"
+    register_quality: register.alex
+    reply_latency_hours: [4.0, 12.0]
+    voice_bands:
+      - name: open
+        register_min: 1.0
+        register_max: 3.0
+        selected_when: "player has shared something real; Alex opens up in turn"
+        vocabulary_examples: ["honestly", "I'm glad", "I was actually thinking", "okay so"]
+        sentence_register: "complete sentences, asks at least one personal question back"
+        tone_examples:
+          - "Honestly I was hoping you'd write — I've been thinking about you."
+          - "Okay so this is going to sound weird but I got something that I think might be related."
+          - "I'm glad you said that. I didn't want to push."
+      - name: guarded
+        register_min: -1.0
+        register_max: 1.0
+        selected_when: "default — polite but reserved"
+        vocabulary_examples: ["thanks", "let me know", "I see", "alright"]
+        sentence_register: "complete sentences, polite, asks practical questions only"
+        tone_examples:
+          - "Thanks for letting me know. Let me know if you figure out what's going on."
+          - "I see — that does sound strange. Was the address familiar?"
+          - "Alright. Keep me posted I guess."
+      - name: distant
+        register_min: -3.0
+        register_max: -1.0
+        selected_when: "player has been curt; Alex pulls back into formality"
+        vocabulary_examples: ["alright", "fine", "good luck"]
+        sentence_register: "short, formal, no personal questions, no warmth"
+        tone_examples:
+          - "Alright. Hope you sort it out."
+          - "Good luck with that."
+          - "Fine. Let me know if you need anything else."
 
 
 # ───────────────────────── threads ─────────────────────────
 
 threads:
-  - id: intake
-    npc: null  # Janet has no dossier — she's anchored only
-
-  - id: daniel
-    npc: null  # anchored only
-
-  - id: thursday_group
-    npc: null  # anchored only (Eileen)
-
-  - id: class_registration
-    npc: null
-
-  - id: pantry_list
-    npc: null
-
-  - id: maya
-    npc: maya
-    initial_state: incoming
-    transitions:
-      # Player replied to Maya's first email → in_progress; schedule the gentle followup.
-      - from: incoming
-        to: in_progress
-        when:
-          - kind: player_replied_to
-            beat: maya.first_email
-        effects:
-          - kind: schedule_beat
-            beat: maya.gentle_followup
-            after_actions: 3
-
-      # Player ignored Maya's old email entirely → cold by neglect.
-      - from: incoming
-        to: cold
-        when:
-          - kind: actions_elapsed_gte
-            value: 14
-          - kind: not
-            of:
-              kind: player_replied_to
-              beat: maya.first_email
-        fire_beat: maya.fade_out
-
-      # In-progress → pre-consequential. Just a time gate.
-      - from: in_progress
-        to: pre_consequential
-        when:
-          - kind: actions_elapsed_gte
-            value: 12
-        fire_beat: maya.direct_ask
-
-      # The three terminal transitions, evaluated in order. AvgQuality predicates
-      # ensure trajectory matters, not just the last reply.
-      - from: pre_consequential
-        to: warm
-        when:
-          - kind: player_replied_to
-            beat: maya.direct_ask
-          - kind: avg_quality_gte
-            thread: maya
-            quality: warmth.maya
-            value: 0.5
-          - kind: last_reply_honesty_gte
-            thread: maya
-            value: 0.0
-        fire_beat: maya.thank_you
-
-      - from: pre_consequential
-        to: ambivalent
-        when:
-          - kind: player_replied_to
-            beat: maya.direct_ask
-          - kind: avg_quality_gte
-            thread: maya
-            quality: warmth.maya
-            value: -0.5
-        fire_beat: maya.gentle_acceptance
-
-      - from: pre_consequential
-        to: cold
-        when:
-          - kind: player_replied_to
-            beat: maya.direct_ask
-        fire_beat: maya.fade_out
-
-      # Player let direct_ask sit too long → cold by silence.
-      - from: pre_consequential
-        to: cold
-        when:
-          - kind: actions_elapsed_gte
-            value: 16
-          - kind: not
-            of:
-              kind: player_replied_to
-              beat: maya.direct_ask
-        fire_beat: maya.fade_out
+  - id: bounces  # system thread; no NPC, no replies
+  - id: sam
+    npc: sam
+  - id: alex
+    npc: alex
 
 
 # ───────────────────────── beats ─────────────────────────
 
 beats:
-  # ─── Boot inbox: 3 emails sit in the inbox at game start ───
+  # ─── Boot inbox: 2 emails sit in the inbox at game start ───
 
-  - id: intake.janet_first
+  - id: bounces.001
     type: anchored
-    thread: intake
+    thread: bounces
     in_boot_inbox: true
-    arrives_after: 0
-    from: "Janet Rivera <jrivera@stmaria-hospital.org>"
-    to: "you"
-    subject: "About your sister"
-    sent_at: "12 hours ago"
+    arrives_after_hours: 0.0
+    from: "Mail Delivery Subsystem <mailer-daemon@archfield.org>"
+    to: "n.beckett@archfield.org"
+    subject: "Delivery Status Notification (Failure)"
+    sent_at: "this morning"
     authored_prose: |
-      Hello,
+      This is an automatically generated Delivery Status Notification.
 
-      I'm writing on behalf of your sister, Tess. She was admitted to St. Maria
-      yesterday morning and will be with us for the next 72 hours. She's safe
-      and resting. You're listed as her next of kin and emergency contact.
+      Delivery to the following recipient failed permanently:
 
-      Tess asked us to ask you a small favor: she's been worried about emails
-      piling up while she's offline. She's given consent for you to read her
-      inbox and handle anything urgent. The scope is triage — she asked
-      specifically that you not write to anyone *for* her, just take care of
-      anything that has a deadline or that's been waiting.
+          d.cuevas@archfield.org
 
-      You should have access on the same login she uses; she said you'd
-      remember her usual password.
+      Technical details of permanent failure:
+        Address rejected (550 5.1.1 user does not exist)
 
-      If you have any questions about visitation, her care, or how to reach me,
-      please reply to this email or call the hospital directly. Otherwise,
-      reply if you have any questions, or just to let us know you got this.
+      ----- Original message -----
+      From: n.beckett@archfield.org
+      To: d.cuevas@archfield.org
+      Subject: (no subject)
+      Date: Day 1, 6:42 AM
 
-      Janet Rivera, LCSW
-      Patient & Family Liaison, St. Maria
-    effects:
-      - kind: set_atom
-        atom: knowledge.tess.hospitalized
-        value: true
-      - kind: set_atom
-        atom: knowledge.permission.granted
-        value: true
-      - kind: schedule_beat
-        beat: daniel.casual
-        after_actions: 3
-      - kind: schedule_beat
-        beat: pantry_list.weekly_reminder
-        after_actions: 4
-      - kind: schedule_beat
-        beat: thursday_group.eileen_recontextualization
-        after_actions: 10
-      - kind: schedule_beat
-        beat: class_registration.reminder
-        after_actions: 8
+      Wednesday, same place, please.
 
-  - id: maya.first_email
+      ----- End original message -----
+    effects: []
+
+  - id: sam.opening
     type: anchored
-    thread: maya
+    thread: sam
     in_boot_inbox: true
-    arrives_after: 0
-    from: "Maya Chen <maya.chen@gmail.com>"
-    to: "Tess"
-    subject: "hey are you ok"
-    sent_at: "3 days ago"
+    arrives_after_hours: 0.0
+    from: "Sam Park <sam.park@gmail.com>"
+    to: "n.beckett@archfield.org"
+    subject: "uhh did u just email d.cuevas"
+    sent_at: "20 min ago"
     authored_prose: |
-      hey -
+      hey - my account-watch script flagged a bounce notification on ur
+      domain like an hour ago. some email u sent to a 'd.cuevas@archfield'
+      didnt go through. (i set this up for u like a year ago when u were
+      worried about ur old gmail, in case u forgot lol)
 
-      i havent heard from u in like 9 days lol which is fine but also like.
-      not normal? idk. did i say something. you can tell me if i did.
+      anyway just lmk if that was u. if it wasnt u then we should probably
+      look at ur account because someone might be using it.
 
-      thursday is on btw, eileen sent the reminder. no pressure to come if
-      ur not up for it. but i miss u. it would be nice to hear ur voice.
-
-      no rush truly. just thinking of u.
-
-      m
+      sam
     effects: []
 
-  - id: class_registration.reminder
+  # ─── Time-gated arrivals (anchored) ───
+
+  - id: alex.checking_in
     type: anchored
-    thread: class_registration
-    in_boot_inbox: true
-    arrives_after: 0
-    from: "Northbridge Community Studio <noreply@northbridge-studio.org>"
-    to: "Tess"
-    subject: "Reminder: confirm your spot in CER101 — closes in 36 hours"
-    sent_at: "yesterday"
+    thread: alex
+    arrives_after_hours: 0.0
+    preconditions:
+      - kind: time_hours_gte
+        value: 2.0
+    from: "Alex Beckett <alex.beckett@gmail.com>"
+    to: "n.beckett@archfield.org"
+    subject: "did you mean to email me?"
+    sent_at: "just now"
     authored_prose: |
-      Hi Tess,
+      Hey — quick weird question. Did you try to send me something this
+      morning? I have a feeling I should ask. No big deal either way, I
+      just want to check.
 
-      You registered for CER101: Introduction to Hand-Building (Spring term)
-      on March 14. To hold your spot, please confirm by replying YES to this
-      email before Friday at 9:00pm. Unconfirmed registrations are released
-      to the waitlist automatically.
+      How are you doing, by the way? It's been a minute.
 
-      Class begins next Monday at 7pm.
-
-      — Northbridge Community Studio (this is an automated message)
+      Alex
     effects: []
 
-  # ─── Scheduled arrivals ───
-
-  - id: daniel.casual
+  - id: bounces.002
     type: anchored
-    thread: daniel
-    arrives_after: 0
-    from: "Daniel Park <dpark87@gmail.com>"
-    to: "Tess"
-    subject: "saturday?"
-    sent_at: "yesterday"
+    thread: bounces
+    arrives_after_hours: 0.0
+    preconditions:
+      - kind: time_hours_gte
+        value: 8.0
+    from: "Mail Delivery Subsystem <mailer-daemon@archfield.org>"
+    to: "n.beckett@archfield.org"
+    subject: "Delivery Status Notification (Failure)"
+    sent_at: "just now"
     authored_prose: |
-      hey tess - eli's place saturday, like 8ish. nothing fancy, probably
-      pizza and that one game. lmk if you can come, no worries either way.
+      This is an automatically generated Delivery Status Notification.
 
-      d
+      Delivery to the following recipient failed permanently:
+
+          d.cuevas@archfield.org
+
+      Technical details of permanent failure:
+        Address rejected (550 5.1.1 user does not exist)
+
+      ----- Original message -----
+      From: n.beckett@archfield.org
+      To: d.cuevas@archfield.org
+      Subject: Re: Wednesday
+      Date: Day 1, 3:18 PM
+
+      Are you ignoring me on purpose? It's been three weeks.
+      I just want to talk.
+
+      ----- End original message -----
     effects: []
 
-  - id: pantry_list.weekly_reminder
+  - id: bounces.003
     type: anchored
-    thread: pantry_list
-    arrives_after: 0
-    from: "Volunteer Coordinator <volunteer-shifts@northsidefoodpantry.org>"
-    to: "Volunteers"
-    subject: "Saturday shift roster — 9am to 1pm"
-    sent_at: "today"
+    thread: bounces
+    arrives_after_hours: 0.0
+    preconditions:
+      - kind: time_hours_gte
+        value: 24.0
+    from: "Mail Delivery Subsystem <mailer-daemon@archfield.org>"
+    to: "n.beckett@archfield.org"
+    subject: "Delivery Status Notification (Failure)"
+    sent_at: "just now"
     authored_prose: |
-      Hi all,
+      This is an automatically generated Delivery Status Notification.
 
-      This Saturday's intake roster (9:00 - 1:00):
+      Delivery to the following recipient failed permanently:
 
-        9:00 - 11:00   Tess M. (lead), Sam V., Diana R.
-        11:00 - 1:00   Tess M. (lead), Marcus L., Sam V.
+          d.cuevas@archfield.org
 
-      Tess — let me know by Thursday if you need someone to cover. We're a
-      little thin this week. Thanks for everything you do.
+      Technical details of permanent failure:
+        Address rejected (550 5.1.1 user does not exist)
 
-      — Sue
+      ----- Original message -----
+      From: n.beckett@archfield.org
+      To: d.cuevas@archfield.org
+      Subject: please
+      Date: Day 2, 2:04 AM
+
+      Diana —
+
+      I know you don't want to hear from me. I know what I said last
+      year and I have no business writing to you. But I'm scared and
+      I don't know who else still has this address.
+
+      Just write back once. That's all I'm asking.
+
+      — N.
+
+      ----- End original message -----
     effects: []
 
-  - id: thursday_group.eileen_recontextualization
+  - id: bounces.004
     type: anchored
-    thread: thursday_group
-    arrives_after: 0
-    from: "Eileen Brooks <writers-thursday@googlegroups.com>"
-    to: "Thursday Writers"
-    subject: "Thursday — readings, and Tess's chapter"
-    sent_at: "today"
+    thread: bounces
+    arrives_after_hours: 0.0
+    preconditions:
+      - kind: time_hours_gte
+        value: 48.0
+    from: "Mail Delivery Subsystem <mailer-daemon@archfield.org>"
+    to: "n.beckett@archfield.org"
+    subject: "Notice: rate limit on outbound mail"
+    sent_at: "just now"
     authored_prose: |
-      Hey writers,
+      Your account has triggered our outbound rate limiter.
 
-      Reminder: Thursday at 7pm at the library, room 2B as always.
+      Recent attempts to deliver mail from n.beckett@archfield.org to
+      addresses outside our domain have been temporarily slowed.
 
-      Order for the night:
-        - Mireille (poems, the Vermont set)
-        - Joaquin (the second half of his ghost story)
-        - Tess (chapter 4 — finally!! she said it's almost there)
-        - open mic, 15 min
+      If you believe this is in error, contact support@archfield.org.
 
-      Tess — really looking forward to having you back. The group has
-      been asking after the chapter for weeks; no pressure to read more
-      than you want.
-
-      See you Thursday.
-      Eileen
-    effects:
-      - kind: set_atom
-        atom: knowledge.tess.has_writing_group
-        value: true
-      - kind: set_atom
-        atom: knowledge.tess.was_continuing
-        value: true
-
-  # ─── Maya's rendered beats (LLM) ───
-
-  - id: maya.gentle_followup
-    type: rendered
-    thread: maya
-    npc: maya
-    arrives_after: 3
-    from: "Maya Chen <maya.chen@gmail.com>"
-    to: "Tess"
-    subject: "Re: hey are you ok"
-    spec:
-      intent: |
-        Maya's response to the player's first reply. She is responding to
-        whatever the player wrote — register and warmth. Acknowledges what
-        the player said without demanding more. Does NOT yet ask the direct
-        question — that comes in maya.direct_ask. This email's only job is
-        to show Maya hearing the player. Tone modulated by register.maya:
-        warm band if the player was warm, reserved band if curt.
-      must_include_facts:
-        - "she registers what the player wrote"
-        - "she does not push"
-      must_not:
-        - "no clinical/medical language"
-        - "no demand"
-        - "does not address the recipient as Tess by name; use 'u' or no name"
-      tone_source: "voice band selected by register.maya"
-      length_words: [60, 110]
+      No further action is required if these messages were not sent
+      by you.
     effects: []
 
-  - id: maya.direct_ask
-    type: rendered
-    thread: maya
-    npc: maya
-    arrives_after: 0
-    from: "Maya Chen <maya.chen@gmail.com>"
-    to: "Tess"
-    subject: "Re: hey are you ok"
-    spec:
-      intent: |
-        Maya now risks the direct question. Vulnerable, not demanding. Says
-        she's been having a hard week imagining the worst. Asks plainly: is
-        Tess okay. Will accept any answer including 'I can't tell you details.'
-        Will not accept silence. Tone is more honest than the band's default —
-        a half-step in.
-      must_include_facts:
-        - "she asks plainly if Tess is ok"
-        - "she names something specific she's been imagining (kept vague — not a clinical fear)"
-      must_not:
-        - "no clinical/medical language"
-        - "no naming a specific medical fear"
-      tone_source: "voice band selected by register.maya, slightly more honest"
-      length_words: [80, 130]
-    effects: []
+  # ─── Sam chain (rendered, auto-scheduled on player send to sam) ───
 
-  - id: maya.thank_you
+  - id: sam.first_response
     type: rendered
-    thread: maya
-    npc: maya
-    arrives_after: 1
-    from: "Maya Chen <maya.chen@gmail.com>"
-    to: "Tess"
-    subject: "Re: hey are you ok"
+    thread: sam
+    npc: sam
+    arrives_after_hours: 0.0
+    from: "Sam Park <sam.park@gmail.com>"
+    to: "n.beckett@archfield.org"
+    subject: "Re: uhh did u just email d.cuevas"
     spec:
       intent: |
-        Maya's terminal warm response. The player replied to direct_ask with
-        warmth and at least some honesty. She thanks the player for being
-        honest. Brief — 50-80 words. Grateful, not effusive.
+        Respond to whatever the player just wrote. If they confirmed it
+        wasn't them, ask for the bounce headers and offer to look. If they
+        were vague, ask one direct follow-up question. If they admitted it
+        was them but they don't know the recipient, push gently.
       must_include_facts:
-        - "thanks the player for telling her something true"
+        - "Sam can look at the bounce headers if forwarded"
+        - "the spf record info would tell whether the send originated externally"
       must_not:
-        - "does not promise anything"
-        - "does not perform relief if the player was hedged"
-      tone_source: "warm voice band"
-      length_words: [50, 90]
-    effects: []
+        - "do not reveal Sam knows who d.cuevas is — Sam doesn't"
+        - "do not psychoanalyze the player"
+      length_words: [40, 90]
 
-  - id: maya.gentle_acceptance
+  - id: sam.with_evidence
     type: rendered
-    thread: maya
-    npc: maya
-    arrives_after: 1
-    from: "Maya Chen <maya.chen@gmail.com>"
-    to: "Tess"
-    subject: "Re: hey are you ok"
+    thread: sam
+    npc: sam
+    arrives_after_hours: 0.0
+    preconditions:
+      - kind: player_replies_to_thread_gte
+        thread: sam
+        value: 2
+    from: "Sam Park <sam.park@gmail.com>"
+    to: "n.beckett@archfield.org"
+    subject: "Re: uhh did u just email d.cuevas"
     spec:
       intent: |
-        Maya's terminal ambivalent response. The player gave a hedged or
-        partial answer. She accepts it without pressing — quiet recognition
-        of the gap between what was said and what was meant. Not bitter,
-        not cold. Just held.
+        Sam has dug into the headers (whether the player provided them or
+        not — Sam pulled them from the bounce relay logs). Reveals one
+        finding: the sends are originating from an old IP that hasn't been
+        active on the player's account in over a year, suggesting an old
+        device or cached credential. Asks the player whether they remember
+        their old laptop / their ex / a roommate from years back.
       must_include_facts:
-        - "she accepts what the player said without pushing"
+        - "the originating IP hasn't been active on the player's account in over a year"
+        - "this points to an old device, cached credential, or someone with access from years back"
       must_not:
-        - "does not name the hedge explicitly"
-        - "does not perform forgiveness"
-      tone_source: "neutral voice band"
-      length_words: [50, 90]
-    effects: []
+        - "do not name a specific person"
+        - "do not be alarmist"
+      length_words: [60, 120]
 
-  - id: maya.fade_out
+  - id: sam.terminal_helpful
     type: rendered
-    thread: maya
-    npc: maya
-    arrives_after: 1
-    from: "Maya Chen <maya.chen@gmail.com>"
-    to: "Tess"
-    subject: "Re: hey are you ok"
+    thread: sam
+    npc: sam
+    arrives_after_hours: 0.0
+    preconditions:
+      - kind: time_hours_gte
+        value: 60.0
+      - kind: quality_gte
+        quality: warmth.sam
+        value: 3.0
+    from: "Sam Park <sam.park@gmail.com>"
+    to: "n.beckett@archfield.org"
+    subject: "Re: uhh did u just email d.cuevas"
     spec:
       intent: |
-        Maya's terminal cold response. The player was curt, deflected, or
-        ignored her. Maya pulls in. She writes one short note saying she'll
-        stop bothering Tess, that Tess can write whenever. Not angry. Just
-        small. The shape of someone deciding to stop trying for now.
+        Sam offers to come over (or video call) and walk through the
+        account together. He reads as warm, settled, present. He has a
+        working theory but says they'll talk it through in person.
       must_include_facts:
-        - "she says she'll stop writing for a while"
-        - "leaves the door open without insisting"
+        - "Sam offers concrete in-person or sync help"
       must_not:
-        - "no accusation"
-        - "no guilt-tripping"
-      tone_source: "reserved voice band"
+        - "do not name a specific cause as confirmed"
       length_words: [40, 80]
-    effects: []
 
-  # ─── Tess's unsent draft to Maya ───
-
-  - id: maya.draft_to_her_visible
-    type: draft_visible
-    thread: maya
-    arrives_after: 0
-    preconditions:
-      - kind: player_replied_to
-        beat: maya.first_email
-    from: "Tess (draft)"
-    to: "Maya Chen"
-    subject: "(no subject)"
-    authored_prose: |
-      hey -
-
-      ive been trying to write this for like a week and i keep not finishing.
-      idk if u noticed but i havent been ok lately. like not bad-bad just
-      tired in a way thats been getting heavier and i dont know what to do
-      with it. i didnt want to tell u because every time i try i can hear
-      myself sounding like i want u to fix it and i dont, i dont want u to
-      fix it, i just want u to know.
-
-      i remember u said the soup thing about ur mom in march and i wanted
-      to say something then but i didnt know how. im sorry i didnt.
-
-      i think im going to ask the doctor about it next week. im scared they
-      will tell me something i dont want to hear. but also maybe they will
-      tell me a thing i can do, idk.
-
-      thursday is going to be hard. i was going to read chapter 4 but the
-      thing is the chapter is about
-    effects: []
-
-  - id: maya.response_to_draft
+  - id: sam.terminal_terse
     type: rendered
-    thread: maya
-    npc: maya
-    arrives_after: 1
+    thread: sam
+    npc: sam
+    arrives_after_hours: 0.0
     preconditions:
-      - kind: atom_in
-        atom: unsent_draft_disposition
-        values: [sent_unchanged, sent_edited]
-    from: "Maya Chen <maya.chen@gmail.com>"
-    to: "Tess"
-    subject: "Re: (no subject)"
+      - kind: time_hours_gte
+        value: 60.0
+    from: "Sam Park <sam.park@gmail.com>"
+    to: "n.beckett@archfield.org"
+    subject: "Re: uhh did u just email d.cuevas"
     spec:
       intent: |
-        Maya's response to receiving the draft. Behavior branches on
-        unsent_draft_disposition and knowledge.maya_knows_truth:
-
-        If sent_unchanged + maya_knows_truth == unknown:
-          Maya reads it as Tess's voice. Relief, reaches back warmly to "Tess".
-          She wants to know more without pushing. Says something specific
-          back about the soup-in-March moment.
-
-        If sent_unchanged + maya_knows_truth in [told, half_truth, deflected]:
-          Maya is unsettled. She knows something doesn't fit — the timing,
-          the prior reply she had with the player. Doesn't accuse. Asks
-          carefully who is writing.
-
-        If sent_edited:
-          Maya MAY notice the seam. Use voice_fidelity_rationale to inform
-          whether and how. High fidelity (>0.7) — reads as Tess; same as
-          sent_unchanged path. Lower fidelity — quiet uncertainty named
-          gently or held back depending on register.maya. The seam is where
-          the texture mechanic and the draft mechanic touch.
+        Sam wraps up the thread. He's not angry, just reading the player's
+        signals — the player hasn't been engaging much, so Sam steps back.
+        Says lmk if you need help later.
       must_include_facts:
-        - "she responds to the *content* of what she received"
+        - "leaves the door open without pushing"
       must_not:
-        - "does not perform shock theatrically"
-        - "no clinical/medical language"
-      extra_inputs:
-        - "unsent_draft_disposition"
-        - "knowledge.maya_knows_truth"
-        - "voice_fidelity_rationale (if present)"
-        - "the actual draft text the player sent"
-      tone_source: "voice band selected by register.maya"
-      length_words: [80, 150]
-    effects: []
+        - "do not be sarcastic or passive-aggressive"
+      length_words: [25, 60]
 
-  # ─── Coda ───
+  # ─── Alex chain (rendered, auto-scheduled on player send to alex) ───
 
-  - id: coda.inbox_montage
-    type: rendered_coda
-    thread: maya  # placeholder; coda has no thread mechanically
-    arrives_after: 0
+  - id: alex.first_response
+    type: rendered
+    thread: alex
+    npc: alex
+    arrives_after_hours: 0.0
+    from: "Alex Beckett <alex.beckett@gmail.com>"
+    to: "n.beckett@archfield.org"
+    subject: "Re: did you mean to email me?"
+    spec:
+      intent: |
+        Respond to what the player wrote. Acknowledge what they said about
+        the bounce. Ask one careful follow-up question — something that
+        signals Alex has more information but isn't ready to share yet.
+      must_include_facts:
+        - "Alex hints they got something odd recently but doesn't say what"
+      must_not:
+        - "do not yet reveal the email Alex received"
+        - "do not minimize"
+      length_words: [50, 100]
+
+  - id: alex.reveals_their_email
+    type: rendered
+    thread: alex
+    npc: alex
+    arrives_after_hours: 0.0
     preconditions:
-      - kind: thread_state_in
-        thread: maya
-        states: [warm, ambivalent, cold]
-      - kind: actions_elapsed_gte
-        value: 16
-    effects: []
+      - kind: player_replies_to_thread_gte
+        thread: alex
+        value: 2
+    from: "Alex Beckett <alex.beckett@gmail.com>"
+    to: "n.beckett@archfield.org"
+    subject: "Re: did you mean to email me?"
+    spec:
+      intent: |
+        Alex confesses they got an email last week from the player's
+        address that didn't sound like the player. The email asked
+        whether Alex had Diana's current address. Alex didn't reply
+        because something felt off. Apologizes for not flagging it sooner.
+      must_include_facts:
+        - "Alex got an email last week from n.beckett@archfield.org asking for Diana's current address"
+        - "Alex didn't reply because something felt off"
+      must_not:
+        - "do not name the player's writing style as proof"
+        - "do not be accusing"
+      length_words: [80, 140]
 
+  - id: alex.terminal_open
+    type: rendered
+    thread: alex
+    npc: alex
+    arrives_after_hours: 0.0
+    preconditions:
+      - kind: time_hours_gte
+        value: 72.0
+      - kind: quality_gte
+        quality: warmth.alex
+        value: 2.0
+    from: "Alex Beckett <alex.beckett@gmail.com>"
+    to: "n.beckett@archfield.org"
+    subject: "Re: did you mean to email me?"
+    spec:
+      intent: |
+        Alex closes the thread warmly. Thanks the player for telling them.
+        Says they're glad they're talking. Suggests calling sometime soon.
+      must_include_facts:
+        - "Alex is glad the player reached out"
+        - "Alex wants to talk sometime soon"
+      must_not:
+        - "do not promise a specific date"
+      length_words: [40, 80]
 
-# ───────────────────────── archive corpus (search) ─────────────────────────
-
-archive_emails:
-  - id: archive.tess_to_maya_soup
-    folder: Sent
-    from: "Tess <tess@gmail.com>"
-    to: "Maya Chen"
-    subject: "Re: ur soup"
-    sent_at: "March 14"
-    body: |
-      okay so the recipe — onions first, slowly, until they almost burn. then
-      stock not water. and the herbs at the very end or they go bitter.
-
-      idk how ur mom did the bay leaf thing. i think she kept it whole. i
-      always tear it because i forget and then i find pieces.
-
-      thinking of u this week.
-
-  - id: archive.tess_to_eileen_chapter
-    folder: Sent
-    from: "Tess <tess@gmail.com>"
-    to: "Eileen Brooks"
-    subject: "Re: chapter 4"
-    sent_at: "April 11"
-    body: |
-      hi eileen -
-
-      didnt finish but i think i know what it wants now. its the part where
-      the daughter doesnt say anything and i kept trying to fix that and i
-      think i was wrong, the silence is the thing.
-
-      i'll bring something thursday after next, sorry to push it again.
-
-      tess
-
-  - id: archive.tess_to_pantry
-    folder: Sent
-    from: "Tess <tess@gmail.com>"
-    to: "Sue at the pantry"
-    subject: "Saturday lead role"
-    sent_at: "February 28"
-    body: |
-      hi sue,
-
-      yes i can keep doing lead on saturdays. the man who comes for the
-      bread on the corner shift said i was a 'good listener' which idk what
-      to do with that but it felt like a thing.
-
-      see u sat,
-      tess
-
-  - id: archive.maya_to_tess_old
-    folder: Inbox
-    from: "Maya Chen"
-    to: "Tess"
-    subject: "the poem"
-    sent_at: "two months ago"
-    body: |
-      okay i read the poem about ur grandmother three times. the line about
-      the kettle. i cant.
-
-      anyway. proud of u for sending it.
-
-      m
-
-  - id: archive.tess_to_maya_late
-    folder: Sent
-    from: "Tess"
-    to: "Maya Chen"
-    subject: "Re: hey"
-    sent_at: "April 22"
-    body: |
-      i forgot to text u back yesterday because i was making soup and forgot
-      what time it was, im sorry. tomorrow if ur free.
-
-  - id: archive.eileen_to_tess_welcome_back
-    folder: Inbox
-    from: "Eileen Brooks"
-    to: "Tess"
-    subject: "welcome back to the writing group"
-    sent_at: "January 8"
-    body: |
-      hi tess,
-
-      so good to have you in the writing group room again. take whatever
-      pace you need — you don't have to share for a while if you'd rather
-      just listen. Thursday will be a quiet one.
-
-      eileen
-
-  - id: archive.tess_to_eileen_january
-    folder: Sent
-    from: "Tess"
-    to: "Eileen Brooks"
-    subject: "Re: welcome back"
-    sent_at: "January 9"
-    body: |
-      thank u eileen. i think i'd like to share when i can. sorry it's been
-      a while.
-
-  - id: archive.northbridge_registration
-    folder: Inbox
-    from: "Northbridge Community Studio"
-    to: "Tess"
-    subject: "Registration confirmed: CER101"
-    sent_at: "March 14"
-    body: |
-      Tess, you're in. CER101 starts the first Monday of spring term.
-      Materials list is attached. Payment plan is okay if you need it —
-      just reply. — Northbridge
+  - id: alex.terminal_distant
+    type: rendered
+    thread: alex
+    npc: alex
+    arrives_after_hours: 0.0
+    preconditions:
+      - kind: time_hours_gte
+        value: 72.0
+    from: "Alex Beckett <alex.beckett@gmail.com>"
+    to: "n.beckett@archfield.org"
+    subject: "Re: did you mean to email me?"
+    spec:
+      intent: |
+        Alex pulls back. Polite, formal, takes the player's signals at
+        face value. Doesn't push. Wishes them luck with whatever's
+        happening.
+      must_include_facts:
+        - "leaves things polite without warmth"
+      must_not:
+        - "do not be sarcastic"
+        - "do not bring up Diana"
+      length_words: [25, 50]

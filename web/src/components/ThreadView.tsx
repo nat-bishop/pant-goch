@@ -1,21 +1,14 @@
 import { useStore } from "../store";
 import { EmailComposer } from "./EmailComposer";
-import { DraftEditor } from "./DraftEditor";
 import { Email } from "../api";
 import { stripAddress } from "../util/email";
 
 export function ThreadView() {
-  const { threadEmails, view, back, archiveEmail, state } = useStore();
+  const { threadEmails, view, back, archiveEmail } = useStore();
 
   if (view.kind !== "thread" || !threadEmails) return null;
 
-  const draftEmail = threadEmails.find((e) => e.folder === "Drafts");
-  const draftPending = state?.unsent_draft_disposition === "pending";
-  const showDraftEditor = draftEmail && draftPending;
-  const visibleEmails = showDraftEditor
-    ? threadEmails.filter((e) => e.id !== draftEmail.id)
-    : threadEmails;
-  const composeTarget = pickComposeTarget(visibleEmails);
+  const composeTarget = pickComposeTarget(threadEmails);
 
   const subject = threadEmails[0]?.subject ?? view.threadId;
   const folderTag = view.folderReturnTo.toLowerCase();
@@ -41,7 +34,7 @@ export function ThreadView() {
 
       <div className="flex-1 overflow-y-auto px-8 py-6">
         <div className="mx-auto max-w-3xl">
-          {visibleEmails.map((email) => (
+          {threadEmails.map((email) => (
             <EmailCard
               key={email.id}
               email={email}
@@ -49,9 +42,7 @@ export function ThreadView() {
             />
           ))}
 
-          {showDraftEditor && draftEmail && <DraftEditor draft={draftEmail} />}
-
-          {!showDraftEditor && composeTarget && (
+          {composeTarget && (
             <EmailComposer
               inReplyTo={composeTarget.beat_id ?? null}
               recipient={composeTarget.from}

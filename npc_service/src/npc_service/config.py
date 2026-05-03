@@ -34,6 +34,9 @@ class Settings(BaseSettings):
     # ───────── service ─────────
     npc_service_port: int = 8000
     npc_log_level: str = "info"
+    # True (default) prints Logfire spans + log records to stderr for fast local
+    # feedback; tests set this to false to keep pytest output uncluttered.
+    npc_logfire_console: bool = True
 
     # ───────── llama lifecycle ─────────
     launch_llama: bool = True

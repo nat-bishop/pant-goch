@@ -1,6 +1,6 @@
 """FastAPI surface for Inbox.
 
-The four LLM agents (see agents.py) are constructed in lifespan against one
+The two LLM agents (see agents.py) are constructed in lifespan against one
 shared model handle. The deterministic spine (spine.py) owns all state
 mutation; agents return prose / scores only.
 """
@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import AsyncIterator
 
 import logfire
+from logfire import ConsoleOptions
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic_ai.models.openai import OpenAIChatModel
@@ -26,10 +27,8 @@ from pydantic_ai.providers.openai import OpenAIProvider
 from .agents import (
     AgentBundle,
     build_agents,
-    build_coda_user_prompt,
     build_email_user_prompt,
     build_texture_user_prompt,
-    build_voice_fidelity_user_prompt,
 )
 from .config import Settings
 from .launcher import (
@@ -43,35 +42,35 @@ from .models import (
     AnchoredBeat,
     ArchiveRequest,
     Beat,
-    CodaBeat,
-    DraftDecisionRequest,
-    DraftVisibleBeat,
     Email,
     InboxState,
     OpenRequest,
     RenderedBeat,
     Reply,
     Scenario,
-    SceneUpdateBeat,
     SendRequest,
     TextureScore,
-    VoiceFidelityScore,
     load_scenario,
 )
 from .spine import (
+    advance_time,
     apply_effect,
     apply_texture_score,
-    apply_voice_fidelity,
     check_end_conditions,
-    evaluate_thread_transitions,
     find_due_beats,
     initialize_boot_inbox,
     render_thread_transcript,
-    search_inbox,
-    select_coda_fragments,
+    schedule_npc_reply,
     select_voice_band,
     thread_id_from_beat_id,
 )
+
+
+# Time costs per verb (game-time hours). Reading is free; sending takes a
+# realistic 15 minutes; waiting and sleeping are deliberate clock pushes.
+SEND_HOURS = 0.25
+WAIT_HOURS = 2.0
+SLEEP_HOURS = 8.0
 
 
 _BOOT_SETTINGS = Settings()
@@ -92,7 +91,7 @@ logfire.configure(
     service_name="npc_service",
     send_to_logfire="if-token-present",
     token=_logfire_token,
-    console=False,
+    console=ConsoleOptions() if _BOOT_SETTINGS.npc_logfire_console else False,
     # Single-player local game with no PII; default scrubbing would redact
     # email bodies and rationales — exactly the prose we want to inspect.
     scrubbing=False,
@@ -174,7 +173,7 @@ logfire.instrument_fastapi(app, capture_headers=False)
 
 
 async def _fire_beat(beat: Beat, in_response_to: str | None) -> Email | None:
-    # `in_response_to` chains rendered Maya replies onto the player's send so
+    # `in_response_to` chains rendered NPC replies onto the player's send so
     # the next beat reads the right transcript.
     assert STATE is not None and SCENARIO is not None and AGENTS is not None
     if beat.id in STATE.fired_beat_ids:
@@ -182,11 +181,7 @@ async def _fire_beat(beat: Beat, in_response_to: str | None) -> Email | None:
 
     with logfire.span("fire_beat", beat_id=beat.id, beat_type=type(beat).__name__):
         email: Email | None = None
-        if isinstance(beat, (AnchoredBeat, DraftVisibleBeat)):
-            sent_at_label = (
-                "(unsent draft)" if isinstance(beat, DraftVisibleBeat)
-                else (beat.sent_at or "just now")
-            )
+        if isinstance(beat, AnchoredBeat):
             email = Email(
                 id=f"email_{uuid.uuid4().hex[:8]}",
                 beat_id=beat.id,
@@ -196,15 +191,11 @@ async def _fire_beat(beat: Beat, in_response_to: str | None) -> Email | None:
                 recipient=beat.to,
                 subject=beat.subject,
                 body=beat.authored_prose.strip(),
-                sent_at_label=sent_at_label,
-                sent_at_action=STATE.action_count,
+                sent_at_label=beat.sent_at or "just now",
+                sent_at_hours=STATE.game_time_hours,
             )
         elif isinstance(beat, RenderedBeat):
             email = await _render_beat_email(beat, in_response_to)
-        elif isinstance(beat, SceneUpdateBeat):
-            email = None
-        elif isinstance(beat, CodaBeat):
-            return None  # /coda owns this beat type, not the scheduler
 
         if email is not None:
             STATE.emails.append(email)
@@ -219,8 +210,7 @@ async def _render_beat_email(beat: RenderedBeat, in_response_to: str | None) -> 
     assert STATE is not None and SCENARIO is not None and AGENTS is not None
     npc = SCENARIO.npc_by_id[beat.npc]
     transcript = render_thread_transcript(STATE, beat.thread)
-    extra_context = _extra_context_for_beat(beat)
-    user_prompt = build_email_user_prompt(beat, npc, STATE, transcript, extra_context)
+    user_prompt = build_email_user_prompt(beat, npc, STATE, transcript)
     band = select_voice_band(npc, STATE)
     band_name = band.name if band else None
 
@@ -229,7 +219,6 @@ async def _render_beat_email(beat: RenderedBeat, in_response_to: str | None) -> 
         beat_id=beat.id,
         npc=beat.npc,
         band=band_name,
-        extra_keys=sorted(extra_context.keys()),
     ) as span:
         result = await AGENTS.email_agent.run(user_prompt)
         usage = result.usage()
@@ -246,58 +235,24 @@ async def _render_beat_email(beat: RenderedBeat, in_response_to: str | None) -> 
         subject=beat.subject,
         body=result.output.prose.strip(),
         sent_at_label="just now",
-        sent_at_action=STATE.action_count,
+        sent_at_hours=STATE.game_time_hours,
         in_reply_to_beat=in_response_to,
         voice_band_used=band_name,
     )
-
-
-def _extra_context_for_beat(beat: RenderedBeat) -> dict[str, str]:
-    """Slice has exactly one beat that takes extra inputs:
-    maya.response_to_draft reads disposition + truth-disclosure + the
-    edited-or-original draft text + any voice_fidelity_rationale."""
-    assert STATE is not None
-    out: dict[str, str] = {}
-    if beat.id != "maya.response_to_draft":
-        return out
-    out["unsent_draft_disposition"] = str(STATE.atoms.get("unsent_draft_disposition", "pending"))
-    out["knowledge.maya_knows_truth"] = str(STATE.atoms.get("knowledge.maya_knows_truth", "unknown"))
-    if STATE.voice_fidelity_rationale:
-        out["voice_fidelity_rationale"] = STATE.voice_fidelity_rationale
-        out["voice_fidelity"] = f"{STATE.voice_fidelity:.2f}" if STATE.voice_fidelity is not None else "n/a"
-    # Pull the most recent player-authored Maya-bound send (the draft they actually sent).
-    sent_drafts = [e for e in STATE.emails if e.sender.startswith("you") and "Maya" in e.recipient]
-    if sent_drafts:
-        out["draft_text_sent"] = sent_drafts[-1].body
-    return out
 
 
 # ───────────────────────── scheduler tick ─────────────────────────
 
 
 async def _tick(in_response_to: str | None = None) -> list[Email]:
-    """Run the spine: thread state machine + beat scheduler. Returns the
-    list of newly-emitted emails this tick (for SSE).
+    """Walk the beat scheduler. Returns the list of newly-emitted emails this
+    tick (for SSE).
     """
     assert STATE is not None and SCENARIO is not None
     new_emails: list[Email] = []
 
     with logfire.span("tick", in_response_to=in_response_to) as span:
-        # First evaluate thread transitions; they may schedule beats or fire one.
-        fired_by_transitions = evaluate_thread_transitions(STATE, SCENARIO)
-        for bf in fired_by_transitions:
-            e = await _fire_beat(bf.beat, in_response_to=in_response_to)
-            if e is not None:
-                new_emails.append(e)
-
-        # Then walk the scheduler.
         for bf in find_due_beats(STATE, SCENARIO):
-            e = await _fire_beat(bf.beat, in_response_to=in_response_to)
-            if e is not None:
-                new_emails.append(e)
-
-        # Re-evaluate transitions in case a fired beat changed state.
-        for bf in evaluate_thread_transitions(STATE, SCENARIO):
             e = await _fire_beat(bf.beat, in_response_to=in_response_to)
             if e is not None:
                 new_emails.append(e)
@@ -326,7 +281,7 @@ async def get_scenario() -> dict:
     return {
         "title": SCENARIO.title,
         "premise": SCENARIO.premise,
-        "max_actions": SCENARIO.max_actions,
+        "max_hours": SCENARIO.max_hours,
     }
 
 
@@ -342,30 +297,30 @@ async def get_inbox() -> dict:
     """Folder summary. The client uses this for the inbox list view."""
     if STATE is None:
         raise HTTPException(503, "state not initialised")
-    folders: dict[str, list[dict]] = {"Inbox": [], "Drafts": [], "Sent": [], "Archive": []}
+    folders: dict[str, list[dict]] = {"Inbox": [], "Sent": [], "Archive": []}
     for e in STATE.emails:
         folders.setdefault(e.folder, []).append(_email_summary(e))
-    # Sort within each folder by sent_at_action desc (newest first).
+    # Sort within each folder by sent_at_hours desc (newest first).
     for k in folders:
-        folders[k].sort(key=lambda x: -x["sent_at_action"])
+        folders[k].sort(key=lambda x: -x["sent_at_hours"])
     return {"folders": folders, "state": STATE.public_view()}
 
 
 @app.get("/thread/{thread_id}")
 async def get_thread(thread_id: str) -> dict:
-    """All emails in a thread, ordered by sent_at_action."""
+    """All emails in a thread, ordered by sent_at_hours."""
     if STATE is None or SCENARIO is None:
         raise HTTPException(503, "state not initialised")
     if thread_id not in SCENARIO.thread_by_id:
         raise HTTPException(404, f"unknown thread: {thread_id}")
     emails = [_email_full(e) for e in STATE.emails if e.thread_id == thread_id]
-    emails.sort(key=lambda x: x["sent_at_action"])
+    emails.sort(key=lambda x: x["sent_at_hours"])
     return {"thread_id": thread_id, "emails": emails}
 
 
 @app.post("/open")
 async def post_open(req: OpenRequest) -> dict:
-    """First-read advances the action counter and ticks the scheduler."""
+    """First-read marks the email as read. Free — does not advance the clock."""
     if STATE is None:
         raise HTTPException(503, "state not initialised")
     if STATE.ended:
@@ -375,35 +330,55 @@ async def post_open(req: OpenRequest) -> dict:
         email = next((e for e in STATE.emails if e.id == req.email_id), None)
         if email is None:
             raise HTTPException(404, f"unknown email_id: {req.email_id}")
-        already_read = email.is_read
         email.is_read = True
-        if already_read:
-            return {"state": STATE.public_view(), "new_emails": []}
-        STATE.action_count += 1
-        new_emails = await _tick(in_response_to=email.id)
+        return {"state": STATE.public_view(), "new_emails": []}
+
+
+@app.post("/archive")
+async def post_archive(req: ArchiveRequest) -> dict:
+    """Move email to Archive. Free — does not advance the clock."""
+    if STATE is None:
+        raise HTTPException(503, "state not initialised")
+    if STATE.ended:
+        raise HTTPException(409, f"session ended ({STATE.end_reason})")
+
+    async with ACTION_LOCK:
+        email = next((e for e in STATE.emails if e.id == req.email_id), None)
+        if email is None:
+            raise HTTPException(404, f"unknown email_id: {req.email_id}")
+        email.folder = "Archive"
+        email.is_read = True
+        return {"state": STATE.public_view(), "new_emails": []}
+
+
+@app.post("/wait")
+async def post_wait() -> dict:
+    """Advance the world clock by WAIT_HOURS, tick the scheduler."""
+    if STATE is None:
+        raise HTTPException(503, "state not initialised")
+    if STATE.ended:
+        raise HTTPException(409, f"session ended ({STATE.end_reason})")
+
+    async with ACTION_LOCK:
+        advance_time(STATE, WAIT_HOURS)
+        new_emails = await _tick(in_response_to=None)
         return {
             "state": STATE.public_view(),
             "new_emails": [_email_full(e) for e in new_emails],
         }
 
 
-@app.post("/archive")
-async def post_archive(req: ArchiveRequest) -> dict:
+@app.post("/sleep")
+async def post_sleep() -> dict:
+    """Advance the world clock by SLEEP_HOURS (overnight), tick the scheduler."""
     if STATE is None:
         raise HTTPException(503, "state not initialised")
     if STATE.ended:
         raise HTTPException(409, f"session ended ({STATE.end_reason})")
 
     async with ACTION_LOCK:
-        email = next((e for e in STATE.emails if e.id == req.email_id), None)
-        if email is None:
-            raise HTTPException(404, f"unknown email_id: {req.email_id}")
-        if email.folder == "Archive":
-            return {"state": STATE.public_view(), "new_emails": []}
-        email.folder = "Archive"
-        email.is_read = True
-        STATE.action_count += 1
-        new_emails = await _tick(in_response_to=email.id)
+        advance_time(STATE, SLEEP_HOURS)
+        new_emails = await _tick(in_response_to=None)
         return {
             "state": STATE.public_view(),
             "new_emails": [_email_full(e) for e in new_emails],
@@ -431,6 +406,8 @@ async def _send_stream(req: SendRequest) -> AsyncIterator[bytes]:
 
     with logfire.span("send_stream", recipient=req.recipient, thread_id=thread_id):
         async with ACTION_LOCK:
+            advance_time(STATE, SEND_HOURS)
+
             send_email = Email(
                 id=f"email_{uuid.uuid4().hex[:8]}",
                 beat_id=None,
@@ -441,7 +418,7 @@ async def _send_stream(req: SendRequest) -> AsyncIterator[bytes]:
                 subject=_reply_subject(req.in_reply_to),
                 body=body,
                 sent_at_label="just now",
-                sent_at_action=STATE.action_count,
+                sent_at_hours=STATE.game_time_hours,
                 in_reply_to_beat=req.in_reply_to,
                 is_read=True,
             )
@@ -450,7 +427,7 @@ async def _send_stream(req: SendRequest) -> AsyncIterator[bytes]:
 
             recipient_npc = _infer_recipient_npc_id(req.recipient)
             recipient_blurb = _persona_blurb_for_recipient(req.recipient, recipient_npc)
-            transcript = render_thread_transcript(STATE, thread_id) if thread_id else ""
+            transcript = render_thread_transcript(STATE, thread_id)
             try:
                 tex_result = await AGENTS.texture_agent.run(
                     build_texture_user_prompt(recipient_blurb, transcript, body)
@@ -459,14 +436,12 @@ async def _send_stream(req: SendRequest) -> AsyncIterator[bytes]:
                 logfire.info(
                     "texture scored",
                     warmth=tex.warmth,
-                    honesty=tex.honesty,
                     rationale=tex.rationale,
                 )
             except Exception:
                 logfire.exception("texture scoring failed; defaulting to neutral")
-                tex = TextureScore(warmth=0.0, honesty=0.0, rationale="scorer-failed")
+                tex = TextureScore(warmth=0.0, rationale="scorer-failed")
 
-            # 3. Apply texture and append Reply.
             STATE.replies.append(Reply(
                 id=f"reply_{uuid.uuid4().hex[:8]}",
                 thread_id=thread_id,
@@ -474,15 +449,17 @@ async def _send_stream(req: SendRequest) -> AsyncIterator[bytes]:
                 recipient=req.recipient,
                 body=body,
                 warmth=tex.warmth,
-                honesty=tex.honesty,
                 rationale=tex.rationale,
-                sent_at_action=STATE.action_count,
+                sent_at_hours=STATE.game_time_hours,
             ))
-            apply_texture_score(STATE, SCENARIO, recipient_npc, tex.warmth, tex.honesty)
-            yield _sse({"type": "texture", "warmth": tex.warmth, "honesty": tex.honesty})
+            apply_texture_score(STATE, SCENARIO, recipient_npc, tex.warmth)
+            yield _sse({"type": "texture", "warmth": tex.warmth})
 
-            # 4. Advance counter, tick scheduler.
-            STATE.action_count += 1
+            if recipient_npc is not None:
+                schedule_npc_reply(STATE, SCENARIO, recipient_npc)
+
+            # Time has advanced by SEND_HOURS, so a time-gated bounce that
+            # just crossed its threshold can fire on this tick.
             new_emails = await _tick(in_response_to=send_email.id)
             for ne in new_emails:
                 yield _sse({"type": "new_email", "email": _email_full(ne)})
@@ -501,184 +478,20 @@ def _reply_subject(in_reply_to: str | None) -> str:
 
 
 def _persona_blurb_for_recipient(recipient: str, npc_id: str | None) -> str:
-    if SCENARIO is None:
+    if SCENARIO is None or npc_id is None:
         return f"a recipient: {recipient}"
-    if npc_id is not None:
-        n = SCENARIO.npc_by_id[npc_id]
-        return f"{n.display_name} — {n.relationship_to_owner}"
-    for key, val in SCENARIO.persona_blurbs.items():
-        if key in recipient:
-            return val
-    return f"a recipient: {recipient}"
+    n = SCENARIO.npc_by_id[npc_id]
+    return f"{n.display_name} — {n.relationship_to_owner}"
 
 
 def _infer_recipient_npc_id(recipient: str) -> str | None:
     if SCENARIO is None:
         return None
+    needle = recipient.lower()
     for n in SCENARIO.npcs:
-        if n.display_name in recipient or n.id in recipient.lower():
+        if n.display_name.lower() in needle or n.id in needle:
             return n.id
     return None
-
-
-@app.post("/draft/{draft_id}/decision")
-async def post_draft_decision(draft_id: str, req: DraftDecisionRequest) -> StreamingResponse:
-    if STATE is None or AGENTS is None or SCENARIO is None:
-        raise HTTPException(503, "state not initialised")
-    if STATE.ended:
-        raise HTTPException(409, f"session ended ({STATE.end_reason})")
-    return StreamingResponse(
-        _draft_decision_stream(draft_id, req),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
-
-
-async def _draft_decision_stream(draft_id: str, req: DraftDecisionRequest) -> AsyncIterator[bytes]:
-    assert STATE is not None and SCENARIO is not None and AGENTS is not None
-
-    with logfire.span("draft_decision", action=req.action, draft_id=draft_id):
-        async with ACTION_LOCK:
-            draft_email = next((e for e in STATE.emails if e.id == draft_id), None)
-            if draft_email is None:
-                yield _sse({"type": "error", "message": f"unknown draft: {draft_id}"})
-                return
-            if draft_email.folder != "Drafts":
-                yield _sse({"type": "error", "message": "email is not a draft"})
-                return
-            if STATE.atoms.get("unsent_draft_disposition") != "pending":
-                yield _sse({"type": "error", "message": "draft decision already made"})
-                return
-
-            if req.action == "hold":
-                STATE.atoms["unsent_draft_disposition"] = "held"
-                STATE.action_count += 1
-                yield _sse({"type": "draft_held"})
-                new_emails = await _tick(in_response_to=draft_email.id)
-                for ne in new_emails:
-                    yield _sse({"type": "new_email", "email": _email_full(ne)})
-                yield _sse({"type": "state", "state": STATE.public_view()})
-                yield _sse({"type": "done"})
-                return
-
-            # send_unchanged or edit_and_send
-            original = draft_email.body
-            if req.action == "edit_and_send":
-                edited = (req.body or "").strip()
-                tess = SCENARIO.npc_by_id["tess"]
-                try:
-                    vf_result = await AGENTS.voice_fidelity_agent.run(
-                        build_voice_fidelity_user_prompt(tess, original, edited)
-                    )
-                    vf = vf_result.output
-                    logfire.info(
-                        "voice fidelity scored",
-                        voice_fidelity=vf.voice_fidelity,
-                        rationale=vf.rationale,
-                    )
-                except Exception:
-                    logfire.exception("voice fidelity scoring failed; defaulting to 0.5")
-                    vf = VoiceFidelityScore(voice_fidelity=0.5, rationale="scorer-failed")
-                apply_voice_fidelity(STATE, vf.voice_fidelity, vf.rationale)
-                yield _sse({
-                    "type": "voice_fidelity",
-                    "voice_fidelity": vf.voice_fidelity,
-                    "rationale": vf.rationale,
-                })
-                STATE.atoms["unsent_draft_disposition"] = "sent_edited"
-                sent_body = edited
-            else:  # send_unchanged
-                STATE.atoms["unsent_draft_disposition"] = "sent_unchanged"
-                sent_body = original
-
-            # Emit a Sent email — the player sent this on Tess's behalf. Thread
-            # follows the draft's thread so Maya's reply chains correctly.
-            sent_email = Email(
-                id=f"email_{uuid.uuid4().hex[:8]}",
-                beat_id=None,
-                thread_id=draft_email.thread_id,
-                folder="Sent",
-                sender="you (sent on behalf of Tess)",
-                recipient=draft_email.recipient,
-                subject="(forwarded draft)",
-                body=sent_body,
-                sent_at_label="just now",
-                sent_at_action=STATE.action_count,
-                in_reply_to_beat=draft_email.beat_id,
-                is_read=True,
-            )
-            STATE.emails.append(sent_email)
-            yield _sse({"type": "draft_sent", "email": _email_full(sent_email)})
-
-            # Mark the original draft as no longer pending — we keep it in Drafts
-            # for visibility but flag it as resolved.
-            draft_email.is_read = True
-
-            STATE.action_count += 1
-            new_emails = await _tick(in_response_to=sent_email.id)
-            for ne in new_emails:
-                yield _sse({"type": "new_email", "email": _email_full(ne)})
-            yield _sse({"type": "state", "state": STATE.public_view()})
-            yield _sse({"type": "done"})
-
-
-@app.get("/search")
-async def get_search(q: str) -> dict:
-    """Free; does not advance actions. Substring search over inbox + archive."""
-    if STATE is None or SCENARIO is None:
-        raise HTTPException(503, "state not initialised")
-    hits = search_inbox(STATE, SCENARIO, q)
-    return {"q": q, "hits": hits}
-
-
-@app.get("/coda")
-async def get_coda() -> StreamingResponse:
-    if STATE is None or AGENTS is None or SCENARIO is None:
-        raise HTTPException(503, "state not initialised")
-    return StreamingResponse(
-        _coda_stream(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
-
-
-async def _coda_stream() -> AsyncIterator[bytes]:
-    assert STATE is not None and SCENARIO is not None and AGENTS is not None
-    with logfire.span("coda_stream") as span:
-        async with ACTION_LOCK:
-            if STATE.coda_emitted:
-                yield _sse({"type": "error", "message": "coda already emitted"})
-                return
-            if not STATE.ended:
-                # check_end_conditions runs every tick, so STATE.ended being false
-                # here means neither budget nor natural-terminal condition fired.
-                # Don't let a stray client force the coda mid-game.
-                yield _sse({"type": "error", "message": "session has not ended yet"})
-                return
-            fragments = select_coda_fragments(STATE, SCENARIO)
-            if not fragments:
-                yield _sse({"type": "error", "message": "no coda fragments"})
-                return
-            for i, frag in enumerate(fragments):
-                yield _sse({"type": "fragment", "index": i, "label": frag.label, "excerpt": frag.excerpt})
-
-            try:
-                user_prompt = build_coda_user_prompt(fragments, STATE)
-                result = await AGENTS.coda_agent.run(user_prompt)
-                usage = result.usage()
-                span.set_attribute("input_tokens", usage.input_tokens)
-                span.set_attribute("output_tokens", usage.output_tokens)
-                for i, line in enumerate(result.output.framing_lines):
-                    yield _sse({"type": "framing", "index": i, "line": line})
-            except Exception as e:
-                logfire.exception("coda generation failed")
-                yield _sse({"type": "error", "message": str(e)})
-                return
-
-            STATE.coda_emitted = True
-            STATE.ended = True
-            STATE.end_reason = STATE.end_reason or "coda_emitted"
-            yield _sse({"type": "done"})
 
 
 @app.post("/reset")
@@ -714,7 +527,7 @@ def _email_summary(email: Email) -> dict:
         "to": email.recipient,
         "subject": email.subject,
         "sent_at": email.sent_at_label,
-        "sent_at_action": email.sent_at_action,
+        "sent_at_hours": email.sent_at_hours,
         "is_read": email.is_read,
         "preview": email.body[:140] + ("…" if len(email.body) > 140 else ""),
         "folder": email.folder,

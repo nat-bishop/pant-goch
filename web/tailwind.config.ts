@@ -5,8 +5,7 @@ export default {
   theme: {
     extend: {
       fontFamily: {
-        mono: ['"IBM Plex Mono"', "ui-monospace", "monospace"],
-        serif: ['"IBM Plex Serif"', "Georgia", "serif"],
+        sans: ['"Google Sans"', "Roboto", "Arial", "sans-serif"],
       },
       colors: {
         paper: "#f7f4ec",

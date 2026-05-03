@@ -32,7 +32,7 @@ export function EmailComposer({ inReplyTo, recipient }: Props) {
         onChange={(e) => setBody(e.target.value)}
         placeholder="got it."
         rows={6}
-        className="w-full resize-y rounded border border-line bg-paper-hover/40 px-3 py-2 font-serif text-base leading-relaxed placeholder-muted focus:border-ink focus:outline-none"
+        className="w-full resize-y rounded border border-line bg-paper-hover/40 px-3 py-2 text-base leading-relaxed placeholder-muted focus:border-ink focus:outline-none"
         disabled={busy}
       />
       <div className="mt-3 flex items-center justify-between">

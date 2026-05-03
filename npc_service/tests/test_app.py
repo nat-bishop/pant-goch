@@ -1,7 +1,7 @@
 """FastAPI smoke tests with Pydantic AI's TestModel — no llama-server, no
-real LLM. Verifies wiring: lifespan boots, boot inbox emits, /open advances
-the action counter, /send runs the texture scorer end-to-end, /draft branches
-the three paths, and /coda emits an inbox montage.
+real LLM. Verifies wiring: lifespan boots, boot inbox emits, /open is free,
+/send advances the clock and runs the texture scorer end-to-end, /wait and
+/sleep advance the clock and surface scheduled beats.
 """
 import json
 from contextlib import ExitStack
@@ -20,7 +20,7 @@ def client(monkeypatch):
     TestModel that returns canned structured outputs.
 
     `Agent.override(model=...)` is a context manager — the override only
-    holds while the context is active. We push all four onto an ExitStack
+    holds while the context is active. We push both onto an ExitStack
     so they live for the whole test.
     """
     monkeypatch.setenv("LAUNCH_LLAMA", "false")
@@ -29,38 +29,19 @@ def client(monkeypatch):
         assert main.AGENTS is not None
         with ExitStack() as stack:
             stack.enter_context(main.AGENTS.email_agent.override(model=_test_model_for_email()))
-            stack.enter_context(main.AGENTS.texture_agent.override(model=_test_model_for_texture(1.0, 1.0)))
-            stack.enter_context(main.AGENTS.voice_fidelity_agent.override(model=_test_model_for_voice_fidelity()))
-            stack.enter_context(main.AGENTS.coda_agent.override(model=_test_model_for_coda()))
+            stack.enter_context(main.AGENTS.texture_agent.override(model=_test_model_for_texture(1.0)))
             yield c
 
 
 def _test_model_for_email() -> TestModel:
-    return TestModel(custom_output_args={"prose": "(test rendered email body — Maya is responding warmly)"})
+    return TestModel(custom_output_args={"prose": "(test rendered email body)"})
 
 
-def _test_model_for_texture(warmth: float, honesty: float) -> TestModel:
-    return TestModel(custom_output_args={"warmth": warmth, "honesty": honesty, "rationale": "(test)"})
+def _test_model_for_texture(warmth: float) -> TestModel:
+    return TestModel(custom_output_args={"warmth": warmth, "rationale": "(test)"})
 
 
-def _test_model_for_voice_fidelity() -> TestModel:
-    return TestModel(custom_output_args={
-        "voice_fidelity": 0.85,
-        "rationale": "kept the lowercase but tightened the ending",
-    })
-
-
-def _test_model_for_coda() -> TestModel:
-    return TestModel(custom_output_args={
-        "framing_lines": [
-            "There are emails she did not write.",
-            "There is a thing left in the drafts folder.",
-            "Outside, it is Thursday.",
-        ],
-    })
-
-
-# ───────────────────────── boot + endpoints ─────────────────────────
+# ───────────────────────── boot + read-only endpoints ─────────────────────────
 
 
 def test_health(client):
@@ -73,84 +54,59 @@ def test_scenario(client):
     r = client.get("/scenario")
     assert r.status_code == 200
     j = r.json()
-    assert j["title"] == "Inbox"
+    assert j["title"] == "Threads"
+    assert j["max_hours"] == 96.0
     assert "premise" in j
 
 
-def test_boot_inbox_has_three_emails(client):
+def test_state_starts_at_zero(client):
+    r = client.get("/state").json()
+    assert r["game_time_hours"] == 0.0
+    assert r["max_hours"] == 96.0
+    assert r["ended"] is False
+
+
+def test_boot_inbox_has_two_emails(client):
     r = client.get("/inbox")
     assert r.status_code == 200
     j = r.json()
     inbox = j["folders"]["Inbox"]
     senders = [e["from"] for e in inbox]
-    # Janet (intake), Maya (old), and the class registration auto-reminder.
-    assert any("Janet" in s for s in senders)
-    assert any("Maya" in s for s in senders)
-    assert any("Northbridge" in s for s in senders)
+    # The inciting bounce + Sam's opening message.
+    assert any("mailer-daemon" in s for s in senders), senders
+    assert any("Sam" in s for s in senders), senders
+    assert len(inbox) == 2
 
 
-def test_state_starts_at_zero(client):
-    r = client.get("/state").json()
-    assert r["action_count"] == 0
-    assert r["max_actions"] == 18
-    assert r["ended"] is False
+# ───────────────────────── free verbs (no clock advance) ─────────────────────────
 
 
-def test_open_advances_action_counter(client):
+def test_open_is_free(client):
     inbox = client.get("/inbox").json()
-    janet_email = next(e for e in inbox["folders"]["Inbox"] if "Janet" in e["from"])
-    r = client.post("/open", json={"email_id": janet_email["id"]})
+    sam_email = next(e for e in inbox["folders"]["Inbox"] if "Sam" in e["from"])
+    r = client.post("/open", json={"email_id": sam_email["id"]})
     assert r.status_code == 200
     state = r.json()["state"]
-    assert state["action_count"] == 1
+    assert state["game_time_hours"] == 0.0
 
 
-def test_open_idempotent_after_first_read(client):
+def test_archive_is_free(client):
     inbox = client.get("/inbox").json()
-    daniel_email = next((e for e in inbox["folders"]["Inbox"] if "Daniel" in e["from"]), None)
-    if daniel_email is None:
-        pytest.skip("daniel hasn't arrived yet at boot")
-    client.post("/open", json={"email_id": daniel_email["id"]})
-    state_after_first = client.get("/state").json()
-    client.post("/open", json={"email_id": daniel_email["id"]})
-    state_after_second = client.get("/state").json()
-    assert state_after_first["action_count"] == state_after_second["action_count"]
-
-
-def test_archive_advances_counter(client):
-    inbox = client.get("/inbox").json()
-    e = inbox["folders"]["Inbox"][0]
-    initial = client.get("/state").json()["action_count"]
-    r = client.post("/archive", json={"email_id": e["id"]})
+    bounce_email = next(e for e in inbox["folders"]["Inbox"] if "mailer-daemon" in e["from"])
+    initial = client.get("/state").json()["game_time_hours"]
+    r = client.post("/archive", json={"email_id": bounce_email["id"]})
     assert r.status_code == 200
-    assert r.json()["state"]["action_count"] == initial + 1
-
-
-def test_search_does_not_advance_counter(client):
-    initial = client.get("/state").json()["action_count"]
-    r = client.get("/search", params={"q": "writing group"})
-    assert r.status_code == 200
-    assert client.get("/state").json()["action_count"] == initial
-
-
-def test_search_finds_results(client):
-    r = client.get("/search", params={"q": "writing group"}).json()
-    assert len(r["hits"]) >= 1
-    assert any("writing group" in h["body"].lower() or "writing group" in h["subject"].lower() for h in r["hits"])
+    assert r.json()["state"]["game_time_hours"] == initial
 
 
 # ───────────────────────── send + texture scoring ─────────────────────────
 
 
-def test_send_runs_texture_and_advances_counter(client):
-    inbox = client.get("/inbox").json()
-    maya_email = next(e for e in inbox["folders"]["Inbox"] if "Maya" in e["from"])
-    initial = client.get("/state").json()["action_count"]
-
+def test_send_advances_clock_and_runs_texture(client):
     events = list(_consume_sse(client.stream("POST", "/send", json={
-        "in_reply_to": maya_email["beat_id"] if "beat_id" in maya_email else None,
-        "recipient": "Maya Chen",
-        "body": "thinking of u, im here",
+        "in_reply_to": "sam.opening",
+        "recipient": "Sam Park",
+        "body": "yeah no idea who that is - can you check?",
     })))
 
     types = [e["type"] for e in events]
@@ -159,117 +115,61 @@ def test_send_runs_texture_and_advances_counter(client):
     assert "done" in types
 
     state_after = client.get("/state").json()
-    assert state_after["action_count"] == initial + 1
+    # Clock should have advanced by SEND_HOURS = 0.25.
+    assert state_after["game_time_hours"] == pytest.approx(0.25)
 
 
-# ───────────────────────── draft mechanic — three branches ─────────────────────────
+def test_send_to_sam_schedules_a_reply(client):
+    list(_consume_sse(client.stream("POST", "/send", json={
+        "in_reply_to": "sam.opening",
+        "recipient": "Sam Park",
+        "body": "yeah no idea who that is",
+    })))
+    # Pending now includes sam.first_response, scheduled at send_time + 1.25h.
+    pending_ids = {pb.beat_id for pb in main.STATE.pending_beats}
+    assert "sam.first_response" in pending_ids
 
 
-def test_draft_does_not_appear_until_player_replies_to_maya(client):
-    """The draft is gated on player_replied_to: maya.first_email."""
-    inbox = client.get("/inbox").json()
-    drafts = inbox["folders"]["Drafts"]
-    assert drafts == [], f"expected no drafts at boot, got {drafts}"
+# ───────────────────────── wait + sleep ─────────────────────────
 
 
-def test_draft_held_branch(client):
-    _reply_to_maya_to_unlock_draft(client, "thanks for writing.")
-    drafts = _get_drafts(client)
-    assert len(drafts) == 1, f"expected the draft to surface; got {drafts}"
-    draft = drafts[0]
-
-    events = list(_consume_sse(
-        client.stream("POST", f"/draft/{draft['id']}/decision", json={"action": "hold"})
-    ))
-    types = [e["type"] for e in events]
-    assert "draft_held" in types
-    assert "done" in types
-
-    # Atom set, no maya.response_to_draft beat fired.
-    state = client.get("/state").json()
-    assert "maya" in state["thread_states"]
-    # maya.response_to_draft only fires on send paths.
-    inbox = client.get("/inbox").json()
-    maya_emails = [e for e in inbox["folders"]["Inbox"] if "Maya" in e["from"]]
-    rendered_response_to_draft = [e for e in maya_emails if e.get("beat_id") == "maya.response_to_draft"]
-    assert rendered_response_to_draft == []
+def test_wait_advances_clock(client):
+    initial = client.get("/state").json()["game_time_hours"]
+    r = client.post("/wait")
+    assert r.status_code == 200
+    assert r.json()["state"]["game_time_hours"] == pytest.approx(initial + 2.0)
 
 
-def test_draft_send_unchanged_branch(client):
-    _reply_to_maya_to_unlock_draft(client, "hey, i'm taking care of things")
-    drafts = _get_drafts(client)
-    draft = drafts[0]
-
-    events = list(_consume_sse(
-        client.stream("POST", f"/draft/{draft['id']}/decision", json={"action": "send_unchanged"})
-    ))
-    types = [e["type"] for e in events]
-    assert "draft_sent" in types
-
-    # The send appears in Sent folder.
-    inbox = client.get("/inbox").json()
-    sent = inbox["folders"]["Sent"]
-    assert any("on behalf of Tess" in e["from"] for e in sent)
+def test_sleep_advances_clock(client):
+    initial = client.get("/state").json()["game_time_hours"]
+    r = client.post("/sleep")
+    assert r.status_code == 200
+    assert r.json()["state"]["game_time_hours"] == pytest.approx(initial + 8.0)
 
 
-def test_draft_edit_and_send_runs_voice_fidelity(client):
-    _reply_to_maya_to_unlock_draft(client, "thanks for the message")
-    drafts = _get_drafts(client)
-    draft = drafts[0]
-
-    events = list(_consume_sse(client.stream(
-        "POST", f"/draft/{draft['id']}/decision",
-        json={"action": "edit_and_send", "body": "hey - im handling some things for tess. she's safe."},
-    )))
-    types = [e["type"] for e in events]
-    assert "voice_fidelity" in types, f"expected voice_fidelity event; got {types}"
-    vf_event = next(e for e in events if e["type"] == "voice_fidelity")
-    assert 0.0 <= vf_event["voice_fidelity"] <= 1.0
-
-
-# ───────────────────────── coda ─────────────────────────
+def test_wait_surfaces_scheduled_npc_reply(client):
+    """Send to Sam, then wait long enough — Sam's reply lands."""
+    list(_consume_sse(client.stream("POST", "/send", json={
+        "in_reply_to": "sam.opening",
+        "recipient": "Sam Park",
+        "body": "what's going on",
+    })))
+    # Sam's latency midpoint is 1.25h; one /wait (2h) is enough.
+    r = client.post("/wait")
+    new_emails = r.json()["new_emails"]
+    sam_reply = next((e for e in new_emails if e.get("beat_id") == "sam.first_response"), None)
+    assert sam_reply is not None, f"expected sam.first_response in new_emails; got {new_emails}"
 
 
-def test_coda_emits_fragments_and_framing(client):
-    # Drive minimal state so the coda has something to montage.
-    _reply_to_maya_to_unlock_draft(client, "im here")
-    # /coda is gated on STATE.ended — flip it directly. End-condition triggering
-    # itself is covered by test_spine.py's check_end_conditions tests.
-    main.STATE.ended = True
-    main.STATE.end_reason = "test"
-    events = list(_consume_sse(client.stream("GET", "/coda")))
-    types = [e["type"] for e in events]
-    assert "fragment" in types
-    assert "framing" in types
-    assert "done" in types
-
-
-def test_coda_refused_before_end_conditions(client):
-    """Stray clients can't force the coda mid-game."""
-    _reply_to_maya_to_unlock_draft(client, "hi")
-    assert main.STATE.ended is False
-    events = list(_consume_sse(client.stream("GET", "/coda")))
-    types = [e["type"] for e in events]
-    assert "error" in types
-    assert "fragment" not in types
+def test_wait_surfaces_time_gated_anchored_beat(client):
+    """Alex's checking_in beat is time-gated at 2h; one /wait should fire it."""
+    r = client.post("/wait")
+    new_emails = r.json()["new_emails"]
+    alex_email = next((e for e in new_emails if e.get("beat_id") == "alex.checking_in"), None)
+    assert alex_email is not None, f"expected alex.checking_in in new_emails; got {new_emails}"
 
 
 # ───────────────────────── helpers ─────────────────────────
-
-
-def _reply_to_maya_to_unlock_draft(client, body: str) -> None:
-    """Send one reply to Maya's boot email so the draft becomes visible."""
-    inbox = client.get("/inbox").json()
-    maya_email = next(e for e in inbox["folders"]["Inbox"] if "Maya" in e["from"])
-    list(_consume_sse(client.stream("POST", "/send", json={
-        "in_reply_to": maya_email.get("beat_id") or "maya.first_email",
-        "recipient": "Maya Chen",
-        "body": body,
-    })))
-
-
-def _get_drafts(client) -> list[dict]:
-    return client.get("/inbox").json()["folders"]["Drafts"]
 
 
 def _consume_sse(response_cm) -> Iterable[dict]:

@@ -9,7 +9,7 @@ export interface Email {
   to: string;
   subject: string;
   sent_at: string;
-  sent_at_action: number;
+  sent_at_hours: number;
   is_read: boolean;
   preview: string;
   folder: string;
@@ -26,16 +26,11 @@ export interface InboxResponse {
 }
 
 export interface GameState {
-  action_count: number;
-  max_actions: number;
-  actions_remaining: number;
+  game_time_hours: number;
+  max_hours: number;
   ended: boolean;
   end_reason: string | null;
-  coda_emitted: boolean;
-  thread_states: Record<string, string>;
-  commitments: string[];
   unread_counts: Record<string, number>;
-  unsent_draft_disposition: "pending" | "sent_unchanged" | "sent_edited" | "held";
 }
 
 export interface ThreadResponse {
@@ -43,22 +38,10 @@ export interface ThreadResponse {
   emails: Email[];
 }
 
-export interface SearchHit {
-  id: string;
-  from: string;
-  to: string;
-  subject: string;
-  sent_at: string;
-  folder: string;
-  body: string;
-  snippet: string;
-  is_archive: boolean;
-}
-
 export async function getScenario() {
   const r = await fetch(`${API}/scenario`);
   if (!r.ok) throw new Error(`scenario: ${r.status}`);
-  return (await r.json()) as { title: string; premise: string; max_actions: number };
+  return (await r.json()) as { title: string; premise: string; max_hours: number };
 }
 
 export async function getInbox(): Promise<InboxResponse> {
@@ -93,24 +76,25 @@ export async function postArchive(emailId: string) {
   return r.json() as Promise<{ state: GameState; new_emails: Email[] }>;
 }
 
-export async function getSearch(q: string): Promise<{ q: string; hits: SearchHit[] }> {
-  const r = await fetch(`${API}/search?q=${encodeURIComponent(q)}`);
-  if (!r.ok) throw new Error(`search: ${r.status}`);
-  return r.json();
+export async function postWait() {
+  const r = await fetch(`${API}/wait`, { method: "POST" });
+  if (!r.ok) throw new Error(`wait: ${r.status}`);
+  return r.json() as Promise<{ state: GameState; new_emails: Email[] }>;
+}
+
+export async function postSleep() {
+  const r = await fetch(`${API}/sleep`, { method: "POST" });
+  if (!r.ok) throw new Error(`sleep: ${r.status}`);
+  return r.json() as Promise<{ state: GameState; new_emails: Email[] }>;
 }
 
 // SSE helpers ─────────────────────────────────────────────────────────
 
 export type SseEvent =
   | { type: "send_recorded"; email: Email }
-  | { type: "texture"; warmth: number; honesty: number }
-  | { type: "draft_held" }
-  | { type: "voice_fidelity"; voice_fidelity: number; rationale: string }
-  | { type: "draft_sent"; email: Email }
+  | { type: "texture"; warmth: number }
   | { type: "new_email"; email: Email }
   | { type: "state"; state: GameState }
-  | { type: "fragment"; index: number; label: string; excerpt: string }
-  | { type: "framing"; index: number; line: string }
   | { type: "done" }
   | { type: "error"; message: string };
 
@@ -123,15 +107,6 @@ export async function* postJsonSse(
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
     body: JSON.stringify(body),
-  });
-  if (!r.ok || !r.body) throw new Error(`${path}: ${r.status}`);
-  yield* readSseStream(r.body);
-}
-
-/** GET with SSE — used for /coda. */
-export async function* getSse(path: string): AsyncGenerator<SseEvent, void, void> {
-  const r = await fetch(`${API}${path}`, {
-    headers: { Accept: "text/event-stream" },
   });
   if (!r.ok || !r.body) throw new Error(`${path}: ${r.status}`);
   yield* readSseStream(r.body);
@@ -172,21 +147,4 @@ export interface SendArgs {
 
 export function streamSend(args: SendArgs) {
   return postJsonSse("/send", args);
-}
-
-export type DraftAction = "send_unchanged" | "edit_and_send" | "hold";
-
-export function streamDraftDecision(
-  draftId: string,
-  action: DraftAction,
-  body: string | null,
-) {
-  return postJsonSse(`/draft/${encodeURIComponent(draftId)}/decision`, {
-    action,
-    body,
-  });
-}
-
-export function streamCoda() {
-  return getSse("/coda");
 }

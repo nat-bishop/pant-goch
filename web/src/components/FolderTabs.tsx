@@ -1,6 +1,6 @@
 import { useStore } from "../store";
 
-const FOLDERS = ["Inbox", "Drafts", "Sent", "Archive"] as const;
+const FOLDERS = ["Inbox", "Sent", "Archive"] as const;
 
 export function FolderTabs() {
   const { view, state, goFolder } = useStore();
@@ -12,7 +12,6 @@ export function FolderTabs() {
         {FOLDERS.map((f) => {
           const unread = state?.unread_counts?.[f] ?? 0;
           const active = activeFolder === f;
-          const isDraftsBadge = f === "Drafts" && unread > 0;
           return (
             <li key={f} className="mb-0.5">
               <button
@@ -28,13 +27,7 @@ export function FolderTabs() {
                   <span>{f}</span>
                 </span>
                 {unread > 0 && (
-                  <span
-                    className={`rounded-full px-1.5 py-0.5 text-[10px] font-bold tracking-wide ${
-                      isDraftsBadge
-                        ? "bg-warm text-paper"
-                        : "bg-ink text-paper"
-                    }`}
-                  >
+                  <span className="rounded-full bg-ink px-1.5 py-0.5 text-[10px] font-bold tracking-wide text-paper">
                     {unread}
                   </span>
                 )}
@@ -43,11 +36,6 @@ export function FolderTabs() {
           );
         })}
       </ul>
-
-      <div className="mx-6 mt-6 border-t border-line pt-4 text-[11px] text-muted">
-        <div className="font-bold tracking-wide text-ink-soft">Tess</div>
-        <div>on a 72-hour hold</div>
-      </div>
     </nav>
   );
 }

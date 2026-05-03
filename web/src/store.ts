@@ -11,45 +11,42 @@ import {
   getThread,
   postArchive,
   postOpen,
-  SearchHit,
-  getSearch,
+  postSleep,
+  postWait,
 } from "./api";
 
 export type View =
   | { kind: "folder"; folder: string }
-  | { kind: "thread"; threadId: string; folderReturnTo: string }
-  | { kind: "search"; query: string }
-  | { kind: "coda" };
+  | { kind: "thread"; threadId: string; folderReturnTo: string };
 
 interface Store {
   bootError: string | null;
-  scenario: { title: string; premise: string; max_actions: number } | null;
+  scenario: { title: string; premise: string; max_hours: number } | null;
   state: GameState | null;
   folders: Record<string, Email[]>;
   view: View;
   threadEmails: Email[] | null;
-  searchHits: SearchHit[] | null;
 
   boot(): Promise<void>;
   refreshInbox(): Promise<void>;
   goFolder(folder: string): void;
   openThread(threadId: string, folderReturnTo: string): Promise<void>;
-  goSearch(query: string): Promise<void>;
-  goCoda(): void;
   back(): void;
 
   openEmail(emailId: string): Promise<Email[]>;
   archiveEmail(emailId: string): Promise<void>;
+  waitHours(): Promise<Email[]>;
+  sleep(): Promise<Email[]>;
+  _afterMutation(): Promise<void>;
 }
 
 export const useStore = create<Store>()((set, get) => ({
   bootError: null,
   scenario: null,
   state: null,
-  folders: { Inbox: [], Drafts: [], Sent: [], Archive: [] },
+  folders: { Inbox: [], Sent: [], Archive: [] },
   view: { kind: "folder", folder: "Inbox" },
   threadEmails: null,
-  searchHits: null,
 
   async boot() {
     try {
@@ -71,7 +68,7 @@ export const useStore = create<Store>()((set, get) => ({
   },
 
   goFolder(folder) {
-    set({ view: { kind: "folder", folder }, threadEmails: null, searchHits: null });
+    set({ view: { kind: "folder", folder }, threadEmails: null });
   },
 
   async openThread(threadId, folderReturnTo) {
@@ -82,40 +79,41 @@ export const useStore = create<Store>()((set, get) => ({
     });
   },
 
-  async goSearch(query) {
-    if (!query.trim()) {
-      set({ view: { kind: "folder", folder: "Inbox" }, searchHits: null });
-      return;
-    }
-    const r = await getSearch(query);
-    set({ view: { kind: "search", query }, searchHits: r.hits });
-  },
-
-  goCoda() {
-    set({ view: { kind: "coda" } });
-  },
-
   back() {
     const { view } = get();
     if (view.kind === "thread") {
       set({ view: { kind: "folder", folder: view.folderReturnTo }, threadEmails: null });
-    } else if (view.kind === "search") {
-      set({ view: { kind: "folder", folder: "Inbox" }, searchHits: null });
     }
   },
 
   async openEmail(emailId) {
     const r = await postOpen(emailId);
-    await get().refreshInbox();
-    const { view } = get();
-    if (view.kind === "thread") {
-      await get().openThread(view.threadId, view.folderReturnTo);
-    }
+    await get()._afterMutation();
     return r.new_emails;
   },
 
   async archiveEmail(emailId) {
     await postArchive(emailId);
+    await get()._afterMutation();
+  },
+
+  async waitHours() {
+    const r = await postWait();
+    await get()._afterMutation();
+    return r.new_emails;
+  },
+
+  async sleep() {
+    const r = await postSleep();
+    await get()._afterMutation();
+    return r.new_emails;
+  },
+
+  async _afterMutation() {
     await get().refreshInbox();
+    const { view } = get();
+    if (view.kind === "thread") {
+      await get().openThread(view.threadId, view.folderReturnTo);
+    }
   },
 }));

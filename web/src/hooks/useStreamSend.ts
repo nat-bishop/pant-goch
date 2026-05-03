@@ -1,6 +1,6 @@
-// Shared post-send pipeline for EmailComposer and DraftEditor: drive an SSE
-// stream to completion, surface error messages, then refresh the inbox and
-// reopen the current thread so the new emails show up.
+// Drive an SSE stream to completion, surface error messages, then refresh
+// the inbox and reopen the current thread so any newly emitted emails show
+// up. Used by EmailComposer for /send.
 
 import { useState } from "react";
 import { SseEvent } from "../api";

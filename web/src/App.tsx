@@ -4,8 +4,6 @@ import { InboxHeader } from "./components/InboxHeader";
 import { FolderTabs } from "./components/FolderTabs";
 import { InboxList } from "./components/InboxList";
 import { ThreadView } from "./components/ThreadView";
-import { SearchResults } from "./components/SearchResults";
-import { Coda } from "./components/Coda";
 
 export default function App() {
   const { boot, bootError, scenario, state, view } = useStore();
@@ -34,8 +32,6 @@ export default function App() {
         <main className="flex-1 overflow-hidden">
           {view.kind === "folder" && <InboxList folder={view.folder} />}
           {view.kind === "thread" && <ThreadView />}
-          {view.kind === "search" && <SearchResults />}
-          {view.kind === "coda" && <Coda />}
         </main>
       </div>
     </div>

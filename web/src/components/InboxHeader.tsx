@@ -1,24 +1,22 @@
 import { useState } from "react";
 import { useStore } from "../store";
-
-// Mirrors MAYA_TERMINAL_STATES in spine.py — the set the coda gates on.
-const MAYA_TERMINAL_STATES = new Set(["warm", "ambivalent", "cold"]);
+import { formatGameTime } from "../util/email";
 
 export function InboxHeader() {
-  const { scenario, state, goSearch, view, goCoda } = useStore();
-  const [q, setQ] = useState(view.kind === "search" ? view.query : "");
+  const { scenario, state, waitHours, sleep } = useStore();
+  const [busy, setBusy] = useState(false);
 
-  const onSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    goSearch(q);
+  const guard = (fn: () => Promise<unknown>) => async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await fn();
+    } finally {
+      setBusy(false);
+    }
   };
 
-  const codaReady =
-    state &&
-    (state.ended ||
-      Object.values(state.thread_states).some((s) => MAYA_TERMINAL_STATES.has(s)));
-
-  const endingNow = state?.ended && !state.coda_emitted;
+  const ended = state?.ended;
 
   return (
     <header className="flex items-center gap-6 border-b border-line bg-paper px-6 py-3">
@@ -26,63 +24,42 @@ export function InboxHeader() {
         {scenario?.title}
       </div>
 
-      <form onSubmit={onSubmit} className="flex-1 max-w-2xl">
-        <label className="flex items-center gap-2 rounded border border-line bg-paper-hover/60 px-3 py-1.5 focus-within:border-ink">
-          <SearchGlyph />
-          <input
-            type="text"
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            placeholder="search Tess's mail"
-            className="w-full bg-transparent text-sm placeholder-muted focus:outline-none"
-          />
-        </label>
-      </form>
+      <div className="flex-1" />
 
-      <div className="flex shrink-0 items-center gap-4">
+      <div className="flex shrink-0 items-center gap-3">
         {state && (
           <span
             className="rounded-full border border-cool/40 bg-cool/5 px-3 py-1 text-[11px] tracking-wide text-cool"
-            title={`${state.actions_remaining} remaining`}
+            title={`${state.game_time_hours.toFixed(1)} of ${state.max_hours} hours`}
           >
-            {state.action_count} / {state.max_actions} actions
+            {formatGameTime(state.game_time_hours)}
           </span>
         )}
-        {endingNow ? (
-          <button
-            onClick={goCoda}
-            className="rounded border border-warm bg-warm px-3 py-1 text-xs font-bold tracking-wide text-paper hover:bg-warm/90"
-          >
-            view closing
-          </button>
-        ) : codaReady ? (
-          <button
-            onClick={goCoda}
-            className="text-xs text-muted hover:text-ink"
-            title="end the session and view the closing montage"
-          >
-            close session
-          </button>
-        ) : null}
+
+        <button
+          onClick={guard(waitHours)}
+          disabled={busy || ended}
+          className="rounded border border-line bg-paper px-3 py-1 text-xs tracking-wide text-ink-soft hover:border-ink hover:text-ink disabled:opacity-50"
+          title="advance the clock by 2 hours"
+        >
+          wait 2h
+        </button>
+
+        <button
+          onClick={guard(sleep)}
+          disabled={busy || ended}
+          className="rounded border border-line bg-paper px-3 py-1 text-xs tracking-wide text-ink-soft hover:border-ink hover:text-ink disabled:opacity-50"
+          title="advance the clock by 8 hours (overnight)"
+        >
+          sleep 8h
+        </button>
+
+        {ended && (
+          <span className="rounded-full border border-warm/40 bg-warm/5 px-3 py-1 text-[11px] tracking-wide text-warm">
+            session ended
+          </span>
+        )}
       </div>
     </header>
-  );
-}
-
-function SearchGlyph() {
-  return (
-    <svg
-      width="14"
-      height="14"
-      viewBox="0 0 14 14"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.4"
-      className="shrink-0 text-muted"
-      aria-hidden
-    >
-      <circle cx="6" cy="6" r="4.25" />
-      <path d="m9 9 3.5 3.5" strokeLinecap="round" />
-    </svg>
   );
 }
