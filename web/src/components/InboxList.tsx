@@ -6,8 +6,14 @@ interface Props {
   folder: string;
 }
 
+interface ThreadRow {
+  head: Email;
+  members: Email[];
+  anyUnread: boolean;
+}
+
 export function InboxList({ folder }: Props) {
-  const { folders, openThread, openEmail } = useStore();
+  const { folders, openThread } = useStore();
   const emails = folders[folder] ?? [];
 
   if (emails.length === 0) {
@@ -18,23 +24,23 @@ export function InboxList({ folder }: Props) {
     );
   }
 
-  const onClick = async (email: Email) => {
-    if (!email.thread_id) return;
-    if (folder === "Inbox" && !email.is_read) {
-      await openEmail(email.id);
-    }
-    await openThread(email.thread_id, folder);
+  const rows = groupByThread(emails);
+
+  const onClick = async (head: Email) => {
+    if (!head.thread_id) return;
+    await openThread(head.thread_id, folder);
   };
 
   return (
     <ul className="h-full overflow-y-auto px-2 py-1">
-      {emails.map((e) => {
-        const unread = !e.is_read && folder === "Inbox";
-        const sender = displaySender(e, folder);
+      {rows.map((row) => {
+        const head = row.head;
+        const unread = row.anyUnread && folder === "Inbox";
+        const sender = displaySender(head, folder);
         return (
           <li
-            key={e.id}
-            onClick={() => onClick(e)}
+            key={head.thread_id ?? head.id}
+            onClick={() => onClick(head)}
             className="group flex cursor-pointer items-center gap-3 rounded-sm border-b border-line/60 px-4 py-2.5 hover:bg-paper-hover"
           >
             <span
@@ -54,21 +60,38 @@ export function InboxList({ folder }: Props) {
 
             <span className="min-w-0 flex-1 truncate text-sm">
               <span className={unread ? "font-bold text-ink" : "text-ink-soft"}>
-                {e.subject}
+                {head.subject}
               </span>
-              {e.preview && (
-                <span className="text-muted"> — {e.preview}</span>
+              {head.preview && (
+                <span className="text-muted"> — {head.preview}</span>
               )}
             </span>
 
             <span className="w-28 shrink-0 text-right text-xs text-muted">
-              {e.sent_at}
+              {head.sent_at}
             </span>
           </li>
         );
       })}
     </ul>
   );
+}
+
+function groupByThread(emails: Email[]): ThreadRow[] {
+  const rows: ThreadRow[] = [];
+  const byThread = new Map<string, ThreadRow>();
+  for (const e of emails) {
+    const key = e.thread_id ?? `__solo__:${e.id}`;
+    let row = byThread.get(key);
+    if (!row) {
+      row = { head: e, members: [], anyUnread: false };
+      byThread.set(key, row);
+      rows.push(row);
+    }
+    row.members.push(e);
+    if (!e.is_read) row.anyUnread = true;
+  }
+  return rows;
 }
 
 function displaySender(email: Email, folder: string): string {

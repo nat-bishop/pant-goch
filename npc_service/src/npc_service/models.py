@@ -478,11 +478,14 @@ class InboxState:
         }
 
     def _unread_counts(self) -> dict[str, int]:
-        counts: dict[str, int] = {}
+        # Count distinct threads with any unread email, not raw email count —
+        # the inbox list collapses to one row per thread, so the badge should
+        # match that visual unit.
+        by_folder: dict[str, set[str | None]] = {}
         for e in self.emails:
             if not e.is_read:
-                counts[e.folder] = counts.get(e.folder, 0) + 1
-        return counts
+                by_folder.setdefault(e.folder, set()).add(e.thread_id)
+        return {folder: len(threads) for folder, threads in by_folder.items()}
 
 
 # ───────────────────────── HTTP DTOs ─────────────────────────

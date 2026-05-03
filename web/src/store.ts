@@ -33,7 +33,6 @@ interface Store {
   openThread(threadId: string, folderReturnTo: string): Promise<void>;
   back(): void;
 
-  openEmail(emailId: string): Promise<Email[]>;
   archiveEmail(emailId: string): Promise<void>;
   waitHours(): Promise<Email[]>;
   sleep(): Promise<Email[]>;
@@ -77,6 +76,18 @@ export const useStore = create<Store>()((set, get) => ({
       view: { kind: "thread", threadId, folderReturnTo },
       threadEmails: t.emails,
     });
+    const unreadIds = t.emails
+      .filter((e) => !e.is_read && e.folder === "Inbox")
+      .map((e) => e.id);
+    if (unreadIds.length > 0) {
+      await Promise.all(unreadIds.map((id) => postOpen(id)));
+      await get().refreshInbox();
+      set({
+        threadEmails: t.emails.map((e) =>
+          e.folder === "Inbox" ? { ...e, is_read: true } : e,
+        ),
+      });
+    }
   },
 
   back() {
@@ -84,12 +95,6 @@ export const useStore = create<Store>()((set, get) => ({
     if (view.kind === "thread") {
       set({ view: { kind: "folder", folder: view.folderReturnTo }, threadEmails: null });
     }
-  },
-
-  async openEmail(emailId) {
-    const r = await postOpen(emailId);
-    await get()._afterMutation();
-    return r.new_emails;
   },
 
   async archiveEmail(emailId) {

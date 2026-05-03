@@ -17,15 +17,16 @@ help:
 	@echo "  make test            Run pytest"
 	@echo "  make typecheck       Run TS typecheck on web/"
 	@echo "  make clean           Remove __pycache__ and logs/*.log"
+	@echo "  make kill-zombies    Force-kill stragglers on :8000/:8080/:5173-5176 (recovery)"
 
-# `run` boots sidecar and web in parallel. The sidecar spawns llama-server
-# itself (LAUNCH_LLAMA=true is the default). Trap kills both on Ctrl-C.
+# `run` boots sidecar and web in parallel via `concurrently` (npm). Ctrl-C
+# propagates through concurrently → tree-kill → both children die. The
+# sidecar spawns llama-server itself (LAUNCH_LLAMA=true default) and its
+# Job Object (launcher.py) ensures llama dies when the sidecar dies.
 .PHONY: run
 run: $(MODEL)
 	@echo "Starting sidecar (spawns llama) and web in parallel. Browser: http://localhost:5173"
-	@(cd npc_service && uv run python -m npc_service) & \
-	(cd web && npm run dev) & \
-	wait
+	cd web && npm run dev:all
 
 $(MODEL):
 	mkdir -p models
@@ -58,3 +59,7 @@ typecheck:
 clean:
 	rm -f logs/*.log
 	find . -type d -name __pycache__ -prune -exec rm -rf {} +
+
+.PHONY: kill-zombies
+kill-zombies:
+	@powershell -Command 'Get-NetTCPConnection -LocalPort 8000,8080,5173,5174,5175,5176 -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $$_.OwningProcess -Force -ErrorAction SilentlyContinue }; Write-Host "killed any processes holding :8000/:8080/:5173-5176"'
