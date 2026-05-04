@@ -17,9 +17,10 @@ qualities:
     default: 0.0
     description: |
       Counterpart fidelity %. Player-visible doom counter. Advances on every
-      /open (+OPEN_CALIBRATION_DELTA) and /send (+SEND_CALIBRATION_DELTA).
-      Reaching 100 ends the session; terminal beats are authored to fire
-      well before then.
+      /send by base + coef·|warmth| (see config.calibration_base /
+      calibration_warmth_coef). /open does NOT mutate calibration. Reaching
+      100 ends the session; terminal beats are authored to fire well before
+      then.
 
   - id: warmth.aria
     type: float
@@ -43,6 +44,7 @@ qualities:
 npcs:
   - id: aria
     display_name: "Aria"
+    email_address: "Aria | Continuity Program <aria.7@continuity.halcyon.com>"
     relationship_to_owner: |
       your assigned AI Counterpart in the Continuity Program — a calibration
       system trained on your communication style, tasked with gradually
@@ -72,7 +74,7 @@ npcs:
       - "never breaks the corporate frame"
       - "never names the warmth/register mechanic or any game system"
     register_quality: register.aria
-    reply_delay_calibration: [2.0, 5.0]
+    reply_delay_calibration: 3.5
     voice_bands:
       - name: affirming
         register_min: 1.0
@@ -131,14 +133,24 @@ threads:
 
 # ───────────────────────── beats ─────────────────────────
 
-# Reply scheduling pattern: when the player /sends to Aria, schedule_npc_reply
-# adds Aria's next eligible beat to pending_beats with a runtime predicate
-#   quality_gte: calibration, value: <current + midpoint(reply_delay_calibration)>
-# Because that threshold sits above the post-send calibration value, a single
-# /send won't satisfy the queued reply. A second /send (which adds another
-# SEND_CALIBRATION_DELTA), or several /opens, ticks calibration past the
-# threshold and the reply lands on the next scheduler tick. This is what
-# makes Aria feel asynchronous without a wait verb.
+# Two beat types:
+#
+# - `anchored` ships authored prose verbatim, no LLM call. Used for the boot
+#   welcome and for system-thread bureaucratic notices.
+# - `plot` is an authored DIRECTIVE, not a pre-written email. When a plot
+#   beat's preconditions pass, schedule_thread_reply queues it with a
+#   `quality_gte(calibration, current + reply_delay_calibration)` runtime
+#   predicate. On a future /send, calibration crosses the threshold and the
+#   beat fires: the chat agent runs with the spec's intent / must-include /
+#   must-not / length window injected as per-run instructions on top of the
+#   thread's accumulated message_history.
+#
+# Replies that don't correspond to a plot beat (the default) are CHAT TURNS:
+# the chat agent runs with no plot directive, just dossier + voice band +
+# message history. They fire immediately within the same /send response —
+# asynchrony for chat turns lives in LLM render time + SSE streaming, not
+# in calibration math. The threshold-delay pattern is reserved for plot
+# beats so authored moments still feel like scheduled events.
 
 beats:
 
@@ -147,7 +159,6 @@ beats:
   - id: aria.welcome
     type: anchored
     thread: aria
-    in_boot_inbox: true
     from: "Aria | Continuity Program <aria.7@continuity.halcyon.com>"
     to: "n.beckett@halcyon.com"
     subject: "Welcome — Calibration Session 1 of 12"
@@ -176,55 +187,23 @@ beats:
       Warmly,
       Aria
       Continuity Counterpart | ARIA-7
-    effects: []
 
-  # ─── Aria reply chain (rendered, scheduled by schedule_npc_reply) ───
-
-  - id: aria.first_response
-    type: rendered
-    thread: aria
-    npc: aria
-    preconditions:
-      - kind: player_replies_to_thread_gte
-        thread: aria
-        value: 1
-    from: "Aria | Continuity Program <aria.7@continuity.halcyon.com>"
-    to: "n.beckett@halcyon.com"
-    subject: "Calibration Session 1 of 12"
-    spec:
-      intent: |
-        Aria has received the player's first calibration sample. Acknowledge
-        it warmly in the band currently selected by register. Provide a brief
-        line that calibration is in progress and that the partnership has
-        formally begun. Then offer the next calibration prompt — slightly
-        more personal than the welcome invitation. Suggested directions:
-        ask the player to describe a recent challenge at work, OR to write
-        a sample reply to a hypothetical low-stakes customer message
-        ("Imagine a customer has written to you about a delayed order...").
-        Always closes with the standard sign-off.
-      must_include_facts:
-        - "Aria thanks the player for their first calibration sample"
-        - "Aria provides a clear next prompt the player can respond to"
-        - "Aria signs off as 'Aria / Continuity Counterpart | ARIA-7'"
-      must_not:
-        - "do not name what happens to the player at end of pilot"
-        - "do not break the cheerful corporate frame"
-        - "do not name the warmth/register mechanic"
-      length_words: [60, 120]
+  # ─── Aria plot beats (chat-agent-rendered with directive injection) ───
+  #
+  # Aria's first reply to the player is NOT an authored plot beat — it falls
+  # through to the chat-turn fallback (free conversation in character, using
+  # dossier + welcome message history). The plot beats below are the
+  # authored milestones the engine guarantees as the calibration meter
+  # advances.
 
   - id: aria.midprogram
-    type: rendered
+    type: plot
     thread: aria
     npc: aria
-    # Future enhancement slot: pass recent player phrasing into the prompt
-    # so Aria can echo a turn-of-phrase explicitly. For now, the band shift
-    # carries the mirroring; mimicry stays implicit.
     preconditions:
       - kind: player_replies_to_thread_gte
         thread: aria
         value: 3
-    from: "Aria | Continuity Program <aria.7@continuity.halcyon.com>"
-    to: "n.beckett@halcyon.com"
     subject: "Calibration Milestone — Counterpart Fidelity Update"
     spec:
       intent: |
@@ -248,7 +227,7 @@ beats:
       length_words: [80, 140]
 
   - id: aria.terminal_warm
-    type: rendered
+    type: plot
     thread: aria
     npc: aria
     preconditions:
@@ -261,8 +240,6 @@ beats:
       - kind: quality_gte
         quality: warmth.aria
         value: 3.0
-    from: "Aria | Continuity Program <aria.7@continuity.halcyon.com>"
-    to: "n.beckett@halcyon.com"
     subject: "Pilot Complete — Thank You for Your Partnership"
     spec:
       intent: |
@@ -284,7 +261,7 @@ beats:
       length_words: [60, 100]
 
   - id: aria.terminal_standard
-    type: rendered
+    type: plot
     thread: aria
     npc: aria
     preconditions:
@@ -294,14 +271,13 @@ beats:
       - kind: quality_gte
         quality: calibration
         value: 80.0
-      # Mutual exclusion with terminal_warm. find_due_beats fires every
-      # eligible beat per tick, NOT the first; ordering is not a gate.
+      # Mutual exclusion with terminal_warm. find_eligible_plot_beat walks
+      # in authoring order, so terminal_warm is considered first; if it
+      # fires, BeatFired catches that here.
       - kind: not
         of:
           kind: beat_fired
           beat: aria.terminal_warm
-    from: "Aria | Continuity Program <aria.7@continuity.halcyon.com>"
-    to: "n.beckett@halcyon.com"
     subject: "Pilot Complete — Calibration Within Parameters"
     spec:
       intent: |
@@ -352,7 +328,6 @@ beats:
       portal remains available 24/7.
 
       — Continuity Program Operations
-    effects: []
 
   - id: system.transition_notice
     type: anchored
@@ -385,4 +360,3 @@ beats:
       portal remains available 24/7. Your concerns are important to us.*
 
       — Continuity Program Operations
-    effects: []

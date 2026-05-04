@@ -1,17 +1,16 @@
 """Pydantic schemas for Inbox.
 
-Three layers:
+Two layers:
 
 - **Authoring** (loaded from `scenario.yaml`, immutable at runtime): QualityDef,
   NPCDossier, Beat, Thread, Scenario.
 - **Runtime state** (mutable, owned by the spine): Email, Reply, InboxState.
-  The LLM never writes any of this directly — only via beat effects
-  (deterministic) or texture scorer outputs (continuous warmth quality).
-- **HTTP DTOs**: OpenRequest, SendRequest.
+  The LLM never writes any of this directly — only TEXTURE_AGENT outputs feed
+  the warmth/register qualities via `apply_texture_score`.
 
-Effects and predicates are tagged-union Pydantic models, not strings. YAML
-authoring is slightly more verbose; in exchange, every effect and every
-predicate is type-checked at load time and impossible to misspell silently.
+Predicates are tagged-union Pydantic models, not strings. YAML authoring is
+slightly more verbose; in exchange, every predicate is type-checked at load
+time and impossible to misspell silently.
 """
 from __future__ import annotations
 
@@ -22,28 +21,10 @@ from typing import Annotated, Literal, Union
 
 import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic_ai.messages import ModelMessage
 
 
-# ───────────────────────── effect / predicate DSL ─────────────────────────
-
-
-class SetQuality(BaseModel):
-    """Mutate a numeric quality. `op: set` overwrites; `op: add` increments;
-    `op: drift_halfway` moves halfway toward `value` (used for register drift)."""
-
-    kind: Literal["set_quality"] = "set_quality"
-    quality: str
-    op: Literal["set", "add", "drift_halfway"] = "set"
-    value: float
-
-
-# Only one effect type for now; kept as a discriminated union so adding a
-# second effect later doesn't require touching call sites that already
-# pattern-match on `kind`.
-Effect = Annotated[
-    Union[SetQuality],
-    Field(discriminator="kind"),
-]
+# ───────────────────────── predicate DSL ─────────────────────────
 
 
 # Predicates compose. Authors write trees of these.
@@ -59,14 +40,6 @@ class QualityLt(BaseModel):
     kind: Literal["quality_lt"] = "quality_lt"
     quality: str
     value: float
-
-
-class PlayerRepliedTo(BaseModel):
-    """True iff the player has sent a reply addressed to (in response to) the
-    given beat."""
-
-    kind: Literal["player_replied_to"] = "player_replied_to"
-    beat: str
 
 
 class PlayerRepliesToThreadGte(BaseModel):
@@ -88,20 +61,6 @@ class BeatFired(BaseModel):
     beat: str
 
 
-class All(BaseModel):
-    """Logical AND."""
-
-    kind: Literal["all"] = "all"
-    of: list["Predicate"]
-
-
-class Any_(BaseModel):
-    """Logical OR."""
-
-    kind: Literal["any"] = "any"
-    of: list["Predicate"]
-
-
 class Not_(BaseModel):
     """Logical NOT."""
 
@@ -113,19 +72,14 @@ Predicate = Annotated[
     Union[
         QualityGte,
         QualityLt,
-        PlayerRepliedTo,
         PlayerRepliesToThreadGte,
         BeatFired,
-        All,
-        Any_,
         Not_,
     ],
     Field(discriminator="kind"),
 ]
 
 
-All.model_rebuild()
-Any_.model_rebuild()
 Not_.model_rebuild()
 
 
@@ -133,8 +87,9 @@ Not_.model_rebuild()
 
 
 class QualityDef(BaseModel):
-    """A continuous numeric state. Mutated by beat effects or TEXTURE_AGENT —
-    never read by predicates as discrete values (use `quality_gte`/`quality_lt`).
+    """A continuous numeric state. Mutated by the spine (calibration) or
+    TEXTURE_AGENT (warmth/register) — never read by predicates as discrete
+    values (use `quality_gte`/`quality_lt`).
     """
 
     id: str = Field(min_length=1, pattern=r"^[a-z][a-z0-9_.]*$")
@@ -146,8 +101,8 @@ class QualityDef(BaseModel):
 
 
 class VoiceBand(BaseModel):
-    """One register-conditioned voice variant. EMAIL_AGENT picks a band per
-    render based on the NPC's `register` quality.
+    """One register-conditioned voice variant. The chat agent picks a band
+    per render based on the NPC's `register` quality.
     """
 
     name: str
@@ -160,11 +115,14 @@ class VoiceBand(BaseModel):
 
 
 class NPCDossier(BaseModel):
-    """Static authoring artifact. Never mutated at runtime. Injected into
-    EMAIL_AGENT or TEXTURE_AGENT prompts as needed."""
+    """Static authoring artifact. Never mutated at runtime. Injected into the
+    chat agent via deps + `@instructions`, and into TEXTURE_AGENT prompts."""
 
     id: str = Field(min_length=1, pattern=r"^[a-z][a-z0-9_]*$")
     display_name: str
+    # Sender address used for chat-turn emails (and recommended as the `from`
+    # value for the NPC's authored beats too).
+    email_address: str
     relationship_to_owner: str = ""
     base_voice_register: str = ""
     base_voice_forbidden: list[str] = Field(default_factory=list)
@@ -172,15 +130,17 @@ class NPCDossier(BaseModel):
     will_not_say: list[str] = Field(default_factory=list)
     voice_bands: list[VoiceBand] = Field(default_factory=list)
     register_quality: str | None = None  # which quality drives band selection
-    # Min/max delay (in calibration units) before this NPC sends their next reply
-    # after the player writes to them. Sampled at the midpoint for determinism.
-    # The delay must exceed SEND_CALIBRATION_DELTA so a single /send doesn't
-    # immediately satisfy its own queued reply — see schedule_npc_reply.
-    reply_delay_calibration: tuple[float, float] = (2.0, 5.0)
+    # Calibration delay before this NPC's queued PlotBeat reply lands. The
+    # PlotBeat is pended with a runtime quality_gte predicate at
+    # current_calibration + reply_delay_calibration; subsequent player verbs
+    # advance calibration past it. Chat-turn fallbacks fire immediately
+    # within the same /send and do NOT use this delay.
+    reply_delay_calibration: float = 3.5
 
 
 class BeatSpec(BaseModel):
-    """Inputs to EMAIL_AGENT for a `rendered` beat."""
+    """Inputs to the chat agent for a `plot` beat — author directive layered
+    onto the conversation as per-run instructions."""
 
     intent: str
     must_include_facts: list[str] = Field(default_factory=list)
@@ -189,14 +149,12 @@ class BeatSpec(BaseModel):
 
 
 # Beat is a tagged union on `type`. Each variant carries the fields that make
-# sense for it. Common to all: id, thread, preconditions, in_boot_inbox, effects.
+# sense for it. Common to all: id, thread, preconditions.
 
 class _BeatBase(BaseModel):
     id: str = Field(min_length=1, pattern=r"^[a-z][a-z0-9_.]*$")
     thread: str
     preconditions: list[Predicate] = Field(default_factory=list)
-    in_boot_inbox: bool = False
-    effects: list[Effect] = Field(default_factory=list)
 
 
 class AnchoredBeat(_BeatBase):
@@ -208,27 +166,28 @@ class AnchoredBeat(_BeatBase):
     subject: str
     authored_prose: str
     sent_at: str = ""  # in-fiction timestamp label (e.g. "just now")
-    folder: Literal["Inbox", "Sent"] = "Inbox"
 
     model_config = {"populate_by_name": True}
 
 
-class RenderedBeat(_BeatBase):
-    """LLM-generated email from spec + dossier + transcript + voice band."""
+class PlotBeat(_BeatBase):
+    """Authored directive that modulates one chat-agent turn.
 
-    type: Literal["rendered"] = "rendered"
+    A PlotBeat doesn't directly produce an email — it queues into pending_beats
+    with a calibration-threshold runtime predicate, and when its preconditions
+    plus that threshold are satisfied, the spine runs the chat agent with the
+    beat's `spec` injected as per-run instructions. The agent's reply IS the
+    plot moment.
+    """
+
+    type: Literal["plot"] = "plot"
     npc: str  # which dossier to use
-    from_: str = Field(alias="from")
-    to: str = "you"
     subject: str
     spec: BeatSpec
-    folder: Literal["Inbox"] = "Inbox"
-
-    model_config = {"populate_by_name": True}
 
 
 Beat = Annotated[
-    Union[AnchoredBeat, RenderedBeat],
+    Union[AnchoredBeat, PlotBeat],
     Field(discriminator="type"),
 ]
 
@@ -242,8 +201,8 @@ class Scenario(BaseModel):
     """Authored content for one playthrough. Loaded once; immutable.
 
     Cross-references validated at load: every thread referenced by a beat
-    must exist; every dossier id used by a rendered beat must exist; every
-    quality/beat referenced by an effect or predicate must exist.
+    must exist; every dossier id used by a plot beat must exist; every
+    quality/beat referenced by a predicate must exist.
 
     Lookup dicts (`beat_by_id`, `npc_by_id`, `quality_by_id`, `thread_by_id`)
     are built lazily and cached. Use them anywhere you'd otherwise scan a list.
@@ -277,7 +236,7 @@ class Scenario(BaseModel):
 
     @cached_property
     def thread_by_npc_id(self) -> dict[str, str]:
-        """Map npc id → its thread id (for `schedule_npc_reply`)."""
+        """Map npc id → its thread id (for `schedule_thread_reply`)."""
         return {t.npc: t.id for t in self.threads if t.npc is not None}
 
     @field_validator("qualities")
@@ -330,10 +289,8 @@ class Scenario(BaseModel):
                 raise ValueError(
                     f"beat {beat.id}: id prefix {id_prefix!r} must equal thread {beat.thread!r}"
                 )
-            if isinstance(beat, RenderedBeat) and beat.npc not in npc_ids:
+            if isinstance(beat, PlotBeat) and beat.npc not in npc_ids:
                 raise ValueError(f"beat {beat.id}: unknown npc {beat.npc!r}")
-            for eff in beat.effects:
-                _check_effect_refs(eff, beat.id, quality_ids)
             for pred in beat.preconditions:
                 _check_predicate_refs(
                     pred, f"beat {beat.id}", quality_ids, thread_ids, beat_ids
@@ -352,15 +309,6 @@ class Scenario(BaseModel):
         return self
 
 
-def _check_effect_refs(
-    eff: Effect,
-    where: str,
-    quality_ids: set[str],
-) -> None:
-    if isinstance(eff, SetQuality) and eff.quality not in quality_ids:
-        raise ValueError(f"{where}: SetQuality references unknown quality {eff.quality!r}")
-
-
 def _check_predicate_refs(
     pred: Predicate,
     where: str,
@@ -370,15 +318,10 @@ def _check_predicate_refs(
 ) -> None:
     if isinstance(pred, (QualityGte, QualityLt)) and pred.quality not in quality_ids:
         raise ValueError(f"{where}: predicate references unknown quality {pred.quality!r}")
-    if isinstance(pred, PlayerRepliedTo) and pred.beat not in beat_ids:
-        raise ValueError(f"{where}: PlayerRepliedTo references unknown beat {pred.beat!r}")
     if isinstance(pred, PlayerRepliesToThreadGte) and pred.thread not in thread_ids:
         raise ValueError(f"{where}: PlayerRepliesToThreadGte references unknown thread {pred.thread!r}")
     if isinstance(pred, BeatFired) and pred.beat not in beat_ids:
         raise ValueError(f"{where}: BeatFired references unknown beat {pred.beat!r}")
-    if isinstance(pred, (All, Any_)):
-        for sub in pred.of:
-            _check_predicate_refs(sub, where, quality_ids, thread_ids, beat_ids)
     if isinstance(pred, Not_):
         _check_predicate_refs(pred.of, where, quality_ids, thread_ids, beat_ids)
 
@@ -395,15 +338,15 @@ def load_scenario(path: str | Path) -> Scenario:
 
 @dataclass
 class Email:
-    """A concrete email instance in the inbox. Produced when a beat fires.
+    """A concrete email instance in the inbox.
 
-    `body` is populated from `authored_prose` (anchored) or from EMAIL_AGENT
-    output (rendered). `thread_id` is set at emission time so neither client
-    nor spine has to parse it back out of beat ids.
+    Sources: anchored beat (`authored_prose`), chat-turn render, or PlotBeat
+    render (chat agent with author directive). `thread_id` is set at emission
+    so neither client nor spine has to parse it back out of beat ids.
     """
 
     id: str
-    beat_id: str | None  # None for player sends
+    beat_id: str | None  # None for player sends and chat turns
     thread_id: str | None  # set at emission so consumers don't parse beat ids
     folder: str
     sender: str
@@ -434,7 +377,7 @@ class PendingBeat:
     """A beat queued to fire when its preconditions become satisfied.
 
     `runtime_preconditions` are added at scheduling time (e.g. by
-    `schedule_npc_reply` to encode a calibration-based reply delay) and
+    `schedule_thread_reply` to encode a calibration-based reply delay) and
     AND'd with the beat's authored preconditions.
     """
 
@@ -446,13 +389,21 @@ class PendingBeat:
 class InboxState:
     """The mutable runtime state. The spine fully owns this; the LLM never
     writes to it directly except through TEXTURE_AGENT outputs that target
-    specific quality fields."""
+    specific quality fields.
+
+    `thread_messages` holds the Pydantic-AI-native conversation per NPC
+    thread. Anchored emails seed it as `ModelResponse(TextPart)` entries;
+    player sends append `ModelRequest(UserPromptPart)`; chat agent runs
+    append `result.new_messages()` to keep the conversation continuous.
+    System threads (no NPC) don't get a history entry.
+    """
 
     qualities: dict[str, float] = field(default_factory=dict)
     fired_beat_ids: set[str] = field(default_factory=set)
     pending_beats: list[PendingBeat] = field(default_factory=list)
     emails: list[Email] = field(default_factory=list)
     replies: list[Reply] = field(default_factory=list)
+    thread_messages: dict[str, list[ModelMessage]] = field(default_factory=dict)
     ended: bool = False
     end_reason: str | None = None
 
@@ -465,12 +416,13 @@ class InboxState:
             elif isinstance(q.default, (int, float)):
                 qualities[q.id] = float(q.default)
         state = cls(qualities=qualities)
-        # Auto-pend every anchored beat that doesn't ship in the boot inbox.
-        # Their authored preconditions are evaluated as runtime predicates by
-        # `find_due_beats`. Rendered per-NPC reply beats stay out — those are
-        # added to pending only by `schedule_npc_reply` on player send.
+        # Auto-pend every anchored beat. Their authored preconditions are
+        # evaluated as runtime predicates by `find_due_beats`; ones with
+        # empty preconditions fire on the first scheduler tick at boot.
+        # PlotBeats are NOT auto-pended — those are added to pending only
+        # by `schedule_thread_reply` on player send.
         for beat in scenario.beats:
-            if isinstance(beat, AnchoredBeat) and not beat.in_boot_inbox:
+            if isinstance(beat, AnchoredBeat):
                 state.pending_beats.append(PendingBeat(beat_id=beat.id))
         return state
 
@@ -512,9 +464,3 @@ class TextureScore(BaseModel):
 
     warmth: float = Field(ge=-3.0, le=3.0)
     rationale: str = ""
-
-
-class EmailRender(BaseModel):
-    """EMAIL_AGENT output. Prose only — no state changes proposed."""
-
-    prose: str = Field(min_length=1)

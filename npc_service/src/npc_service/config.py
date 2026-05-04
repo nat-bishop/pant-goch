@@ -54,12 +54,20 @@ class Settings(BaseSettings):
     scenario_path: Path | None = None
 
     # ───────── calibration progression ─────────
-    # Both tunables live here so play feel can be adjusted from .env without
-    # editing scenario or spine. The reply-delay range is per-NPC (in
-    # NPCDossier.reply_delay_calibration) and must exceed SEND_CALIBRATION_DELTA
-    # so a single send doesn't satisfy its own queued reply.
-    send_calibration_delta: float = 5.0
-    open_calibration_delta: float = 1.0
+    # Calibration advances per /send by base + coef·|warmth| (warmth is the
+    # texture-scorer output, range -3..3). /open does NOT mutate calibration —
+    # reading is not a deliberate communication act. The meter is exclusively
+    # driven by the texture-scored player voice, which is the design point.
+    #
+    # Default tuning (base=2.0, coef=1.5):
+    #   warmth=0   → +2.0    (neutral sends still progress slowly)
+    #   warmth=±1  → +3.5
+    #   warmth=±2  → +5.0    (matches the old flat send delta)
+    #   warmth=±3  → +6.5
+    # Average ~14 sends to reach the 100 cap; terminal beats are authored to
+    # fire well before then.
+    calibration_base: float = 2.0
+    calibration_warmth_coef: float = 1.5
 
     # ───────── history compaction (rarely tuned at runtime) ─────────
     # summarize_when_large fires when input would exceed this share of LLAMA_CTX.

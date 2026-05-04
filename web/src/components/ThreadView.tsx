@@ -33,14 +33,14 @@ export function ThreadView() {
       </div>
 
       <div className="flex-1 overflow-y-auto px-8 py-6">
-        <div className="mx-auto max-w-3xl">
+        <div className="mx-auto max-w-2xl">
           {threadEmails.map((email) => (
             <EmailCard key={email.id} email={email} />
           ))}
 
           {composeTarget && (
             <EmailComposer
-              inReplyTo={composeTarget.beat_id ?? null}
+              inReplyTo={composeTarget.id}
               recipient={composeTarget.from}
             />
           )}
@@ -75,7 +75,7 @@ function EmailCard({ email }: { email: Email }) {
 function pickComposeTarget(emails: Email[]): Email | null {
   for (let i = emails.length - 1; i >= 0; i--) {
     const e = emails[i];
-    if (e.folder === "Inbox" && e.from !== "you" && e.beat_id) {
+    if (e.folder === "Inbox" && e.from !== "you") {
       return e;
     }
   }

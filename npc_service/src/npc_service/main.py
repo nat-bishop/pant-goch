@@ -4,10 +4,12 @@ The two LLM agents (see agents.py) are constructed in lifespan against one
 shared model handle. The deterministic spine (spine.py) owns all state
 mutation; agents return prose / scores only.
 
-Two verbs only: `/open` and `/send`. Both advance calibration (the doom
-counter) and tick the scheduler. There's no clock — beats fire on calibration
-thresholds and reply counts. See spine.schedule_npc_reply for how reply
-asynchrony falls out of authoring rather than waiting.
+Two verbs only: `/open` and `/send`. /open marks an email read but no longer
+advances calibration — the meter is exclusively driven by texture-scored
+sends. /send advances calibration by `base + coef·|warmth|` (warmth from
+TEXTURE_AGENT) and decides whether the NPC's reply is a free-chat turn
+(immediate, no author directive) or a queued PlotBeat (threshold-delayed
+authored moment).
 """
 from __future__ import annotations
 
@@ -26,13 +28,14 @@ import logfire
 from logfire import ConsoleOptions
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic_ai.messages import ModelResponse, TextPart
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
 from .agents import (
     AgentBundle,
+    ChatDeps,
     build_agents,
-    build_email_user_prompt,
     build_texture_user_prompt,
 )
 from .config import Settings
@@ -49,7 +52,7 @@ from .models import (
     Email,
     InboxState,
     OpenRequest,
-    RenderedBeat,
+    PlotBeat,
     Reply,
     Scenario,
     SendRequest,
@@ -57,15 +60,14 @@ from .models import (
     load_scenario,
 )
 from .spine import (
-    apply_calibration_delta,
-    apply_effect,
+    apply_calibration_from_warmth,
     apply_texture_score,
     find_due_beats,
-    initialize_boot_inbox,
-    render_thread_transcript,
-    schedule_npc_reply,
+    find_eligible_plot_beat,
+    latest_npc_email_in_thread,
+    reply_subject_for_email,
+    schedule_thread_reply,
     select_voice_band,
-    thread_id_from_beat_id,
 )
 
 
@@ -170,9 +172,21 @@ logfire.instrument_fastapi(app, capture_headers=False)
 # ───────────────────────── beat firing ─────────────────────────
 
 
-async def _fire_beat(beat: Beat, in_response_to: str | None) -> Email | None:
-    # `in_response_to` chains rendered NPC replies onto the player's send so
-    # the next beat reads the right transcript.
+async def _fire_beat(
+    beat: Beat,
+    *,
+    player_body: str | None,
+    in_response_to: str | None,
+) -> Email | None:
+    """Fire a beat and produce its email.
+
+    AnchoredBeats ship verbatim; the rendered email seeds `thread_messages`
+    so the chat agent's next run sees the anchored prose as a prior turn.
+
+    PlotBeats run the chat agent with `plot_directive=beat.spec`, using the
+    current player_body as user_prompt. Caller must pass player_body for
+    PlotBeats — they're triggered by /send ticks where a body always exists.
+    """
     assert STATE is not None and SCENARIO is not None and AGENTS is not None
     if beat.id in STATE.fired_beat_ids:
         return None
@@ -184,76 +198,149 @@ async def _fire_beat(beat: Beat, in_response_to: str | None) -> Email | None:
                 id=f"email_{uuid.uuid4().hex[:8]}",
                 beat_id=beat.id,
                 thread_id=beat.thread,
-                folder=beat.folder,
+                folder="Inbox",
                 sender=beat.from_,
                 recipient=beat.to,
                 subject=beat.subject,
                 body=beat.authored_prose.strip(),
                 sent_at_label=beat.sent_at or "just now",
             )
-        elif isinstance(beat, RenderedBeat):
-            email = await _render_beat_email(beat, in_response_to)
+            _seed_thread_history(beat.thread, email.body)
+        elif isinstance(beat, PlotBeat):
+            assert player_body is not None, (
+                "PlotBeat fires require a player body — they trigger only on /send ticks"
+            )
+            email = await _render_via_chat_agent(
+                npc_id=beat.npc,
+                thread_id=beat.thread,
+                player_body=player_body,
+                in_reply_to_email_id=in_response_to,
+                plot_directive=beat.spec,
+                beat_id=beat.id,
+                subject=beat.subject,
+            )
 
         if email is not None:
             STATE.emails.append(email)
 
-        for eff in beat.effects:
-            apply_effect(eff, STATE, SCENARIO)
         STATE.fired_beat_ids.add(beat.id)
         return email
 
 
-async def _render_beat_email(beat: RenderedBeat, in_response_to: str | None) -> Email:
+def _seed_thread_history(thread_id: str, body: str) -> None:
+    """Anchored emails on NPC threads land in `thread_messages` as
+    `ModelResponse(TextPart)` so the chat agent's next run sees them as
+    prior assistant turns. System threads (no NPC) skip this — there's no
+    chat agent for them."""
+    assert STATE is not None and SCENARIO is not None
+    thread = SCENARIO.thread_by_id.get(thread_id)
+    if thread is None or thread.npc is None:
+        return
+    history = STATE.thread_messages.setdefault(thread_id, [])
+    history.append(ModelResponse(parts=[TextPart(content=body)]))
+
+
+async def _render_via_chat_agent(
+    *,
+    npc_id: str,
+    thread_id: str,
+    player_body: str,
+    in_reply_to_email_id: str | None,
+    plot_directive,
+    beat_id: str | None,
+    subject: str | None,
+) -> Email:
+    """Single rendering path used by both chat turns (no plot directive) and
+    PlotBeat fires (directive injected via deps).
+
+    Appends `result.new_messages()` to thread_messages so future turns see
+    the player's body and the NPC's reply as the next two messages in the
+    Pydantic AI conversation.
+    """
     assert STATE is not None and SCENARIO is not None and AGENTS is not None
-    npc = SCENARIO.npc_by_id[beat.npc]
-    transcript = render_thread_transcript(STATE, beat.thread)
-    user_prompt = build_email_user_prompt(beat, npc, STATE, transcript)
+    npc = SCENARIO.npc_by_id[npc_id]
     band = select_voice_band(npc, STATE)
-    band_name = band.name if band else None
+    deps = ChatDeps(npc=npc, voice_band=band, plot_directive=plot_directive)
+    history = STATE.thread_messages.setdefault(thread_id, [])
 
     with logfire.span(
-        "render_beat",
-        beat_id=beat.id,
-        npc=beat.npc,
-        band=band_name,
+        "render_chat",
+        npc=npc_id,
+        thread=thread_id,
+        beat=beat_id,
+        band=band.name if band else None,
+        plot=plot_directive is not None,
+        history_len=len(history),
     ) as span:
-        result = await AGENTS.email_agent.run(user_prompt)
+        result = await AGENTS.chat_agent.run(
+            player_body,
+            message_history=list(history),
+            deps=deps,
+        )
+        history.extend(result.new_messages())
         usage = result.usage()
         span.set_attribute("input_tokens", usage.input_tokens)
         span.set_attribute("output_tokens", usage.output_tokens)
 
+    body = result.output.strip()
+    derived_subject = subject if subject is not None else reply_subject_for_email(
+        STATE, in_reply_to_email_id
+    )
+    derived_recipient = _derive_chat_recipient(thread_id, npc.email_address)
+
     return Email(
         id=f"email_{uuid.uuid4().hex[:8]}",
-        beat_id=beat.id,
-        thread_id=beat.thread,
+        beat_id=beat_id,
+        thread_id=thread_id,
         folder="Inbox",
-        sender=beat.from_,
-        recipient=beat.to,
-        subject=beat.subject,
-        body=result.output.prose.strip(),
+        sender=npc.email_address,
+        recipient=derived_recipient,
+        subject=derived_subject,
+        body=body,
         sent_at_label="just now",
-        in_reply_to_beat=in_response_to,
-        voice_band_used=band_name,
+        in_reply_to_beat=in_reply_to_email_id,
+        voice_band_used=band.name if band else None,
     )
+
+
+def _derive_chat_recipient(thread_id: str, npc_address: str) -> str:
+    """The player's address — read off the NPC's most recent email's
+    `recipient` field. The boot anchored welcome guarantees this is
+    populated before any chat turn fires."""
+    assert STATE is not None
+    prior = latest_npc_email_in_thread(STATE, thread_id, npc_address)
+    return prior.recipient if prior is not None else "you"
 
 
 # ───────────────────────── scheduler tick ─────────────────────────
 
 
-async def _tick(in_response_to: str | None = None) -> list[Email]:
-    """Walk the beat scheduler. Returns the list of newly-emitted emails this
-    tick (for SSE).
+async def _tick(
+    *,
+    player_body: str | None = None,
+    in_response_to: str | None = None,
+) -> tuple[list[Email], set[str]]:
+    """Walk the beat scheduler. Returns (newly-emitted emails, set of thread
+    ids where a PlotBeat fired this tick). The thread-id set lets the caller
+    decide whether a chat-turn fallback is still needed.
     """
     assert STATE is not None and SCENARIO is not None
     new_emails: list[Email] = []
+    plot_fired_threads: set[str] = set()
 
     with logfire.span("tick", in_response_to=in_response_to) as span:
-        for bf in find_due_beats(STATE, SCENARIO):
-            e = await _fire_beat(bf.beat, in_response_to=in_response_to)
+        for beat in find_due_beats(STATE, SCENARIO):
+            e = await _fire_beat(
+                beat,
+                player_body=player_body,
+                in_response_to=in_response_to,
+            )
             if e is not None:
                 new_emails.append(e)
+                if isinstance(beat, PlotBeat):
+                    plot_fired_threads.add(beat.thread)
         span.set_attribute("new_email_count", len(new_emails))
-        return new_emails
+        return new_emails, plot_fired_threads
 
 
 # ───────────────────────── endpoints ─────────────────────────
@@ -312,11 +399,10 @@ async def get_thread(thread_id: str) -> dict:
 
 @app.post("/open")
 async def post_open(req: OpenRequest) -> dict:
-    """Mark email read. Bumps calibration by OPEN_CALIBRATION_DELTA and ticks
-    the scheduler — opening is calibration-positive in the fiction (the
-    Program reads what you read).
-    """
-    if STATE is None or SCENARIO is None or SETTINGS is None:
+    """Mark email read. No calibration mutation — reading isn't a
+    communication act. The meter is exclusively driven by texture-scored
+    sends."""
+    if STATE is None or SCENARIO is None:
         raise HTTPException(503, "state not initialised")
     if STATE.ended:
         raise HTTPException(409, f"session ended ({STATE.end_reason})")
@@ -326,11 +412,9 @@ async def post_open(req: OpenRequest) -> dict:
         if email is None:
             raise HTTPException(404, f"unknown email_id: {req.email_id}")
         email.is_read = True
-        apply_calibration_delta(STATE, SCENARIO, SETTINGS.open_calibration_delta)
-        new_emails = await _tick(in_response_to=None)
         return {
             "state": STATE.public_view(),
-            "new_emails": [_email_full(e) for e in new_emails],
+            "new_emails": [],
         }
 
 
@@ -352,12 +436,15 @@ async def post_send(req: SendRequest) -> StreamingResponse:
 async def _send_stream(req: SendRequest) -> AsyncIterator[bytes]:
     assert STATE is not None and SCENARIO is not None and AGENTS is not None and SETTINGS is not None
     body = req.body.strip()
-    thread_id = thread_id_from_beat_id(req.in_reply_to)
+    in_reply_email = (
+        next((e for e in STATE.emails if e.id == req.in_reply_to), None)
+        if req.in_reply_to else None
+    )
+    thread_id = in_reply_email.thread_id if in_reply_email else None
 
     with logfire.span("send_stream", recipient=req.recipient, thread_id=thread_id):
         async with ACTION_LOCK:
-            apply_calibration_delta(STATE, SCENARIO, SETTINGS.send_calibration_delta)
-
+            # 1. Record the player's send
             send_email = Email(
                 id=f"email_{uuid.uuid4().hex[:8]}",
                 beat_id=None,
@@ -365,7 +452,7 @@ async def _send_stream(req: SendRequest) -> AsyncIterator[bytes]:
                 folder="Sent",
                 sender="you",
                 recipient=req.recipient,
-                subject=_reply_subject(req.in_reply_to),
+                subject=reply_subject_for_email(STATE, req.in_reply_to),
                 body=body,
                 sent_at_label="just now",
                 in_reply_to_beat=req.in_reply_to,
@@ -374,19 +461,16 @@ async def _send_stream(req: SendRequest) -> AsyncIterator[bytes]:
             STATE.emails.append(send_email)
             yield _sse({"type": "send_recorded", "email": _email_full(send_email)})
 
+            # 2. Texture scoring
             recipient_npc = _infer_recipient_npc_id(req.recipient)
             recipient_blurb = _persona_blurb_for_recipient(req.recipient, recipient_npc)
-            transcript = render_thread_transcript(STATE, thread_id)
+            prior_email_body = in_reply_email.body if in_reply_email else ""
             try:
                 tex_result = await AGENTS.texture_agent.run(
-                    build_texture_user_prompt(recipient_blurb, transcript, body)
+                    build_texture_user_prompt(recipient_blurb, prior_email_body, body)
                 )
                 tex = tex_result.output
-                logfire.info(
-                    "texture scored",
-                    warmth=tex.warmth,
-                    rationale=tex.rationale,
-                )
+                logfire.info("texture scored", warmth=tex.warmth, rationale=tex.rationale)
             except Exception:
                 logfire.exception("texture scoring failed; defaulting to neutral")
                 tex = TextureScore(warmth=0.0, rationale="scorer-failed")
@@ -401,30 +485,50 @@ async def _send_stream(req: SendRequest) -> AsyncIterator[bytes]:
                 rationale=tex.rationale,
             ))
             apply_texture_score(STATE, SCENARIO, recipient_npc, tex.warmth)
-            yield _sse({"type": "texture", "warmth": tex.warmth})
+            delta = apply_calibration_from_warmth(
+                STATE, SCENARIO, tex.warmth,
+                base=SETTINGS.calibration_base,
+                coef=SETTINGS.calibration_warmth_coef,
+            )
+            yield _sse({"type": "texture", "warmth": tex.warmth, "calibration_delta": delta})
 
-            if recipient_npc is not None:
-                schedule_npc_reply(STATE, SCENARIO, recipient_npc)
+            # 3. Tick: fire due AnchoredBeats and any PlotBeat whose threshold
+            #    was crossed by this send's calibration bump. PlotBeats use the
+            #    just-typed player body as user_prompt for the chat agent.
+            new_emails, plot_fired_threads = await _tick(
+                player_body=body,
+                in_response_to=send_email.id,
+            )
 
-            # Calibration just bumped, so any anchored beat whose
-            # quality_gte threshold the player just crossed fires this tick.
-            # The just-queued NPC reply normally won't — its threshold sits
-            # above the current value (see schedule_npc_reply).
-            new_emails = await _tick(in_response_to=send_email.id)
+            # 4 + 5: chat-turn fallback and next-PlotBeat scheduling.
+            #    Both require a known NPC + thread; emit the new_email events
+            #    after either path resolves.
+            if recipient_npc is not None and thread_id is not None:
+                if thread_id not in plot_fired_threads:
+                    chat_email = await _render_via_chat_agent(
+                        npc_id=recipient_npc,
+                        thread_id=thread_id,
+                        player_body=body,
+                        in_reply_to_email_id=send_email.id,
+                        plot_directive=None,
+                        beat_id=None,
+                        subject=None,
+                    )
+                    STATE.emails.append(chat_email)
+                    new_emails.append(chat_email)
+
+                # Schedule the next PlotBeat with the threshold-delay pattern.
+                # Becomes pending; lands on a future /send tick once
+                # calibration crosses the threshold.
+                next_plot = find_eligible_plot_beat(STATE, SCENARIO, thread_id)
+                if next_plot is not None:
+                    schedule_thread_reply(STATE, SCENARIO, recipient_npc, next_plot)
+
             for ne in new_emails:
                 yield _sse({"type": "new_email", "email": _email_full(ne)})
+
             yield _sse({"type": "state", "state": STATE.public_view()})
             yield _sse({"type": "done"})
-
-
-def _reply_subject(in_reply_to: str | None) -> str:
-    if STATE is None or in_reply_to is None:
-        return "(no subject)"
-    target = next((e for e in STATE.emails if e.beat_id == in_reply_to), None)
-    if target is None:
-        return "(no subject)"
-    s = target.subject
-    return s if s.lower().startswith("re:") else f"Re: {s}"
 
 
 def _persona_blurb_for_recipient(recipient: str, npc_id: str | None) -> str:
@@ -456,14 +560,14 @@ async def post_reset() -> JSONResponse:
 
 
 async def _bootstrap_state() -> None:
-    """Init state from scenario, fire boot inbox, then any beats already due."""
+    """Init state from scenario; fire any beats already due (anchored beats
+    with empty preconditions land here on the first tick)."""
     global STATE
     assert SCENARIO is not None
     STATE = InboxState.from_scenario(SCENARIO)
-    for bf in initialize_boot_inbox(STATE, SCENARIO):
-        await _fire_beat(bf.beat, in_response_to=None)
-    for bf in find_due_beats(STATE, SCENARIO):
-        await _fire_beat(bf.beat, in_response_to=None)
+    # Boot tick fires AnchoredBeats with empty preconditions. PlotBeats can't
+    # fire here — they aren't auto-pended. So no player_body needed.
+    await _tick(player_body=None, in_response_to=None)
 
 
 # ───────────────────────── DTO helpers ─────────────────────────
