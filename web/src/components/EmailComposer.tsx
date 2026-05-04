@@ -17,8 +17,8 @@ export function EmailComposer({ inReplyTo, recipient }: Props) {
 
   const onSend = async () => {
     if (!canSend) return;
-    await run(streamSend({ in_reply_to: inReplyTo, recipient, body: trimmed }));
     setBody("");
+    await run(streamSend({ in_reply_to: inReplyTo, recipient, body: trimmed }));
   };
 
   const recipientName = stripAddress(recipient);

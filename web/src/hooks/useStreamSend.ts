@@ -7,7 +7,7 @@ import { SseEvent } from "../api";
 import { useStore } from "../store";
 
 export function useStreamSend() {
-  const { refreshInbox, view, openThread } = useStore();
+  const { refreshInbox, view, openThread, appendEmailOptimistic } = useStore();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -16,8 +16,9 @@ export function useStreamSend() {
     setError(null);
     try {
       for await (const ev of stream) {
-        if (ev.type === "error") setError(ev.message);
-        if (ev.type === "done") break;
+        if (ev.type === "send_recorded") appendEmailOptimistic(ev.email);
+        else if (ev.type === "error") setError(ev.message);
+        else if (ev.type === "done") break;
       }
       await refreshInbox();
       if (view.kind === "thread") {

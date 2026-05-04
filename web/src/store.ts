@@ -29,6 +29,7 @@ interface Store {
   goFolder(folder: string): void;
   openThread(threadId: string, folderReturnTo: string): Promise<void>;
   back(): void;
+  appendEmailOptimistic(email: Email): void;
 }
 
 export const useStore = create<Store>()((set, get) => ({
@@ -92,5 +93,16 @@ export const useStore = create<Store>()((set, get) => ({
     if (view.kind === "thread") {
       set({ view: { kind: "folder", folder: view.folderReturnTo }, threadEmails: null });
     }
+  },
+
+  appendEmailOptimistic(email) {
+    const { folders, view, threadEmails } = get();
+    const folder = folders[email.folder] ?? [];
+    const nextFolders = { ...folders, [email.folder]: [...folder, email] };
+    const nextThreadEmails =
+      view.kind === "thread" && view.threadId === email.thread_id && threadEmails
+        ? [...threadEmails, email]
+        : threadEmails;
+    set({ folders: nextFolders, threadEmails: nextThreadEmails });
   },
 }));
