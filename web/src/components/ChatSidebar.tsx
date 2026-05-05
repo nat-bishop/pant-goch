@@ -8,7 +8,7 @@ import { PresenceDot } from "./PresenceDot";
 export function ChatSidebar() {
   const view = useStore((s) => s.view);
   const openChat = useStore((s) => s.openChat);
-  const unreadAria = useStore((s) => s.state?.unread_counts.aria ?? 0);
+  const unreadAria = useStore((s) => s.state?.unread_counts.Inbox ?? 0);
   const [directOpen, setDirectOpen] = useState(true);
 
   return (
