@@ -24,7 +24,6 @@ export interface InboxResponse {
 }
 
 export interface GameState {
-  calibration: number;
   ended: boolean;
   end_reason: string | null;
   unread_counts: Record<string, number>;
@@ -67,7 +66,6 @@ export async function postOpen(emailId: string) {
 
 export type SseEvent =
   | { type: "send_recorded"; email: Email }
-  | { type: "calibration"; calibration_delta: number }
   | { type: "classified"; quality: string; value: string; score: number }
   | { type: "new_email"; email: Email }
   | { type: "state"; state: GameState }

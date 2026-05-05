@@ -51,7 +51,6 @@ from .models import (
     load_scenario,
 )
 from .spine import (
-    apply_calibration_delta,
     apply_classification,
     evaluate_completes_when,
     find_due_beats,
@@ -224,12 +223,17 @@ async def _fire_beat(
                 subject=beat.subject,
             )
 
+        is_plot = isinstance(beat, PlotBeat)
         if email is not None:
             STATE.emails.append(email)
+            if is_plot and beat.ends_session:
+                STATE.ended = True
+                STATE.end_reason = beat.id
 
-        # Fire-once: mark complete now. Multi-turn: stay re-fireable; the
-        # next _fire_beat call re-evaluates completes_when.
-        if not beat.completes_when:
+        # multi_turn beats never enter fired_beat_ids; they stop firing
+        # only when preconditions stop holding (typical pattern: mutex via
+        # Not_(BeatFired …) against terminals that supersede them).
+        if not (is_plot and beat.multi_turn) and not beat.completes_when:
             STATE.fired_beat_ids.add(beat.id)
         return email
 
@@ -403,8 +407,8 @@ async def get_thread(thread_id: str) -> dict:
 
 @app.post("/open")
 async def post_open(req: OpenRequest) -> dict:
-    """Mark email read. No calibration mutation — reading isn't a
-    communication act. The meter is exclusively driven by /send."""
+    """Mark email read. /open does not mutate qualities — reading isn't a
+    communication act, so it can't move engagement or fire any beat."""
     if STATE is None or SCENARIO is None:
         raise HTTPException(503, "state not initialised")
     if STATE.ended:
@@ -437,7 +441,7 @@ async def post_send(req: SendRequest) -> StreamingResponse:
 
 
 async def _send_stream(req: SendRequest) -> AsyncIterator[bytes]:
-    assert STATE is not None and SCENARIO is not None and AGENTS is not None and SETTINGS is not None
+    assert STATE is not None and SCENARIO is not None and AGENTS is not None
     body = req.body.strip()
     in_reply_email = (
         next((e for e in STATE.emails if e.id == req.in_reply_to), None)
@@ -470,14 +474,11 @@ async def _send_stream(req: SendRequest) -> AsyncIterator[bytes]:
             ))
             yield _sse({"type": "send_recorded", "email": _email_full(send_email)})
 
-            delta = apply_calibration_delta(STATE, SCENARIO, SETTINGS.calibration_base)
-            yield _sse({"type": "calibration", "calibration_delta": delta})
-
             # Classifier runs serially before _tick because the replied-to
-            # beat may consume its own classifier output via `completes_when`
-            # (e.g. aria.first_calibration's gate on engaged_initial). _tick
-            # must see the post-classifier qualities to decide whether the
-            # multi-turn beat re-renders or completes silently.
+            # beat may consume its own classifier output (e.g. aria.loop's
+            # `accumulate=true` engagement classifier whose value gates the
+            # complete_warm vs complete_standard split). _tick must see the
+            # post-classifier qualities to make terminal decisions.
             recipient_npc = _infer_recipient_npc_id(req.recipient)
             replied_beat = (
                 SCENARIO.beat_by_id.get(in_reply_email.beat_id)
@@ -513,9 +514,10 @@ async def _send_stream(req: SendRequest) -> AsyncIterator[bytes]:
                 in_response_to=send_email.id,
             )
 
-            # Chat-turn fallback fires when no PlotBeat covered this thread
-            # (e.g. between first_calibration completing silently and
-            # midprogram's reply-count threshold being met).
+            # Chat-turn fallback fires when no PlotBeat covered this thread.
+            # In the steady state aria.loop is multi-turn and fires on every
+            # tick after the welcome reply, so this branch only matters for
+            # threads without a covering loop beat.
             if recipient_npc is not None and thread_id is not None and thread_id not in plot_fired_threads:
                 chat_email = await _render_via_chat_agent(
                     npc_id=recipient_npc,

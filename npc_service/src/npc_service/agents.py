@@ -137,7 +137,12 @@ def build_agents(model) -> AgentBundle:
         name="classifier_agent",
         output_type=ToolOutput(ClassificationResult),
         instructions=_CLASSIFIER_SYSTEM_PROMPT,
-        model_settings={"max_tokens": 256, "temperature": 0.1},
+        # Headroom: Gemma 4 E4B sometimes preambles before emitting the
+        # tool call. At max_tokens=256 it regularly hit `finish_reasons=
+        # ["length"]` on the first attempt, forcing Pydantic AI to retry
+        # and ~2x the latency. 2048 leaves ample budget for the call plus
+        # any preamble the model wants to write.
+        model_settings={"max_tokens": 2048, "temperature": 0.1},
     )
 
     return AgentBundle(

@@ -1,5 +1,4 @@
-"""The deterministic spine: predicate evaluation, beat scheduler, and
-calibration application.
+"""The deterministic spine: predicate evaluation and beat scheduler.
 
 No LLM calls live here — only code-owned state mutation.
 
@@ -31,8 +30,6 @@ from .models import (
 
 
 log = logging.getLogger("npc_service.spine")
-
-CALIBRATION_QUALITY = "calibration"
 
 
 # ───────────────────────── predicate evaluation ─────────────────────────
@@ -87,36 +84,25 @@ def apply_classification(
 ) -> bool:
     """Apply a classifier output to the named quality. Returns True if the
     value was applied; False if `value` isn't in the authored map (caller
-    should log + leave the quality alone). LLM-judge → single named quality
-    with `_clamp_quality` bounding.
+    should log + leave the quality alone).
+
+    With `accumulate=False` (default) the mapped score replaces the quality.
+    With `accumulate=True` it's added to the current value — used for
+    cumulative signals like aria.loop's engagement, where each reply moves
+    the quality by the mapped delta. Both paths share `_clamp_quality`.
     """
     score = classify_reply.map.get(value)
     if score is None:
         return False
+    if classify_reply.accumulate:
+        cur = state.qualities.get(classify_reply.quality, 0.0)
+        new = cur + score
+    else:
+        new = score
     state.qualities[classify_reply.quality] = _clamp_quality(
-        score, classify_reply.quality, scenario
+        new, classify_reply.quality, scenario
     )
     return True
-
-
-# ───────────────────────── calibration ─────────────────────────
-
-
-def apply_calibration_delta(state: InboxState, scenario: Scenario, delta: float) -> float:
-    """Bump the calibration quality by `delta`, clamped against its QualityDef
-    bounds. Returns the delta applied for telemetry. Reaching the max ends
-    the session — terminals are authored to fire well before then, so this
-    is a safety net rather than the expected end.
-    """
-    cur = state.qualities.get(CALIBRATION_QUALITY, 0.0)
-    new = _clamp_quality(cur + delta, CALIBRATION_QUALITY, scenario)
-    state.qualities[CALIBRATION_QUALITY] = new
-    log.debug("calibration %s -> %s", cur, new)
-    q = scenario.quality_by_id.get(CALIBRATION_QUALITY)
-    if not state.ended and q is not None and q.max is not None and new >= q.max:
-        state.ended = True
-        state.end_reason = "calibration_complete"
-    return delta
 
 
 # ───────────────────────── beat scheduler ─────────────────────────
@@ -136,7 +122,7 @@ def find_due_beats(state: InboxState, scenario: Scenario) -> list[Beat]:
 
     Pending beats are evaluated in scenario authoring order — that's how
     authors break ties when two beats sharing a tick reference each other
-    via BeatFired (e.g., terminal_warm and terminal_standard).
+    via BeatFired (e.g., aria.complete_warm and aria.complete_standard).
     """
     due: list[Beat] = []
     pending_by_id = {pb.beat_id: pb for pb in state.pending_beats}

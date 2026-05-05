@@ -53,15 +53,6 @@ class Settings(BaseSettings):
 
     scenario_path: Path | None = None
 
-    # ───────── calibration progression ─────────
-    # Flat per-/send delta applied to the visible "Counterpart fidelity %"
-    # counter. /open does NOT mutate calibration — reading is not a deliberate
-    # communication act. Calibration is decorative (no beat gates on its
-    # value), so we just need a deterministic climb. At base=5.0 the meter
-    # reaches the 100 cap in ~20 sends; terminal beats are authored to fire
-    # well before that on reply count.
-    calibration_base: float = 5.0
-
     # ───────── history compaction (rarely tuned at runtime) ─────────
     # summarize_when_large fires when input would exceed this share of LLAMA_CTX.
     summary_trigger_frac: float = 0.8

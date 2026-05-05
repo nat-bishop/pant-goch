@@ -12,15 +12,6 @@ export function InboxHeader() {
       <div className="flex-1" />
 
       <div className="flex shrink-0 items-center gap-3">
-        {state && (
-          <span
-            className="rounded-full border border-cool/40 bg-cool/5 px-3 py-1 text-[11px] tracking-wide text-cool"
-            title="counterpart fidelity — advances with every action; reaching 100% completes the pilot"
-          >
-            Counterpart fidelity: {Math.round(state.calibration)}%
-          </span>
-        )}
-
         {state?.ended && (
           <span className="rounded-full border border-warm/40 bg-warm/5 px-3 py-1 text-[11px] tracking-wide text-warm">
             transition complete

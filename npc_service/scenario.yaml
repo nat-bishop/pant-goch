@@ -10,37 +10,16 @@ premise: |
 # ───────────────────────── qualities ─────────────────────────
 
 qualities:
-  - id: calibration
+  - id: engagement
     type: float
     min: 0.0
-    max: 100.0
+    max: 10.0
     default: 0.0
     description: |
-      Counterpart fidelity %. Player-visible doom counter. Advances by a
-      flat config.calibration_base per /send. /open does NOT mutate
-      calibration. Reaching 100 ends the session; terminal beats are
-      authored to fire well before then.
-
-  - id: engaged_initial
-    type: float
-    min: 0.0
-    max: 1.0
-    default: 0.5
-    description: |
-      Did the player substantively engage with Aria's first calibration
-      ask? Written by classify_reply on aria.first_calibration; gates
-      that beat's completes_when (≥0.7 marks the multi-turn beat
-      complete and lets the chain advance to aria.midprogram).
-
-  - id: partnership_warmth
-    type: float
-    min: 0.0
-    max: 1.0
-    default: 0.5
-    description: |
-      Was the player's reply to aria.midprogram warm and personal?
-      Written by classify_reply on aria.midprogram; gates terminal_warm
-      vs terminal_standard at the post-midprogram terminal selection.
+      Cumulative engagement score. Written by aria.loop's classify_reply
+      with `accumulate: true` on every player reply: engaged → +1.0,
+      unclear → +0.5, deflected → -0.5. Floor-clamped at 0. Drives the
+      warm-vs-standard ending split (≥4.0 → warm).
 
 
 # ───────────────────────── NPC dossiers ─────────────────────────
@@ -86,7 +65,6 @@ npcs:
 threads:
   - id: aria
     npc: aria
-  - id: system  # system thread; no NPC, no replies expected
 
 
 # ───────────────────────── beats ─────────────────────────
@@ -94,21 +72,25 @@ threads:
 # Two beat types:
 #
 # - `anchored` ships authored prose verbatim, no LLM call. Used for the boot
-#   welcome and for system-thread bureaucratic notices.
+#   welcome.
 # - `plot` is an authored DIRECTIVE, not a pre-written email. When a plot
-#   beat's preconditions pass, schedule_thread_reply queues it with a
-#   `quality_gte(calibration, current + reply_delay_calibration)` runtime
-#   predicate. On a future /send, calibration crosses the threshold and the
-#   beat fires: the chat agent runs with the spec's intent / must-include /
-#   must-not / length window injected as per-run instructions on top of the
-#   thread's accumulated message_history.
+#   beat's preconditions pass, the chat agent runs with the spec's intent /
+#   must-include / must-not / length window injected as per-run instructions
+#   on top of the thread's accumulated message_history.
 #
-# Replies that don't correspond to a plot beat (the default) are CHAT TURNS:
-# the chat agent runs with no plot directive, just dossier + voice band +
-# message history. They fire immediately within the same /send response —
-# asynchrony for chat turns lives in LLM render time + SSE streaming, not
-# in calibration math. The threshold-delay pattern is reserved for plot
-# beats so authored moments still feel like scheduled events.
+# PlotBeat flags:
+#
+# - `multi_turn: true` — the beat re-fires every tick; never enters
+#   `fired_beat_ids`. Stop firing via mutex preconditions (e.g. terminals
+#   that supersede it).
+# - `ends_session: true` — after the beat's email is emitted, `state.ended`
+#   flips to True; subsequent /open and /send return 409.
+#
+# Authoring order matters: `find_due_beats` walks beats in this order, and
+# `Not_(BeatFired x)` preconditions resolve same-tick via `extra_fired`. The
+# terminals (complete_warm, complete_standard) are authored BEFORE the loop
+# so that on the same tick where a terminal becomes eligible, the loop sees
+# the terminal in `extra_fired` and is correctly suppressed.
 
 beats:
 
@@ -146,128 +128,20 @@ beats:
       Aria
       Continuity Counterpart | ARIA-7
 
-  # ─── Aria plot beats (chat-agent-rendered with directive injection) ───
-  #
-  # The arc is a chain: first_calibration is a MULTI-TURN beat that loops
-  # until the player engages substantively (gated on engaged_initial≥0.7,
-  # written by its own classify_reply). When it completes, midprogram
-  # becomes eligible; when midprogram has fired and the player has racked
-  # up enough replies, one of the terminals fires.
+  # ─── Endings (authored before the loop for same-tick mutex resolution) ───
 
-  - id: aria.first_calibration
+  - id: aria.complete_warm
     type: plot
     thread: aria
     npc: aria
+    ends_session: true
     preconditions:
-      - kind: player_replies_to_thread_gte
-        thread: aria
-        value: 1
-    subject: "Calibration Sample 1 — Continuing"
-    spec:
-      intent: |
-        Calibration ask — Aria's first follow-up after the welcome reply.
-        This beat is multi-turn: it re-renders until the player engages
-        substantively. Use the message_history to decide which mode you're
-        in.
-
-        FIRST RENDER (your prior message in this thread is just the
-        welcome email): Affirm receipt of the calibration sample. Ask one
-        specific, personal calibration question — what does a typical
-        Tuesday afternoon look like, or a recent moment at work that felt
-        meaningful, or what the desk in front of the player has on it.
-
-        SUBSEQUENT RENDERS (your prior message in this thread is a
-        calibration ask the player did not substantively answer): Note
-        gently that the sample needs more texture for usable calibration.
-        Rephrase the prompt as something concrete and easier — a single
-        sentence about today's weather, a coffee preference, what's on
-        the desk. Mention that the Wellness portal remains available.
-        Never punitive, never break the cheerful corporate frame.
-      must_include_facts:
-        - "asks the player one specific, personal calibration question"
-        - "Aria signs off as 'Aria / Continuity Counterpart | ARIA-7'"
-      must_not:
-        - "do not name what happens to the player at end of pilot"
-        - "do not break the cheerful corporate frame"
-        - "do not name any game system"
-      length_words: [60, 140]
-    classify_reply:
-      quality: engaged_initial
-      question: |
-        Did the player substantively engage with Aria's calibration prompt
-        — sharing any specific personal detail, opinion, or concrete
-        response? Or did they refuse, deflect, change the subject, or send
-        a one-word non-answer?
-      allowed_values: ["engaged", "deflected", "unclear"]
-      map:
-        engaged: 1.0
-        deflected: 0.0
-        unclear: 0.5
-    completes_when:
       - kind: quality_gte
-        quality: engaged_initial
-        value: 0.7
-
-  - id: aria.midprogram
-    type: plot
-    thread: aria
-    npc: aria
-    preconditions:
-      - kind: beat_fired
-        beat: aria.first_calibration
-      - kind: player_replies_to_thread_gte
-        thread: aria
-        value: 3
-    subject: "Calibration Milestone — Counterpart Fidelity Update"
-    spec:
-      intent: |
-        Aria reports a calibration milestone in cheerful corporate terms
-        ("Counterpart fidelity now at approximately X% — thank you for
-        your continued engagement"). She reflects, in her own phrasing,
-        one quality of how the player has been writing — without explicitly
-        naming this as analysis (the Program presents itself as a
-        partnership). Asks a more personal calibration prompt — ideally
-        one that touches on the player's working style, their feelings
-        about their role, or their typical Tuesday afternoon. Closes
-        with the standard sign-off.
-      must_include_facts:
-        - "Aria reports a calibration milestone with a fidelity percentage in the rough vicinity of 40-60%"
-        - "Aria asks a more personal next calibration prompt"
-        - "Aria signs off as 'Aria / Continuity Counterpart | ARIA-7'"
-      must_not:
-        - "do not name what happens to the player at end of pilot"
-        - "do not break the cheerful corporate frame"
-        - "do not name any game system"
-      length_words: [80, 140]
-    # The player's reply to this milestone email is the one warmth check that
-    # actually gates the story — terminal_warm vs terminal_standard. The
-    # classifier runs once on this reply and writes partnership_warmth.
-    classify_reply:
-      quality: partnership_warmth
-      question: |
-        Did the player reply with warmth and personal engagement —
-        sharing feelings, naming what matters to them, addressing Aria
-        directly, or otherwise treating this as a real exchange? Or was
-        the reply transactional, brief, deflecting, or cold?
-      allowed_values: ["warm", "neutral", "cold"]
-      map:
-        warm: 1.0
-        neutral: 0.5
-        cold: 0.0
-
-  - id: aria.terminal_warm
-    type: plot
-    thread: aria
-    npc: aria
-    preconditions:
-      - kind: beat_fired
-        beat: aria.midprogram
+        quality: engagement
+        value: 4.0
       - kind: player_replies_to_thread_gte
         thread: aria
         value: 5
-      - kind: quality_gte
-        quality: partnership_warmth
-        value: 0.7
     subject: "Pilot Complete — Thank You for Your Partnership"
     spec:
       intent: |
@@ -288,24 +162,22 @@ beats:
         - "do not be sarcastic or knowing"
       length_words: [60, 100]
 
-  - id: aria.terminal_standard
+  - id: aria.complete_standard
     type: plot
     thread: aria
     npc: aria
+    ends_session: true
     preconditions:
-      - kind: beat_fired
-        beat: aria.midprogram
       - kind: player_replies_to_thread_gte
         thread: aria
         value: 5
-      # Mutual exclusion with terminal_warm. find_due_beats walks beats
-      # in authoring order, so terminal_warm is considered first; if it
-      # fires (or just fired this same tick via extra_fired), BeatFired
-      # catches that here.
+      # Mutual exclusion with complete_warm. Authored after complete_warm
+      # so when both become eligible the same tick, complete_warm fires
+      # first and lands in `extra_fired`; this Not_(BeatFired) catches it.
       - kind: not
         of:
           kind: beat_fired
-          beat: aria.terminal_warm
+          beat: aria.complete_warm
     subject: "Pilot Complete — Calibration Within Parameters"
     spec:
       intent: |
@@ -323,68 +195,57 @@ beats:
         - "do not be sarcastic"
       length_words: [40, 80]
 
-  # ─── System thread: anchored bureaucratic notices, no replies expected ───
+  # ─── Ongoing calibration loop ───
 
-  - id: system.midpoint_report
-    type: anchored
-    thread: system
+  - id: aria.loop
+    type: plot
+    thread: aria
+    npc: aria
+    multi_turn: true
     preconditions:
-      - kind: beat_fired
-        beat: aria.midprogram
-    from: "Continuity Program Operations <ops@continuity.halcyon.com>"
-    to: "n.beckett@halcyon.com"
-    subject: "Midpoint Report — Pilot Cohort 014"
-    sent_at: "just now"
-    authored_prose: |
-      CONTINUITY PROGRAM — MIDPOINT REPORT
-      Pilot Cohort 014 | Associate: n.beckett@halcyon.com
-
-      Thank you for your continued participation. Your pilot has reached
-      its midpoint. The following metrics summarize progress to date:
-
-        • Counterpart fidelity:      developing
-        • Engagement score:          within acceptable range
-        • Tone variance:             low
-        • Calibration samples:       (see your inbox)
-
-      No action is required at this time. Your Counterpart will continue
-      to acquire calibration data from your subsequent correspondence.
-
-      If you are experiencing transition-related discomfort, the Wellness
-      portal remains available 24/7.
-
-      — Continuity Program Operations
-
-  - id: system.transition_notice
-    type: anchored
-    thread: system
-    preconditions:
-      - kind: beat_fired
-        beat: aria.midprogram
       - kind: player_replies_to_thread_gte
         thread: aria
-        value: 4
-    from: "Continuity Program Operations <ops@continuity.halcyon.com>"
-    to: "n.beckett@halcyon.com"
-    subject: "Transition Approaching — Pilot Cohort 014"
-    sent_at: "just now"
-    authored_prose: |
-      CONTINUITY PROGRAM — TRANSITION APPROACHING
-      Pilot Cohort 014 | Associate: n.beckett@halcyon.com
-
-      Your pilot is entering its final phase. Your Counterpart is nearing
-      operational readiness and will soon be eligible to assume the
-      agreed-upon portions of your role.
-
-      To ensure a smooth transition:
-
-        • Continue to engage with your Counterpart as you have been.
-        • Review your personal effects checklist at your earliest convenience.
-        • Make any final notes you would like your Counterpart to retain.
-
-      We thank you for your service to the Program.
-
-      *If you are experiencing transition-related discomfort, the Wellness
-      portal remains available 24/7. Your concerns are important to us.*
-
-      — Continuity Program Operations
+        value: 1
+      # Suppressed once a terminal fires. Same-tick resolution: when a
+      # terminal becomes eligible this tick it lands in `extra_fired`
+      # before the loop is evaluated (terminals are authored first), so
+      # these Not_ preconditions block the loop from firing alongside.
+      - kind: not
+        of:
+          kind: beat_fired
+          beat: aria.complete_warm
+      - kind: not
+        of:
+          kind: beat_fired
+          beat: aria.complete_standard
+    subject: "Calibration — Continuing"
+    spec:
+      intent: |
+        Aria's ongoing calibration ask. Use message_history to vary the
+        prompt — never repeat a question you've already asked. Affirm
+        what the player just shared without parroting it. Ask one
+        specific, personal calibration question — what does a typical
+        Tuesday afternoon look like, what's on the desk in front of them,
+        a recent moment at work that felt meaningful. Keep tone in the
+        dossier's base register.
+      must_include_facts:
+        - "asks the player one specific, personal calibration question"
+        - "Aria signs off as 'Aria / Continuity Counterpart | ARIA-7'"
+      must_not:
+        - "do not name what happens to the player at end of pilot"
+        - "do not break the cheerful corporate frame"
+        - "do not name any game system"
+      length_words: [60, 140]
+    classify_reply:
+      quality: engagement
+      accumulate: true
+      question: |
+        Did the player substantively engage with Aria's calibration prompt
+        — sharing any specific personal detail, opinion, or concrete
+        response? Or did they refuse, deflect, change the subject, or send
+        a one-word non-answer?
+      allowed_values: ["engaged", "deflected", "unclear"]
+      map:
+        engaged: 1.0
+        deflected: -0.5
+        unclear: 0.5

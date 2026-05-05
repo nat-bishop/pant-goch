@@ -40,6 +40,11 @@ class ClassifyReply(BaseModel):
     question: str
     allowed_values: list[str] = Field(min_length=2)
     map: dict[str, float]
+    # When True, apply_classification adds the mapped score to the existing
+    # quality value (clamped) rather than overwriting it. Used for cumulative
+    # signals like aria.loop's engagement score, where every reply moves the
+    # quality by the mapped delta.
+    accumulate: bool = False
 
     @model_validator(mode="after")
     def _map_keys_match_allowed(self) -> "ClassifyReply":
@@ -120,8 +125,8 @@ Not_.model_rebuild()
 
 
 class QualityDef(BaseModel):
-    """A continuous numeric state. Mutated by the spine (calibration) or by
-    the classifier when a beat authors `classify_reply`. Predicates read
+    """A continuous numeric state. Mutated by the classifier when a beat
+    authors `classify_reply` (see `apply_classification`). Predicates read
     qualities through `quality_gte`/`quality_lt`, not as discrete values.
     """
 
@@ -195,17 +200,28 @@ class AnchoredBeat(_BeatBase):
 class PlotBeat(_BeatBase):
     """Authored directive that modulates one chat-agent turn.
 
-    A PlotBeat doesn't directly produce an email — it queues into pending_beats
-    with a calibration-threshold runtime predicate, and when its preconditions
-    plus that threshold are satisfied, the spine runs the chat agent with the
-    beat's `spec` injected as per-run instructions. The agent's reply IS the
-    plot moment.
+    A PlotBeat fires when its preconditions pass; the spine runs the chat
+    agent with the beat's `spec` injected as per-run instructions. The
+    agent's reply IS the plot moment.
+
+    `multi_turn` and `ends_session` are independent flags that change firing
+    semantics — see field comments below.
     """
 
     type: Literal["plot"] = "plot"
     npc: str  # which dossier to use
     subject: str
     spec: BeatSpec
+    # When True, the beat re-fires on every tick — never enters
+    # `fired_beat_ids` based on its own state. Stop firing by adding mutex
+    # preconditions (e.g. `Not_(BeatFired aria.complete_warm)`) so terminal
+    # beats can take over. Cleaner than abusing `completes_when` with a
+    # never-True predicate.
+    multi_turn: bool = False
+    # When True, `state.ended` flips to True immediately after this beat's
+    # email is emitted, with `state.end_reason = beat.id`. Subsequent /open
+    # and /send return HTTP 409.
+    ends_session: bool = False
 
 
 Beat = Annotated[
@@ -445,7 +461,6 @@ class InboxState:
     # The view exposed to the client. Hides internal scheduler state.
     def public_view(self) -> dict:
         return {
-            "calibration": self.qualities.get("calibration", 0.0),
             "ended": self.ended,
             "end_reason": self.end_reason,
             "unread_counts": self._unread_counts(),

@@ -73,9 +73,6 @@ export const useStore = create<Store>()((set, get) => ({
       .filter((e) => !e.is_read && e.folder === "Inbox")
       .map((e) => e.id);
     if (unreadIds.length > 0) {
-      // Each /open advances calibration server-side and may surface new
-      // emails. Sequential awaits so each tick sees the previous read's
-      // calibration bump.
       for (const id of unreadIds) {
         await postOpen(id);
       }
