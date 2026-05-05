@@ -29,7 +29,7 @@ export function MessageGroup({ emails }: Props) {
       )}
       <div
         className={clsx(
-          "flex max-w-[calc(100%-3rem)] flex-col gap-[2px]",
+          "flex min-w-0 flex-1 flex-col gap-[2px]",
           own ? "items-end" : "items-start",
         )}
       >

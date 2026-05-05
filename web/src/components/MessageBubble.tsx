@@ -43,7 +43,7 @@ export function MessageBubble({
   return (
     <div
       className={clsx(
-        "flex flex-col animate-bubble-in",
+        "flex w-full flex-col animate-bubble-in",
         own ? "items-end" : "items-start",
       )}
     >
