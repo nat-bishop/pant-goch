@@ -1,8 +1,9 @@
 """FastAPI smoke tests with Pydantic AI's TestModel — no llama-server, no
-real LLM. Verifies wiring: lifespan boots, boot inbox emits, /open no longer
-advances calibration, /send rejects empty bodies, runs the texture scorer
-end-to-end, fires an immediate chat-turn fallback for the first send, and
-threshold-delays PlotBeats so they land on a later /send.
+real LLM. Verifies wiring: lifespan boots, boot inbox emits, /open does not
+advance calibration, /send rejects empty bodies, runs the texture scorer
+end-to-end, fires aria.first_calibration on the first send, and re-fires it
+across multiple ticks until the classifier writes engaged_initial across
+the gate (multi-turn beat).
 """
 import json
 from contextlib import ExitStack
@@ -28,8 +29,11 @@ def client(monkeypatch):
     """Boot the app with no llama-server and override every agent with a
     TestModel that returns canned outputs.
 
-    `Agent.override(model=...)` is a context manager — push both onto an
-    ExitStack so they live for the whole test.
+    `Agent.override(model=...)` is a context manager — push all three onto
+    an ExitStack so they live for the whole test. Default classifier value
+    is 'deflected' so the multi-turn first_calibration re-renders by default;
+    individual tests can override on a per-call basis via
+    `client.app` — but most tests just exercise the default path.
     """
     monkeypatch.setenv("LAUNCH_LLAMA", "false")
     monkeypatch.setattr(main, "EXTERNAL_LLAMA_PROBE_TIMEOUT_SECONDS", 0.1)
@@ -38,6 +42,7 @@ def client(monkeypatch):
         with ExitStack() as stack:
             stack.enter_context(main.AGENTS.chat_agent.override(model=_test_model_for_chat()))
             stack.enter_context(main.AGENTS.texture_agent.override(model=_test_model_for_texture(1.0)))
+            stack.enter_context(main.AGENTS.classifier_agent.override(model=_test_model_for_classifier("deflected")))
             yield c
 
 
@@ -47,6 +52,10 @@ def _test_model_for_chat(text: str = CHAT_TURN_PROSE) -> TestModel:
 
 def _test_model_for_texture(warmth: float) -> TestModel:
     return TestModel(custom_output_args={"warmth": warmth, "rationale": "(test)"})
+
+
+def _test_model_for_classifier(value: str) -> TestModel:
+    return TestModel(custom_output_args={"value": value, "rationale": "(test)"})
 
 
 # ───────────────────────── boot + read-only endpoints ─────────────────────────
@@ -149,10 +158,12 @@ def test_send_advances_calibration_by_warmth_derived_delta(client):
     assert cal_after == pytest.approx(initial + 3.5)
 
 
-def test_first_send_to_aria_returns_chat_turn_immediately(client):
-    """No PlotBeat is eligible after one player reply (midprogram needs ≥3,
-    terminals need ≥4 + cal ≥ 80). The chat-turn fallback fires inside the
-    same /send response — no `wait for second send` for the first reply.
+def test_first_send_to_aria_fires_first_calibration(client):
+    """After the player's first reply (replies≥1 satisfied),
+    aria.first_calibration becomes eligible and renders. Welcome itself
+    has no classify_reply, so on this send the classifier doesn't run —
+    engaged_initial stays at default 0.5, gate (≥0.7) is not met, and the
+    multi-turn beat renders without marking complete.
     """
     welcome = client.get("/inbox").json()["folders"]["Inbox"][0]
     events = list(_consume_sse(client.stream("POST", "/send", json={
@@ -161,16 +172,22 @@ def test_first_send_to_aria_returns_chat_turn_immediately(client):
         "body": "happy to be here",
     })))
     new_email_events = [e for e in events if e["type"] == "new_email"]
-    assert len(new_email_events) >= 1
-    # Chat-turn email: beat_id is None, sender is Aria's dossier address.
-    chat_emails = [e["email"] for e in new_email_events if e["email"]["beat_id"] is None]
-    assert len(chat_emails) == 1
-    assert "aria" in chat_emails[0]["from"].lower()
+    plot_emails = [
+        e["email"] for e in new_email_events
+        if e["email"]["beat_id"] == "aria.first_calibration"
+    ]
+    assert len(plot_emails) == 1
+    # Multi-turn beat: gate not met → not added to fired_beat_ids yet.
+    assert "aria.first_calibration" not in main.STATE.fired_beat_ids
+    # Pending: still re-fireable on the next tick.
+    assert any(pb.beat_id == "aria.first_calibration" for pb in main.STATE.pending_beats)
 
 
 def test_thread_messages_accumulates_across_sends(client):
     """Two /sends to Aria should leave thread_messages["aria"] holding:
-    welcome (ModelResponse) + two (ModelRequest, ModelResponse) pairs."""
+    welcome (ModelResponse) + two (ModelRequest, ModelResponse) pairs.
+    Each send fires aria.first_calibration (multi-turn beat re-rendering
+    while the classifier returns 'deflected' from the fixture)."""
     welcome = client.get("/inbox").json()["folders"]["Inbox"][0]
     list(_consume_sse(client.stream("POST", "/send", json={
         "in_reply_to": welcome["id"], "recipient": "Aria", "body": "hello there",
@@ -189,63 +206,97 @@ def test_thread_messages_accumulates_across_sends(client):
     assert isinstance(history[4], ModelResponse)
 
 
-def test_chat_turn_body_does_not_leak_email_headers(client):
+def test_plot_beat_body_does_not_leak_email_headers(client):
     """Regression guard: with output_type=str (no JSON schema enforcement)
     the chat agent could in principle drift into emitting `Subject:` or
     `From:` headers. The base instructions forbid this. TestModel echoes
     the canned prose verbatim so this would only fail if the canned text
-    itself contains forbidden tokens — guard the canned prose too."""
+    itself contains forbidden tokens — guard the canned prose too. We hit
+    the same code path through aria.first_calibration's plot directive
+    render."""
     welcome = client.get("/inbox").json()["folders"]["Inbox"][0]
     events = list(_consume_sse(client.stream("POST", "/send", json={
         "in_reply_to": welcome["id"], "recipient": "Aria", "body": "hello",
     })))
-    chat_emails = [
+    plot_emails = [
         e["email"] for e in events
-        if e["type"] == "new_email" and e["email"]["beat_id"] is None
+        if e["type"] == "new_email" and e["email"]["beat_id"] == "aria.first_calibration"
     ]
-    assert chat_emails
-    body = chat_emails[0]["body"]
+    assert plot_emails
+    body = plot_emails[0]["body"]
     for forbidden in ("Subject:", "From:", "To:", "Date:", "```"):
-        assert forbidden not in body, f"chat-turn body leaked {forbidden!r}: {body!r}"
+        assert forbidden not in body, f"plot beat body leaked {forbidden!r}: {body!r}"
 
 
-def test_midprogram_plotbeat_lands_after_threshold_send(client):
-    """midprogram requires ≥3 player replies in aria thread. After the
-    third send, find_eligible_plot_beat returns midprogram and
-    schedule_thread_reply queues it with a calibration-threshold runtime
-    predicate. The threshold sits above the post-send calibration value,
-    so midprogram does NOT fire on its scheduling tick. A subsequent /send
-    crosses the threshold and the beat lands.
-    """
+def test_classifier_runs_on_reply_to_first_calibration(client):
+    """When the player replies to an email that originated from a beat with
+    `classify_reply` (aria.first_calibration), the classifier runs and emits
+    a `classified` SSE event with the mapped score."""
     welcome = client.get("/inbox").json()["folders"]["Inbox"][0]
-    # Three sends to satisfy midprogram's ≥3-reply gate.
-    for body in ["one", "two", "three"]:
-        list(_consume_sse(client.stream("POST", "/send", json={
-            "in_reply_to": welcome["id"], "recipient": "Aria", "body": body,
-        })))
-    # After the third send: midprogram should be queued but not fired.
-    pending_ids = {pb.beat_id for pb in main.STATE.pending_beats}
-    assert "aria.midprogram" in pending_ids
-    assert "aria.midprogram" not in main.STATE.fired_beat_ids
-
-    # A fourth /send pushes calibration past the threshold; midprogram fires
-    # on this tick as the chat-agent reply with author directive injected.
+    # First send: replies to welcome, fires first_calibration. Welcome has no
+    # classify_reply so the classifier doesn't run on this send.
     events = list(_consume_sse(client.stream("POST", "/send", json={
-        "in_reply_to": welcome["id"], "recipient": "Aria", "body": "fourth",
+        "in_reply_to": welcome["id"], "recipient": "Aria", "body": "hi",
     })))
-    new_beat_ids = {
-        e["email"]["beat_id"] for e in events if e["type"] == "new_email"
-    }
-    assert "aria.midprogram" in new_beat_ids
-    assert "aria.midprogram" in main.STATE.fired_beat_ids
+    assert not any(e["type"] == "classified" for e in events)
+
+    # Find the first_calibration email Aria just rendered, then reply to IT.
+    inbox = client.get("/inbox").json()
+    fc_emails = [
+        e for e in inbox["folders"]["Inbox"]
+        if any(em.id == e["id"] and em.beat_id == "aria.first_calibration"
+               for em in main.STATE.emails)
+    ]
+    assert fc_emails
+    fc_email_id = fc_emails[0]["id"]
+
+    # Second send: replies to first_calibration's email. Classifier runs.
+    events = list(_consume_sse(client.stream("POST", "/send", json={
+        "in_reply_to": fc_email_id, "recipient": "Aria", "body": "I dont want to",
+    })))
+    classified = [e for e in events if e["type"] == "classified"]
+    assert len(classified) == 1
+    assert classified[0]["quality"] == "engaged_initial"
+    assert classified[0]["value"] == "deflected"  # fixture default
+    # Mapped score: deflected → 0.0.
+    assert main.STATE.qualities["engaged_initial"] == 0.0
 
 
-def test_send_threshold_anchored_beat_fires_via_calibration_cross(client):
-    """system.midpoint_report is gated on calibration ≥ 40. Crank calibration
-    just below the threshold, /send once (delta 3.5) → AnchoredBeat fires
-    on the post-send tick."""
+def test_first_calibration_completes_when_classifier_engaged(client, monkeypatch):
+    """When the classifier returns 'engaged' (mapped to 1.0 ≥ 0.7), the
+    multi-turn beat completes. _fire_beat skips the render that would have
+    happened and adds first_calibration to fired_beat_ids."""
+    # Override the classifier to return 'engaged' for the upcoming send.
     welcome = client.get("/inbox").json()["folders"]["Inbox"][0]
-    main.STATE.qualities["calibration"] = 39.0
+    list(_consume_sse(client.stream("POST", "/send", json={
+        "in_reply_to": welcome["id"], "recipient": "Aria", "body": "starting",
+    })))
+    fc_email = next(
+        e for e in main.STATE.emails if e.beat_id == "aria.first_calibration"
+    )
+
+    with main.AGENTS.classifier_agent.override(model=_test_model_for_classifier("engaged")):
+        list(_consume_sse(client.stream("POST", "/send", json={
+            "in_reply_to": fc_email.id, "recipient": "Aria",
+            "body": "Tuesday afternoons I usually triage email, then deep work.",
+        })))
+
+    assert main.STATE.qualities["engaged_initial"] == 1.0
+    # Beat completed: gate met before the next render → marked done, no
+    # further first_calibration emails fired this tick.
+    assert "aria.first_calibration" in main.STATE.fired_beat_ids
+
+
+def test_system_midpoint_fires_via_beat_fired_chain(client):
+    """system.midpoint_report is gated on `beat_fired(aria.midprogram)`.
+    Force the chain by marking midprogram fired, then /send to advance the
+    scheduler — system.midpoint_report should land on the same tick the
+    chain reaches it."""
+    welcome = client.get("/inbox").json()["folders"]["Inbox"][0]
+    # Pre-seed: simulate the chain having reached midprogram.
+    main.STATE.fired_beat_ids.update({
+        "aria.first_calibration", "aria.midprogram",
+    })
     events = list(_consume_sse(client.stream("POST", "/send", json={
         "in_reply_to": welcome["id"], "recipient": "Aria", "body": "ok",
     })))

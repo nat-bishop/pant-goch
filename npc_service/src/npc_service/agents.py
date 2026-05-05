@@ -1,4 +1,4 @@
-"""The two LLM agents: CHAT_AGENT and TEXTURE_AGENT.
+"""The three LLM agents: CHAT_AGENT, TEXTURE_AGENT, CLASSIFIER_AGENT.
 
 CHAT_AGENT renders one email body per turn. It uses Pydantic AI's native
 `message_history` for the per-thread conversation, plain-text `output_type=str`
@@ -8,6 +8,12 @@ optional plot-directive context per run.
 
 TEXTURE_AGENT is unchanged in shape: one-shot, ToolOutput, scores warmth on
 the player's just-typed reply. It never sees `message_history`.
+
+CLASSIFIER_AGENT is a sibling of TEXTURE_AGENT: one-shot, ToolOutput, returns
+a `value: str` chosen from a beat-authored `allowed_values` list. The list
+is enforced via the user prompt (not the schema) since allowed values vary
+per beat. The caller validates post-hoc and skips the quality write if the
+returned value is off-spec.
 
 Construction is deferred to `build_agents()` (called from `lifespan`) so the
 shared OpenAI-compatible model handle can be passed in once.
@@ -21,6 +27,7 @@ from pydantic_ai import Agent, RunContext, ToolOutput
 
 from .models import (
     BeatSpec,
+    ClassificationResult,
     NPCDossier,
     TextureScore,
     VoiceBand,
@@ -69,6 +76,23 @@ VOICE RULES:
 """
 
 
+_CLASSIFIER_SYSTEM_PROMPT = """You classify a player-written email reply against a beat-authored question.
+
+You will receive:
+- The recipient's persona blurb (who the player is writing to).
+- The most recent prior email in the thread (what the player is replying to).
+- The player's just-typed reply (the new send).
+- The classification question (what the author wants to know).
+- The allowed values (you MUST pick exactly one, verbatim).
+
+Pick the single allowed value that best matches the player's reply. Do not
+return values outside the allowed list. Also write a one-sentence rationale
+(kept for telemetry, not shown to the player).
+
+Return: {"value": "<one of allowed_values>", "rationale": "<one sentence>"}.
+"""
+
+
 _TEXTURE_SYSTEM_PROMPT = """You score the warmth of a player-written email reply on a -3..3 scale.
 
 You will receive:
@@ -97,10 +121,11 @@ Return: {"warmth": <int>, "rationale": "<one sentence>"}.
 
 @dataclass
 class AgentBundle:
-    """Both agents wired up against one shared model handle."""
+    """All three agents wired up against one shared model handle."""
 
     chat_agent: Agent
     texture_agent: Agent
+    classifier_agent: Agent
 
 
 def build_agents(model) -> AgentBundle:
@@ -153,9 +178,18 @@ def build_agents(model) -> AgentBundle:
         model_settings={"max_tokens": 256, "temperature": 0.1},
     )
 
+    classifier_agent = Agent(
+        model,
+        name="classifier_agent",
+        output_type=ToolOutput(ClassificationResult),
+        instructions=_CLASSIFIER_SYSTEM_PROMPT,
+        model_settings={"max_tokens": 256, "temperature": 0.1},
+    )
+
     return AgentBundle(
         chat_agent=chat_agent,
         texture_agent=texture_agent,
+        classifier_agent=classifier_agent,
     )
 
 
@@ -189,13 +223,13 @@ def _bullets(items: list[str]) -> str:
     return "\n".join(f"  - {x}" for x in items) or "  (none)"
 
 
-def build_texture_user_prompt(
+def _format_judge_preamble(
     recipient_blurb: str,
     prior_email_body: str,
     reply_body: str,
 ) -> str:
-    """One-shot input for TEXTURE_AGENT. Single prior email is sufficient
-    context for warmth scoring; we don't need the full thread."""
+    """Shared scaffold for the per-reply judges (texture + classifier).
+    A single source of truth so both judges always see identical inputs."""
     return f"""RECIPIENT (who the player is writing to):
 {recipient_blurb}
 
@@ -203,6 +237,35 @@ MOST RECENT PRIOR EMAIL (what the player is replying to):
 {prior_email_body.strip() or '(no prior email)'}
 
 PLAYER'S REPLY (just typed):
-{reply_body}
+{reply_body}"""
+
+
+def build_texture_user_prompt(
+    recipient_blurb: str,
+    prior_email_body: str,
+    reply_body: str,
+) -> str:
+    return f"""{_format_judge_preamble(recipient_blurb, prior_email_body, reply_body)}
 
 Now score this reply's warmth (-3..3 integer) and write a one-sentence rationale."""
+
+
+def build_classifier_user_prompt(
+    recipient_blurb: str,
+    prior_email_body: str,
+    reply_body: str,
+    question: str,
+    allowed_values: list[str],
+) -> str:
+    """The schema only enforces that *some* string is returned, so the LLM
+    must respect the allowed_values list given in the prompt."""
+    values = ", ".join(f'"{v}"' for v in allowed_values)
+    return f"""{_format_judge_preamble(recipient_blurb, prior_email_body, reply_body)}
+
+CLASSIFICATION QUESTION:
+{question.strip()}
+
+ALLOWED VALUES (pick exactly one, verbatim):
+{values}
+
+Return one of the allowed values and a one-sentence rationale."""

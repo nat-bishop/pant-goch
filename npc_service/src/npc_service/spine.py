@@ -17,13 +17,13 @@ import logging
 from .models import (
     Beat,
     BeatFired,
+    ClassifyReply,
     Email,
     InboxState,
     NPCDossier,
     Not_,
     PendingBeat,
     PlayerRepliesToThreadGte,
-    PlotBeat,
     Predicate,
     QualityGte,
     QualityLt,
@@ -79,6 +79,28 @@ def _clamp_quality(value: float, quality_id: str, scenario: Scenario) -> float:
     if q.max is not None and value > q.max:
         return q.max
     return value
+
+
+def apply_classification(
+    state: InboxState,
+    scenario: Scenario,
+    classify_reply: ClassifyReply,
+    value: str,
+) -> bool:
+    """Apply a classifier output to the named quality. Returns True if the
+    value was applied; False if `value` isn't in the authored map (caller
+    should log + leave the quality alone).
+
+    Mirrors `apply_texture_score`'s shape: LLM-judge → quality, with the
+    same `_clamp_quality` clamping path.
+    """
+    score = classify_reply.map.get(value)
+    if score is None:
+        return False
+    state.qualities[classify_reply.quality] = _clamp_quality(
+        score, classify_reply.quality, scenario
+    )
+    return True
 
 
 def apply_texture_score(
@@ -152,7 +174,14 @@ def apply_calibration_from_warmth(
 def find_due_beats(state: InboxState, scenario: Scenario) -> list[Beat]:
     """Return all pending beats whose preconditions (authored + runtime) all
     pass on this tick. Pending beats survive to the next tick when not yet
-    eligible. Each beat fires at most once.
+    eligible.
+
+    Beats stay in `pending_beats` until they're added to `fired_beat_ids`.
+    Fire-once beats (empty `completes_when`) get added by `_fire_beat`
+    immediately after rendering, so they're pruned on the next tick.
+    Multi-turn beats stay re-fireable until their `completes_when` predicates
+    pass — `_fire_beat` only marks them complete then, so they re-appear in
+    the due list each tick until satisfied.
 
     Pending beats are evaluated in scenario authoring order — that's how
     authors break ties when two beats sharing a tick reference each other
@@ -172,11 +201,17 @@ def find_due_beats(state: InboxState, scenario: Scenario) -> list[Beat]:
         if not all(evaluate_predicate(p, state, just_due_ids) for p in all_preds):
             continue
         due.append(beat)
-        just_due_ids.add(beat.id)
+        # Only shadow downstream `BeatFired` predicates if this beat will
+        # actually complete this tick — otherwise a multi-turn beat that
+        # is rendering-but-not-yet-completing would falsely satisfy them.
+        if evaluate_completes_when(state, beat, just_due_ids):
+            just_due_ids.add(beat.id)
 
+    # Prune completed beats from pending; keep multi-turn beats around so
+    # they re-fire on subsequent ticks until completes_when passes.
     still_pending: list[PendingBeat] = []
     for pb in state.pending_beats:
-        if pb.beat_id in just_due_ids or pb.beat_id in state.fired_beat_ids:
+        if pb.beat_id in state.fired_beat_ids:
             continue
         if pb.beat_id not in scenario.beat_by_id:
             log.warning("pending beat %s not in scenario", pb.beat_id)
@@ -186,71 +221,24 @@ def find_due_beats(state: InboxState, scenario: Scenario) -> list[Beat]:
     return due
 
 
-def find_eligible_plot_beat(
-    state: InboxState, scenario: Scenario, thread_id: str
-) -> PlotBeat | None:
-    """Walk scenario.beats in authoring order; return the first un-fired
-    PlotBeat in `thread_id` whose authored preconditions pass.
+def evaluate_completes_when(
+    state: InboxState,
+    beat: Beat,
+    extra_fired: frozenset[str] | set[str] = frozenset(),
+) -> bool:
+    """A beat with empty `completes_when` always completes on first render
+    (legacy fire-once semantics). A beat with non-empty `completes_when`
+    completes only when all predicates pass.
 
-    Authoring order is the tiebreaker for mutual exclusion: terminal_warm
-    is authored before terminal_standard, so when both are eligible we
-    return terminal_warm first. terminal_standard's `Not_(BeatFired(...))`
-    precondition then keeps it from firing on subsequent ticks.
-
-    Returns None if no PlotBeat in this thread is currently eligible — the
-    caller (typically /send) falls back to a chat turn.
+    `extra_fired` mirrors the parameter on `evaluate_predicate`: pass the
+    tick-local "just due" set when checking from inside `find_due_beats` so
+    `BeatFired` predicates can resolve same-tick. `_fire_beat` calls with
+    the default empty set — by then `find_due_beats` has already returned
+    and the rendering loop is processing one beat at a time.
     """
-    for beat in scenario.beats:
-        if not isinstance(beat, PlotBeat):
-            continue
-        if beat.thread != thread_id:
-            continue
-        if beat.id in state.fired_beat_ids:
-            continue
-        # Skip if already pending — once queued we don't re-resolve.
-        if any(pb.beat_id == beat.id for pb in state.pending_beats):
-            continue
-        if not all(evaluate_predicate(p, state) for p in beat.preconditions):
-            continue
-        return beat
-    return None
-
-
-def schedule_thread_reply(
-    state: InboxState, scenario: Scenario, npc_id: str, beat: PlotBeat
-) -> None:
-    """Queue a resolved PlotBeat for an NPC's reply with a calibration-
-    threshold runtime predicate.
-
-    The threshold sits at `current_calibration + reply_delay_calibration`,
-    above the post-send value, so the queued PlotBeat doesn't fire on its
-    own send tick. A subsequent /send (or several /opens — actually no,
-    /open no longer mutates calibration) ticks calibration past the
-    threshold and the beat lands on the next scheduler tick. This is what
-    makes plot moments feel like authored events rather than direct chat
-    replies.
-
-    Does NOT enforce one-pending-per-thread: callers (find_eligible_plot_beat)
-    already filter pending. ChatTurn fallbacks fire immediately within /send
-    and never go through this function — they are not stored in pending_beats.
-    """
-    npc = scenario.npc_by_id.get(npc_id)
-    if npc is None:
-        return
-    cur_cal = state.qualities.get(CALIBRATION_QUALITY, 0.0)
-    threshold = cur_cal + npc.reply_delay_calibration
-    state.pending_beats.append(
-        PendingBeat(
-            beat_id=beat.id,
-            runtime_preconditions=[
-                QualityGte(quality=CALIBRATION_QUALITY, value=threshold)
-            ],
-        )
-    )
-    log.info(
-        "scheduled plot beat %s for %s at calibration>=%.2f",
-        beat.id, npc_id, threshold,
-    )
+    if not beat.completes_when:
+        return True
+    return all(evaluate_predicate(p, state, extra_fired) for p in beat.completes_when)
 
 
 # ───────────────────────── voice band selector ─────────────────────────

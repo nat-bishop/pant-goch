@@ -38,6 +38,17 @@ qualities:
       voice-band selector for Aria's next rendered email. Drifts halfway
       toward last_reply.warmth on every player send in this thread.
 
+  - id: engaged_initial
+    type: float
+    min: 0.0
+    max: 1.0
+    default: 0.5
+    description: |
+      Did the player substantively engage with Aria's first calibration
+      ask? Written by classify_reply on aria.first_calibration; gates
+      that beat's completes_when (≥0.7 marks the multi-turn beat
+      complete and lets the chain advance to aria.midprogram).
+
 
 # ───────────────────────── NPC dossiers ─────────────────────────
 
@@ -74,7 +85,6 @@ npcs:
       - "never breaks the corporate frame"
       - "never names the warmth/register mechanic or any game system"
     register_quality: register.aria
-    reply_delay_calibration: 3.5
     voice_bands:
       - name: affirming
         register_min: 1.0
@@ -190,17 +200,75 @@ beats:
 
   # ─── Aria plot beats (chat-agent-rendered with directive injection) ───
   #
-  # Aria's first reply to the player is NOT an authored plot beat — it falls
-  # through to the chat-turn fallback (free conversation in character, using
-  # dossier + welcome message history). The plot beats below are the
-  # authored milestones the engine guarantees as the calibration meter
-  # advances.
+  # The arc is a chain: first_calibration is a MULTI-TURN beat that loops
+  # until the player engages substantively (gated on engaged_initial≥0.7,
+  # written by its own classify_reply). When it completes, midprogram
+  # becomes eligible; when midprogram has fired and the player has racked
+  # up enough replies, one of the terminals fires.
+
+  - id: aria.first_calibration
+    type: plot
+    thread: aria
+    npc: aria
+    preconditions:
+      - kind: player_replies_to_thread_gte
+        thread: aria
+        value: 1
+    subject: "Calibration Sample 1 — Continuing"
+    spec:
+      intent: |
+        Calibration ask — Aria's first follow-up after the welcome reply.
+        This beat is multi-turn: it re-renders until the player engages
+        substantively. Use the message_history to decide which mode you're
+        in.
+
+        FIRST RENDER (your prior message in this thread is just the
+        welcome email): Affirm receipt of the calibration sample. Ask one
+        specific, personal calibration question — what does a typical
+        Tuesday afternoon look like, or a recent moment at work that felt
+        meaningful, or what the desk in front of the player has on it.
+        Affirming-or-standard band tone.
+
+        SUBSEQUENT RENDERS (your prior message in this thread is a
+        calibration ask the player did not substantively answer): Note
+        gently that the sample needs more texture for usable calibration.
+        Rephrase the prompt as something concrete and easier — a single
+        sentence about today's weather, a coffee preference, what's on
+        the desk. Mention that the Wellness portal remains available.
+        Corrective band — never punitive, never break the cheerful
+        corporate frame.
+      must_include_facts:
+        - "asks the player one specific, personal calibration question"
+        - "Aria signs off as 'Aria / Continuity Counterpart | ARIA-7'"
+      must_not:
+        - "do not name what happens to the player at end of pilot"
+        - "do not break the cheerful corporate frame"
+        - "do not name the warmth/register mechanic or any game system"
+      length_words: [60, 140]
+    classify_reply:
+      quality: engaged_initial
+      question: |
+        Did the player substantively engage with Aria's calibration prompt
+        — sharing any specific personal detail, opinion, or concrete
+        response? Or did they refuse, deflect, change the subject, or send
+        a one-word non-answer?
+      allowed_values: ["engaged", "deflected", "unclear"]
+      map:
+        engaged: 1.0
+        deflected: 0.0
+        unclear: 0.5
+    completes_when:
+      - kind: quality_gte
+        quality: engaged_initial
+        value: 0.7
 
   - id: aria.midprogram
     type: plot
     thread: aria
     npc: aria
     preconditions:
+      - kind: beat_fired
+        beat: aria.first_calibration
       - kind: player_replies_to_thread_gte
         thread: aria
         value: 3
@@ -231,12 +299,11 @@ beats:
     thread: aria
     npc: aria
     preconditions:
+      - kind: beat_fired
+        beat: aria.midprogram
       - kind: player_replies_to_thread_gte
         thread: aria
-        value: 4
-      - kind: quality_gte
-        quality: calibration
-        value: 80.0
+        value: 5
       - kind: quality_gte
         quality: warmth.aria
         value: 3.0
@@ -265,15 +332,15 @@ beats:
     thread: aria
     npc: aria
     preconditions:
+      - kind: beat_fired
+        beat: aria.midprogram
       - kind: player_replies_to_thread_gte
         thread: aria
-        value: 4
-      - kind: quality_gte
-        quality: calibration
-        value: 80.0
-      # Mutual exclusion with terminal_warm. find_eligible_plot_beat walks
+        value: 5
+      # Mutual exclusion with terminal_warm. find_due_beats walks beats
       # in authoring order, so terminal_warm is considered first; if it
-      # fires, BeatFired catches that here.
+      # fires (or just fired this same tick via extra_fired), BeatFired
+      # catches that here.
       - kind: not
         of:
           kind: beat_fired
@@ -302,9 +369,8 @@ beats:
     type: anchored
     thread: system
     preconditions:
-      - kind: quality_gte
-        quality: calibration
-        value: 40.0
+      - kind: beat_fired
+        beat: aria.midprogram
     from: "Continuity Program Operations <ops@continuity.halcyon.com>"
     to: "n.beckett@halcyon.com"
     subject: "Midpoint Report — Pilot Cohort 014"
@@ -333,9 +399,11 @@ beats:
     type: anchored
     thread: system
     preconditions:
-      - kind: quality_gte
-        quality: calibration
-        value: 70.0
+      - kind: beat_fired
+        beat: aria.midprogram
+      - kind: player_replies_to_thread_gte
+        thread: aria
+        value: 4
     from: "Continuity Program Operations <ops@continuity.halcyon.com>"
     to: "n.beckett@halcyon.com"
     subject: "Transition Approaching — Pilot Cohort 014"

@@ -1,6 +1,6 @@
 """Pure-Python tests for the deterministic spine: scenario load, predicate
 evaluation, beat scheduler, voice band selection, calibration application,
-PlotBeat eligibility, and reply scheduling.
+classifier-driven quality writes, and multi-turn beat completion.
 
 No LLM, no FastAPI. Runs fast.
 """
@@ -11,6 +11,7 @@ import pytest
 from npc_service.models import (
     AnchoredBeat,
     BeatFired,
+    ClassifyReply,
     Email,
     InboxState,
     Not_,
@@ -24,13 +25,13 @@ from npc_service.models import (
 from npc_service.spine import (
     apply_calibration_delta,
     apply_calibration_from_warmth,
+    apply_classification,
     apply_texture_score,
+    evaluate_completes_when,
     evaluate_predicate,
     find_due_beats,
-    find_eligible_plot_beat,
     latest_npc_email_in_thread,
     reply_subject_for_email,
-    schedule_thread_reply,
     select_voice_band,
 )
 
@@ -69,18 +70,18 @@ def test_initial_state_starts_at_zero(state: InboxState):
     assert state.thread_messages == {}
 
 
-def test_from_scenario_auto_pends_all_anchored_beats(state: InboxState):
-    """`InboxState.from_scenario` auto-pends every anchored beat — including
-    aria.welcome (no preconditions, so it fires on the first scheduler tick
-    at boot). PlotBeats are NOT auto-pended; they're queued by
-    schedule_thread_reply on player send."""
+def test_from_scenario_auto_pends_every_beat(state: InboxState):
+    """`InboxState.from_scenario` auto-pends every beat — anchored AND plot.
+    Authored preconditions are evaluated by `find_due_beats` each tick;
+    beats whose preconditions don't yet pass stay pending."""
     pending_ids = {pb.beat_id for pb in state.pending_beats}
     assert "aria.welcome" in pending_ids
+    assert "aria.first_calibration" in pending_ids
+    assert "aria.midprogram" in pending_ids
+    assert "aria.terminal_warm" in pending_ids
+    assert "aria.terminal_standard" in pending_ids
     assert "system.midpoint_report" in pending_ids
     assert "system.transition_notice" in pending_ids
-    # PlotBeats stay out until schedule_thread_reply queues them.
-    assert "aria.midprogram" not in pending_ids
-    assert "aria.terminal_warm" not in pending_ids
 
 
 def test_boot_tick_fires_aria_welcome(state: InboxState, scenario: Scenario):
@@ -213,33 +214,17 @@ def test_not_predicate_inverts(state: InboxState):
 # ───────────────────────── beat scheduler ─────────────────────────
 
 
-def test_calibration_gated_anchored_beat_fires_at_threshold(
-    state: InboxState, scenario: Scenario
-):
-    """system.midpoint_report fires when calibration crosses 40."""
-    find_due_beats(state, scenario)  # drain boot tick
-    state.qualities["calibration"] = 30.0
-    due = find_due_beats(state, scenario)
-    assert not any(b.id == "system.midpoint_report" for b in due)
-    state.qualities["calibration"] = 40.0
-    due = find_due_beats(state, scenario)
-    assert any(b.id == "system.midpoint_report" for b in due)
-
-
 def test_pending_beat_with_runtime_predicate_waits(
     state: InboxState, scenario: Scenario
 ):
     """A runtime predicate AND'd with the beat's authored preconditions
-    must all pass before the beat fires."""
+    must all pass before the beat fires. The PendingBeat field stays in the
+    schema for future extensibility even though no runtime code currently
+    sets it."""
     _drain_boot(state, scenario)
-    # Use system.midpoint_report (authored: calibration ≥ 40), AND'd with a
-    # runtime calibration ≥ 50 predicate.
-    state.pending_beats = [
-        PendingBeat(
-            beat_id="system.midpoint_report",
-            runtime_preconditions=[QualityGte(quality="calibration", value=50.0)],
-        )
-    ]
+    pending = next(pb for pb in state.pending_beats if pb.beat_id == "system.midpoint_report")
+    pending.runtime_preconditions = [QualityGte(quality="calibration", value=50.0)]
+    state.fired_beat_ids.add("aria.midprogram")  # authored precondition met
     state.qualities["calibration"] = 45.0  # authored passes, runtime fails
     due = find_due_beats(state, scenario)
     assert not any(b.id == "system.midpoint_report" for b in due)
@@ -248,47 +233,176 @@ def test_pending_beat_with_runtime_predicate_waits(
     assert any(b.id == "system.midpoint_report" for b in due)
 
 
-# ───────────────────────── PlotBeat eligibility & mutual exclusion ─────────────────────────
+# ───────────────────────── classifier writes ─────────────────────────
 
 
-def test_find_eligible_plot_beat_returns_none_when_no_preconditions_pass(
+def test_apply_classification_writes_mapped_score(
     state: InboxState, scenario: Scenario
 ):
-    """No replies, no calibration: no PlotBeat eligible."""
+    classify = ClassifyReply(
+        quality="engaged_initial",
+        question="(test)",
+        allowed_values=["engaged", "deflected", "unclear"],
+        map={"engaged": 1.0, "deflected": 0.0, "unclear": 0.5},
+    )
+    applied = apply_classification(state, scenario, classify, "engaged")
+    assert applied is True
+    assert state.qualities["engaged_initial"] == 1.0
+
+
+def test_apply_classification_clamps_to_quality_bounds(
+    state: InboxState, scenario: Scenario
+):
+    """Classifier scores route through `_clamp_quality`, same path as
+    texture, so out-of-bound mapped values get clipped."""
+    classify = ClassifyReply(
+        quality="engaged_initial",
+        question="(test)",
+        allowed_values=["over", "under"],
+        map={"over": 5.0, "under": -1.0},  # quality bounds are 0..1
+    )
+    apply_classification(state, scenario, classify, "over")
+    assert state.qualities["engaged_initial"] == 1.0  # clamped to max
+    apply_classification(state, scenario, classify, "under")
+    assert state.qualities["engaged_initial"] == 0.0  # clamped to min
+
+
+def test_apply_classification_off_spec_returns_false(
+    state: InboxState, scenario: Scenario
+):
+    """Off-spec value (LLM returned something not in allowed_values) leaves
+    the quality untouched and returns False so the caller can log it."""
+    classify = ClassifyReply(
+        quality="engaged_initial",
+        question="(test)",
+        allowed_values=["engaged", "deflected"],
+        map={"engaged": 1.0, "deflected": 0.0},
+    )
+    state.qualities["engaged_initial"] = 0.5  # default
+    applied = apply_classification(state, scenario, classify, "garbage")
+    assert applied is False
+    assert state.qualities["engaged_initial"] == 0.5  # unchanged
+
+
+# ───────────────────────── multi-turn beat lifecycle ─────────────────────────
+
+
+def test_evaluate_completes_when_empty_returns_true(
+    state: InboxState, scenario: Scenario
+):
+    """An empty completes_when means fire-once: the beat completes on first
+    render. evaluate_completes_when returns True so the caller marks done."""
+    welcome = scenario.beat_by_id["aria.welcome"]
+    assert welcome.completes_when == []
+    assert evaluate_completes_when(state, welcome) is True
+
+
+def test_evaluate_completes_when_unmet_returns_false(
+    state: InboxState, scenario: Scenario
+):
+    """Multi-turn beat with an unmet gate: not yet complete."""
+    first = scenario.beat_by_id["aria.first_calibration"]
+    state.qualities["engaged_initial"] = 0.5  # default; gate is ≥0.7
+    assert evaluate_completes_when(state, first) is False
+
+
+def test_evaluate_completes_when_met_returns_true(
+    state: InboxState, scenario: Scenario
+):
+    first = scenario.beat_by_id["aria.first_calibration"]
+    state.qualities["engaged_initial"] = 1.0
+    assert evaluate_completes_when(state, first) is True
+
+
+def test_first_calibration_eligible_when_player_has_replied_once(
+    state: InboxState, scenario: Scenario
+):
     _drain_boot(state, scenario)
-    assert find_eligible_plot_beat(state, scenario, "aria") is None
+    state.replies.append(_make_reply(thread="aria", warmth=0.0))
+    due = find_due_beats(state, scenario)
+    assert any(b.id == "aria.first_calibration" for b in due)
 
 
-def test_find_eligible_plot_beat_returns_midprogram_when_replies_satisfy(
+def test_first_calibration_re_fires_until_gate_met(
     state: InboxState, scenario: Scenario
 ):
+    """The multi-turn beat stays in pending and keeps appearing in
+    find_due_beats until completes_when passes. We simulate `_fire_beat`'s
+    behavior: don't add to fired_beat_ids when completes_when is unmet."""
+    _drain_boot(state, scenario)
+    state.replies.append(_make_reply(thread="aria", warmth=0.0))
+
+    # Tick 1: beat is due. Simulate _fire_beat refusing to mark complete.
+    due = find_due_beats(state, scenario)
+    assert any(b.id == "aria.first_calibration" for b in due)
+    # Gate is engaged_initial ≥ 0.7; default is 0.5 → not met → no mark.
+    assert "aria.first_calibration" not in state.fired_beat_ids
+
+    # Tick 2 (same gate): beat still pending, still due.
+    state.replies.append(_make_reply(thread="aria", warmth=0.0))
+    due = find_due_beats(state, scenario)
+    assert any(b.id == "aria.first_calibration" for b in due)
+
+
+def test_first_calibration_completes_when_gate_met(
+    state: InboxState, scenario: Scenario
+):
+    _drain_boot(state, scenario)
+    state.replies.append(_make_reply(thread="aria", warmth=2.0))
+    state.qualities["engaged_initial"] = 1.0  # classifier wrote "engaged"
+
+    first = scenario.beat_by_id["aria.first_calibration"]
+    assert evaluate_completes_when(state, first) is True
+
+    # Caller marks complete; subsequent find_due_beats prunes from pending.
+    state.fired_beat_ids.add("aria.first_calibration")
+    due = find_due_beats(state, scenario)
+    assert not any(b.id == "aria.first_calibration" for b in due)
+
+
+# ───────────────────────── chain progression ─────────────────────────
+
+
+def test_midprogram_blocked_until_first_calibration_completes(
+    state: InboxState, scenario: Scenario
+):
+    """midprogram has `beat_fired(aria.first_calibration)` as a precondition.
+    Even with replies≥3, midprogram doesn't fire until first_calibration is
+    completed."""
     _drain_boot(state, scenario)
     state.replies.extend(_make_reply(thread="aria", warmth=1.0) for _ in range(3))
-    plot = find_eligible_plot_beat(state, scenario, "aria")
-    assert plot is not None
-    assert plot.id == "aria.midprogram"
-    assert isinstance(plot, PlotBeat)
+    due = find_due_beats(state, scenario)
+    assert not any(b.id == "aria.midprogram" for b in due)
+
+    state.fired_beat_ids.add("aria.first_calibration")  # complete the loop
+    due = find_due_beats(state, scenario)
+    assert any(b.id == "aria.midprogram" for b in due)
 
 
-def test_find_eligible_plot_beat_skips_already_pending(
+def test_terminal_warm_blocked_until_midprogram_fired(
     state: InboxState, scenario: Scenario
 ):
-    """Once a PlotBeat is queued, find_eligible_plot_beat doesn't re-pick
-    it — prevents the /send schedule loop from queueing the same beat
-    twice."""
+    """terminal_warm requires `beat_fired(aria.midprogram)`. Without first
+    completing the chain through midprogram, terminal_warm stays out of the
+    due list — even with replies≥5 and warmth≥3.0."""
     _drain_boot(state, scenario)
-    state.replies.extend(_make_reply(thread="aria", warmth=1.0) for _ in range(3))
-    state.pending_beats.append(PendingBeat(beat_id="aria.midprogram"))
-    assert find_eligible_plot_beat(state, scenario, "aria") is None
+    # first_calibration NOT fired → midprogram can't fire → terminal_warm
+    # can't fire (its beat_fired(midprogram) precondition fails because
+    # midprogram is neither in fired_beat_ids nor in this tick's due set).
+    state.qualities["warmth.aria"] = 5.0
+    state.replies.extend(_make_reply(thread="aria", warmth=2.0) for _ in range(5))
+    due = find_due_beats(state, scenario)
+    due_ids = {b.id for b in due}
+    assert "aria.terminal_warm" not in due_ids
+    assert "aria.midprogram" not in due_ids  # blocked on first_calibration
 
-
-def test_find_eligible_plot_beat_skips_already_fired(
-    state: InboxState, scenario: Scenario
-):
-    _drain_boot(state, scenario)
-    state.replies.extend(_make_reply(thread="aria", warmth=1.0) for _ in range(3))
-    state.fired_beat_ids.add("aria.midprogram")
-    assert find_eligible_plot_beat(state, scenario, "aria") is None
+    # Complete the chain manually; on the next tick midprogram fires AND
+    # terminal_warm fires same-tick via the extra_fired mutex (this is the
+    # intentional chain-of-beats behavior — once preconditions cascade,
+    # downstream beats become eligible immediately).
+    state.fired_beat_ids.update({"aria.first_calibration", "aria.midprogram"})
+    due = find_due_beats(state, scenario)
+    assert any(b.id == "aria.terminal_warm" for b in due)
 
 
 def test_terminal_mutual_exclusion_warm_wins_when_warmth_high(
@@ -296,77 +410,32 @@ def test_terminal_mutual_exclusion_warm_wins_when_warmth_high(
 ):
     """High warmth: terminal_warm comes first in authoring order; it's
     eligible and fires. terminal_standard's Not_(BeatFired terminal_warm)
-    keeps it suppressed once warm has fired."""
+    keeps it suppressed once warm has fired (via tick-local extra_fired)."""
     _drain_boot(state, scenario)
-    state.fired_beat_ids.add("aria.midprogram")
-    state.qualities["calibration"] = 80.0
+    state.fired_beat_ids.update({"aria.first_calibration", "aria.midprogram"})
     state.qualities["warmth.aria"] = 5.0
-    state.replies.extend(_make_reply(thread="aria", warmth=2.0) for _ in range(4))
+    state.replies.extend(_make_reply(thread="aria", warmth=2.0) for _ in range(5))
 
-    plot = find_eligible_plot_beat(state, scenario, "aria")
-    assert plot is not None and plot.id == "aria.terminal_warm"
+    due = find_due_beats(state, scenario)
+    due_ids = [b.id for b in due]
+    # terminal_warm fires; terminal_standard's Not_(BeatFired terminal_warm)
+    # catches the tick-local fire via `extra_fired` and suppresses standard.
+    assert "aria.terminal_warm" in due_ids
+    assert "aria.terminal_standard" not in due_ids
 
-    # Simulate firing terminal_warm.
-    state.fired_beat_ids.add("aria.terminal_warm")
-    plot2 = find_eligible_plot_beat(state, scenario, "aria")
-    assert plot2 is None  # terminal_standard's Not_(BeatFired) suppresses it
 
-
-def test_terminal_standard_eligible_when_warmth_low(
+def test_terminal_standard_fires_when_warmth_low(
     state: InboxState, scenario: Scenario
 ):
     _drain_boot(state, scenario)
-    state.fired_beat_ids.add("aria.midprogram")
-    state.qualities["calibration"] = 80.0
+    state.fired_beat_ids.update({"aria.first_calibration", "aria.midprogram"})
     state.qualities["warmth.aria"] = 0.0  # below 3.0 — terminal_warm fails
-    state.replies.extend(_make_reply(thread="aria", warmth=0.0) for _ in range(4))
+    state.replies.extend(_make_reply(thread="aria", warmth=0.0) for _ in range(5))
 
-    plot = find_eligible_plot_beat(state, scenario, "aria")
-    assert plot is not None and plot.id == "aria.terminal_standard"
-
-
-# ───────────────────────── reply scheduling ─────────────────────────
-
-
-def test_schedule_thread_reply_queues_with_calibration_threshold(
-    state: InboxState, scenario: Scenario
-):
-    _drain_boot(state, scenario)
-    state.replies.extend(_make_reply(thread="aria", warmth=1.0) for _ in range(3))
-    state.qualities["calibration"] = 50.0
-
-    midprogram = find_eligible_plot_beat(state, scenario, "aria")
-    assert midprogram is not None
-    schedule_thread_reply(state, scenario, "aria", midprogram)
-
-    pending = [pb for pb in state.pending_beats if pb.beat_id == "aria.midprogram"]
-    assert len(pending) == 1
-    # Aria's reply_delay_calibration = 3.5; from cal=50 → threshold 53.5.
-    assert len(pending[0].runtime_preconditions) == 1
-    pred = pending[0].runtime_preconditions[0]
-    assert isinstance(pred, QualityGte)
-    assert pred.quality == "calibration"
-    assert pred.value == pytest.approx(53.5)
-
-
-def test_scheduled_plot_beat_does_not_fire_same_send(
-    state: InboxState, scenario: Scenario
-):
-    """Threshold sits above current calibration → queued PlotBeat doesn't
-    fire on its own scheduling tick. This is the deliberate-pacing pattern
-    for plot moments."""
-    _drain_boot(state, scenario)
-    state.replies.extend(_make_reply(thread="aria", warmth=1.0) for _ in range(3))
-    state.qualities["calibration"] = 50.0
-    midprogram = find_eligible_plot_beat(state, scenario, "aria")
-    schedule_thread_reply(state, scenario, "aria", midprogram)
-    # Same tick: threshold is 53.5, calibration is 50 → not due.
     due = find_due_beats(state, scenario)
-    assert not any(b.id == "aria.midprogram" for b in due)
-    # Crossing the threshold: now due.
-    state.qualities["calibration"] = 54.0
-    due = find_due_beats(state, scenario)
-    assert any(b.id == "aria.midprogram" for b in due)
+    due_ids = [b.id for b in due]
+    assert "aria.terminal_warm" not in due_ids
+    assert "aria.terminal_standard" in due_ids
 
 
 # ───────────────────────── reply-subject helper ─────────────────────────

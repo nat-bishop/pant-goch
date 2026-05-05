@@ -24,6 +24,34 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_ai.messages import ModelMessage
 
 
+# ───────────────────────── classifier authoring ─────────────────────────
+
+
+class ClassifyReply(BaseModel):
+    """Beat-local LLM classifier authored on a beat. When the player replies
+    to that beat's email, the classifier judges the reply and writes the
+    result to a named quality.
+
+    Runs in parallel with TEXTURE_AGENT and writes only the named quality —
+    same boundary discipline as texture (LLM-judge → quality, never anything
+    else).
+    """
+
+    quality: str
+    question: str
+    allowed_values: list[str] = Field(min_length=2)
+    map: dict[str, float]
+
+    @model_validator(mode="after")
+    def _map_keys_match_allowed(self) -> "ClassifyReply":
+        if set(self.map.keys()) != set(self.allowed_values):
+            raise ValueError(
+                f"classify_reply: map keys {sorted(self.map.keys())} "
+                f"must equal allowed_values {sorted(self.allowed_values)}"
+            )
+        return self
+
+
 # ───────────────────────── predicate DSL ─────────────────────────
 
 
@@ -51,7 +79,13 @@ class PlayerRepliesToThreadGte(BaseModel):
 
 
 class BeatFired(BaseModel):
-    """True iff the named beat has already fired (lives in `state.fired_beat_ids`).
+    """True iff the named beat has completed (lives in `state.fired_beat_ids`).
+
+    For fire-once beats, "completed" == "rendered once" — they're added to
+    `fired_beat_ids` immediately after rendering. For multi-turn beats
+    (those with non-empty `completes_when`), "completed" means the gate
+    passed: such a beat may render multiple times before completing, and
+    only the completing render adds it to `fired_beat_ids`.
 
     Use under `Not_` to express mutual exclusion between two beats whose
     other preconditions overlap.
@@ -130,12 +164,6 @@ class NPCDossier(BaseModel):
     will_not_say: list[str] = Field(default_factory=list)
     voice_bands: list[VoiceBand] = Field(default_factory=list)
     register_quality: str | None = None  # which quality drives band selection
-    # Calibration delay before this NPC's queued PlotBeat reply lands. The
-    # PlotBeat is pended with a runtime quality_gte predicate at
-    # current_calibration + reply_delay_calibration; subsequent player verbs
-    # advance calibration past it. Chat-turn fallbacks fire immediately
-    # within the same /send and do NOT use this delay.
-    reply_delay_calibration: float = 3.5
 
 
 class BeatSpec(BaseModel):
@@ -155,6 +183,17 @@ class _BeatBase(BaseModel):
     id: str = Field(min_length=1, pattern=r"^[a-z][a-z0-9_.]*$")
     thread: str
     preconditions: list[Predicate] = Field(default_factory=list)
+    # Beat-local classifier. When the player replies to this beat's email,
+    # the classifier runs alongside texture scoring and writes to the named
+    # quality. None → no classifier runs for replies to this beat.
+    classify_reply: ClassifyReply | None = None
+    # Multi-turn lifecycle. Empty → fire-once (legacy semantics: completes on
+    # first render). Non-empty → beat is "completed" only when all predicates
+    # pass; until then, find_due_beats keeps returning it and _fire_beat
+    # re-renders. The chat agent's message_history carries prior asks +
+    # player replies, so on a re-render the LLM differentiates initial vs
+    # rephrase from context (the spec's intent should describe both modes).
+    completes_when: list[Predicate] = Field(default_factory=list)
 
 
 class AnchoredBeat(_BeatBase):
@@ -295,6 +334,18 @@ class Scenario(BaseModel):
                 _check_predicate_refs(
                     pred, f"beat {beat.id}", quality_ids, thread_ids, beat_ids
                 )
+            for pred in beat.completes_when:
+                _check_predicate_refs(
+                    pred,
+                    f"beat {beat.id} completes_when",
+                    quality_ids, thread_ids, beat_ids,
+                )
+            if beat.classify_reply is not None:
+                if beat.classify_reply.quality not in quality_ids:
+                    raise ValueError(
+                        f"beat {beat.id}: classify_reply.quality "
+                        f"{beat.classify_reply.quality!r} is not a known quality"
+                    )
 
         for npc in self.npcs:
             if npc.register_quality and npc.register_quality not in quality_ids:
@@ -416,14 +467,10 @@ class InboxState:
             elif isinstance(q.default, (int, float)):
                 qualities[q.id] = float(q.default)
         state = cls(qualities=qualities)
-        # Auto-pend every anchored beat. Their authored preconditions are
-        # evaluated as runtime predicates by `find_due_beats`; ones with
-        # empty preconditions fire on the first scheduler tick at boot.
-        # PlotBeats are NOT auto-pended — those are added to pending only
-        # by `schedule_thread_reply` on player send.
+        # Auto-pend every beat; `find_due_beats` evaluates authored
+        # preconditions each tick and only fires the eligible ones.
         for beat in scenario.beats:
-            if isinstance(beat, AnchoredBeat):
-                state.pending_beats.append(PendingBeat(beat_id=beat.id))
+            state.pending_beats.append(PendingBeat(beat_id=beat.id))
         return state
 
     # The view exposed to the client. Hides internal scheduler state.
@@ -463,4 +510,12 @@ class TextureScore(BaseModel):
     """TEXTURE_AGENT output."""
 
     warmth: float = Field(ge=-3.0, le=3.0)
+    rationale: str = ""
+
+
+class ClassificationResult(BaseModel):
+    """CLASSIFIER_AGENT output. `value` MUST be one of the beat-authored
+    `allowed_values` — caller validates and skips the quality write if not."""
+
+    value: str = Field(min_length=1)
     rationale: str = ""
