@@ -147,7 +147,7 @@ def build_agents(
         name="summary_agent",
         output_type=str,
         instructions=_SUMMARY_INSTRUCTIONS,
-        model_settings={"max_tokens": 512, "temperature": 0.3},
+        model_settings={"max_tokens": 512, "temperature": 1.0, "top_p": 0.95, "extra_body": {"top_k": 64}},
     )
 
     history_processors: list = []
@@ -167,7 +167,7 @@ def build_agents(
         deps_type=ChatDeps,
         output_type=str,
         instructions=_BASE_CHAT_INSTRUCTIONS,
-        model_settings={"max_tokens": 800, "temperature": 0.7},
+        model_settings={"max_tokens": 800, "temperature": 1.0, "top_p": 0.95, "extra_body": {"top_k": 64}},
         history_processors=history_processors,
     )
 
@@ -199,7 +199,7 @@ def build_agents(
         # ["length"]` on the first attempt, forcing Pydantic AI to retry
         # and ~2x the latency. 2048 leaves ample budget for the call plus
         # any preamble the model wants to write.
-        model_settings={"max_tokens": 2048, "temperature": 0.1},
+        model_settings={"max_tokens": 2048, "temperature": 1.0, "top_p": 0.95, "extra_body": {"top_k": 64}},
     )
 
     return AgentBundle(
