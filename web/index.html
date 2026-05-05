@@ -4,6 +4,9 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Continuity Program</title>
+    <!-- Set theme class on <html> BEFORE the JS bundle parses to prevent a
+         50–200ms flash of the wrong theme on first paint. Don't move into
+         main.tsx — by the time React mounts, the page has already painted. -->
     <script>
       (function () {
         try {

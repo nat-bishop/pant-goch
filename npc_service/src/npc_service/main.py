@@ -54,7 +54,6 @@ from .spine import (
     apply_classification,
     evaluate_completes_when,
     find_due_beats,
-    latest_npc_email_in_thread,
     reply_subject_for_email,
 )
 
@@ -203,7 +202,7 @@ async def _fire_beat(
                 thread_id=beat.thread,
                 folder="Inbox",
                 sender=beat.from_,
-                recipient=beat.to,
+                recipient=SCENARIO.player_email,
                 subject=beat.subject,
                 body=beat.authored_prose.strip(),
                 sent_at_label=beat.sent_at or "just now",
@@ -295,7 +294,6 @@ async def _render_via_chat_agent(
     derived_subject = subject if subject is not None else reply_subject_for_email(
         STATE, in_reply_to_email_id
     )
-    derived_recipient = _derive_chat_recipient(thread_id, npc.email_address)
 
     return Email(
         id=f"email_{uuid.uuid4().hex[:8]}",
@@ -303,21 +301,12 @@ async def _render_via_chat_agent(
         thread_id=thread_id,
         folder="Inbox",
         sender=npc.email_address,
-        recipient=derived_recipient,
+        recipient=SCENARIO.player_email,
         subject=derived_subject,
         body=body,
         sent_at_label="just now",
         in_reply_to_beat=in_reply_to_email_id,
     )
-
-
-def _derive_chat_recipient(thread_id: str, npc_address: str) -> str:
-    """The player's address — read off the NPC's most recent email's
-    `recipient` field. The boot anchored welcome guarantees this is
-    populated before any chat turn fires."""
-    assert STATE is not None
-    prior = latest_npc_email_in_thread(STATE, thread_id, npc_address)
-    return prior.recipient if prior is not None else "you"
 
 
 # ───────────────────────── scheduler tick ─────────────────────────

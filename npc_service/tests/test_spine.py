@@ -26,7 +26,6 @@ from npc_service.spine import (
     evaluate_completes_when,
     evaluate_predicate,
     find_due_beats,
-    latest_npc_email_in_thread,
     reply_subject_for_email,
 )
 
@@ -335,23 +334,6 @@ def test_reply_subject_unknown_email_id():
     state = InboxState()
     assert reply_subject_for_email(state, "nope") == "(no subject)"
     assert reply_subject_for_email(state, None) == "(no subject)"
-
-
-# ───────────────────────── latest_npc_email lookup ─────────────────────────
-
-
-def test_latest_npc_email_picks_most_recent_by_sender():
-    state = InboxState()
-    state.emails.append(_make_email(id="e1", thread_id="aria", sender="aria@x", recipient="player@x"))
-    state.emails.append(_make_email(id="e2", thread_id="aria", sender="you", recipient="aria@x"))
-    state.emails.append(_make_email(id="e3", thread_id="aria", sender="aria@x", recipient="player@x"))
-    found = latest_npc_email_in_thread(state, "aria", "aria@x")
-    assert found is not None and found.id == "e3"
-
-
-def test_latest_npc_email_returns_none_when_none_exist():
-    state = InboxState()
-    assert latest_npc_email_in_thread(state, "aria", "aria@x") is None
 
 
 # ───────────────────────── helpers ─────────────────────────

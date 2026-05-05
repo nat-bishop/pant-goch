@@ -185,11 +185,15 @@ class _BeatBase(BaseModel):
 
 
 class AnchoredBeat(_BeatBase):
-    """Pre-authored email; ships verbatim. No LLM call."""
+    """Pre-authored email; ships verbatim. No LLM call.
+
+    Recipient is `Scenario.player_email` — anchored beats are NPC→player by
+    construction. If a future scenario needs a non-player anchored email,
+    add a `to` field back at that time.
+    """
 
     type: Literal["anchored"] = "anchored"
     from_: str = Field(alias="from")
-    to: str = "you"
     subject: str
     authored_prose: str
     sent_at: str = ""  # in-fiction timestamp label (e.g. "just now")
@@ -250,6 +254,11 @@ class Scenario(BaseModel):
 
     title: str
     premise: str
+    # The player's email address. Used as the `recipient` on every NPC→player
+    # email — anchored beats and chat-turn renders both source it from here
+    # so the address has exactly one home rather than being read back off the
+    # boot welcome's `to:` field.
+    player_email: str = Field(min_length=1)
 
     qualities: list[QualityDef]
     npcs: list[NPCDossier]

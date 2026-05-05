@@ -17,7 +17,6 @@ from .models import (
     Beat,
     BeatFired,
     ClassifyReply,
-    Email,
     InboxState,
     Not_,
     PendingBeat,
@@ -195,19 +194,6 @@ def reply_subject_for_email(state: InboxState, email_id: str | None) -> str:
         return "(no subject)"
     s = target.subject
     return s if s.lower().startswith("re:") else f"Re: {s}"
-
-
-def latest_npc_email_in_thread(
-    state: InboxState, thread_id: str, npc_address: str
-) -> Email | None:
-    """Most recent email in the thread sent BY the NPC (matched by sender
-    address). Used to derive the chat-turn email's `recipient` field — we
-    take the NPC's prior email's `recipient` as the player's address.
-    """
-    for e in reversed(state.emails):
-        if e.thread_id == thread_id and e.sender == npc_address:
-            return e
-    return None
 
 
 def thread_id_from_beat_id(beat_id: str | None) -> str | None:

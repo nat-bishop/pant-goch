@@ -47,6 +47,9 @@ export const useStore = create<Store>()((set, get) => ({
   theme: detectInitialTheme(),
 
   async boot() {
+    // React StrictMode double-mounts in dev; without this guard, boot() runs
+    // twice concurrently and the welcome typing-replay fires twice. Set
+    // synchronously before any await so the second call sees it.
     if (get().bootStarted) return;
     set({ bootStarted: true });
     try {

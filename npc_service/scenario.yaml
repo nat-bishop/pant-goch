@@ -6,6 +6,10 @@ premise: |
   portions of your daily correspondence, freeing you to focus on the
   higher-order strategic work that only you can perform.
 
+# Used as the `recipient` on every NPC→player email — anchored beats and
+# chat-turn renders both pull from here.
+player_email: "n.beckett@halcyon.com"
+
 
 # ───────────────────────── qualities ─────────────────────────
 
@@ -100,7 +104,6 @@ beats:
     type: anchored
     thread: aria
     from: "Aria | Continuity Program <aria.7@continuity.halcyon.com>"
-    to: "n.beckett@halcyon.com"
     subject: "Welcome — Calibration Session 1 of 12"
     sent_at: "just now"
     authored_prose: |
