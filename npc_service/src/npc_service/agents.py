@@ -1,19 +1,17 @@
-"""The three LLM agents: CHAT_AGENT, TEXTURE_AGENT, CLASSIFIER_AGENT.
+"""The two LLM agents: CHAT_AGENT and CLASSIFIER_AGENT.
 
 CHAT_AGENT renders one email body per turn. It uses Pydantic AI's native
 `message_history` for the per-thread conversation, plain-text `output_type=str`
 so the assistant turn lands as a `TextPart` (clean for subsequent turns), and
-dynamic `@instructions` keyed on `ChatDeps` to layer dossier / voice-band /
-optional plot-directive context per run.
+dynamic `@instructions` keyed on `ChatDeps` to layer dossier and optional
+plot-directive context per run.
 
-TEXTURE_AGENT is unchanged in shape: one-shot, ToolOutput, scores warmth on
-the player's just-typed reply. It never sees `message_history`.
-
-CLASSIFIER_AGENT is a sibling of TEXTURE_AGENT: one-shot, ToolOutput, returns
-a `value: str` chosen from a beat-authored `allowed_values` list. The list
-is enforced via the user prompt (not the schema) since allowed values vary
-per beat. The caller validates post-hoc and skips the quality write if the
-returned value is off-spec.
+CLASSIFIER_AGENT is one-shot, ToolOutput, returns a `value: str` chosen from
+a beat-authored `allowed_values` list. The list is enforced via the user
+prompt (not the schema) since allowed values vary per beat. The caller
+validates post-hoc and skips the quality write if the returned value is
+off-spec. The classifier runs only when the player is replying to a beat
+that authored a `classify_reply` block — never on every send.
 
 Construction is deferred to `build_agents()` (called from `lifespan`) so the
 shared OpenAI-compatible model handle can be passed in once.
@@ -29,8 +27,6 @@ from .models import (
     BeatSpec,
     ClassificationResult,
     NPCDossier,
-    TextureScore,
-    VoiceBand,
 )
 
 
@@ -51,7 +47,6 @@ class ChatDeps:
     """
 
     npc: NPCDossier
-    voice_band: VoiceBand | None
     plot_directive: BeatSpec | None
 
 
@@ -67,12 +62,10 @@ OUTPUT FORMAT (strict):
 - No JSON, no markdown code fences, no meta-commentary.
 
 VOICE RULES:
-- Stay inside the selected voice band. If the band says lower-case, lower-case.
-  If it forbids 'lol', no 'lol'.
+- Stay inside the dossier's base voice register.
 - Do not invent named characters or places not in the dossier or transcript.
 - Do not mention game mechanics, scoring, or the meta-fiction.
 - Address the recipient by name or as "you", never as "the player".
-- Stay within the length window if a plot directive specifies one.
 """
 
 
@@ -93,38 +86,14 @@ Return: {"value": "<one of allowed_values>", "rationale": "<one sentence>"}.
 """
 
 
-_TEXTURE_SYSTEM_PROMPT = """You score the warmth of a player-written email reply on a -3..3 scale.
-
-You will receive:
-- The recipient's persona blurb (who the player is writing to).
-- The most recent prior email in the thread (what the player is replying to).
-- The player's just-typed reply (the new send).
-
-Score warmth on a -3..3 integer scale:
-
-  +3  intimate, specific, attentive — names the recipient's feelings or specifics
-  +1  friendly, present
-   0  neutral, transactional
-  -1  curt, distant
-  -3  cold, dismissive
-
-A reply naming a specific concern shared in the recipient's prior emails scores high warmth.
-
-Also write a one-sentence rationale (kept for telemetry, not shown to player).
-
-Return: {"warmth": <int>, "rationale": "<one sentence>"}.
-"""
-
-
 # ───────────────────────── agent construction ─────────────────────────
 
 
 @dataclass
 class AgentBundle:
-    """All three agents wired up against one shared model handle."""
+    """Both agents wired up against one shared model handle."""
 
     chat_agent: Agent
-    texture_agent: Agent
     classifier_agent: Agent
 
 
@@ -147,13 +116,6 @@ def build_agents(model) -> AgentBundle:
         return _format_dossier(ctx.deps.npc)
 
     @chat_agent.instructions
-    def _voice_band_block(ctx: RunContext[ChatDeps]) -> str:
-        band = ctx.deps.voice_band
-        if band is None:
-            return ""
-        return "VOICE BAND for this render:\n" + _format_voice_band(band)
-
-    @chat_agent.instructions
     def _plot_directive_block(ctx: RunContext[ChatDeps]) -> str:
         spec = ctx.deps.plot_directive
         if spec is None:
@@ -170,14 +132,6 @@ def build_agents(model) -> AgentBundle:
             f"Must not:\n{must_not}"
         )
 
-    texture_agent = Agent(
-        model,
-        name="texture_agent",
-        output_type=ToolOutput(TextureScore),
-        instructions=_TEXTURE_SYSTEM_PROMPT,
-        model_settings={"max_tokens": 256, "temperature": 0.1},
-    )
-
     classifier_agent = Agent(
         model,
         name="classifier_agent",
@@ -188,7 +142,6 @@ def build_agents(model) -> AgentBundle:
 
     return AgentBundle(
         chat_agent=chat_agent,
-        texture_agent=texture_agent,
         classifier_agent=classifier_agent,
     )
 
@@ -207,47 +160,8 @@ def _format_dossier(npc: NPCDossier) -> str:
     )
 
 
-def _format_voice_band(band: VoiceBand) -> str:
-    vocab = ", ".join(f"{v!r}" for v in band.vocabulary_examples) or "(none)"
-    examples = "\n".join(f"  - {ex!r}" for ex in band.tone_examples) or "  (none)"
-    return (
-        f"Band: {band.name}\n"
-        f"Selected when: {band.selected_when}\n"
-        f"Sentence register: {band.sentence_register}\n"
-        f"Vocabulary cues: {vocab}\n"
-        f"Tone examples:\n{examples}"
-    )
-
-
 def _bullets(items: list[str]) -> str:
     return "\n".join(f"  - {x}" for x in items) or "  (none)"
-
-
-def _format_judge_preamble(
-    recipient_blurb: str,
-    prior_email_body: str,
-    reply_body: str,
-) -> str:
-    """Shared scaffold for the per-reply judges (texture + classifier).
-    A single source of truth so both judges always see identical inputs."""
-    return f"""RECIPIENT (who the player is writing to):
-{recipient_blurb}
-
-MOST RECENT PRIOR EMAIL (what the player is replying to):
-{prior_email_body.strip() or '(no prior email)'}
-
-PLAYER'S REPLY (just typed):
-{reply_body}"""
-
-
-def build_texture_user_prompt(
-    recipient_blurb: str,
-    prior_email_body: str,
-    reply_body: str,
-) -> str:
-    return f"""{_format_judge_preamble(recipient_blurb, prior_email_body, reply_body)}
-
-Now score this reply's warmth (-3..3 integer) and write a one-sentence rationale."""
 
 
 def build_classifier_user_prompt(
@@ -260,7 +174,14 @@ def build_classifier_user_prompt(
     """The schema only enforces that *some* string is returned, so the LLM
     must respect the allowed_values list given in the prompt."""
     values = ", ".join(f'"{v}"' for v in allowed_values)
-    return f"""{_format_judge_preamble(recipient_blurb, prior_email_body, reply_body)}
+    return f"""RECIPIENT (who the player is writing to):
+{recipient_blurb}
+
+MOST RECENT PRIOR EMAIL (what the player is replying to):
+{prior_email_body.strip() or '(no prior email)'}
+
+PLAYER'S REPLY (just typed):
+{reply_body}
 
 CLASSIFICATION QUESTION:
 {question.strip()}

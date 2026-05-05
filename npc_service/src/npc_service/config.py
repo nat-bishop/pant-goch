@@ -54,20 +54,13 @@ class Settings(BaseSettings):
     scenario_path: Path | None = None
 
     # ───────── calibration progression ─────────
-    # Calibration advances per /send by base + coef·|warmth| (warmth is the
-    # texture-scorer output, range -3..3). /open does NOT mutate calibration —
-    # reading is not a deliberate communication act. The meter is exclusively
-    # driven by the texture-scored player voice, which is the design point.
-    #
-    # Default tuning (base=2.0, coef=1.5):
-    #   warmth=0   → +2.0    (neutral sends still progress slowly)
-    #   warmth=±1  → +3.5
-    #   warmth=±2  → +5.0    (matches the old flat send delta)
-    #   warmth=±3  → +6.5
-    # Average ~14 sends to reach the 100 cap; terminal beats are authored to
-    # fire well before then.
-    calibration_base: float = 2.0
-    calibration_warmth_coef: float = 1.5
+    # Flat per-/send delta applied to the visible "Counterpart fidelity %"
+    # counter. /open does NOT mutate calibration — reading is not a deliberate
+    # communication act. Calibration is decorative (no beat gates on its
+    # value), so we just need a deterministic climb. At base=5.0 the meter
+    # reaches the 100 cap in ~20 sends; terminal beats are authored to fire
+    # well before that on reply count.
+    calibration_base: float = 5.0
 
     # ───────── history compaction (rarely tuned at runtime) ─────────
     # summarize_when_large fires when input would exceed this share of LLAMA_CTX.

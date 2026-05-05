@@ -5,8 +5,8 @@ Two layers:
 - **Authoring** (loaded from `scenario.yaml`, immutable at runtime): QualityDef,
   NPCDossier, Beat, Thread, Scenario.
 - **Runtime state** (mutable, owned by the spine): Email, Reply, InboxState.
-  The LLM never writes any of this directly — only TEXTURE_AGENT outputs feed
-  the warmth/register qualities via `apply_texture_score`.
+  The LLM never writes any of this directly — only the classifier agent
+  (when a beat authors `classify_reply`) writes a single named quality.
 
 Predicates are tagged-union Pydantic models, not strings. YAML authoring is
 slightly more verbose; in exchange, every predicate is type-checked at load
@@ -32,9 +32,8 @@ class ClassifyReply(BaseModel):
     to that beat's email, the classifier judges the reply and writes the
     result to a named quality.
 
-    Runs in parallel with TEXTURE_AGENT and writes only the named quality —
-    same boundary discipline as texture (LLM-judge → quality, never anything
-    else).
+    The single LLM-judge → single named quality boundary keeps the classifier
+    from acting as a general state actor.
     """
 
     quality: str
@@ -121,9 +120,9 @@ Not_.model_rebuild()
 
 
 class QualityDef(BaseModel):
-    """A continuous numeric state. Mutated by the spine (calibration) or
-    TEXTURE_AGENT (warmth/register) — never read by predicates as discrete
-    values (use `quality_gte`/`quality_lt`).
+    """A continuous numeric state. Mutated by the spine (calibration) or by
+    the classifier when a beat authors `classify_reply`. Predicates read
+    qualities through `quality_gte`/`quality_lt`, not as discrete values.
     """
 
     id: str = Field(min_length=1, pattern=r"^[a-z][a-z0-9_.]*$")
@@ -134,23 +133,9 @@ class QualityDef(BaseModel):
     description: str = ""
 
 
-class VoiceBand(BaseModel):
-    """One register-conditioned voice variant. The chat agent picks a band
-    per render based on the NPC's `register` quality.
-    """
-
-    name: str
-    register_min: float = -3.0
-    register_max: float = 3.0
-    selected_when: str
-    vocabulary_examples: list[str] = Field(default_factory=list)
-    sentence_register: str
-    tone_examples: list[str] = Field(default_factory=list)
-
-
 class NPCDossier(BaseModel):
     """Static authoring artifact. Never mutated at runtime. Injected into the
-    chat agent via deps + `@instructions`, and into TEXTURE_AGENT prompts."""
+    chat agent via deps + `@instructions`."""
 
     id: str = Field(min_length=1, pattern=r"^[a-z][a-z0-9_]*$")
     display_name: str
@@ -162,8 +147,6 @@ class NPCDossier(BaseModel):
     base_voice_forbidden: list[str] = Field(default_factory=list)
     will_say: list[str] = Field(default_factory=list)
     will_not_say: list[str] = Field(default_factory=list)
-    voice_bands: list[VoiceBand] = Field(default_factory=list)
-    register_quality: str | None = None  # which quality drives band selection
 
 
 class BeatSpec(BaseModel):
@@ -184,8 +167,8 @@ class _BeatBase(BaseModel):
     thread: str
     preconditions: list[Predicate] = Field(default_factory=list)
     # Beat-local classifier. When the player replies to this beat's email,
-    # the classifier runs alongside texture scoring and writes to the named
-    # quality. None → no classifier runs for replies to this beat.
+    # the classifier runs and writes the mapped score to the named quality.
+    # None → no classifier runs for replies to this beat.
     classify_reply: ClassifyReply | None = None
     # Multi-turn lifecycle. Empty → fire-once (legacy semantics: completes on
     # first render). Non-empty → beat is "completed" only when all predicates
@@ -273,11 +256,6 @@ class Scenario(BaseModel):
     def thread_by_id(self) -> dict[str, Thread]:
         return {t.id: t for t in self.threads}
 
-    @cached_property
-    def thread_by_npc_id(self) -> dict[str, str]:
-        """Map npc id → its thread id (for `schedule_thread_reply`)."""
-        return {t.npc: t.id for t in self.threads if t.npc is not None}
-
     @field_validator("qualities")
     @classmethod
     def _quality_ids_unique(cls, v: list[QualityDef]) -> list[QualityDef]:
@@ -347,12 +325,6 @@ class Scenario(BaseModel):
                         f"{beat.classify_reply.quality!r} is not a known quality"
                     )
 
-        for npc in self.npcs:
-            if npc.register_quality and npc.register_quality not in quality_ids:
-                raise ValueError(
-                    f"npc {npc.id}: register_quality {npc.register_quality!r} is not a known quality"
-                )
-
         for thread in self.threads:
             if thread.npc is not None and thread.npc not in npc_ids:
                 raise ValueError(f"thread {thread.id}: unknown npc {thread.npc!r}")
@@ -407,7 +379,6 @@ class Email:
     sent_at_label: str
     is_read: bool = False
     in_reply_to_beat: str | None = None
-    voice_band_used: str | None = None
 
 
 @dataclass
@@ -419,17 +390,15 @@ class Reply:
     beat_responded_to: str | None
     recipient: str
     body: str
-    warmth: float
-    rationale: str
 
 
 @dataclass
 class PendingBeat:
     """A beat queued to fire when its preconditions become satisfied.
 
-    `runtime_preconditions` are added at scheduling time (e.g. by
-    `schedule_thread_reply` to encode a calibration-based reply delay) and
-    AND'd with the beat's authored preconditions.
+    `runtime_preconditions` are AND'd with the beat's authored preconditions
+    at scheduling time. Currently unused at runtime — kept on the schema for
+    extensibility and exercised by the spine tests.
     """
 
     beat_id: str
@@ -439,8 +408,8 @@ class PendingBeat:
 @dataclass
 class InboxState:
     """The mutable runtime state. The spine fully owns this; the LLM never
-    writes to it directly except through TEXTURE_AGENT outputs that target
-    specific quality fields.
+    writes to it directly except through classifier outputs (when a beat
+    authors `classify_reply`) which target a single named quality.
 
     `thread_messages` holds the Pydantic-AI-native conversation per NPC
     thread. Anchored emails seed it as `ModelResponse(TextPart)` entries;
@@ -504,13 +473,6 @@ class SendRequest(BaseModel):
     in_reply_to: str | None = None  # email id, optional
     recipient: str = Field(min_length=1)
     body: str  # rejected as 400 if empty/whitespace
-
-
-class TextureScore(BaseModel):
-    """TEXTURE_AGENT output."""
-
-    warmth: float = Field(ge=-3.0, le=3.0)
-    rationale: str = ""
 
 
 class ClassificationResult(BaseModel):

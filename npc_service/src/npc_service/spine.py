@@ -1,5 +1,5 @@
-"""The deterministic spine: predicate evaluation, beat scheduler,
-voice-band selector, calibration application, and PlotBeat scheduler.
+"""The deterministic spine: predicate evaluation, beat scheduler, and
+calibration application.
 
 No LLM calls live here — only code-owned state mutation.
 
@@ -7,8 +7,8 @@ Two rules this module enforces:
 
 1. The chat-rendering LLM never touches state. The chat agent returns prose
    only; the spine is the only thing that mutates `InboxState`.
-2. The judging agent (TEXTURE_AGENT) writes the *warmth* and *register*
-   qualities via `apply_texture_score()`. It never writes anything else.
+2. The classifier agent (when a beat authors `classify_reply`) writes a
+   single named quality via `apply_classification()`. It writes nothing else.
 """
 from __future__ import annotations
 
@@ -20,7 +20,6 @@ from .models import (
     ClassifyReply,
     Email,
     InboxState,
-    NPCDossier,
     Not_,
     PendingBeat,
     PlayerRepliesToThreadGte,
@@ -28,7 +27,6 @@ from .models import (
     QualityGte,
     QualityLt,
     Scenario,
-    VoiceBand,
 )
 
 
@@ -89,10 +87,8 @@ def apply_classification(
 ) -> bool:
     """Apply a classifier output to the named quality. Returns True if the
     value was applied; False if `value` isn't in the authored map (caller
-    should log + leave the quality alone).
-
-    Mirrors `apply_texture_score`'s shape: LLM-judge → quality, with the
-    same `_clamp_quality` clamping path.
+    should log + leave the quality alone). LLM-judge → single named quality
+    with `_clamp_quality` bounding.
     """
     score = classify_reply.map.get(value)
     if score is None:
@@ -103,41 +99,14 @@ def apply_classification(
     return True
 
 
-def apply_texture_score(
-    state: InboxState,
-    scenario: Scenario,
-    recipient_npc_id: str | None,
-    warmth: float,
-) -> None:
-    """Apply the texture-scorer output to qualities. Updates `warmth.<npc>`
-    cumulatively and `register.<npc>` with halfway drift toward the new warmth.
-    Both are no-ops if the recipient isn't a known NPC.
-
-    Quality bounds come from scenario.yaml's QualityDef.min/max via
-    `_clamp_quality` — single source of truth for clamping.
-    """
-    if recipient_npc_id is None:
-        return
-    warmth_id = f"warmth.{recipient_npc_id}"
-    register_id = f"register.{recipient_npc_id}"
-
-    if warmth_id in state.qualities:
-        cur_w = state.qualities.get(warmth_id, 0.0)
-        state.qualities[warmth_id] = _clamp_quality(cur_w + warmth, warmth_id, scenario)
-
-    if register_id in state.qualities:
-        cur_r = state.qualities.get(register_id, 0.0)
-        new_r = cur_r + (warmth - cur_r) / 2.0
-        state.qualities[register_id] = _clamp_quality(new_r, register_id, scenario)
-
-
 # ───────────────────────── calibration ─────────────────────────
 
 
-def apply_calibration_delta(state: InboxState, scenario: Scenario, delta: float) -> None:
+def apply_calibration_delta(state: InboxState, scenario: Scenario, delta: float) -> float:
     """Bump the calibration quality by `delta`, clamped against its QualityDef
-    bounds. Reaching the max ends the session — terminals are authored to fire
-    well before then, so this is a safety net rather than the expected end.
+    bounds. Returns the delta applied for telemetry. Reaching the max ends
+    the session — terminals are authored to fire well before then, so this
+    is a safety net rather than the expected end.
     """
     cur = state.qualities.get(CALIBRATION_QUALITY, 0.0)
     new = _clamp_quality(cur + delta, CALIBRATION_QUALITY, scenario)
@@ -147,24 +116,6 @@ def apply_calibration_delta(state: InboxState, scenario: Scenario, delta: float)
     if not state.ended and q is not None and q.max is not None and new >= q.max:
         state.ended = True
         state.end_reason = "calibration_complete"
-
-
-def apply_calibration_from_warmth(
-    state: InboxState,
-    scenario: Scenario,
-    warmth: float,
-    *,
-    base: float,
-    coef: float,
-) -> float:
-    """Advance calibration on a /send: `delta = base + coef·|warmth|`.
-
-    The texture-scored warmth (range -3..3) drives pacing — strong signal in
-    either direction calibrates faster, lukewarm sends barely move it. Returns
-    the delta applied for telemetry.
-    """
-    delta = base + coef * abs(warmth)
-    apply_calibration_delta(state, scenario, delta)
     return delta
 
 
@@ -239,23 +190,6 @@ def evaluate_completes_when(
     if not beat.completes_when:
         return True
     return all(evaluate_predicate(p, state, extra_fired) for p in beat.completes_when)
-
-
-# ───────────────────────── voice band selector ─────────────────────────
-
-
-def select_voice_band(npc: NPCDossier, state: InboxState) -> VoiceBand | None:
-    """Pick the voice band whose register range contains the current value of
-    the NPC's `register_quality`. Returns None if the NPC has no bands or no
-    register quality.
-    """
-    if not npc.voice_bands or not npc.register_quality:
-        return None
-    register = state.qualities.get(npc.register_quality, 0.0)
-    for band in npc.voice_bands:
-        if band.register_min <= register <= band.register_max:
-            return band
-    return npc.voice_bands[0]
 
 
 # ───────────────────────── reply-subject helper ─────────────────────────

@@ -1,9 +1,9 @@
 """FastAPI smoke tests with Pydantic AI's TestModel — no llama-server, no
 real LLM. Verifies wiring: lifespan boots, boot inbox emits, /open does not
-advance calibration, /send rejects empty bodies, runs the texture scorer
-end-to-end, fires aria.first_calibration on the first send, and re-fires it
-across multiple ticks until the classifier writes engaged_initial across
-the gate (multi-turn beat).
+advance calibration, /send rejects empty bodies, advances calibration by a
+flat per-send delta, fires aria.first_calibration on the first send, and
+re-fires it across multiple ticks until the classifier writes engaged_initial
+across the gate (multi-turn beat).
 """
 import json
 from contextlib import ExitStack
@@ -15,6 +15,7 @@ from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart
 from pydantic_ai.models.test import TestModel
 
 import npc_service.main as main
+from npc_service.models import Email
 
 
 CHAT_TURN_PROSE = (
@@ -26,14 +27,13 @@ CHAT_TURN_PROSE = (
 
 @pytest.fixture
 def client(monkeypatch):
-    """Boot the app with no llama-server and override every agent with a
+    """Boot the app with no llama-server and override both agents with a
     TestModel that returns canned outputs.
 
-    `Agent.override(model=...)` is a context manager — push all three onto
-    an ExitStack so they live for the whole test. Default classifier value
-    is 'deflected' so the multi-turn first_calibration re-renders by default;
-    individual tests can override on a per-call basis via
-    `client.app` — but most tests just exercise the default path.
+    `Agent.override(model=...)` is a context manager — push both onto an
+    ExitStack so they live for the whole test. Default classifier value is
+    'deflected' so the multi-turn first_calibration re-renders by default;
+    individual tests can override per-call.
     """
     monkeypatch.setenv("LAUNCH_LLAMA", "false")
     monkeypatch.setattr(main, "EXTERNAL_LLAMA_PROBE_TIMEOUT_SECONDS", 0.1)
@@ -41,17 +41,12 @@ def client(monkeypatch):
         assert main.AGENTS is not None
         with ExitStack() as stack:
             stack.enter_context(main.AGENTS.chat_agent.override(model=_test_model_for_chat()))
-            stack.enter_context(main.AGENTS.texture_agent.override(model=_test_model_for_texture(1.0)))
             stack.enter_context(main.AGENTS.classifier_agent.override(model=_test_model_for_classifier("deflected")))
             yield c
 
 
 def _test_model_for_chat(text: str = CHAT_TURN_PROSE) -> TestModel:
     return TestModel(custom_output_text=text)
-
-
-def _test_model_for_texture(warmth: float) -> TestModel:
-    return TestModel(custom_output_args={"warmth": warmth, "rationale": "(test)"})
 
 
 def _test_model_for_classifier(value: str) -> TestModel:
@@ -105,8 +100,7 @@ def test_boot_seeds_thread_messages(client):
 
 def test_open_does_not_advance_calibration(client):
     """/open is no longer a mutating endpoint for calibration. Reading isn't
-    a communication act — the meter is exclusively driven by texture-scored
-    sends."""
+    a communication act — the meter is exclusively driven by /send."""
     inbox = client.get("/inbox").json()
     welcome = inbox["folders"]["Inbox"][0]
     initial = client.get("/state").json()["calibration"]
@@ -138,9 +132,9 @@ def test_send_rejects_empty_body(client):
     assert r.status_code == 400
 
 
-def test_send_advances_calibration_by_warmth_derived_delta(client):
-    """TestModel returns warmth=1.0; calibration_base=2.0, coef=1.5
-    → delta = 2.0 + 1.5·1.0 = 3.5."""
+def test_send_advances_calibration_by_flat_delta(client):
+    """Calibration advances by a flat config.calibration_base per /send,
+    independent of player input. Default base is 5.0."""
     welcome = client.get("/inbox").json()["folders"]["Inbox"][0]
     initial = client.get("/state").json()["calibration"]
     events = list(_consume_sse(client.stream("POST", "/send", json={
@@ -151,11 +145,13 @@ def test_send_advances_calibration_by_warmth_derived_delta(client):
 
     types = [e["type"] for e in events]
     assert "send_recorded" in types
-    assert "texture" in types
+    assert "calibration" in types
     assert "done" in types
 
+    cal_event = next(e for e in events if e["type"] == "calibration")
+    assert cal_event["calibration_delta"] == pytest.approx(5.0)
     cal_after = client.get("/state").json()["calibration"]
-    assert cal_after == pytest.approx(initial + 3.5)
+    assert cal_after == pytest.approx(initial + 5.0)
 
 
 def test_first_send_to_aria_fires_first_calibration(client):
@@ -285,6 +281,42 @@ def test_first_calibration_completes_when_classifier_engaged(client, monkeypatch
     # Beat completed: gate met before the next render → marked done, no
     # further first_calibration emails fired this tick.
     assert "aria.first_calibration" in main.STATE.fired_beat_ids
+
+
+def test_midprogram_reply_classifies_partnership_warmth(client):
+    """When the player replies to aria.midprogram, classify_reply is now
+    authored on that beat — the classifier runs, writes partnership_warmth,
+    and emits a `classified` SSE event with the mapped score.
+
+    We seed a synthetic midprogram email rather than walking the chain
+    end-to-end (faster and stays focused on the new wiring)."""
+    # Force a midprogram email into the inbox and history.
+    main.STATE.fired_beat_ids.update({"aria.first_calibration", "aria.midprogram"})
+    midprogram_email = Email(
+        id="email_midprog",
+        beat_id="aria.midprogram",
+        thread_id="aria",
+        folder="Inbox",
+        sender="Aria | Continuity Program <aria.7@continuity.halcyon.com>",
+        recipient="n.beckett@halcyon.com",
+        subject="Calibration Milestone — Counterpart Fidelity Update",
+        body="Counterpart fidelity now at approximately 50%.",
+        sent_at_label="just now",
+    )
+    main.STATE.emails.append(midprogram_email)
+
+    # Override classifier to return 'warm' for this send.
+    with main.AGENTS.classifier_agent.override(model=_test_model_for_classifier("warm")):
+        events = list(_consume_sse(client.stream("POST", "/send", json={
+            "in_reply_to": midprogram_email.id, "recipient": "Aria",
+            "body": "Tuesday afternoons I usually triage email — the slow shift after lunch.",
+        })))
+
+    classified = [e for e in events if e["type"] == "classified"]
+    assert len(classified) == 1
+    assert classified[0]["quality"] == "partnership_warmth"
+    assert classified[0]["value"] == "warm"
+    assert main.STATE.qualities["partnership_warmth"] == 1.0
 
 
 def test_system_midpoint_fires_via_beat_fired_chain(client):

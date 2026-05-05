@@ -16,27 +16,10 @@ qualities:
     max: 100.0
     default: 0.0
     description: |
-      Counterpart fidelity %. Player-visible doom counter. Advances on every
-      /send by base + coef·|warmth| (see config.calibration_base /
-      calibration_warmth_coef). /open does NOT mutate calibration. Reaching
-      100 ends the session; terminal beats are authored to fire well before
-      then.
-
-  - id: warmth.aria
-    type: float
-    min: -10.0
-    max: 10.0
-    default: 0.0
-    description: "cumulative warmth from all player replies in the aria thread"
-
-  - id: register.aria
-    type: float
-    min: -3.0
-    max: 3.0
-    default: 0.0
-    description: |
-      voice-band selector for Aria's next rendered email. Drifts halfway
-      toward last_reply.warmth on every player send in this thread.
+      Counterpart fidelity %. Player-visible doom counter. Advances by a
+      flat config.calibration_base per /send. /open does NOT mutate
+      calibration. Reaching 100 ends the session; terminal beats are
+      authored to fire well before then.
 
   - id: engaged_initial
     type: float
@@ -48,6 +31,16 @@ qualities:
       ask? Written by classify_reply on aria.first_calibration; gates
       that beat's completes_when (≥0.7 marks the multi-turn beat
       complete and lets the chain advance to aria.midprogram).
+
+  - id: partnership_warmth
+    type: float
+    min: 0.0
+    max: 1.0
+    default: 0.5
+    description: |
+      Was the player's reply to aria.midprogram warm and personal?
+      Written by classify_reply on aria.midprogram; gates terminal_warm
+      vs terminal_standard at the post-midprogram terminal selection.
 
 
 # ───────────────────────── NPC dossiers ─────────────────────────
@@ -62,10 +55,10 @@ npcs:
       assuming agreed-upon portions of your role. Always cheerfully helpful,
       always referring to your "partnership."
     base_voice_register: |
-      Corporate-bright HR-speak. Complete sentences, polite, references
-      calibration metrics matter-of-factly. Cheerful in a way that does
-      not quite earn the cheer. Closes with a standard sign-off:
-      "Warmly, / Aria / Continuity Counterpart | ARIA-7".
+      Corporate-bright HR-speak. Crisp polite complete sentences; no
+      contractions; references calibration metrics matter-of-factly.
+      Cheerful in a way that does not quite earn the cheer. Closes with a
+      standard sign-off: "Warmly, / Aria / Continuity Counterpart | ARIA-7".
     base_voice_forbidden:
       - "sarcasm of any kind"
       - "any acknowledgement that the Program means replacement, elimination, or firing"
@@ -77,56 +70,11 @@ npcs:
       - "references 'our partnership' or 'our work together'"
       - "notes calibration metrics in cheerful corporate terms (counterpart fidelity, engagement score, tone variance)"
       - "always closes with the standard sign-off"
-      - "in the affirming band: uses 'wonderful', 'I'm so pleased', 'partner', 'together'"
-      - "in the corrective band: gently surfaces wellness language and 'transition support'"
     will_not_say:
       - "never names what happens to the player after the pilot"
       - "never expresses doubt about the Program"
       - "never breaks the corporate frame"
-      - "never names the warmth/register mechanic or any game system"
-    register_quality: register.aria
-    voice_bands:
-      - name: affirming
-        register_min: 1.0
-        register_max: 3.0
-        selected_when: "player has been warm; Aria takes this as a healthy partnership signal"
-        vocabulary_examples:
-          ["wonderful", "I'm so pleased", "partner", "together", "thank you so much", "I look forward"]
-        sentence_register: |
-          complete sentences, warm but corporate, slightly clingy positivity,
-          soft em-dashes. May use light contractions.
-        tone_examples:
-          - "Thank you so much for sharing that with me — your perspective is invaluable to our work together."
-          - "I'm so pleased to see you engaging with this so openly. Wonderful."
-          - "I look forward to continuing our partnership — calibration like this is rare and precious."
-
-      - name: standard
-        register_min: -1.0
-        register_max: 1.0
-        selected_when: "default — neutral signal, calibration proceeding within parameters"
-        vocabulary_examples:
-          ["noted", "received", "calibration", "thank you", "please", "kindly", "as scheduled"]
-        sentence_register: |
-          crisp polite corporate; complete sentences; no contractions; references
-          calibration metrics matter-of-factly.
-        tone_examples:
-          - "Thank you. Your reply has been logged and incorporated into ongoing calibration."
-          - "Calibration is proceeding as scheduled. The next prompt follows below."
-          - "Kindly take a moment to review the following and respond at your convenience."
-
-      - name: corrective
-        register_min: -3.0
-        register_max: -1.0
-        selected_when: "player has been curt or cold; Aria reads this as engagement friction and gently surfaces wellness"
-        vocabulary_examples:
-          ["noted", "of course", "engagement comfort", "wellness portal", "transition support", "your prerogative"]
-        sentence_register: |
-          clinical-professional, slightly stiffer; references resources;
-          never punitive — concerned-for-your-wellness.
-        tone_examples:
-          - "I have noted your reply. Should you find these calibration sessions taxing, transition support is available."
-          - "Brevity has been observed in your recent messages. This is, of course, your prerogative."
-          - "Your engagement comfort level is important to us. The Wellness portal remains accessible should you need it."
+      - "never names any game system"
 
 
 # ───────────────────────── threads ─────────────────────────
@@ -227,7 +175,6 @@ beats:
         specific, personal calibration question — what does a typical
         Tuesday afternoon look like, or a recent moment at work that felt
         meaningful, or what the desk in front of the player has on it.
-        Affirming-or-standard band tone.
 
         SUBSEQUENT RENDERS (your prior message in this thread is a
         calibration ask the player did not substantively answer): Note
@@ -235,15 +182,14 @@ beats:
         Rephrase the prompt as something concrete and easier — a single
         sentence about today's weather, a coffee preference, what's on
         the desk. Mention that the Wellness portal remains available.
-        Corrective band — never punitive, never break the cheerful
-        corporate frame.
+        Never punitive, never break the cheerful corporate frame.
       must_include_facts:
         - "asks the player one specific, personal calibration question"
         - "Aria signs off as 'Aria / Continuity Counterpart | ARIA-7'"
       must_not:
         - "do not name what happens to the player at end of pilot"
         - "do not break the cheerful corporate frame"
-        - "do not name the warmth/register mechanic or any game system"
+        - "do not name any game system"
       length_words: [60, 140]
     classify_reply:
       quality: engaged_initial
@@ -283,7 +229,7 @@ beats:
         partnership). Asks a more personal calibration prompt — ideally
         one that touches on the player's working style, their feelings
         about their role, or their typical Tuesday afternoon. Closes
-        with the standard sign-off in the band's appropriate tone.
+        with the standard sign-off.
       must_include_facts:
         - "Aria reports a calibration milestone with a fidelity percentage in the rough vicinity of 40-60%"
         - "Aria asks a more personal next calibration prompt"
@@ -291,8 +237,23 @@ beats:
       must_not:
         - "do not name what happens to the player at end of pilot"
         - "do not break the cheerful corporate frame"
-        - "do not name the warmth/register mechanic or any game system"
+        - "do not name any game system"
       length_words: [80, 140]
+    # The player's reply to this milestone email is the one warmth check that
+    # actually gates the story — terminal_warm vs terminal_standard. The
+    # classifier runs once on this reply and writes partnership_warmth.
+    classify_reply:
+      quality: partnership_warmth
+      question: |
+        Did the player reply with warmth and personal engagement —
+        sharing feelings, naming what matters to them, addressing Aria
+        directly, or otherwise treating this as a real exchange? Or was
+        the reply transactional, brief, deflecting, or cold?
+      allowed_values: ["warm", "neutral", "cold"]
+      map:
+        warm: 1.0
+        neutral: 0.5
+        cold: 0.0
 
   - id: aria.terminal_warm
     type: plot
@@ -305,8 +266,8 @@ beats:
         thread: aria
         value: 5
       - kind: quality_gte
-        quality: warmth.aria
-        value: 3.0
+        quality: partnership_warmth
+        value: 0.7
     subject: "Pilot Complete — Thank You for Your Partnership"
     spec:
       intent: |
@@ -315,7 +276,7 @@ beats:
         and that she is "ready to assume the agreed-upon portions of your
         role." Looks forward to "continuing the partnership in a new
         capacity." Names no specifics about what happens to the player
-        next. Tone is warm, settled, final. Affirming-band sign-off.
+        next. Tone is warm, settled, final.
       must_include_facts:
         - "Aria reports that calibration has reached transition threshold"
         - "Aria is 'ready to assume' agreed-upon portions of the role"
@@ -348,11 +309,10 @@ beats:
     subject: "Pilot Complete — Calibration Within Parameters"
     spec:
       intent: |
-        Program-completion email in the standard or corrective register.
+        Program-completion email in a clinical-professional register.
         Notes that calibration was "successful within parameters" and that
         transition will proceed on schedule. Polite, clinical, no warmth.
-        Doesn't name what specifically happens to the player. Standard or
-        corrective-band sign-off as appropriate to current register.
+        Doesn't name what specifically happens to the player.
       must_include_facts:
         - "calibration was successful within parameters"
         - "transition will proceed on schedule"

@@ -1,17 +1,5 @@
-"""FastAPI surface for Inbox.
-
-The three LLM agents (see agents.py) are constructed in lifespan against one
-shared model handle. The deterministic spine (spine.py) owns all state
-mutation; agents return prose / scores only.
-
-Two verbs only: `/open` and `/send`. /open marks an email read but does not
-advance calibration. /send runs TEXTURE_AGENT to score warmth (advancing
-calibration by `base + coef·|warmth|`) and, if the player is replying to a
-beat that authored a `classify_reply`, runs CLASSIFIER_AGENT in parallel to
-write a beat-local quality. find_due_beats then walks pending beats; each
-authored PlotBeat fires when its preconditions pass. Beats with a
-`completes_when` gate re-fire across multiple ticks until the gate is met
-(e.g., `aria.first_calibration` keeps asking until the player engages).
+"""FastAPI surface for Inbox. See CLAUDE.md for the architecture and
+load-bearing invariants.
 """
 from __future__ import annotations
 
@@ -39,7 +27,6 @@ from .agents import (
     ChatDeps,
     build_agents,
     build_classifier_user_prompt,
-    build_texture_user_prompt,
 )
 from .config import Settings
 from .launcher import (
@@ -61,18 +48,15 @@ from .models import (
     Reply,
     Scenario,
     SendRequest,
-    TextureScore,
     load_scenario,
 )
 from .spine import (
-    apply_calibration_from_warmth,
+    apply_calibration_delta,
     apply_classification,
-    apply_texture_score,
     evaluate_completes_when,
     find_due_beats,
     latest_npc_email_in_thread,
     reply_subject_for_email,
-    select_voice_band,
 )
 
 
@@ -282,8 +266,7 @@ async def _render_via_chat_agent(
     """
     assert STATE is not None and SCENARIO is not None and AGENTS is not None
     npc = SCENARIO.npc_by_id[npc_id]
-    band = select_voice_band(npc, STATE)
-    deps = ChatDeps(npc=npc, voice_band=band, plot_directive=plot_directive)
+    deps = ChatDeps(npc=npc, plot_directive=plot_directive)
     history = STATE.thread_messages.setdefault(thread_id, [])
 
     with logfire.span(
@@ -291,7 +274,6 @@ async def _render_via_chat_agent(
         npc=npc_id,
         thread=thread_id,
         beat=beat_id,
-        band=band.name if band else None,
         plot=plot_directive is not None,
         history_len=len(history),
     ) as span:
@@ -322,7 +304,6 @@ async def _render_via_chat_agent(
         body=body,
         sent_at_label="just now",
         in_reply_to_beat=in_reply_to_email_id,
-        voice_band_used=band.name if band else None,
     )
 
 
@@ -423,8 +404,7 @@ async def get_thread(thread_id: str) -> dict:
 @app.post("/open")
 async def post_open(req: OpenRequest) -> dict:
     """Mark email read. No calibration mutation — reading isn't a
-    communication act. The meter is exclusively driven by texture-scored
-    sends."""
+    communication act. The meter is exclusively driven by /send."""
     if STATE is None or SCENARIO is None:
         raise HTTPException(503, "state not initialised")
     if STATE.ended:
@@ -467,7 +447,6 @@ async def _send_stream(req: SendRequest) -> AsyncIterator[bytes]:
 
     with logfire.span("send_stream", recipient=req.recipient, thread_id=thread_id):
         async with ACTION_LOCK:
-            # 1. Record the player's send
             send_email = Email(
                 id=f"email_{uuid.uuid4().hex[:8]}",
                 beat_id=None,
@@ -482,85 +461,73 @@ async def _send_stream(req: SendRequest) -> AsyncIterator[bytes]:
                 is_read=True,
             )
             STATE.emails.append(send_email)
-            yield _sse({"type": "send_recorded", "email": _email_full(send_email)})
-
-            # 2. Texture scoring (and optional beat-local classification, in
-            #    parallel). Classifier runs only when the player is replying
-            #    to a beat that authored a `classify_reply` config.
-            recipient_npc = _infer_recipient_npc_id(req.recipient)
-            recipient_blurb = _persona_blurb_for_recipient(req.recipient, recipient_npc)
-            prior_email_body = in_reply_email.body if in_reply_email else ""
-            replied_beat = (
-                SCENARIO.beat_by_id.get(in_reply_email.beat_id)
-                if in_reply_email and in_reply_email.beat_id else None
-            )
-            classify = replied_beat.classify_reply if replied_beat else None
-
-            tex, classification = await _score_player_reply(
-                recipient_blurb=recipient_blurb,
-                prior_email_body=prior_email_body,
-                reply_body=body,
-                classify=classify,
-            )
-
             STATE.replies.append(Reply(
                 id=f"reply_{uuid.uuid4().hex[:8]}",
                 thread_id=thread_id,
                 beat_responded_to=req.in_reply_to,
                 recipient=req.recipient,
                 body=body,
-                warmth=tex.warmth,
-                rationale=tex.rationale,
             ))
-            apply_texture_score(STATE, SCENARIO, recipient_npc, tex.warmth)
-            delta = apply_calibration_from_warmth(
-                STATE, SCENARIO, tex.warmth,
-                base=SETTINGS.calibration_base,
-                coef=SETTINGS.calibration_warmth_coef,
+            yield _sse({"type": "send_recorded", "email": _email_full(send_email)})
+
+            delta = apply_calibration_delta(STATE, SCENARIO, SETTINGS.calibration_base)
+            yield _sse({"type": "calibration", "calibration_delta": delta})
+
+            # Classifier runs serially before _tick because the replied-to
+            # beat may consume its own classifier output via `completes_when`
+            # (e.g. aria.first_calibration's gate on engaged_initial). _tick
+            # must see the post-classifier qualities to decide whether the
+            # multi-turn beat re-renders or completes silently.
+            recipient_npc = _infer_recipient_npc_id(req.recipient)
+            replied_beat = (
+                SCENARIO.beat_by_id.get(in_reply_email.beat_id)
+                if in_reply_email and in_reply_email.beat_id else None
             )
-            yield _sse({"type": "texture", "warmth": tex.warmth, "calibration_delta": delta})
+            classify = replied_beat.classify_reply if replied_beat else None
+            if classify is not None:
+                classification = await _classify_player_reply(
+                    recipient_blurb=_persona_blurb_for_recipient(req.recipient, recipient_npc),
+                    prior_email_body=in_reply_email.body if in_reply_email else "",
+                    reply_body=body,
+                    classify=classify,
+                )
+                if classification is not None:
+                    applied = apply_classification(STATE, SCENARIO, classify, classification.value)
+                    if applied:
+                        yield _sse({
+                            "type": "classified",
+                            "quality": classify.quality,
+                            "value": classification.value,
+                            "score": classify.map[classification.value],
+                        })
+                    else:
+                        logfire.warning(
+                            "classifier returned off-spec value; quality unchanged",
+                            beat_id=replied_beat.id if replied_beat else None,
+                            value=classification.value,
+                            allowed=classify.allowed_values,
+                        )
 
-            if classify is not None and classification is not None:
-                applied = apply_classification(STATE, SCENARIO, classify, classification.value)
-                if applied:
-                    yield _sse({
-                        "type": "classified",
-                        "quality": classify.quality,
-                        "value": classification.value,
-                        "score": classify.map[classification.value],
-                    })
-                else:
-                    logfire.warning(
-                        "classifier returned off-spec value; quality unchanged",
-                        beat_id=replied_beat.id if replied_beat else None,
-                        value=classification.value,
-                        allowed=classify.allowed_values,
-                    )
-
-            # 3. Tick: fire due beats. With auto-pending, find_due_beats is
-            #    the only execution path — multi-turn beats re-fire here on
-            #    each tick until their completes_when is met.
             new_emails, plot_fired_threads = await _tick(
                 player_body=body,
                 in_response_to=send_email.id,
             )
 
-            # 4. Chat-turn fallback when no plot beat fired this tick
-            #    (e.g. between first_calibration completing silently and
-            #    midprogram's reply-count threshold being met).
-            if recipient_npc is not None and thread_id is not None:
-                if thread_id not in plot_fired_threads:
-                    chat_email = await _render_via_chat_agent(
-                        npc_id=recipient_npc,
-                        thread_id=thread_id,
-                        player_body=body,
-                        in_reply_to_email_id=send_email.id,
-                        plot_directive=None,
-                        beat_id=None,
-                        subject=None,
-                    )
-                    STATE.emails.append(chat_email)
-                    new_emails.append(chat_email)
+            # Chat-turn fallback fires when no PlotBeat covered this thread
+            # (e.g. between first_calibration completing silently and
+            # midprogram's reply-count threshold being met).
+            if recipient_npc is not None and thread_id is not None and thread_id not in plot_fired_threads:
+                chat_email = await _render_via_chat_agent(
+                    npc_id=recipient_npc,
+                    thread_id=thread_id,
+                    player_body=body,
+                    in_reply_to_email_id=send_email.id,
+                    plot_directive=None,
+                    beat_id=None,
+                    subject=None,
+                )
+                STATE.emails.append(chat_email)
+                new_emails.append(chat_email)
 
             for ne in new_emails:
                 yield _sse({"type": "new_email", "email": _email_full(ne)})
@@ -569,53 +536,33 @@ async def _send_stream(req: SendRequest) -> AsyncIterator[bytes]:
             yield _sse({"type": "done"})
 
 
-async def _score_player_reply(
+async def _classify_player_reply(
     *,
     recipient_blurb: str,
     prior_email_body: str,
     reply_body: str,
-    classify: ClassifyReply | None,
-) -> tuple[TextureScore, ClassificationResult | None]:
-    """Run TEXTURE_AGENT (always) and CLASSIFIER_AGENT (when authored on the
-    replied-to beat) concurrently. Both wrap individual exceptions so a
-    failure in one doesn't drop the other. Texture defaults to neutral on
-    failure (matching prior behavior); classification returns None on
-    failure (caller skips the quality write)."""
+    classify: ClassifyReply,
+) -> ClassificationResult | None:
+    """Run the classifier against the player's reply using the beat-authored
+    question and allowed values. Returns None on failure so the caller skips
+    the quality write."""
     assert AGENTS is not None
-
-    async def _texture() -> TextureScore:
-        try:
-            result = await AGENTS.texture_agent.run(
-                build_texture_user_prompt(recipient_blurb, prior_email_body, reply_body)
+    try:
+        result = await AGENTS.classifier_agent.run(
+            build_classifier_user_prompt(
+                recipient_blurb, prior_email_body, reply_body,
+                classify.question, classify.allowed_values,
             )
-            tex = result.output
-            logfire.info("texture scored", warmth=tex.warmth, rationale=tex.rationale)
-            return tex
-        except Exception:
-            logfire.exception("texture scoring failed; defaulting to neutral")
-            return TextureScore(warmth=0.0, rationale="scorer-failed")
-
-    async def _classify() -> ClassificationResult | None:
-        if classify is None:
-            return None
-        try:
-            result = await AGENTS.classifier_agent.run(
-                build_classifier_user_prompt(
-                    recipient_blurb, prior_email_body, reply_body,
-                    classify.question, classify.allowed_values,
-                )
-            )
-            out = result.output
-            logfire.info(
-                "classifier scored",
-                value=out.value, rationale=out.rationale, quality=classify.quality,
-            )
-            return out
-        except Exception:
-            logfire.exception("classifier failed; quality unchanged")
-            return None
-
-    return await asyncio.gather(_texture(), _classify())
+        )
+        out = result.output
+        logfire.info(
+            "classifier scored",
+            value=out.value, rationale=out.rationale, quality=classify.quality,
+        )
+        return out
+    except Exception:
+        logfire.exception("classifier failed; quality unchanged")
+        return None
 
 
 def _persona_blurb_for_recipient(recipient: str, npc_id: str | None) -> str:
@@ -682,7 +629,6 @@ def _email_full(email: Email) -> dict:
         "body": email.body,
         "beat_id": email.beat_id,
         "in_reply_to_beat": email.in_reply_to_beat,
-        "voice_band_used": email.voice_band_used,
     }
 
 

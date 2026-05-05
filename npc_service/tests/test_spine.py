@@ -1,9 +1,10 @@
 """Pure-Python tests for the deterministic spine: scenario load, predicate
-evaluation, beat scheduler, voice band selection, calibration application,
-classifier-driven quality writes, and multi-turn beat completion.
+evaluation, beat scheduler, calibration application, classifier-driven
+quality writes, and multi-turn beat completion.
 
 No LLM, no FastAPI. Runs fast.
 """
+import uuid
 from pathlib import Path
 
 import pytest
@@ -24,15 +25,12 @@ from npc_service.models import (
 )
 from npc_service.spine import (
     apply_calibration_delta,
-    apply_calibration_from_warmth,
     apply_classification,
-    apply_texture_score,
     evaluate_completes_when,
     evaluate_predicate,
     find_due_beats,
     latest_npc_email_in_thread,
     reply_subject_for_email,
-    select_voice_band,
 )
 
 
@@ -64,8 +62,6 @@ def test_scenario_loads_and_is_internally_consistent(scenario: Scenario):
 
 def test_initial_state_starts_at_zero(state: InboxState):
     assert state.qualities["calibration"] == 0.0
-    assert state.qualities["warmth.aria"] == 0.0
-    assert state.qualities["register.aria"] == 0.0
     assert state.ended is False
     assert state.thread_messages == {}
 
@@ -112,84 +108,6 @@ def test_calibration_at_cap_ends_session(state: InboxState, scenario: Scenario):
 def test_calibration_below_cap_does_not_end(state: InboxState, scenario: Scenario):
     apply_calibration_delta(state, scenario, 50.0)
     assert state.ended is False
-
-
-@pytest.mark.parametrize(
-    "warmth,base,coef,expected",
-    [
-        (0.0, 2.0, 1.5, 2.0),     # neutral: just the base
-        (1.0, 2.0, 1.5, 3.5),
-        (-2.0, 2.0, 1.5, 5.0),    # cold scores absolute, same as warm
-        (3.0, 2.0, 1.5, 6.5),
-    ],
-)
-def test_apply_calibration_from_warmth(
-    state: InboxState, scenario: Scenario,
-    warmth: float, base: float, coef: float, expected: float,
-):
-    delta = apply_calibration_from_warmth(state, scenario, warmth, base=base, coef=coef)
-    assert delta == pytest.approx(expected)
-    assert state.qualities["calibration"] == pytest.approx(expected)
-
-
-# ───────────────────────── texture / register loop ─────────────────────────
-
-
-def test_warm_reply_increases_warmth_and_drifts_register(state: InboxState, scenario: Scenario):
-    apply_texture_score(state, scenario, recipient_npc_id="aria", warmth=2.0)
-    assert state.qualities["warmth.aria"] == 2.0
-    # Register drifts halfway from 0 toward 2 → 1.0.
-    assert state.qualities["register.aria"] == 1.0
-
-
-def test_curt_reply_pulls_register_negative(state: InboxState, scenario: Scenario):
-    apply_texture_score(state, scenario, recipient_npc_id="aria", warmth=-2.0)
-    assert state.qualities["register.aria"] == -1.0
-
-
-def test_register_drift_visible_within_one_round(state: InboxState, scenario: Scenario):
-    apply_texture_score(state, scenario, recipient_npc_id="aria", warmth=3.0)
-    after_warm = state.qualities["register.aria"]
-    apply_texture_score(state, scenario, recipient_npc_id="aria", warmth=-3.0)
-    after_cold = state.qualities["register.aria"]
-    assert after_warm > after_cold
-    assert after_cold < 0
-
-
-def test_unknown_recipient_does_not_mutate_qualities(state: InboxState, scenario: Scenario):
-    apply_texture_score(state, scenario, recipient_npc_id=None, warmth=2.0)
-    assert state.qualities["warmth.aria"] == 0.0
-    assert state.qualities["register.aria"] == 0.0
-
-
-def test_warmth_and_register_are_clamped(state: InboxState, scenario: Scenario):
-    for _ in range(20):
-        apply_texture_score(state, scenario, recipient_npc_id="aria", warmth=3.0)
-    assert state.qualities["warmth.aria"] == 10.0  # max=10
-    assert state.qualities["register.aria"] <= 3.0  # max=3
-
-
-# ───────────────────────── voice band selection ─────────────────────────
-
-
-def test_voice_band_standard_at_zero(state: InboxState, scenario: Scenario):
-    aria = scenario.npc_by_id["aria"]
-    band = select_voice_band(aria, state)
-    assert band is not None and band.name == "standard"
-
-
-def test_voice_band_affirming_when_register_high(state: InboxState, scenario: Scenario):
-    state.qualities["register.aria"] = 2.0
-    aria = scenario.npc_by_id["aria"]
-    band = select_voice_band(aria, state)
-    assert band is not None and band.name == "affirming"
-
-
-def test_voice_band_corrective_when_register_low(state: InboxState, scenario: Scenario):
-    state.qualities["register.aria"] = -2.0
-    aria = scenario.npc_by_id["aria"]
-    band = select_voice_band(aria, state)
-    assert band is not None and band.name == "corrective"
 
 
 # ───────────────────────── predicate evaluation ─────────────────────────
@@ -253,8 +171,8 @@ def test_apply_classification_writes_mapped_score(
 def test_apply_classification_clamps_to_quality_bounds(
     state: InboxState, scenario: Scenario
 ):
-    """Classifier scores route through `_clamp_quality`, same path as
-    texture, so out-of-bound mapped values get clipped."""
+    """Classifier scores route through `_clamp_quality`, so out-of-bound
+    mapped values get clipped."""
     classify = ClassifyReply(
         quality="engaged_initial",
         question="(test)",
@@ -318,7 +236,7 @@ def test_first_calibration_eligible_when_player_has_replied_once(
     state: InboxState, scenario: Scenario
 ):
     _drain_boot(state, scenario)
-    state.replies.append(_make_reply(thread="aria", warmth=0.0))
+    state.replies.append(_make_reply(thread="aria"))
     due = find_due_beats(state, scenario)
     assert any(b.id == "aria.first_calibration" for b in due)
 
@@ -330,7 +248,7 @@ def test_first_calibration_re_fires_until_gate_met(
     find_due_beats until completes_when passes. We simulate `_fire_beat`'s
     behavior: don't add to fired_beat_ids when completes_when is unmet."""
     _drain_boot(state, scenario)
-    state.replies.append(_make_reply(thread="aria", warmth=0.0))
+    state.replies.append(_make_reply(thread="aria"))
 
     # Tick 1: beat is due. Simulate _fire_beat refusing to mark complete.
     due = find_due_beats(state, scenario)
@@ -339,7 +257,7 @@ def test_first_calibration_re_fires_until_gate_met(
     assert "aria.first_calibration" not in state.fired_beat_ids
 
     # Tick 2 (same gate): beat still pending, still due.
-    state.replies.append(_make_reply(thread="aria", warmth=0.0))
+    state.replies.append(_make_reply(thread="aria"))
     due = find_due_beats(state, scenario)
     assert any(b.id == "aria.first_calibration" for b in due)
 
@@ -348,7 +266,7 @@ def test_first_calibration_completes_when_gate_met(
     state: InboxState, scenario: Scenario
 ):
     _drain_boot(state, scenario)
-    state.replies.append(_make_reply(thread="aria", warmth=2.0))
+    state.replies.append(_make_reply(thread="aria"))
     state.qualities["engaged_initial"] = 1.0  # classifier wrote "engaged"
 
     first = scenario.beat_by_id["aria.first_calibration"]
@@ -370,7 +288,7 @@ def test_midprogram_blocked_until_first_calibration_completes(
     Even with replies≥3, midprogram doesn't fire until first_calibration is
     completed."""
     _drain_boot(state, scenario)
-    state.replies.extend(_make_reply(thread="aria", warmth=1.0) for _ in range(3))
+    state.replies.extend(_make_reply(thread="aria") for _ in range(3))
     due = find_due_beats(state, scenario)
     assert not any(b.id == "aria.midprogram" for b in due)
 
@@ -384,13 +302,10 @@ def test_terminal_warm_blocked_until_midprogram_fired(
 ):
     """terminal_warm requires `beat_fired(aria.midprogram)`. Without first
     completing the chain through midprogram, terminal_warm stays out of the
-    due list — even with replies≥5 and warmth≥3.0."""
+    due list — even with replies≥5 and partnership_warmth≥0.7."""
     _drain_boot(state, scenario)
-    # first_calibration NOT fired → midprogram can't fire → terminal_warm
-    # can't fire (its beat_fired(midprogram) precondition fails because
-    # midprogram is neither in fired_beat_ids nor in this tick's due set).
-    state.qualities["warmth.aria"] = 5.0
-    state.replies.extend(_make_reply(thread="aria", warmth=2.0) for _ in range(5))
+    state.qualities["partnership_warmth"] = 1.0
+    state.replies.extend(_make_reply(thread="aria") for _ in range(5))
     due = find_due_beats(state, scenario)
     due_ids = {b.id for b in due}
     assert "aria.terminal_warm" not in due_ids
@@ -408,13 +323,14 @@ def test_terminal_warm_blocked_until_midprogram_fired(
 def test_terminal_mutual_exclusion_warm_wins_when_warmth_high(
     state: InboxState, scenario: Scenario
 ):
-    """High warmth: terminal_warm comes first in authoring order; it's
-    eligible and fires. terminal_standard's Not_(BeatFired terminal_warm)
-    keeps it suppressed once warm has fired (via tick-local extra_fired)."""
+    """High partnership_warmth: terminal_warm comes first in authoring
+    order; it's eligible and fires. terminal_standard's
+    Not_(BeatFired terminal_warm) keeps it suppressed once warm has fired
+    (via tick-local extra_fired)."""
     _drain_boot(state, scenario)
     state.fired_beat_ids.update({"aria.first_calibration", "aria.midprogram"})
-    state.qualities["warmth.aria"] = 5.0
-    state.replies.extend(_make_reply(thread="aria", warmth=2.0) for _ in range(5))
+    state.qualities["partnership_warmth"] = 1.0
+    state.replies.extend(_make_reply(thread="aria") for _ in range(5))
 
     due = find_due_beats(state, scenario)
     due_ids = [b.id for b in due]
@@ -429,8 +345,8 @@ def test_terminal_standard_fires_when_warmth_low(
 ):
     _drain_boot(state, scenario)
     state.fired_beat_ids.update({"aria.first_calibration", "aria.midprogram"})
-    state.qualities["warmth.aria"] = 0.0  # below 3.0 — terminal_warm fails
-    state.replies.extend(_make_reply(thread="aria", warmth=0.0) for _ in range(5))
+    state.qualities["partnership_warmth"] = 0.0  # below 0.7 — warm fails
+    state.replies.extend(_make_reply(thread="aria") for _ in range(5))
 
     due = find_due_beats(state, scenario)
     due_ids = [b.id for b in due]
@@ -486,18 +402,15 @@ def _drain_boot(state: InboxState, scenario: Scenario) -> None:
 
 def _make_reply(
     thread: str | None,
-    warmth: float,
     beat: str | None = None,
     body: str = "(test reply)",
 ) -> Reply:
     return Reply(
-        id=f"reply_{warmth}_{len(body)}",
+        id=f"reply_{uuid.uuid4().hex[:6]}",
         thread_id=thread,
         beat_responded_to=beat,
         recipient="Aria" if thread == "aria" else "other",
         body=body,
-        warmth=warmth,
-        rationale="(test)",
     )
 
 
