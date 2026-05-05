@@ -13,7 +13,7 @@ import subprocess
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import AsyncIterator
+from typing import AsyncIterator, Iterator
 
 import logfire
 from logfire import ConsoleOptions
@@ -29,6 +29,7 @@ from .agents import (
     ChatDeps,
     build_agents,
     build_classifier_user_prompt,
+    commitments_snapshot,
     make_llama_token_counter,
 )
 from .config import Settings
@@ -41,8 +42,8 @@ from .launcher import (
 )
 from .models import (
     AnchoredBeat,
+    AxisResult,
     Beat,
-    ClassificationResult,
     ClassifyReply,
     Email,
     InboxState,
@@ -55,6 +56,7 @@ from .models import (
 )
 from .spine import (
     apply_classification,
+    apply_writes,
     evaluate_completes_when,
     find_due_beats,
     reply_subject_for_email,
@@ -260,6 +262,11 @@ async def _fire_beat(
     if beat.id in STATE.fired_beat_ids:
         return None
 
+    # Writes apply *before* the silent-complete check so the fact of
+    # completion is recorded even on the no-render path.
+    if isinstance(beat, PlotBeat) and beat.spec.writes:
+        apply_writes(STATE, SCENARIO, beat.spec.writes)
+
     # If a multi-turn beat's gate is already satisfied (e.g. the
     # just-applied classifier bumped its quality past the threshold),
     # complete silently — no render — and let the chain advance.
@@ -353,7 +360,15 @@ async def _render_via_chat_agent(
     """
     assert STATE is not None and SCENARIO is not None and AGENTS is not None
     npc = SCENARIO.npc_by_id[npc_id]
-    deps = ChatDeps(npc=npc, plot_directive=plot_directive)
+    deps = ChatDeps(
+        npc=npc,
+        plot_directive=plot_directive,
+        commitments=commitments_snapshot(
+            STATE.qualities,
+            SCENARIO.quality_defaults,
+            SCENARIO.quality_descriptions,
+        ),
+    )
     history = STATE.thread_messages.setdefault(thread_id, [])
 
     with LLM_LOGFIRE.span(
@@ -551,18 +566,19 @@ async def _send_stream(req: SendRequest) -> AsyncIterator[bytes]:
                 is_read=True,
             )
             STATE.emails.append(send_email)
-            STATE.replies.append(Reply(
+            reply = Reply(
                 id=f"reply_{uuid.uuid4().hex[:8]}",
                 thread_id=thread_id,
                 beat_responded_to=req.in_reply_to,
                 recipient=req.recipient,
                 body=body,
-            ))
+            )
+            STATE.replies.append(reply)
             yield _sse({"type": "send_recorded", "email": _email_full(send_email)})
 
             # Classifier runs serially before _tick because the replied-to
             # beat may consume its own classifier output (e.g. aria.loop's
-            # `accumulate=true` engagement classifier whose value gates the
+            # `accumulate=true` engagement axis whose value gates the
             # complete_warm vs complete_standard split). _tick must see the
             # post-classifier qualities to make terminal decisions.
             recipient_npc = _infer_recipient_npc_id(req.recipient)
@@ -570,30 +586,19 @@ async def _send_stream(req: SendRequest) -> AsyncIterator[bytes]:
                 SCENARIO.beat_by_id.get(in_reply_email.beat_id)
                 if in_reply_email and in_reply_email.beat_id else None
             )
-            classify = replied_beat.classify_reply if replied_beat else None
-            if classify is not None:
-                classification = await _classify_player_reply(
+            axes = list(replied_beat.classify_reply_axes) if replied_beat else []
+            if axes:
+                results = await _classify_player_reply(
                     recipient_blurb=_persona_blurb_for_recipient(req.recipient, recipient_npc),
                     prior_email_body=in_reply_email.body if in_reply_email else "",
                     reply_body=body,
-                    classify=classify,
+                    axes=axes,
                 )
-                if classification is not None:
-                    applied = apply_classification(STATE, SCENARIO, classify, classification.value)
-                    if applied:
-                        yield _sse({
-                            "type": "classified",
-                            "quality": classify.quality,
-                            "value": classification.value,
-                            "score": classify.map[classification.value],
-                        })
-                    else:
-                        logfire.warn(
-                            "classifier returned off-spec value; quality unchanged",
-                            beat_id=replied_beat.id if replied_beat else None,
-                            value=classification.value,
-                            allowed=classify.allowed_values,
-                        )
+                if results is not None:
+                    for event in _apply_axis_results(
+                        axes=axes, results=results, replied_beat_id=replied_beat.id, reply=reply,
+                    ):
+                        yield event
 
             try:
                 new_emails, plot_fired_threads = await _tick(
@@ -652,37 +657,99 @@ async def _classify_player_reply(
     recipient_blurb: str,
     prior_email_body: str,
     reply_body: str,
-    classify: ClassifyReply,
-) -> ClassificationResult | None:
-    """Run the classifier against the player's reply using the beat-authored
-    question and allowed values. Returns None on failure so the caller skips
-    the quality write.
+    axes: list[ClassifyReply],
+) -> list[AxisResult] | None:
+    """Run the classifier against the player's reply across all authored
+    axes in a single batched call. Returns None on failure so the caller
+    skips every axis's quality write.
 
     Wrapped in an llm-tagged span so the auto-instrumented Pydantic AI run
-    has a business-context parent — and so `reply_preview` /
-    `classifier_value` ride on the span row in the trace tree, no drilling.
+    has a business-context parent — and so `reply_preview` and the per-axis
+    qualities ride on the span row in the trace tree, no drilling.
     """
     assert AGENTS is not None
     with LLM_LOGFIRE.span(
-        "classify reply for {quality}",
-        quality=classify.quality,
-        allowed_values=classify.allowed_values,
+        "classify reply for {qualities}",
+        qualities=[a.quality for a in axes],
         reply_preview=reply_body[:200],
     ) as span:
         try:
             result = await AGENTS.classifier_agent.run(
                 build_classifier_user_prompt(
-                    recipient_blurb, prior_email_body, reply_body,
-                    classify.question, classify.allowed_values,
+                    recipient_blurb, prior_email_body, reply_body, axes,
                 )
             )
         except Exception:
-            logfire.exception("classifier failed; quality unchanged")
+            logfire.exception("classifier failed; qualities unchanged")
             return None
-        out = result.output
-        span.set_attribute("classifier_value", out.value)
-        span.set_attribute("classifier_rationale", out.rationale)
-        return out
+        results = result.output
+        span.set_attribute("classifier_results", [
+            {"quality": r.quality, "value": r.value} for r in results
+        ])
+        return results
+
+
+def _apply_axis_results(
+    *,
+    axes: list[ClassifyReply],
+    results: list[AxisResult],
+    replied_beat_id: str,
+    reply: Reply,
+) -> Iterator[bytes]:
+    """Apply each authored axis in YAML order against the classifier's
+    returned results. Defense-in-depth, single pass over `results` to
+    categorize, then a pass over `axes` to apply:
+
+    - Unknown axis (quality not authored on the beat) → logfire-warn, drop.
+    - Duplicate axis (LLM returned multiple results for the same quality)
+      → keep the first, logfire-warn the rest.
+    - Missing axis (LLM omitted an authored quality) → logfire-warn, skip.
+    - Off-spec value (not in `allowed_values`) → `apply_classification`
+      returns None, logfire-warn, no SSE event, no append onto Reply.
+
+    Emits one `classified` SSE event per applied axis, in YAML axis order.
+    """
+    assert STATE is not None and SCENARIO is not None
+    authored_qualities = {a.quality for a in axes}
+    by_quality: dict[str, AxisResult] = {}
+    for r in results:
+        if r.quality not in authored_qualities:
+            logfire.warn(
+                "classifier returned unauthored axis; dropped",
+                beat_id=replied_beat_id, quality=r.quality, value=r.value,
+            )
+            continue
+        if r.quality in by_quality:
+            logfire.warn(
+                "classifier returned duplicate axis result; first kept",
+                beat_id=replied_beat_id, quality=r.quality,
+            )
+            continue
+        by_quality[r.quality] = r
+
+    for axis in axes:
+        r = by_quality.get(axis.quality)
+        if r is None:
+            logfire.warn(
+                "classifier missing axis result; quality unchanged",
+                beat_id=replied_beat_id, quality=axis.quality,
+            )
+            continue
+        applied = apply_classification(STATE, SCENARIO, axis, r.value, r.rationale)
+        if applied is None:
+            logfire.warn(
+                "classifier returned off-spec value; quality unchanged",
+                beat_id=replied_beat_id, quality=axis.quality,
+                value=r.value, allowed=axis.allowed_values,
+            )
+            continue
+        reply.classifier_results.append(applied)
+        yield _sse({
+            "type": "classified",
+            "quality": axis.quality,
+            "value": r.value,
+            "score": axis.map[r.value],
+        })
 
 
 def _persona_blurb_for_recipient(recipient: str, npc_id: str | None) -> str:

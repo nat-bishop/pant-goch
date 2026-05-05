@@ -1,17 +1,22 @@
-"""The three LLM agents: CHAT_AGENT, CLASSIFIER_AGENT, SUMMARY_AGENT.
+"""The four LLM agents: CHAT_AGENT, CLASSIFIER_AGENT, SUMMARY_AGENT, FACT_CHECKER_AGENT.
 
 CHAT_AGENT renders one email body per turn. It uses Pydantic AI's native
 `message_history` for the per-thread conversation, plain-text `output_type=str`
 so the assistant turn lands as a `TextPart` (clean for subsequent turns), and
-dynamic `@instructions` keyed on `ChatDeps` to layer dossier and optional
-plot-directive context per run.
+dynamic `@instructions` keyed on `ChatDeps` to layer dossier, optional plot
+directive, and current commitments per run. An `@output_validator` engages
+ONLY when the firing beat sets `spec.validate_facts=True`: it runs the
+fact-checker against the beat's must_include_facts / must_not lists and
+raises ModelRetry on any miss. Default-off keeps loop beats free of
+validator latency.
 
-CLASSIFIER_AGENT is one-shot, ToolOutput, returns a `value: str` chosen from
-a beat-authored `allowed_values` list. The list is enforced via the user
-prompt (not the schema) since allowed values vary per beat. The caller
-validates post-hoc and skips the quality write if the returned value is
-off-spec. The classifier runs only when the player is replying to a beat
-that authored a `classify_reply` block — never on every send.
+CLASSIFIER_AGENT is one-shot, ToolOutput. It returns a list of per-axis
+results (one entry per beat-authored axis in `classify_reply_axes`), each
+with a `quality`, `value`, `rationale`. The allowed-values list per axis
+is enforced via the user prompt (not the schema) since values vary per
+axis. The caller validates post-hoc per axis and skips the quality write
+if a returned value is off-spec. Single batched call regardless of axis
+count keeps per-send cost flat.
 
 SUMMARY_AGENT runs only inside the chat agent's history_processors, when
 message_history has grown past the configured token budget. It takes the
@@ -20,24 +25,34 @@ handle as the chat agent (we don't have a separate cheaper provider in this
 local-llama setup), so the cost is one extra LLM round-trip on the rare
 overflow turn — preferred over drop-oldest because rapport carries forward.
 
+FACT_CHECKER_AGENT is opt-in, ToolOutput, and only invoked from the chat
+agent's output validator on beats with `spec.validate_facts=True`. Returns
+`{missing_facts, violations}`; both empty → output passes through; either
+non-empty → ModelRetry. Pay the cost only on critical beats.
+
 Construction is deferred to `build_agents()` (called from `lifespan`) so the
 shared OpenAI-compatible model handle can be passed in once.
 """
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import httpx
 import logfire
-from pydantic_ai import Agent, RunContext, ToolOutput
+from pydantic import BaseModel
+from pydantic_ai import Agent, ModelRetry, RunContext, ToolOutput
 from pydantic_ai.messages import ModelMessage
 
 from .models import (
+    AxisResult,
     BeatSpec,
-    ClassificationResult,
+    ClassifyReply,
     NPCDossier,
 )
+
+
+COMMITMENT_PREFIX = "commitment."
 
 
 # Type alias: a function that estimates the token cost of a list of messages.
@@ -56,11 +71,19 @@ class ChatDeps:
     `plot_directive` is None for chat-turn fallbacks (free conversation in
     character) and is a `BeatSpec` when a PlotBeat is firing on this turn —
     in which case the directive is layered into the prompt as authored
-    intent / must-include / must-not / length window.
+    intent / must-include / must-not.
+
+    `commitments` is a snapshot of qualities matching the `commitment.*`
+    convention captured at render-call time, mapping the full quality id
+    to (current value, description). The decorator `_commitments_block`
+    surfaces them with the `commitment.` prefix stripped. Snapshotting
+    in deps keeps deps immutable for the duration of one agent run, which
+    matches the `plot_directive` pattern.
     """
 
     npc: NPCDossier
     plot_directive: BeatSpec | None
+    commitments: dict[str, tuple[float, str]] = field(default_factory=dict)
 
 
 # ───────────────────────── system prompts ─────────────────────────
@@ -82,20 +105,42 @@ VOICE RULES:
 """
 
 
-_CLASSIFIER_SYSTEM_PROMPT = """You classify a player-written email reply against a beat-authored question.
+_CLASSIFIER_SYSTEM_PROMPT = """You classify a player-written email reply against one or more beat-authored axes.
 
 You will receive:
 - The recipient's persona blurb (who the player is writing to).
 - The most recent prior email in the thread (what the player is replying to).
 - The player's just-typed reply (the new send).
-- The classification question (what the author wants to know).
-- The allowed values (you MUST pick exactly one, verbatim).
+- A list of CLASSIFICATION AXES. Each axis has:
+  - quality: an internal id used to route the result.
+  - question: what the author wants to know.
+  - allowed_values: the exact strings you may return for that axis.
 
-Pick the single allowed value that best matches the player's reply. Do not
-return values outside the allowed list. Also write a one-sentence rationale
-(kept for telemetry, not shown to the player).
+For each axis, pick the single allowed value that best matches the player's
+reply on that axis. Axes are independent — judge each one against its own
+question, and do not let a value from one axis bias another. Do not return
+values outside the listed allowed_values for the relevant axis. Write a
+one-sentence rationale per axis (telemetry only).
 
-Return: {"value": "<one of allowed_values>", "rationale": "<one sentence>"}.
+Return one result per axis, in the order the axes were given:
+[{"quality": "<axis quality>", "value": "<one of that axis's allowed_values>", "rationale": "<one sentence>"}, ...]
+"""
+
+
+_FACT_CHECKER_SYSTEM_PROMPT = """You audit a candidate email body against authored constraints.
+
+You will receive:
+- The candidate body the chat agent just produced.
+- A list of REQUIRED FACTS — each entry must be present (in spirit) in the body.
+- A list of FORBIDDEN ITEMS — none of these may appear in the body (in spirit).
+
+Return:
+- missing_facts: required entries that are NOT meaningfully present in the body.
+- violations: forbidden entries that ARE present in the body.
+
+Be strict but charitable: a fact is present if the body conveys the same
+meaning, even if the wording differs. A violation is a clear hit, not a
+suspicion. Both lists empty → the body passes.
 """
 
 
@@ -116,13 +161,26 @@ Output: a single concise paragraph in third person. No header, no list formattin
 # ───────────────────────── agent construction ─────────────────────────
 
 
+class FactCheckResult(BaseModel):
+    """Output of the fact-checker agent.
+
+    `missing_facts` lists `must_include_facts` entries the candidate body
+    fails to convey; `violations` lists `must_not` entries it does convey.
+    Both empty → the body passes the validator.
+    """
+
+    missing_facts: list[str]
+    violations: list[str]
+
+
 @dataclass
 class AgentBundle:
-    """Three agents wired up against one shared model handle."""
+    """Four agents wired up against one shared model handle."""
 
     chat_agent: Agent
     classifier_agent: Agent
     summary_agent: Agent
+    fact_checker_agent: Agent
 
 
 def build_agents(
@@ -132,9 +190,12 @@ def build_agents(
     token_budget: int | None = None,
     history_keep_tail: int = 4,
 ) -> AgentBundle:
-    """Construct the three agents. The chat agent's per-run customization is
+    """Construct the four agents. The chat agent's per-run customization is
     in `@instructions` decorators below — they read from `ctx.deps` (ChatDeps)
-    so a single shared agent handles every NPC and every turn type.
+    so a single shared agent handles every NPC and every turn type. The
+    `@output_validator` engages only when the firing beat sets
+    `spec.validate_facts=True`; the fact-checker agent is referenced via
+    closure so the validator never needs it on `ChatDeps`.
 
     When `token_counter` and `token_budget` are both provided, the chat agent
     gets a `history_processors` callable that summarises the oldest messages
@@ -148,6 +209,16 @@ def build_agents(
         output_type=str,
         instructions=_SUMMARY_INSTRUCTIONS,
         model_settings={"max_tokens": 512, "temperature": 0.3},
+    )
+
+    fact_checker_agent = Agent(
+        model,
+        name="fact_checker_agent",
+        output_type=ToolOutput(FactCheckResult),
+        instructions=_FACT_CHECKER_SYSTEM_PROMPT,
+        # Tight budget — the agent only emits two short lists. The
+        # 2048 budget the classifier uses is overkill here.
+        model_settings={"max_tokens": 512, "temperature": 0.1},
     )
 
     history_processors: list = []
@@ -169,6 +240,10 @@ def build_agents(
         instructions=_BASE_CHAT_INSTRUCTIONS,
         model_settings={"max_tokens": 800, "temperature": 0.7},
         history_processors=history_processors,
+        # Allow one corrective shot when the fact-checker raises ModelRetry.
+        # Exhaustion is caught at the render call site (`_render_via_chat_agent`)
+        # so a fact-check miss never breaks a player's session.
+        retries=2,
     )
 
     @chat_agent.instructions
@@ -189,16 +264,49 @@ def build_agents(
             f"Must not:\n{must_not}"
         )
 
+    @chat_agent.instructions
+    def _commitments_block(ctx: RunContext[ChatDeps]) -> str:
+        lines = format_commitments(ctx.deps.commitments)
+        if not lines:
+            return ""
+        body = "\n".join(f"  {line}" for line in lines)
+        return f"CURRENT COMMITMENTS:\n{body}"
+
+    @chat_agent.output_validator
+    async def _validate_against_directive(
+        ctx: RunContext[ChatDeps], output: str
+    ) -> str:
+        spec = ctx.deps.plot_directive
+        if spec is None or not spec.validate_facts:
+            return output
+        if not spec.must_include_facts and not spec.must_not:
+            return output  # load-time validator should reject this; defensive
+        result = await fact_checker_agent.run(
+            build_fact_checker_user_prompt(
+                output, spec.must_include_facts, spec.must_not
+            )
+        )
+        fc = result.output
+        if fc.missing_facts or fc.violations:
+            logfire.info(
+                "fact_checker flagged candidate body",
+                missing_facts=fc.missing_facts,
+                violations=fc.violations,
+            )
+            raise ModelRetry(_format_fact_retry_message(fc))
+        return output
+
     classifier_agent = Agent(
         model,
         name="classifier_agent",
-        output_type=ToolOutput(ClassificationResult),
+        output_type=ToolOutput(list[AxisResult]),
         instructions=_CLASSIFIER_SYSTEM_PROMPT,
         # Headroom: Gemma 4 E4B sometimes preambles before emitting the
         # tool call. At max_tokens=256 it regularly hit `finish_reasons=
         # ["length"]` on the first attempt, forcing Pydantic AI to retry
         # and ~2x the latency. 2048 leaves ample budget for the call plus
-        # any preamble the model wants to write.
+        # any preamble the model wants to write — and now scales over
+        # multiple per-axis result entries in one tool call.
         model_settings={"max_tokens": 2048, "temperature": 0.1},
     )
 
@@ -206,6 +314,7 @@ def build_agents(
         chat_agent=chat_agent,
         classifier_agent=classifier_agent,
         summary_agent=summary_agent,
+        fact_checker_agent=fact_checker_agent,
     )
 
 
@@ -310,12 +419,24 @@ def build_classifier_user_prompt(
     recipient_blurb: str,
     prior_email_body: str,
     reply_body: str,
-    question: str,
-    allowed_values: list[str],
+    axes: list[ClassifyReply],
 ) -> str:
-    """The schema only enforces that *some* string is returned, so the LLM
-    must respect the allowed_values list given in the prompt."""
-    values = ", ".join(f'"{v}"' for v in allowed_values)
+    """Build the classifier's user prompt for one or more axes.
+
+    `recipient_blurb` and `prior_email_body` are shared across all axes by
+    construction — there is no per-axis context selection in Stage 1. If a
+    future axis needs to score against, say, the original welcome rather
+    than the most recent prior, that's a follow-up.
+    """
+    axis_blocks: list[str] = []
+    for i, axis in enumerate(axes, start=1):
+        values = ", ".join(f'"{v}"' for v in axis.allowed_values)
+        axis_blocks.append(
+            f"AXIS {i} — quality: {axis.quality}\n"
+            f"  Question: {axis.question.strip()}\n"
+            f"  Allowed values: {values}"
+        )
+    axes_text = "\n\n".join(axis_blocks)
     return f"""RECIPIENT (who the player is writing to):
 {recipient_blurb}
 
@@ -325,10 +446,83 @@ MOST RECENT PRIOR EMAIL (what the player is replying to):
 PLAYER'S REPLY (just typed):
 {reply_body}
 
-CLASSIFICATION QUESTION:
-{question.strip()}
+CLASSIFICATION AXES (return one result per axis, in order):
+{axes_text}
 
-ALLOWED VALUES (pick exactly one, verbatim):
-{values}
+For each axis, return {{"quality": "<axis quality id>", "value": "<one allowed value, verbatim>", "rationale": "<one sentence>"}}."""
 
-Return one of the allowed values and a one-sentence rationale."""
+
+def build_fact_checker_user_prompt(
+    body: str,
+    must_include_facts: list[str],
+    must_not: list[str],
+) -> str:
+    required = _bullets(must_include_facts)
+    forbidden = _bullets(must_not)
+    return f"""CANDIDATE BODY:
+{body}
+
+REQUIRED FACTS (each must be conveyed):
+{required}
+
+FORBIDDEN ITEMS (none may appear):
+{forbidden}
+
+Return missing_facts and violations."""
+
+
+def _format_fact_retry_message(fc: FactCheckResult) -> str:
+    """Concise corrective message handed back to the chat agent on retry.
+    The agent already has the full directive in its instructions block."""
+    parts: list[str] = []
+    if fc.missing_facts:
+        parts.append("Required facts missing from your draft:\n" + _bullets(fc.missing_facts))
+    if fc.violations:
+        parts.append("Forbidden items present in your draft:\n" + _bullets(fc.violations))
+    parts.append(
+        "Rewrite the body so every required fact is conveyed and every "
+        "forbidden item is removed. Keep voice, length, and intent."
+    )
+    return "\n\n".join(parts)
+
+
+def format_commitments(commitments: dict[str, tuple[float, str]]) -> list[str]:
+    """Filter the commitments snapshot down to qualities whose current
+    value differs from their default (or 0.0 if default is None) and
+    format each as a single line with the `commitment.` prefix stripped.
+
+    A commitment that has never been set is noise the chat agent has to
+    ignore on every render — empty list is the right state until the
+    bargain (or whatever else the scenario authors) actually commits.
+    """
+    lines: list[str] = []
+    for full_id, (value, description) in commitments.items():
+        if not full_id.startswith(COMMITMENT_PREFIX):
+            continue
+        short = full_id[len(COMMITMENT_PREFIX):]
+        line = f"{short} = {value}"
+        if description.strip():
+            line += f"  # {description.strip()}"
+        lines.append(line)
+    return lines
+
+
+def commitments_snapshot(
+    qualities: dict[str, float],
+    defaults: dict[str, float],
+    descriptions: dict[str, str],
+) -> dict[str, tuple[float, str]]:
+    """Build the per-render commitments snapshot for ChatDeps. Filters to
+    `commitment.*` ids whose current value differs from the authored
+    default (or 0.0 if no default). Caller derives `defaults` and
+    `descriptions` from `Scenario.qualities`.
+    """
+    out: dict[str, tuple[float, str]] = {}
+    for full_id, value in qualities.items():
+        if not full_id.startswith(COMMITMENT_PREFIX):
+            continue
+        default = defaults.get(full_id, 0.0)
+        if value == default:
+            continue
+        out[full_id] = (value, descriptions.get(full_id, ""))
+    return out

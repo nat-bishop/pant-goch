@@ -236,16 +236,16 @@ beats:
         - "do not name what happens to the player at end of pilot"
         - "do not break the cheerful corporate frame"
         - "do not name any game system"
-    classify_reply:
-      quality: engagement
-      accumulate: true
-      question: |
-        Did the player substantively engage with Aria's calibration prompt
-        — sharing any specific personal detail, opinion, or concrete
-        response? Or did they refuse, deflect, change the subject, or send
-        a one-word non-answer?
-      allowed_values: ["engaged", "deflected", "unclear"]
-      map:
-        engaged: 1.0
-        deflected: -0.5
-        unclear: 0.5
+    classify_reply_axes:
+      - quality: engagement
+        accumulate: true
+        question: |
+          Did the player substantively engage with Aria's calibration prompt
+          — sharing any specific personal detail, opinion, or concrete
+          response? Or did they refuse, deflect, change the subject, or send
+          a one-word non-answer?
+        allowed_values: ["engaged", "deflected", "unclear"]
+        map:
+          engaged: 1.0
+          deflected: -0.5
+          unclear: 0.5

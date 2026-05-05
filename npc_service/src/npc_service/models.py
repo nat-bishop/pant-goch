@@ -5,8 +5,10 @@ Two layers:
 - **Authoring** (loaded from `scenario.yaml`, immutable at runtime): QualityDef,
   NPCDossier, Beat, Thread, Scenario.
 - **Runtime state** (mutable, owned by the spine): Email, Reply, InboxState.
-  The LLM never writes any of this directly — only the classifier agent
-  (when a beat authors `classify_reply`) writes a single named quality.
+  The LLM never writes any of this directly. There are exactly two code-owned
+  state-write sites for qualities: `apply_classification` (driven by the
+  classifier agent's per-axis output) and `apply_writes` (driven by a beat's
+  authored `spec.writes`). Both live in spine.py.
 
 Predicates are tagged-union Pydantic models, not strings. YAML authoring is
 slightly more verbose; in exchange, every predicate is type-checked at load
@@ -28,12 +30,13 @@ from pydantic_ai.messages import ModelMessage
 
 
 class ClassifyReply(BaseModel):
-    """Beat-local LLM classifier authored on a beat. When the player replies
-    to that beat's email, the classifier judges the reply and writes the
-    result to a named quality.
+    """Beat-local LLM classifier authored on one axis of a beat's
+    `classify_reply_axes` list. When the player replies to that beat's email,
+    each axis is judged and the result is written to its named quality.
 
-    The single LLM-judge → single named quality boundary keeps the classifier
-    from acting as a general state actor.
+    Multiple axes per beat are batched into a single classifier call and
+    each axis writes independently to its own quality. The classifier never
+    touches state outside the named quality.
     """
 
     quality: str
@@ -50,10 +53,22 @@ class ClassifyReply(BaseModel):
     def _map_keys_match_allowed(self) -> "ClassifyReply":
         if set(self.map.keys()) != set(self.allowed_values):
             raise ValueError(
-                f"classify_reply: map keys {sorted(self.map.keys())} "
+                f"classify_reply axis: map keys {sorted(self.map.keys())} "
                 f"must equal allowed_values {sorted(self.allowed_values)}"
             )
         return self
+
+
+class AxisResult(BaseModel):
+    """One classifier axis's output. Stored on `Reply.classifier_results`
+    immediately after `apply_classification` accepts the value, so recent-
+    window predicates can read player history off `state.replies` directly
+    rather than maintaining a parallel ring buffer.
+    """
+
+    quality: str
+    value: str
+    rationale: str = ""
 
 
 # ───────────────────────── predicate DSL ─────────────────────────
@@ -99,6 +114,39 @@ class BeatFired(BaseModel):
     beat: str
 
 
+class RecentClassifierValue(BaseModel):
+    """True iff, of the last `window` replies whose classifier wrote
+    `quality`, at least `match` (or "any" / "all") of them landed on a value
+    in `values`.
+
+    Replies without a matching-quality classifier result are skipped — they
+    don't fill a window slot. So the window walks "the last N replies that
+    were classified on this quality," not "the last N replies overall."
+
+    Use cases (from the Frankenstein adaptation): "the last three replies
+    were clinical or horrified" (any-of, match=all); "the most recent reply
+    was a refusal" (window=1, match=any).
+    """
+
+    kind: Literal["recent_classifier_value"] = "recent_classifier_value"
+    quality: str
+    values: list[str] = Field(min_length=1)  # ANY-OF match
+    window: int = Field(ge=1)
+    # "any" → ≥1 match; "all" → every slot in window matches (under-filled
+    # window cannot satisfy "all"); int N → ≥N matches.
+    match: Literal["any", "all"] | int = "any"
+
+    @model_validator(mode="after")
+    def _match_in_range(self) -> "RecentClassifierValue":
+        if isinstance(self.match, int) and not isinstance(self.match, bool):
+            if not (1 <= self.match <= self.window):
+                raise ValueError(
+                    f"RecentClassifierValue: match int {self.match} "
+                    f"must be in 1..{self.window}"
+                )
+        return self
+
+
 class Not_(BaseModel):
     """Logical NOT."""
 
@@ -112,6 +160,7 @@ Predicate = Annotated[
         QualityLt,
         PlayerRepliesToThreadGte,
         BeatFired,
+        RecentClassifierValue,
         Not_,
     ],
     Field(discriminator="kind"),
@@ -162,6 +211,36 @@ class BeatSpec(BaseModel):
     must_include_facts: list[str] = Field(default_factory=list)
     must_not: list[str] = Field(default_factory=list)
 
+    # Committed facts the beat fire stamps onto state with SET semantics
+    # (no accumulate). Quality bounds clamp via `_clamp_quality`. Authoring
+    # convention: keys begin with `commitment.` so the chat agent's
+    # `_commitments_block` instructions decorator surfaces them on every
+    # render. Multi-turn-collision contract: if a `writes` key on a
+    # `multi_turn` beat is also written by another beat, that other beat's
+    # mutex must take effect before its tick — otherwise the multi_turn
+    # beat will re-fire on the next tick and clobber the later write back
+    # to its own value. (Concrete: multi_turn A writes x=2.0; B later
+    # writes x=3.0; on the next tick A re-fires unless A has
+    # `Not_(BeatFired B)` and clobbers B back to 2.0.)
+    writes: dict[str, float] = Field(default_factory=dict)
+    # When True, the chat agent's output_validator runs the fact-checker
+    # agent against this beat's `must_include_facts` + `must_not` and
+    # raises ModelRetry on any miss/violation. Default False — every
+    # un-flagged beat skips the validator entirely (zero per-render LLM
+    # cost). Authors flag this on critical beats (terminals, pivotal
+    # forks); leave it off on chatty multi-turn loops.
+    validate_facts: bool = False
+
+    @model_validator(mode="after")
+    def _validate_facts_needs_constraints(self) -> "BeatSpec":
+        if self.validate_facts and not (self.must_include_facts or self.must_not):
+            raise ValueError(
+                "BeatSpec: validate_facts=True requires at least one entry "
+                "in must_include_facts or must_not — otherwise the validator "
+                "has nothing to check."
+            )
+        return self
+
 
 # Beat is a tagged union on `type`. Each variant carries the fields that make
 # sense for it. Common to all: id, thread, preconditions.
@@ -170,10 +249,12 @@ class _BeatBase(BaseModel):
     id: str = Field(min_length=1, pattern=r"^[a-z][a-z0-9_.]*$")
     thread: str
     preconditions: list[Predicate] = Field(default_factory=list)
-    # Beat-local classifier. When the player replies to this beat's email,
-    # the classifier runs and writes the mapped score to the named quality.
-    # None → no classifier runs for replies to this beat.
-    classify_reply: ClassifyReply | None = None
+    # Beat-local classifier axes. Empty → no classifier runs for replies
+    # to this beat. Multiple axes are batched into a single classifier
+    # LLM call; each axis writes independently to its own quality. Within
+    # one beat, axis quality ids must be unique (and must not collide
+    # with any key in this beat's `spec.writes`).
+    classify_reply_axes: list[ClassifyReply] = Field(default_factory=list)
     # Multi-turn lifecycle. Empty → fire-once (legacy semantics: completes on
     # first render). Non-empty → beat is "completed" only when all predicates
     # pass; until then, find_due_beats keeps returning it and _fire_beat
@@ -277,6 +358,19 @@ class Scenario(BaseModel):
         return {q.id: q for q in self.qualities}
 
     @cached_property
+    def quality_defaults(self) -> dict[str, float]:
+        """Frozen at load — the chat-agent commitments snapshot reads this
+        on every render and would otherwise rebuild it per call."""
+        return {
+            q.id: float(q.default) if q.default is not None else 0.0
+            for q in self.qualities
+        }
+
+    @cached_property
+    def quality_descriptions(self) -> dict[str, str]:
+        return {q.id: q.description for q in self.qualities}
+
+    @cached_property
     def thread_by_id(self) -> dict[str, Thread]:
         return {t.id: t for t in self.threads}
 
@@ -342,12 +436,33 @@ class Scenario(BaseModel):
                     f"beat {beat.id} completes_when",
                     quality_ids, thread_ids, beat_ids,
                 )
-            if beat.classify_reply is not None:
-                if beat.classify_reply.quality not in quality_ids:
+            axis_qualities: set[str] = set()
+            for axis in beat.classify_reply_axes:
+                if axis.quality not in quality_ids:
                     raise ValueError(
-                        f"beat {beat.id}: classify_reply.quality "
-                        f"{beat.classify_reply.quality!r} is not a known quality"
+                        f"beat {beat.id}: classify_reply_axes quality "
+                        f"{axis.quality!r} is not a known quality"
                     )
+                if axis.quality in axis_qualities:
+                    raise ValueError(
+                        f"beat {beat.id}: classify_reply_axes has two axes "
+                        f"targeting the same quality {axis.quality!r}"
+                    )
+                axis_qualities.add(axis.quality)
+            if isinstance(beat, PlotBeat):
+                for write_q in beat.spec.writes:
+                    if write_q not in quality_ids:
+                        raise ValueError(
+                            f"beat {beat.id}: spec.writes targets unknown "
+                            f"quality {write_q!r}"
+                        )
+                    if write_q in axis_qualities:
+                        raise ValueError(
+                            f"beat {beat.id}: spec.writes key {write_q!r} "
+                            f"collides with a classify_reply_axes axis on "
+                            f"the same beat (the multi_turn re-fire would "
+                            f"clobber the classifier each tick)"
+                        )
 
         for thread in self.threads:
             if thread.npc is not None and thread.npc not in npc_ids:
@@ -369,6 +484,8 @@ def _check_predicate_refs(
         raise ValueError(f"{where}: PlayerRepliesToThreadGte references unknown thread {pred.thread!r}")
     if isinstance(pred, BeatFired) and pred.beat not in beat_ids:
         raise ValueError(f"{where}: BeatFired references unknown beat {pred.beat!r}")
+    if isinstance(pred, RecentClassifierValue) and pred.quality not in quality_ids:
+        raise ValueError(f"{where}: RecentClassifierValue references unknown quality {pred.quality!r}")
     if isinstance(pred, Not_):
         _check_predicate_refs(pred.of, where, quality_ids, thread_ids, beat_ids)
 
@@ -407,13 +524,21 @@ class Email:
 
 @dataclass
 class Reply:
-    """One player send. Captured for trajectory analysis."""
+    """One player send. Captured for trajectory analysis.
+
+    `classifier_results` holds the per-axis classifier output for this
+    reply, populated by `apply_classification` after each successful
+    write. Recent-window predicates walk `state.replies` in reverse and
+    read this field — single source of truth for "what did the classifier
+    say on reply N?"
+    """
 
     id: str
     thread_id: str | None  # None for cross-thread sends
     beat_responded_to: str | None
     recipient: str
     body: str
+    classifier_results: list[AxisResult] = field(default_factory=list)
 
 
 @dataclass
@@ -498,9 +623,3 @@ class SendRequest(BaseModel):
     body: str  # rejected as 400 if empty/whitespace
 
 
-class ClassificationResult(BaseModel):
-    """CLASSIFIER_AGENT output. `value` MUST be one of the beat-authored
-    `allowed_values` — caller validates and skips the quality write if not."""
-
-    value: str = Field(min_length=1)
-    rationale: str = ""
