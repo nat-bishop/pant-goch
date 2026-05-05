@@ -42,7 +42,7 @@ class Settings(BaseSettings):
     launch_llama: bool = True
     llama_server_bin: Path | None = None
     llama_model_path: Path | None = None
-    llama_hf_repo: str = "unsloth/gemma-4-E4B-it-GGUF:Q8_0"
+    llama_hf_repo: str = "ggml-org/gemma-4-E4B-it-GGUF:Q8_0"
     llama_port: int = 8080
     llama_ctx: int = 32768
     llama_ngl: int = 99

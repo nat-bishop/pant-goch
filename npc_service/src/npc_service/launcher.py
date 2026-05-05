@@ -167,7 +167,7 @@ def resolve_config(settings: Settings | None = None) -> LlamaConfig:
         model_path: Path | None = s.llama_model_path
         hf: str | None = None
     else:
-        candidate = base / "models" / "gemma-4-E4B-it-Q8_0.gguf"
+        candidate = base / "models" / "ggml-org-gemma-4-E4B-it-Q8_0.gguf"
         if candidate.exists():
             model_path = candidate
             hf = None

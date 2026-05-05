@@ -1,5 +1,5 @@
-MODEL       := models/gemma-4-E4B-it-Q8_0.gguf
-MODEL_URL   := https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-Q8_0.gguf
+MODEL       := models/ggml-org-gemma-4-E4B-it-Q8_0.gguf
+MODEL_URL   := https://huggingface.co/ggml-org/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-Q8_0.gguf
 LLAMA_BIN   := vendor/llama.cpp/llama-server.exe
 LLAMA_HOST  := 127.0.0.1
 LLAMA_PORT  := 8080
