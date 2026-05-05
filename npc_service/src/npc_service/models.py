@@ -161,7 +161,6 @@ class BeatSpec(BaseModel):
     intent: str
     must_include_facts: list[str] = Field(default_factory=list)
     must_not: list[str] = Field(default_factory=list)
-    length_words: tuple[int, int] | None = None  # min, max
 
 
 # Beat is a tagged union on `type`. Each variant carries the fields that make

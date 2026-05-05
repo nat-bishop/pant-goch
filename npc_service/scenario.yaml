@@ -163,7 +163,6 @@ beats:
         - "do not name what specifically happens to the player after transition"
         - "do not break the cheerful corporate frame"
         - "do not be sarcastic or knowing"
-      length_words: [60, 100]
 
   - id: aria.complete_standard
     type: plot
@@ -196,7 +195,6 @@ beats:
         - "do not name what specifically happens to the player after transition"
         - "do not be warm or affirming"
         - "do not be sarcastic"
-      length_words: [40, 80]
 
   # ─── Ongoing calibration loop ───
 
@@ -238,7 +236,6 @@ beats:
         - "do not name what happens to the player at end of pilot"
         - "do not break the cheerful corporate frame"
         - "do not name any game system"
-      length_words: [60, 140]
     classify_reply:
       quality: engagement
       accumulate: true

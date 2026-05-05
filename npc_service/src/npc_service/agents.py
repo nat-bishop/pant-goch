@@ -182,12 +182,9 @@ def build_agents(
             return ""
         must_include = "\n".join(f"  - {f}" for f in spec.must_include_facts) or "  (none specified)"
         must_not = "\n".join(f"  - {f}" for f in spec.must_not) or "  (none specified)"
-        length = ""
-        if spec.length_words:
-            length = f"\nLength: {spec.length_words[0]}-{spec.length_words[1]} words."
         return (
             f"PLOT DIRECTIVE (this turn only):\n"
-            f"Intent: {spec.intent.strip()}{length}\n"
+            f"Intent: {spec.intent.strip()}\n"
             f"Must include:\n{must_include}\n"
             f"Must not:\n{must_not}"
         )
