@@ -8,10 +8,15 @@ from contextlib import ExitStack
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic_ai.exceptions import UnexpectedModelBehavior
 from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart
+from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.models.test import TestModel
+from pydantic_ai.providers.openai import OpenAIProvider
 
 import npc_service.main as main
+from npc_service.agents import ChatDeps, build_agents
+from npc_service.models import BeatSpec, NPCDossier
 
 from .conftest import consume_sse
 
@@ -46,8 +51,20 @@ def _test_model_for_chat(text: str = CHAT_TURN_PROSE) -> TestModel:
     return TestModel(custom_output_text=text)
 
 
-def _test_model_for_classifier(value: str) -> TestModel:
-    return TestModel(custom_output_args={"value": value, "rationale": "(test)"})
+def _test_model_for_classifier(value: str, quality: str = "engagement") -> TestModel:
+    """Single-axis convenience — returns one AxisResult inside the list
+    output type the multi-axis classifier now uses. Continuity Program
+    tests use the default quality='engagement' for aria.loop's only axis."""
+    return TestModel(custom_output_args=[
+        {"quality": quality, "value": value, "rationale": "(test)"},
+    ])
+
+
+def _test_model_for_classifier_multi(results: list[dict]) -> TestModel:
+    """Multi-axis variant — pass a list of {quality, value, rationale} dicts.
+    Used by tests that exercise the batched per-axis flow and the
+    defense-in-depth paths (missing / duplicate / unknown axes)."""
+    return TestModel(custom_output_args=results)
 
 
 # ───────────────────────── boot + read-only endpoints ─────────────────────────
@@ -309,6 +326,209 @@ def test_send_returns_409_after_session_ends(client):
         "in_reply_to": last_npc.id, "recipient": "Aria", "body": "more?",
     })
     assert r.status_code == 409
+
+
+# ───────────────────────── multi-axis classifier defense-in-depth ─────────────────────────
+
+
+def test_classifier_handles_unknown_axis_returned_by_model(client):
+    """LLM returns a result for a quality the beat didn't author. The
+    unknown axis is logged and dropped; the authored axis still applies."""
+    welcome = client.get("/inbox").json()["folders"]["Inbox"][0]
+    list(consume_sse(client.stream("POST", "/send", json={
+        "in_reply_to": welcome["id"], "recipient": "Aria", "body": "hi",
+    })))
+    loop_email = next(e for e in main.STATE.emails if e.beat_id == "aria.loop")
+
+    multi = _test_model_for_classifier_multi([
+        {"quality": "engagement", "value": "engaged", "rationale": "(t)"},
+        {"quality": "phantom", "value": "anything", "rationale": "(t)"},
+    ])
+    with main.AGENTS.classifier_agent.override(model=multi):
+        events = list(consume_sse(client.stream("POST", "/send", json={
+            "in_reply_to": loop_email.id, "recipient": "Aria", "body": "yes",
+        })))
+    classified = [e for e in events if e["type"] == "classified"]
+    # Only the authored 'engagement' axis emitted.
+    assert len(classified) == 1
+    assert classified[0]["quality"] == "engagement"
+    assert main.STATE.qualities["engagement"] == 1.0
+
+
+def test_classifier_handles_duplicate_axis_returned_by_model(client):
+    """LLM returns two results for the same authored axis. First kept,
+    second logged. One classified event."""
+    welcome = client.get("/inbox").json()["folders"]["Inbox"][0]
+    list(consume_sse(client.stream("POST", "/send", json={
+        "in_reply_to": welcome["id"], "recipient": "Aria", "body": "hi",
+    })))
+    loop_email = next(e for e in main.STATE.emails if e.beat_id == "aria.loop")
+
+    multi = _test_model_for_classifier_multi([
+        {"quality": "engagement", "value": "engaged", "rationale": "(first)"},
+        {"quality": "engagement", "value": "deflected", "rationale": "(dupe)"},
+    ])
+    with main.AGENTS.classifier_agent.override(model=multi):
+        events = list(consume_sse(client.stream("POST", "/send", json={
+            "in_reply_to": loop_email.id, "recipient": "Aria", "body": "yes",
+        })))
+    classified = [e for e in events if e["type"] == "classified"]
+    assert len(classified) == 1
+    assert classified[0]["value"] == "engaged"  # first kept
+
+
+def test_classifier_handles_off_spec_value(client):
+    """Model returns a value outside allowed_values. apply_classification
+    returns False; no SSE event, no append onto Reply.classifier_results,
+    quality unchanged."""
+    welcome = client.get("/inbox").json()["folders"]["Inbox"][0]
+    list(consume_sse(client.stream("POST", "/send", json={
+        "in_reply_to": welcome["id"], "recipient": "Aria", "body": "hi",
+    })))
+    loop_email = next(e for e in main.STATE.emails if e.beat_id == "aria.loop")
+
+    multi = _test_model_for_classifier_multi([
+        {"quality": "engagement", "value": "garbage_value", "rationale": "(t)"},
+    ])
+    starting_engagement = main.STATE.qualities["engagement"]
+    with main.AGENTS.classifier_agent.override(model=multi):
+        events = list(consume_sse(client.stream("POST", "/send", json={
+            "in_reply_to": loop_email.id, "recipient": "Aria", "body": "yes",
+        })))
+    classified = [e for e in events if e["type"] == "classified"]
+    assert classified == []
+    assert main.STATE.qualities["engagement"] == starting_engagement
+    # The reply was recorded but its classifier_results stayed empty.
+    last_reply = main.STATE.replies[-1]
+    assert last_reply.classifier_results == []
+
+
+def test_classified_events_arrive_before_new_email_and_state(client):
+    """SSE event ordering: classified events arrive before any new_email,
+    state arrives last (just before done). A future UI listener relying on
+    this ordering must not break."""
+    welcome = client.get("/inbox").json()["folders"]["Inbox"][0]
+    list(consume_sse(client.stream("POST", "/send", json={
+        "in_reply_to": welcome["id"], "recipient": "Aria", "body": "hi",
+    })))
+    loop_email = next(e for e in main.STATE.emails if e.beat_id == "aria.loop")
+
+    with main.AGENTS.classifier_agent.override(
+        model=_test_model_for_classifier("engaged")
+    ):
+        events = list(consume_sse(client.stream("POST", "/send", json={
+            "in_reply_to": loop_email.id, "recipient": "Aria", "body": "yes",
+        })))
+    types = [e["type"] for e in events]
+    classified_idx = types.index("classified")
+    new_email_idx = types.index("new_email")
+    state_idx = types.index("state")
+    done_idx = types.index("done")
+    assert classified_idx < new_email_idx < state_idx < done_idx
+
+
+def test_apply_classification_appends_to_active_reply_via_send(client):
+    """Smoke test for the Reply.classifier_results plumbing through /send:
+    after a successful classification, the just-recorded Reply has the
+    AxisResult."""
+    welcome = client.get("/inbox").json()["folders"]["Inbox"][0]
+    list(consume_sse(client.stream("POST", "/send", json={
+        "in_reply_to": welcome["id"], "recipient": "Aria", "body": "hi",
+    })))
+    loop_email = next(e for e in main.STATE.emails if e.beat_id == "aria.loop")
+
+    with main.AGENTS.classifier_agent.override(
+        model=_test_model_for_classifier("engaged")
+    ):
+        list(consume_sse(client.stream("POST", "/send", json={
+            "in_reply_to": loop_email.id, "recipient": "Aria", "body": "yes",
+        })))
+    last_reply = main.STATE.replies[-1]
+    assert len(last_reply.classifier_results) == 1
+    assert last_reply.classifier_results[0].quality == "engagement"
+    assert last_reply.classifier_results[0].value == "engaged"
+
+
+# ───────────────────────── render validator (fact-checker) opt-in ─────────────────────────
+
+
+def test_fact_checker_not_called_for_default_off_beats(client):
+    """validate_facts=False (the default for aria.loop) → fact_checker_agent
+    is never invoked. Asserted via call counter on the agent's run."""
+    call_counter = {"count": 0}
+    real_run = main.AGENTS.fact_checker_agent.run
+
+    async def _counting_run(*args, **kwargs):
+        call_counter["count"] += 1
+        return await real_run(*args, **kwargs)
+
+    main.AGENTS.fact_checker_agent.run = _counting_run  # type: ignore[method-assign]
+    try:
+        welcome = client.get("/inbox").json()["folders"]["Inbox"][0]
+        list(consume_sse(client.stream("POST", "/send", json={
+            "in_reply_to": welcome["id"], "recipient": "Aria", "body": "hi",
+        })))
+    finally:
+        main.AGENTS.fact_checker_agent.run = real_run  # type: ignore[method-assign]
+    assert call_counter["count"] == 0
+
+
+def _validator_test_bundle():
+    """Construct an isolated AgentBundle for unit-testing the chat-agent
+    output_validator. Chat agent and fact-checker need different TestModel
+    output shapes, so each test overrides them in its own ExitStack."""
+    placeholder = OpenAIChatModel(
+        "test", provider=OpenAIProvider(base_url="http://x", api_key="k")
+    )
+    return build_agents(placeholder)
+
+
+def _validator_test_deps() -> ChatDeps:
+    return ChatDeps(
+        npc=NPCDossier(id="aria", display_name="Aria", email_address="aria@x"),
+        plot_directive=BeatSpec(
+            intent="x",
+            must_include_facts=["thank the player"],
+            validate_facts=True,
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_validator_passes_when_fact_checker_returns_clean():
+    """validate_facts=True + fact-checker returning empty lists → body
+    passes through unchanged."""
+    bundle = _validator_test_bundle()
+    with ExitStack() as stack:
+        stack.enter_context(bundle.chat_agent.override(
+            model=TestModel(custom_output_text="ok"),
+        ))
+        stack.enter_context(bundle.fact_checker_agent.override(
+            model=TestModel(custom_output_args={
+                "missing_facts": [], "violations": [],
+            }),
+        ))
+        result = await bundle.chat_agent.run("hello", deps=_validator_test_deps())
+    assert result.output.strip() == "ok"
+
+
+@pytest.mark.asyncio
+async def test_validator_raises_when_fact_checker_flags():
+    """validate_facts=True + non-empty missing_facts → ModelRetry. With
+    chat_agent retries=2, exhaustion surfaces as UnexpectedModelBehavior;
+    capturing the raise confirms the validator engaged."""
+    bundle = _validator_test_bundle()
+    with ExitStack() as stack:
+        stack.enter_context(bundle.chat_agent.override(
+            model=TestModel(custom_output_text="ok"),
+        ))
+        stack.enter_context(bundle.fact_checker_agent.override(
+            model=TestModel(custom_output_args={
+                "missing_facts": ["thank the player"], "violations": [],
+            }),
+        ))
+        with pytest.raises(UnexpectedModelBehavior):
+            await bundle.chat_agent.run("hello", deps=_validator_test_deps())
 
 
 # ───────────────────────── helpers ─────────────────────────

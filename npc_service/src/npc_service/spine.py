@@ -6,14 +6,18 @@ Two rules this module enforces:
 
 1. The chat-rendering LLM never touches state. The chat agent returns prose
    only; the spine is the only thing that mutates `InboxState`.
-2. The classifier agent (when a beat authors `classify_reply`) writes a
-   single named quality via `apply_classification()`. It writes nothing else.
+2. Quality writes have exactly two code-owned entry points, both in this
+   module: `apply_classification` (driven by the classifier agent's per-axis
+   output, with optional `accumulate`) and `apply_writes` (driven by a beat's
+   authored `spec.writes`, SET-only for committed facts). Both share
+   `_clamp_quality`. No other code path mutates `state.qualities`.
 """
 from __future__ import annotations
 
 import logfire
 
 from .models import (
+    AxisResult,
     Beat,
     BeatFired,
     ClassifyReply,
@@ -24,6 +28,7 @@ from .models import (
     Predicate,
     QualityGte,
     QualityLt,
+    RecentClassifierValue,
     Scenario,
 )
 
@@ -53,9 +58,37 @@ def evaluate_predicate(
         return n >= pred.value
     if isinstance(pred, BeatFired):
         return pred.beat in state.fired_beat_ids or pred.beat in extra_fired
+    if isinstance(pred, RecentClassifierValue):
+        return _evaluate_recent_classifier_value(pred, state)
     if isinstance(pred, Not_):
         return not evaluate_predicate(pred.of, state, extra_fired)
     raise TypeError(f"unhandled predicate: {type(pred).__name__}")
+
+
+def _evaluate_recent_classifier_value(
+    pred: RecentClassifierValue, state: InboxState
+) -> bool:
+    """Walk replies in reverse, collecting up to `pred.window` axis results
+    for `pred.quality`. Replies without a matching-quality result are
+    skipped (they don't fill a window slot). Resolve `pred.match` against
+    the count of collected results whose value ∈ pred.values.
+    """
+    collected: list[str] = []
+    for reply in reversed(state.replies):
+        for axis in reply.classifier_results:
+            if axis.quality == pred.quality:
+                collected.append(axis.value)
+                break  # axis-uniqueness invariant: ≤1 per reply per quality
+        if len(collected) >= pred.window:
+            break
+
+    matches = sum(1 for v in collected if v in pred.values)
+    if pred.match == "any":
+        return matches >= 1
+    if pred.match == "all":
+        # Under-filled window can't satisfy "all" — len(collected) < window.
+        return matches >= pred.window
+    return matches >= pred.match
 
 
 # ───────────────────────── quality mutation ─────────────────────────
@@ -77,19 +110,23 @@ def apply_classification(
     scenario: Scenario,
     classify_reply: ClassifyReply,
     value: str,
-) -> bool:
-    """Apply a classifier output to the named quality. Returns True if the
-    value was applied; False if `value` isn't in the authored map (caller
-    should log + leave the quality alone).
+    rationale: str = "",
+) -> AxisResult | None:
+    """Apply a classifier axis output to the named quality.
+
+    Returns the resulting `AxisResult` on success, or None if `value`
+    isn't in the authored map. The caller is responsible for appending
+    the returned `AxisResult` onto an active `Reply.classifier_results`
+    if it wants `RecentClassifierValue` predicates to see this write.
 
     With `accumulate=False` (default) the mapped score replaces the quality.
     With `accumulate=True` it's added to the current value — used for
-    cumulative signals like aria.loop's engagement, where each reply moves
-    the quality by the mapped delta. Both paths share `_clamp_quality`.
+    cumulative signals like aria.loop's engagement. Both paths share
+    `_clamp_quality`.
     """
     score = classify_reply.map.get(value)
     if score is None:
-        return False
+        return None
     if classify_reply.accumulate:
         cur = state.qualities.get(classify_reply.quality, 0.0)
         new = cur + score
@@ -98,7 +135,23 @@ def apply_classification(
     state.qualities[classify_reply.quality] = _clamp_quality(
         new, classify_reply.quality, scenario
     )
-    return True
+    return AxisResult(quality=classify_reply.quality, value=value, rationale=rationale)
+
+
+def apply_writes(
+    state: InboxState,
+    scenario: Scenario,
+    writes: dict[str, float],
+) -> None:
+    """Apply a beat's authored `spec.writes` to state with SET semantics
+    (no accumulate). Quality bounds clamp via `_clamp_quality`. Called
+    once per fire from `_fire_beat` after the fired-id guard and before
+    the silent-complete check, so the fact of completion is recorded
+    even on the no-render path. Multi-turn beats re-apply on every fire
+    — see the BeatSpec.writes field comment for the collision contract.
+    """
+    for quality_id, value in writes.items():
+        state.qualities[quality_id] = _clamp_quality(value, quality_id, scenario)
 
 
 # ───────────────────────── beat scheduler ─────────────────────────
