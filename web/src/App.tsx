@@ -4,7 +4,6 @@ import { AppShell } from "./components/AppShell";
 import { ChatHeader } from "./components/ChatHeader";
 import { MessageComposer } from "./components/MessageComposer";
 import { MessageList } from "./components/MessageList";
-import { NoticeChannel } from "./components/NoticeChannel";
 import { useTheme } from "./hooks/useTheme";
 import { useStore } from "./store";
 import { stripAddress } from "./util/email";
@@ -15,10 +14,8 @@ export default function App() {
   const bootError = useStore((s) => s.bootError);
   const scenario = useStore((s) => s.scenario);
   const state = useStore((s) => s.state);
-  const view = useStore((s) => s.view);
   const chatMessages = useStore((s) => s.chatMessages);
 
-  // Hydrate theme into the html class.
   useTheme();
 
   useEffect(() => {
@@ -41,15 +38,11 @@ export default function App() {
     );
   }
 
-  const emails = chatMessages[view.chatId] ?? [];
+  const emails = chatMessages.aria ?? [];
 
   return (
     <AppShell>
-      {view.chatId === "aria" ? (
-        <AriaChat emails={emails} />
-      ) : (
-        <NoticeChannel emails={emails} />
-      )}
+      <AriaChat emails={emails} />
     </AppShell>
   );
 }

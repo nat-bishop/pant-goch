@@ -14,7 +14,7 @@ import {
 import { detectInitialTheme, type Theme } from "./hooks/useTheme";
 import { sleep, typingDelayMs } from "./util/pacing";
 
-export type ChatId = "aria" | "system";
+export type ChatId = "aria";
 
 interface Store {
   bootStarted: boolean;
@@ -33,7 +33,6 @@ interface Store {
   appendEmailOptimistic(email: Email): void;
   setPendingTypingFor(threadId: string | null): void;
   setTheme(theme: Theme): void;
-  unreadFor(chatId: ChatId): number;
 }
 
 export const useStore = create<Store>()((set, get) => ({
@@ -101,7 +100,6 @@ export const useStore = create<Store>()((set, get) => ({
 
     set({ chatMessages: { ...get().chatMessages, [chatId]: t.emails } });
     if (unread.length > 0) {
-      // /open does not mutate calibration, so these can run concurrently.
       await Promise.all(unread.map((e) => postOpen(e.id)));
       await get().refreshInbox();
     }
@@ -121,9 +119,5 @@ export const useStore = create<Store>()((set, get) => ({
 
   setTheme(theme) {
     set({ theme });
-  },
-
-  unreadFor(chatId) {
-    return get().state?.unread_counts[chatId] ?? 0;
   },
 }));

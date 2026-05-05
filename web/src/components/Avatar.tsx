@@ -31,19 +31,3 @@ export function Avatar({ seed, name, size = 32, variant = "circle" }: Props) {
   );
 }
 
-export function ChannelIcon({ size = 32 }: { size?: number }) {
-  return (
-    <div
-      className="flex shrink-0 select-none items-center justify-center bg-bg-bubble-them font-mono text-text-muted"
-      style={{
-        width: size,
-        height: size,
-        borderRadius: size * 0.22,
-        fontSize: Math.round(size * 0.55),
-      }}
-      aria-hidden
-    >
-      #
-    </div>
-  );
-}

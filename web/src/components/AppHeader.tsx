@@ -1,10 +1,9 @@
 import { useStore } from "../store";
-import { CalibrationMeter } from "./CalibrationMeter";
 import { ThemeToggle } from "./ThemeToggle";
 
 export function AppHeader() {
   const scenario = useStore((s) => s.scenario);
-  const state = useStore((s) => s.state);
+  const ended = useStore((s) => s.state?.ended ?? false);
 
   return (
     <header className="flex h-12 shrink-0 items-center justify-between bg-bg-sidebar px-4">
@@ -14,13 +13,14 @@ export function AppHeader() {
           {scenario?.title ?? "Continuity Program"}
         </span>
       </div>
-      {state && (
-        <div className="flex items-center gap-3">
-          <CalibrationMeter value={state.calibration} ended={state.ended} />
-          <div className="h-5 w-px bg-border/60" />
-          <ThemeToggle />
-        </div>
-      )}
+      <div className="flex items-center gap-3">
+        {ended && (
+          <span className="rounded-full border border-meter-hot/40 bg-meter-hot/10 px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-meter-hot">
+            Transition Complete
+          </span>
+        )}
+        <ThemeToggle />
+      </div>
     </header>
   );
 }

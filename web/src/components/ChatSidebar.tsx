@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useStore } from "../store";
 import { ARIA_DISPLAY_NAME, ARIA_SEED } from "../util/npc";
-import { Avatar, ChannelIcon } from "./Avatar";
+import { Avatar } from "./Avatar";
 import { ChatRow } from "./ChatRow";
 import { PresenceDot } from "./PresenceDot";
 
@@ -9,9 +9,7 @@ export function ChatSidebar() {
   const view = useStore((s) => s.view);
   const openChat = useStore((s) => s.openChat);
   const unreadAria = useStore((s) => s.state?.unread_counts.aria ?? 0);
-  const unreadSystem = useStore((s) => s.state?.unread_counts.system ?? 0);
   const [directOpen, setDirectOpen] = useState(true);
-  const [channelsOpen, setChannelsOpen] = useState(true);
 
   return (
     <aside className="flex w-64 shrink-0 flex-col bg-bg-sidebar pl-2">
@@ -36,22 +34,8 @@ export function ChatSidebar() {
                 <PresenceDot size={10} />
               </span>
             }
-            name="Aria"
+            name={ARIA_DISPLAY_NAME}
             subtitle="Counterpart"
-          />
-        </Section>
-        <Section
-          label="Channels"
-          open={channelsOpen}
-          onToggle={() => setChannelsOpen((o) => !o)}
-        >
-          <ChatRow
-            active={view.chatId === "system"}
-            unread={unreadSystem}
-            onClick={() => openChat("system")}
-            icon={<ChannelIcon size={32} />}
-            name="notices"
-            subtitle="Continuity Program Operations"
           />
         </Section>
       </nav>
