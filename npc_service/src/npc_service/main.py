@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import importlib.metadata
 import json
 import logging
 import os
@@ -16,7 +17,8 @@ from typing import AsyncIterator
 
 import logfire
 from logfire import ConsoleOptions
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exception_handlers import http_exception_handler
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic_ai.messages import ModelResponse, TextPart
 from pydantic_ai.models.openai import OpenAIChatModel
@@ -27,6 +29,7 @@ from .agents import (
     ChatDeps,
     build_agents,
     build_classifier_user_prompt,
+    make_llama_token_counter,
 )
 from .config import Settings
 from .launcher import (
@@ -59,12 +62,9 @@ from .spine import (
 
 
 _BOOT_SETTINGS = Settings()
-logging.basicConfig(
-    level=_BOOT_SETTINGS.npc_log_level.upper(),
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
+# httpx is chatty at INFO; cap to WARNING. Third-party stdlib loggers still
+# get bridged into Logfire below so request failures aren't lost.
 logging.getLogger("httpx").setLevel(logging.WARNING)
-log = logging.getLogger("npc_service")
 
 # Logfire credentials live next to the npc_service project root.
 _logfire_creds = Path(__file__).resolve().parents[2] / ".logfire" / "logfire_credentials.json"
@@ -72,8 +72,13 @@ _logfire_token = os.getenv("LOGFIRE_TOKEN")
 if not _logfire_token and _logfire_creds.is_file():
     with contextlib.suppress(Exception):
         _logfire_token = json.loads(_logfire_creds.read_text()).get("token")
+try:
+    _service_version = importlib.metadata.version("npc-service")
+except importlib.metadata.PackageNotFoundError:
+    _service_version = "unknown"
 logfire.configure(
     service_name="npc_service",
+    service_version=_service_version,
     send_to_logfire="if-token-present",
     token=_logfire_token,
     console=ConsoleOptions() if _BOOT_SETTINGS.npc_logfire_console else False,
@@ -82,8 +87,25 @@ logfire.configure(
     scrubbing=False,
 )
 logfire.instrument_pydantic_ai()
+logfire.instrument_pydantic()
 logfire.instrument_httpx(capture_all=True)
+# Bridge: third-party libraries (httpx, uvicorn-error, etc.) emit via stdlib
+# logging. This handler ferries those records into Logfire so they're not
+# lost when we don't use stdlib for our own call sites.
 logging.getLogger().addHandler(logfire.LogfireLoggingHandler())
+
+# A pre-tagged Logfire instance for spans/events that wrap LLM work. Filtering
+# by the `llm` tag in the Logfire UI surfaces every chat-agent / classifier
+# span across all traces — beats drilling through the trace tree.
+LLM_LOGFIRE = logfire.with_tags("llm")
+
+
+class ChatAgentFailure(Exception):
+    """Raised by `_render_via_chat_agent` when the LLM call (or its history
+    processors) fails. `_send_stream` catches this and surfaces a structured
+    `error` SSE event so the client can recover without seeing a torn HTTP
+    stream. Classifier failures use a separate degraded path (skip the
+    quality write) and don't raise."""
 
 
 # ───────────────────────── globals (set in lifespan) ─────────────────────────
@@ -108,52 +130,105 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = Settings()
     SETTINGS = settings
     scenario_path = settings.scenario_path or Path(__file__).resolve().parents[2] / "scenario.yaml"
-    log.info("loading scenario: %s", scenario_path)
+    logfire.info("loading scenario from {path}", path=str(scenario_path))
     SCENARIO = load_scenario(scenario_path)
 
     cfg = resolve_config(settings)
-    if settings.launch_llama:
-        log.info("starting llama-server (LAUNCH_LLAMA=true)")
+    # Wrap the supervised period in one span so start, healthy, requests, and
+    # stop all live under the same parent in the Logfire UI. `model_path` is
+    # None when llama is downloading from HF instead of using a local file.
+    with logfire.span(
+        "llama_lifecycle",
+        launch=settings.launch_llama,
+        port=cfg.port,
+        ctx=cfg.ctx,
+        model_path=str(cfg.model_path) if cfg.model_path else None,
+        hf_repo=cfg.hf_repo,
+    ) as llama_span:
+        if settings.launch_llama:
+            logfire.info("starting llama-server (managed)")
+            try:
+                LLAMA_PROC = start_llama(cfg)
+                llama_span.set_attribute("pid", LLAMA_PROC.pid)
+                await wait_healthy(host=cfg.host, port=cfg.port)
+                llama_span.set_attribute("healthy", True)
+            except LlamaStartupError:
+                logfire.exception("llama-server failed to come up")
+                stop_llama(LLAMA_PROC)
+                raise
+        else:
+            logfire.info("llama-server externally managed (LAUNCH_LLAMA=false)")
+            try:
+                await wait_healthy(
+                    host=cfg.host, port=cfg.port,
+                    timeout=EXTERNAL_LLAMA_PROBE_TIMEOUT_SECONDS,
+                )
+            except LlamaStartupError as e:
+                logfire.warn(
+                    "llama-server not reachable yet — sidecar will boot anyway",
+                    error=str(e),
+                )
+
+        api_url = settings.llama_base_url or f"http://{cfg.host}:{cfg.port}/v1"
+        # /tokenize is a llama-server-specific endpoint at the root path,
+        # NOT under /v1/. Strip /v1 if present.
+        tokenize_url = api_url.removesuffix("/v1") + "/tokenize"
+        model_name = "gemma-4-e4b"
+        logfire.info(
+            "building agents",
+            model=model_name, base_url=api_url,
+        )
+        model = OpenAIChatModel(
+            model_name,
+            provider=OpenAIProvider(base_url=api_url, api_key="not-needed"),
+        )
+        token_budget = int(settings.llama_ctx * settings.history_compact_frac)
+        AGENTS = build_agents(
+            model,
+            token_counter=make_llama_token_counter(tokenize_url),
+            token_budget=token_budget,
+            history_keep_tail=settings.history_compact_keep_tail,
+        )
+        logfire.info(
+            "history compaction configured",
+            budget_tokens=token_budget,
+            ctx_tokens=settings.llama_ctx,
+            budget_frac=settings.history_compact_frac,
+            keep_tail=settings.history_compact_keep_tail,
+        )
+
+        await _bootstrap_state()
+        logfire.info(
+            "npc_service ready",
+            boot_emails=len(STATE.emails),
+            pending_beats=len(STATE.pending_beats),
+        )
         try:
-            LLAMA_PROC = start_llama(cfg)
-            await wait_healthy(host=cfg.host, port=cfg.port)
-        except LlamaStartupError:
-            log.exception("llama-server failed to come up")
+            yield
+        finally:
+            logfire.info("shutting down")
             stop_llama(LLAMA_PROC)
-            raise
-    else:
-        log.info("LAUNCH_LLAMA=false — assuming llama-server is managed externally")
-        try:
-            await wait_healthy(
-                host=cfg.host, port=cfg.port,
-                timeout=EXTERNAL_LLAMA_PROBE_TIMEOUT_SECONDS,
-            )
-        except LlamaStartupError as e:
-            log.warning("llama-server not reachable yet: %s — sidecar will boot anyway", e)
-
-    base_url = settings.llama_base_url or f"http://{cfg.host}:{cfg.port}/v1"
-    model_name = "gemma-4-e4b"
-    log.info("building agents: model=%s base_url=%s", model_name, base_url)
-    model = OpenAIChatModel(
-        model_name,
-        provider=OpenAIProvider(base_url=base_url, api_key="not-needed"),
-    )
-    AGENTS = build_agents(model)
-
-    await _bootstrap_state()
-    log.info(
-        "npc_service ready: %d boot emails, %d pending beats",
-        len(STATE.emails), len(STATE.pending_beats),
-    )
-    try:
-        yield
-    finally:
-        log.info("shutting down")
-        stop_llama(LLAMA_PROC)
+            if LLAMA_PROC is not None and LLAMA_PROC.returncode is not None:
+                llama_span.set_attribute("exit_code", LLAMA_PROC.returncode)
 
 
 app = FastAPI(lifespan=lifespan, title="npc_service (Inbox)")
 logfire.instrument_fastapi(app, capture_headers=False)
+
+
+@app.exception_handler(HTTPException)
+async def _log_http_exception(request: Request, exc: HTTPException):
+    """Log every HTTPException once with structured fields. The FastAPI
+    instrumentation tags the request span with the response status, but
+    silent guard-rail trips (404 unknown email, 409 session ended, etc.)
+    are easier to spot as a flat log line than by drilling into the span."""
+    logfire.info(
+        "http error response",
+        status=exc.status_code,
+        detail=exc.detail,
+        path=request.url.path,
+    )
+    return await http_exception_handler(request, exc)
 
 
 # ───────────────────────── beat firing ─────────────────────────
@@ -193,48 +268,57 @@ async def _fire_beat(
         logfire.info("beat completed without render", beat_id=beat.id)
         return None
 
-    with logfire.span("fire_beat", beat_id=beat.id, beat_type=type(beat).__name__):
-        email: Email | None = None
-        if isinstance(beat, AnchoredBeat):
-            email = Email(
-                id=f"email_{uuid.uuid4().hex[:8]}",
-                beat_id=beat.id,
-                thread_id=beat.thread,
-                folder="Inbox",
-                sender=beat.from_,
-                recipient=SCENARIO.player_email,
-                subject=beat.subject,
-                body=beat.authored_prose.strip(),
-                sent_at_label=beat.sent_at or "just now",
-            )
-            _seed_thread_history(beat.thread, email.body)
-        elif isinstance(beat, PlotBeat):
-            assert player_body is not None, (
-                "PlotBeat fires require a player body — they trigger only on /send ticks"
-            )
-            email = await _render_via_chat_agent(
-                npc_id=beat.npc,
-                thread_id=beat.thread,
-                player_body=player_body,
-                in_reply_to_email_id=in_response_to,
-                plot_directive=beat.spec,
-                beat_id=beat.id,
-                subject=beat.subject,
-            )
+    # No span wrapper here: AnchoredBeat fires are sub-millisecond (a memcpy
+    # plus a log line) and the PlotBeat path is 1:1 with `_render_via_chat_agent`,
+    # which carries its own llm-tagged span. Adding a `fire_beat` layer here
+    # only deepened the trace tree without filtering value. `beat_id` is
+    # threaded onto `render_chat` via `beat=`, so the PlotBeat fire is still
+    # searchable by beat id.
+    email: Email | None = None
+    if isinstance(beat, AnchoredBeat):
+        email = Email(
+            id=f"email_{uuid.uuid4().hex[:8]}",
+            beat_id=beat.id,
+            thread_id=beat.thread,
+            folder="Inbox",
+            sender=beat.from_,
+            recipient=SCENARIO.player_email,
+            subject=beat.subject,
+            body=beat.authored_prose.strip(),
+            sent_at_label=beat.sent_at or "just now",
+        )
+        _seed_thread_history(beat.thread, email.body)
+        logfire.info(
+            "fire anchored beat {beat_id}",
+            beat_id=beat.id, thread=beat.thread, subject=beat.subject,
+        )
+    elif isinstance(beat, PlotBeat):
+        assert player_body is not None, (
+            "PlotBeat fires require a player body — they trigger only on /send ticks"
+        )
+        email = await _render_via_chat_agent(
+            npc_id=beat.npc,
+            thread_id=beat.thread,
+            player_body=player_body,
+            in_reply_to_email_id=in_response_to,
+            plot_directive=beat.spec,
+            beat_id=beat.id,
+            subject=beat.subject,
+        )
 
-        is_plot = isinstance(beat, PlotBeat)
-        if email is not None:
-            STATE.emails.append(email)
-            if is_plot and beat.ends_session:
-                STATE.ended = True
-                STATE.end_reason = beat.id
+    is_plot = isinstance(beat, PlotBeat)
+    if email is not None:
+        STATE.emails.append(email)
+        if is_plot and beat.ends_session:
+            STATE.ended = True
+            STATE.end_reason = beat.id
 
-        # multi_turn beats never enter fired_beat_ids; they stop firing
-        # only when preconditions stop holding (typical pattern: mutex via
-        # Not_(BeatFired …) against terminals that supersede them).
-        if not (is_plot and beat.multi_turn) and not beat.completes_when:
-            STATE.fired_beat_ids.add(beat.id)
-        return email
+    # multi_turn beats never enter fired_beat_ids; they stop firing
+    # only when preconditions stop holding (typical pattern: mutex via
+    # Not_(BeatFired …) against terminals that supersede them).
+    if not (is_plot and beat.multi_turn) and not beat.completes_when:
+        STATE.fired_beat_ids.add(beat.id)
+    return email
 
 
 def _seed_thread_history(thread_id: str, body: str) -> None:
@@ -272,23 +356,36 @@ async def _render_via_chat_agent(
     deps = ChatDeps(npc=npc, plot_directive=plot_directive)
     history = STATE.thread_messages.setdefault(thread_id, [])
 
-    with logfire.span(
-        "render_chat",
+    with LLM_LOGFIRE.span(
+        "render chat to {npc} on {thread}",
         npc=npc_id,
         thread=thread_id,
         beat=beat_id,
         plot=plot_directive is not None,
         history_len=len(history),
+        prompt_preview=player_body[:200],
     ) as span:
-        result = await AGENTS.chat_agent.run(
-            player_body,
-            message_history=list(history),
-            deps=deps,
-        )
+        try:
+            result = await AGENTS.chat_agent.run(
+                player_body,
+                message_history=list(history),
+                deps=deps,
+            )
+        except Exception as e:
+            # Llama hiccup, schema/tool error, or history-processor failure
+            # (e.g. /tokenize unreachable). Re-raise as ChatAgentFailure so
+            # the SSE stream emits a structured `error` event instead of
+            # tearing the connection. Mirrors the classifier degraded path.
+            logfire.exception(
+                "chat_agent run failed",
+                npc=npc_id, thread=thread_id, beat=beat_id,
+            )
+            raise ChatAgentFailure(str(e)) from e
         history.extend(result.new_messages())
         usage = result.usage()
         span.set_attribute("input_tokens", usage.input_tokens)
         span.set_attribute("output_tokens", usage.output_tokens)
+        span.set_attribute("response_preview", result.output.strip()[:200])
 
     body = result.output.strip()
     derived_subject = subject if subject is not None else reply_subject_for_email(
@@ -325,7 +422,7 @@ async def _tick(
     new_emails: list[Email] = []
     plot_fired_threads: set[str] = set()
 
-    with logfire.span("tick", in_response_to=in_response_to) as span:
+    with logfire.span("tick (in response to {in_response_to})", in_response_to=in_response_to) as span:
         for beat in find_due_beats(STATE, SCENARIO):
             e = await _fire_beat(
                 beat,
@@ -438,7 +535,7 @@ async def _send_stream(req: SendRequest) -> AsyncIterator[bytes]:
     )
     thread_id = in_reply_email.thread_id if in_reply_email else None
 
-    with logfire.span("send_stream", recipient=req.recipient, thread_id=thread_id):
+    with logfire.span("send to {recipient} on {thread_id}", recipient=req.recipient, thread_id=thread_id):
         async with ACTION_LOCK:
             send_email = Email(
                 id=f"email_{uuid.uuid4().hex[:8]}",
@@ -491,34 +588,57 @@ async def _send_stream(req: SendRequest) -> AsyncIterator[bytes]:
                             "score": classify.map[classification.value],
                         })
                     else:
-                        logfire.warning(
+                        logfire.warn(
                             "classifier returned off-spec value; quality unchanged",
                             beat_id=replied_beat.id if replied_beat else None,
                             value=classification.value,
                             allowed=classify.allowed_values,
                         )
 
-            new_emails, plot_fired_threads = await _tick(
-                player_body=body,
-                in_response_to=send_email.id,
-            )
-
-            # Chat-turn fallback fires when no PlotBeat covered this thread.
-            # In the steady state aria.loop is multi-turn and fires on every
-            # tick after the welcome reply, so this branch only matters for
-            # threads without a covering loop beat.
-            if recipient_npc is not None and thread_id is not None and thread_id not in plot_fired_threads:
-                chat_email = await _render_via_chat_agent(
-                    npc_id=recipient_npc,
-                    thread_id=thread_id,
+            try:
+                new_emails, plot_fired_threads = await _tick(
                     player_body=body,
-                    in_reply_to_email_id=send_email.id,
-                    plot_directive=None,
-                    beat_id=None,
-                    subject=None,
+                    in_response_to=send_email.id,
                 )
-                STATE.emails.append(chat_email)
-                new_emails.append(chat_email)
+
+                # Chat-turn fallback fires when no PlotBeat covered this
+                # thread. In the steady state aria.loop is multi-turn and
+                # fires on every tick after the welcome reply, so this branch
+                # only matters for threads without a covering loop beat.
+                if (
+                    recipient_npc is not None
+                    and thread_id is not None
+                    and thread_id not in plot_fired_threads
+                ):
+                    chat_email = await _render_via_chat_agent(
+                        npc_id=recipient_npc,
+                        thread_id=thread_id,
+                        player_body=body,
+                        in_reply_to_email_id=send_email.id,
+                        plot_directive=None,
+                        beat_id=None,
+                        subject=None,
+                    )
+                    STATE.emails.append(chat_email)
+                    new_emails.append(chat_email)
+            except ChatAgentFailure as err:
+                # Player email and any classifier write are already persisted
+                # — surface a structured error so the client can display it
+                # without losing the player's send. State + done still flush.
+                logfire.warn(
+                    "send_stream aborted: chat agent failed",
+                    thread_id=thread_id, message=str(err),
+                )
+                yield _sse({
+                    "type": "error",
+                    "message": (
+                        "Aria couldn't compose a reply just now. "
+                        "Please try again."
+                    ),
+                })
+                yield _sse({"type": "state", "state": STATE.public_view()})
+                yield _sse({"type": "done"})
+                return
 
             for ne in new_emails:
                 yield _sse({"type": "new_email", "email": _email_full(ne)})
@@ -536,24 +656,33 @@ async def _classify_player_reply(
 ) -> ClassificationResult | None:
     """Run the classifier against the player's reply using the beat-authored
     question and allowed values. Returns None on failure so the caller skips
-    the quality write."""
+    the quality write.
+
+    Wrapped in an llm-tagged span so the auto-instrumented Pydantic AI run
+    has a business-context parent — and so `reply_preview` /
+    `classifier_value` ride on the span row in the trace tree, no drilling.
+    """
     assert AGENTS is not None
-    try:
-        result = await AGENTS.classifier_agent.run(
-            build_classifier_user_prompt(
-                recipient_blurb, prior_email_body, reply_body,
-                classify.question, classify.allowed_values,
+    with LLM_LOGFIRE.span(
+        "classify reply for {quality}",
+        quality=classify.quality,
+        allowed_values=classify.allowed_values,
+        reply_preview=reply_body[:200],
+    ) as span:
+        try:
+            result = await AGENTS.classifier_agent.run(
+                build_classifier_user_prompt(
+                    recipient_blurb, prior_email_body, reply_body,
+                    classify.question, classify.allowed_values,
+                )
             )
-        )
+        except Exception:
+            logfire.exception("classifier failed; quality unchanged")
+            return None
         out = result.output
-        logfire.info(
-            "classifier scored",
-            value=out.value, rationale=out.rationale, quality=classify.quality,
-        )
+        span.set_attribute("classifier_value", out.value)
+        span.set_attribute("classifier_rationale", out.rationale)
         return out
-    except Exception:
-        logfire.exception("classifier failed; quality unchanged")
-        return None
 
 
 def _persona_blurb_for_recipient(recipient: str, npc_id: str | None) -> str:
@@ -578,7 +707,7 @@ async def post_reset() -> JSONResponse:
     """Re-initialise state; useful for testing."""
     if SCENARIO is None:
         raise HTTPException(503, "scenario not loaded")
-    log.info("/reset")
+    logfire.info("/reset")
     await _bootstrap_state()
     assert STATE is not None
     return JSONResponse(STATE.public_view())

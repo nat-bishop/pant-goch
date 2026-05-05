@@ -34,3 +34,7 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = [
+    "integration: tests that require a running llama-server (skipped by default; run with `uv run pytest -m integration`)",
+]
+addopts = "-m 'not integration'"

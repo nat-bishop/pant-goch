@@ -4,9 +4,7 @@ real LLM. Verifies wiring: lifespan boots, the welcome anchored beat lands,
 beats that author classify_reply, the multi-turn loop re-fires across sends,
 engagement accumulates, and ends_session terminals flip state.ended.
 """
-import json
 from contextlib import ExitStack
-from typing import Iterable
 
 import pytest
 from fastapi.testclient import TestClient
@@ -14,6 +12,8 @@ from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart
 from pydantic_ai.models.test import TestModel
 
 import npc_service.main as main
+
+from .conftest import consume_sse
 
 
 CHAT_TURN_PROSE = (
@@ -133,7 +133,7 @@ def test_first_send_fires_loop(client):
     eligible and renders. Welcome has no classify_reply so the classifier
     doesn't run on this send."""
     welcome = client.get("/inbox").json()["folders"]["Inbox"][0]
-    events = list(_consume_sse(client.stream("POST", "/send", json={
+    events = list(consume_sse(client.stream("POST", "/send", json={
         "in_reply_to": welcome["id"],
         "recipient": "Aria",
         "body": "happy to be here",
@@ -155,14 +155,14 @@ def test_loop_re_fires_across_sends(client):
     tick. thread_messages accumulates: welcome (ModelResponse) + two
     (ModelRequest, ModelResponse) pairs = 5 entries."""
     welcome = client.get("/inbox").json()["folders"]["Inbox"][0]
-    list(_consume_sse(client.stream("POST", "/send", json={
+    list(consume_sse(client.stream("POST", "/send", json={
         "in_reply_to": welcome["id"], "recipient": "Aria", "body": "hello there",
     })))
     # Reply to the loop's email this time so the classifier runs.
     loop_email = next(
         e for e in main.STATE.emails if e.beat_id == "aria.loop"
     )
-    list(_consume_sse(client.stream("POST", "/send", json={
+    list(consume_sse(client.stream("POST", "/send", json={
         "in_reply_to": loop_email.id, "recipient": "Aria", "body": "another note",
     })))
 
@@ -184,7 +184,7 @@ def test_loop_body_does_not_leak_email_headers(client):
     the chat agent could in principle drift into emitting `Subject:` or
     `From:` headers. The base instructions forbid this."""
     welcome = client.get("/inbox").json()["folders"]["Inbox"][0]
-    events = list(_consume_sse(client.stream("POST", "/send", json={
+    events = list(consume_sse(client.stream("POST", "/send", json={
         "in_reply_to": welcome["id"], "recipient": "Aria", "body": "hello",
     })))
     loop_emails = [
@@ -203,7 +203,7 @@ def test_classifier_runs_on_reply_to_loop_and_accumulates(client):
     pushes the quality up by 1.0."""
     welcome = client.get("/inbox").json()["folders"]["Inbox"][0]
     # First send: replies to welcome → loop fires; welcome has no classifier.
-    list(_consume_sse(client.stream("POST", "/send", json={
+    list(consume_sse(client.stream("POST", "/send", json={
         "in_reply_to": welcome["id"], "recipient": "Aria", "body": "hi",
     })))
     assert main.STATE.qualities["engagement"] == 0.0
@@ -212,7 +212,7 @@ def test_classifier_runs_on_reply_to_loop_and_accumulates(client):
     # Override classifier to 'engaged' for the next two sends; engagement
     # should accumulate to 2.0.
     with main.AGENTS.classifier_agent.override(model=_test_model_for_classifier("engaged")):
-        events = list(_consume_sse(client.stream("POST", "/send", json={
+        events = list(consume_sse(client.stream("POST", "/send", json={
             "in_reply_to": loop_email.id, "recipient": "Aria",
             "body": "Tuesday afternoons I usually triage email, then deep work.",
         })))
@@ -224,7 +224,7 @@ def test_classifier_runs_on_reply_to_loop_and_accumulates(client):
         next_loop_email = next(
             e for e in reversed(main.STATE.emails) if e.beat_id == "aria.loop"
         )
-        list(_consume_sse(client.stream("POST", "/send", json={
+        list(consume_sse(client.stream("POST", "/send", json={
             "in_reply_to": next_loop_email.id, "recipient": "Aria",
             "body": "and Wednesdays are deep work mornings.",
         })))
@@ -260,6 +260,45 @@ def test_complete_standard_fires_when_engagement_low(client):
     assert main.STATE.qualities["engagement"] == 0.0  # floor-clamped
 
 
+def test_send_emits_structured_error_when_chat_agent_fails(client, monkeypatch):
+    """When chat_agent.run raises, _send_stream must emit a structured SSE
+    `error` event (matching `web/src/api.ts` SseEvent.error) followed by a
+    final state + done — never a torn HTTP stream. The player's email is
+    already persisted so the client sees their send accepted before the
+    error.
+
+    Replaces the real chat_agent.run with one that raises RuntimeError so
+    the test exercises the ChatAgentFailure → SSE error path without
+    needing to break the TestModel internals.
+    """
+    async def _raise(*args, **kwargs):
+        raise RuntimeError("simulated llama failure")
+
+    monkeypatch.setattr(main.AGENTS.chat_agent, "run", _raise)
+    welcome = client.get("/inbox").json()["folders"]["Inbox"][0]
+    events = list(consume_sse(client.stream("POST", "/send", json={
+        "in_reply_to": welcome["id"], "recipient": "Aria", "body": "hi",
+    })))
+
+    # Player's send is recorded first.
+    assert events[0]["type"] == "send_recorded"
+
+    # Exactly one error event with a player-friendly message.
+    errors = [e for e in events if e["type"] == "error"]
+    assert len(errors) == 1
+    assert "Aria" in errors[0]["message"]
+
+    # Stream still terminates cleanly with state + done.
+    assert events[-2]["type"] == "state"
+    assert events[-1]["type"] == "done"
+
+    # No NPC reply was emitted (rendering failed before any new_email event).
+    assert not any(e["type"] == "new_email" for e in events)
+
+    # Player email IS in state — the send was accepted before the failure.
+    assert any(e.body == "hi" and e.sender == "you" for e in main.STATE.emails)
+
+
 def test_send_returns_409_after_session_ends(client):
     """Once a terminal beat fires, /send rejects further activity."""
     _play_five_replies(client)
@@ -282,7 +321,7 @@ def _play_five_replies(client, body: str = "k") -> None:
     welcome = client.get("/inbox").json()["folders"]["Inbox"][0]
     last_in_reply_to = welcome["id"]
     for _ in range(5):
-        list(_consume_sse(client.stream("POST", "/send", json={
+        list(consume_sse(client.stream("POST", "/send", json={
             "in_reply_to": last_in_reply_to, "recipient": "Aria", "body": body,
         })))
         last_npc = next(
@@ -291,19 +330,3 @@ def _play_five_replies(client, body: str = "k") -> None:
         )
         if last_npc is not None:
             last_in_reply_to = last_npc.id
-
-
-def _consume_sse(response_cm) -> Iterable[dict]:
-    with response_cm as r:
-        assert r.status_code == 200, r.text
-        buffer = ""
-        for chunk in r.iter_text():
-            buffer += chunk
-            while "\n\n" in buffer:
-                block, _, buffer = buffer.partition("\n\n")
-                for line in block.split("\n"):
-                    if line.startswith("data: "):
-                        try:
-                            yield json.loads(line[6:])
-                        except json.JSONDecodeError:
-                            continue

@@ -3,6 +3,17 @@
 
 const API = "/api";
 
+async function ensureOk(r: Response, op: string): Promise<void> {
+  if (r.ok) return;
+  // Surface a friendly message to UI banners while keeping the raw status +
+  // response body in dev tools for debugging. Sidecar 5xx → "sidecar error";
+  // 4xx (bad request, session ended, unknown thread) → "request rejected".
+  const detail = r.status >= 500 ? "sidecar error" : "request rejected";
+  const body = await r.text().catch(() => "");
+  console.warn(`${op} failed`, r.status, body);
+  throw new Error(detail);
+}
+
 export interface Email {
   id: string;
   from: string;
@@ -36,19 +47,19 @@ export interface ThreadResponse {
 
 export async function getScenario() {
   const r = await fetch(`${API}/scenario`);
-  if (!r.ok) throw new Error(`scenario: ${r.status}`);
+  await ensureOk(r, "scenario");
   return (await r.json()) as { title: string; premise: string };
 }
 
 export async function getInbox(): Promise<InboxResponse> {
   const r = await fetch(`${API}/inbox`);
-  if (!r.ok) throw new Error(`inbox: ${r.status}`);
+  await ensureOk(r, "inbox");
   return r.json();
 }
 
 export async function getThread(threadId: string): Promise<ThreadResponse> {
   const r = await fetch(`${API}/thread/${encodeURIComponent(threadId)}`);
-  if (!r.ok) throw new Error(`thread: ${r.status}`);
+  await ensureOk(r, "thread");
   return r.json();
 }
 
@@ -58,7 +69,7 @@ export async function postOpen(emailId: string) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ email_id: emailId }),
   });
-  if (!r.ok) throw new Error(`open: ${r.status}`);
+  await ensureOk(r, "open");
   return r.json() as Promise<{ state: GameState; new_emails: Email[] }>;
 }
 
@@ -82,7 +93,8 @@ export async function* postJsonSse(
     headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
     body: JSON.stringify(body),
   });
-  if (!r.ok || !r.body) throw new Error(`${path}: ${r.status}`);
+  await ensureOk(r, path);
+  if (!r.body) throw new Error("sidecar error");
   yield* readSseStream(r.body);
 }
 
@@ -104,8 +116,11 @@ async function* readSseStream(
         if (line.startsWith("data: ")) {
           try {
             yield JSON.parse(line.slice(6)) as SseEvent;
-          } catch {
-            // ignore unparseable
+          } catch (e) {
+            // Don't tear the stream over a single malformed event, but make
+            // sure dev tools see it — silent JSON corruption was costing us
+            // hours of "why didn't the UI update?" debugging.
+            console.warn("unparseable SSE line", line, e);
           }
         }
       }

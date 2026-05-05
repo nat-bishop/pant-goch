@@ -52,11 +52,14 @@ The two flags `--jinja` and `--reasoning off` on llama-server are non-negotiable
 ## Tests
 
 ```bash
-make test                 # 42 pytest tests (no llama needed; uses TestModel)
-make typecheck            # tsc on web/
+make test                              # 44 unit tests (no llama; uses TestModel)
+cd npc_service && uv run pytest -m integration  # 6 live-llama tests (needs `make llama` running)
+make typecheck                         # tsc on web/
 ```
 
-`test_spine.py` covers predicate evaluation (including `BeatFired` and `Not_` for mutual exclusion), beat scheduling with `runtime_preconditions`, multi-turn beat re-fire and completion, `apply_classification` (LLM-judge → named quality with `set` and `accumulate` modes, clamping), terminal mutual-exclusion via `Not_(BeatFired)` gated on `engagement`, `reply_subject_for_email`, and `latest_npc_email_in_thread`. `test_app.py` boots the FastAPI app with TestModel-overridden agents and asserts: `/open` is read-only; `/send` rejects empty bodies; first /send fires the loop beat; the multi_turn loop re-fires across sends; `thread_messages` accumulates `ModelRequest`/`ModelResponse` across sends; rendered bodies contain no `Subject:`/`From:`/`To:`/JSON/markdown header leakage; the classifier accumulates `engagement` on replies to the loop; `complete_warm` fires + `state.ended` flips at `engagement ≥ 4` and `replies ≥ 5`; `complete_standard` fires when warm is blocked; `/send` returns 409 after session end.
+Unit tests run by default; integration tests are skipped via `addopts = "-m 'not integration'"` in `pyproject.toml`. The integration suite exercises the real `/v1/chat/completions` and `/tokenize` round-trips — slower (~5-15s per chat turn on Gemma 4 E4B), but the only thing that catches prompt drift, classifier sycophancy, and llama-server endpoint contract changes.
+
+`test_spine.py` covers predicate evaluation (including `BeatFired` and `Not_` for mutual exclusion), beat scheduling with `runtime_preconditions`, multi-turn beat re-fire and completion, `apply_classification` (LLM-judge → named quality with `set` and `accumulate` modes, clamping), terminal mutual-exclusion via `Not_(BeatFired)` gated on `engagement`, `reply_subject_for_email`, and `latest_npc_email_in_thread`. `test_app.py` boots the FastAPI app with TestModel-overridden agents and asserts: `/open` is read-only; `/send` rejects empty bodies; first /send fires the loop beat; the multi_turn loop re-fires across sends; `thread_messages` accumulates `ModelRequest`/`ModelResponse` across sends; rendered bodies contain no `Subject:`/`From:`/`To:`/JSON/markdown header leakage; the classifier accumulates `engagement` on replies to the loop; `complete_warm` fires + `state.ended` flips at `engagement ≥ 4` and `replies ≥ 5`; `complete_standard` fires when warm is blocked; `/send` returns 409 after session end; chat-agent failures emit a structured `error` SSE event (no torn streams). `test_history_compaction.py` unit-tests the summarise-then-replace history processor in isolation (under-budget noop, short-history noop, over-budget summary splice).
 
 ## Smoke-test the loop
 

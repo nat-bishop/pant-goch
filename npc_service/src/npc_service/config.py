@@ -53,15 +53,11 @@ class Settings(BaseSettings):
 
     scenario_path: Path | None = None
 
-    # ───────── history compaction (rarely tuned at runtime) ─────────
-    # summarize_when_large fires when input would exceed this share of LLAMA_CTX.
-    summary_trigger_frac: float = 0.8
-    # Absolute trigger override (tokens). 0 → compute from summary_trigger_frac * llama_ctx.
-    summary_trigger_tokens: int = 0
-    # Trailing messages kept verbatim past the recap.
-    summary_keep_tail: int = 4
-    # Whole-stream timeout for /action; surface error rather than hang the SSE.
-    action_stream_timeout_seconds: float = 120.0
-    # Whole-call timeout for /options; bounds how long ACTION_LOCK can be held by
-    # an options call so a stalled model can't lock out /action indefinitely.
-    options_timeout_seconds: float = 30.0
+    # ───────── history compaction ─────────
+    # When the chat-agent's message_history would exceed this share of llama_ctx,
+    # the oldest messages get summarised by a sibling agent and replaced with a
+    # single recap. Token budget is computed at boot from llama_ctx.
+    history_compact_frac: float = 0.8
+    # Most recent N messages always kept verbatim past the recap so the model
+    # sees the immediate exchange without paraphrase loss.
+    history_compact_keep_tail: int = 4

@@ -11,7 +11,7 @@ Two rules this module enforces:
 """
 from __future__ import annotations
 
-import logging
+import logfire
 
 from .models import (
     Beat,
@@ -26,9 +26,6 @@ from .models import (
     QualityLt,
     Scenario,
 )
-
-
-log = logging.getLogger("npc_service.spine")
 
 
 # ───────────────────────── predicate evaluation ─────────────────────────
@@ -150,7 +147,7 @@ def find_due_beats(state: InboxState, scenario: Scenario) -> list[Beat]:
         if pb.beat_id in state.fired_beat_ids:
             continue
         if pb.beat_id not in scenario.beat_by_id:
-            log.warning("pending beat %s not in scenario", pb.beat_id)
+            logfire.warn("pending beat not in scenario", beat_id=pb.beat_id)
             continue
         still_pending.append(pb)
     state.pending_beats = still_pending

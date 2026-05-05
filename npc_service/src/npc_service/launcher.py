@@ -2,25 +2,27 @@ from __future__ import annotations
 
 import asyncio
 import ctypes
-import logging
 import os
 import subprocess
-import sys
 import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
 import httpx
+import logfire
 
 from .config import Settings
-
-
-log = logging.getLogger(__name__)
 
 HEALTH_POLL_INTERVAL_SECONDS = 0.5
 HEALTH_TIMEOUT_DEFAULT_SECONDS = 600.0  # cold Q8_0 load on slow disk: 90+s; HF download can be minutes
 SHUTDOWN_GRACE_SECONDS = 5.0
+
+
+def _warn_winapi(msg: str, **fields) -> None:
+    """logfire.warn with `err=GetLastError()` already attached — every WinAPI
+    failure path in this module wants the same error code."""
+    logfire.warn(msg, err=ctypes.get_last_error(), **fields)
 
 
 # ───────────────────────── Windows Job Object cleanup ─────────────────────────
@@ -84,7 +86,7 @@ def _create_kill_on_close_job() -> int | None:
 
     h = kernel32.CreateJobObjectW(None, None)
     if not h:
-        log.warning("CreateJobObject failed (err=%s); llama-server cleanup falls back to stop_llama()", ctypes.get_last_error())
+        _warn_winapi("CreateJobObject failed; llama-server cleanup falls back to stop_llama()")
         return None
 
     info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
@@ -92,7 +94,7 @@ def _create_kill_on_close_job() -> int | None:
     if not kernel32.SetInformationJobObject(
         h, JobObjectExtendedLimitInformation, ctypes.byref(info), ctypes.sizeof(info)
     ):
-        log.warning("SetInformationJobObject failed (err=%s); closing job", ctypes.get_last_error())
+        _warn_winapi("SetInformationJobObject failed; closing job")
         kernel32.CloseHandle(h)
         return None
     return h
@@ -110,11 +112,11 @@ def _assign_pid_to_job(job_handle: int, pid: int) -> None:
     kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
     h_proc = kernel32.OpenProcess(PROCESS_TERMINATE | PROCESS_SET_QUOTA, False, pid)
     if not h_proc:
-        log.warning("OpenProcess(pid=%s) failed (err=%s)", pid, ctypes.get_last_error())
+        _warn_winapi("OpenProcess failed for pid {pid}", pid=pid)
         return
     try:
         if not kernel32.AssignProcessToJobObject(job_handle, h_proc):
-            log.warning("AssignProcessToJobObject failed (err=%s) — likely already in a non-nestable parent job", ctypes.get_last_error())
+            _warn_winapi("AssignProcessToJobObject failed — likely already in a non-nestable parent job")
     finally:
         kernel32.CloseHandle(h_proc)
 
@@ -205,7 +207,13 @@ def _build_command(cfg: LlamaConfig) -> list[str]:
 
 
 def _drain_pipe(pipe, log_file_handle, tag: str) -> None:
-    """Background thread: read from a Popen pipe forever, tee to file."""
+    """Background thread: read from a Popen pipe forever, tee to file.
+
+    Bulk subprocess output (every line) goes to the per-launch log file
+    only — that file is the forensic record. The handful of keyword-matched
+    lines (errors, model-loaded, listening, eval timings) ride into Logfire
+    as structured `llama subprocess` events so they're visible alongside
+    sidecar spans without staring at a tail."""
     try:
         for raw in iter(pipe.readline, b""):
             try:
@@ -214,14 +222,13 @@ def _drain_pipe(pipe, log_file_handle, tag: str) -> None:
                 line = repr(raw)
             log_file_handle.write(f"[{tag}] {line}\n")
             log_file_handle.flush()
-            # tee key lines to stderr so they show up in console
             lower = line.lower()
             keywords = (
                 "error", "loaded model", "model loaded", "warming up", "listening on",
                 "prompt eval", "eval time", "tokens per second", "slot release",
             )
             if any(k in lower for k in keywords):
-                print(f"[llama:{tag}] {line}", file=sys.stderr, flush=True)
+                logfire.info("llama subprocess [{tag}]", tag=tag, line=line)
     finally:
         try:
             pipe.close()
@@ -233,59 +240,72 @@ def start_llama(cfg: LlamaConfig | None = None) -> subprocess.Popen:
     cfg = cfg or resolve_config()
     cmd = _build_command(cfg)
 
-    log_dir = _exe_dir() / "logs"
-    log_dir.mkdir(parents=True, exist_ok=True)
-    log_path = log_dir / f"llama-{int(time.time())}.log"
-    log_handle = open(log_path, "w", encoding="utf-8")
-    log_handle.write(f"# command: {' '.join(cmd)}\n")
-    log_handle.flush()
+    with logfire.span(
+        "start llama-server on port {port}",
+        port=cfg.port,
+        bin=str(cfg.bin),
+        model_path=str(cfg.model_path) if cfg.model_path else None,
+        hf_repo=cfg.hf_repo,
+        ctx=cfg.ctx,
+    ):
+        log_dir = _exe_dir() / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = log_dir / f"llama-{int(time.time())}.log"
+        log_handle = open(log_path, "w", encoding="utf-8")
+        log_handle.write(f"# command: {' '.join(cmd)}\n")
+        log_handle.flush()
 
-    log.info("starting llama-server: %s", " ".join(cmd))
-    log.info("llama-server log: %s", log_path)
-
-    if not cfg.bin.exists() and not cfg.bin.name == "llama-server":
-        # Allow PATH lookup if user passed bare "llama-server"
-        log.warning("llama-server binary not found at %s — relying on PATH", cfg.bin)
-
-    creationflags = 0
-    if os.name == "nt":
-        # Avoid spawning a console window for the subprocess
-        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-
-    try:
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            stdin=subprocess.DEVNULL,
-            bufsize=0,
-            creationflags=creationflags,
-            # Don't let llama-server inherit uvicorn's listening socket — otherwise
-            # an orphaned llama keeps :8000 bound after the sidecar dies.
-            close_fds=True,
+        logfire.info(
+            "spawning llama-server",
+            cmd=cmd, log_path=str(log_path),
         )
-    except FileNotFoundError as e:
-        raise LlamaStartupError(
-            f"could not start llama-server: binary not found. "
-            f"Set LLAMA_SERVER_BIN or place llama-server in {cfg.bin.parent}. "
-            f"Underlying error: {e}"
-        ) from e
 
-    # Enroll llama-server in our KILL_ON_JOB_CLOSE job so it dies if Python
-    # exits abruptly without running stop_llama(). No-op on non-Windows or
-    # if job creation failed (logged above) — stop_llama() remains the
-    # primary cleanup path.
-    if _LLAMA_JOB_HANDLE is not None:
-        _assign_pid_to_job(_LLAMA_JOB_HANDLE, proc.pid)
+        if not cfg.bin.exists() and not cfg.bin.name == "llama-server":
+            # Allow PATH lookup if user passed bare "llama-server"
+            logfire.warn(
+                "llama-server binary not found — relying on PATH",
+                bin=str(cfg.bin),
+            )
 
-    threading.Thread(
-        target=_drain_pipe, args=(proc.stdout, log_handle, "out"), daemon=True
-    ).start()
-    threading.Thread(
-        target=_drain_pipe, args=(proc.stderr, log_handle, "err"), daemon=True
-    ).start()
+        creationflags = 0
+        if os.name == "nt":
+            # Avoid spawning a console window for the subprocess
+            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
-    return proc
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                stdin=subprocess.DEVNULL,
+                bufsize=0,
+                creationflags=creationflags,
+                # Don't let llama-server inherit uvicorn's listening socket — otherwise
+                # an orphaned llama keeps :8000 bound after the sidecar dies.
+                close_fds=True,
+            )
+        except FileNotFoundError as e:
+            raise LlamaStartupError(
+                f"could not start llama-server: binary not found. "
+                f"Set LLAMA_SERVER_BIN or place llama-server in {cfg.bin.parent}. "
+                f"Underlying error: {e}"
+            ) from e
+
+        # Enroll llama-server in our KILL_ON_JOB_CLOSE job so it dies if Python
+        # exits abruptly without running stop_llama(). No-op on non-Windows or
+        # if job creation failed (logged above) — stop_llama() remains the
+        # primary cleanup path.
+        if _LLAMA_JOB_HANDLE is not None:
+            _assign_pid_to_job(_LLAMA_JOB_HANDLE, proc.pid)
+
+        threading.Thread(
+            target=_drain_pipe, args=(proc.stdout, log_handle, "out"), daemon=True
+        ).start()
+        threading.Thread(
+            target=_drain_pipe, args=(proc.stderr, log_handle, "err"), daemon=True
+        ).start()
+
+        return proc
 
 
 async def wait_healthy(
@@ -304,30 +324,38 @@ async def wait_healthy(
         timeout = HEALTH_TIMEOUT_DEFAULT_SECONDS
 
     url = f"http://{host}:{port}/health"
-    deadline = asyncio.get_event_loop().time() + timeout
     last_err: Exception | None = None
 
-    log.info("waiting for llama-server at %s (timeout=%ss)", url, timeout)
-    async with httpx.AsyncClient(timeout=2.0) as client:
-        while asyncio.get_event_loop().time() < deadline:
-            try:
-                resp = await client.get(url)
-                if resp.status_code == 200:
-                    body: dict = {}
-                    try:
-                        body = resp.json()
-                    except Exception:
-                        pass
-                    status = body.get("status") if isinstance(body, dict) else None
-                    if status == "ok" or not body:
-                        log.info("llama-server healthy")
-                        return
-                    last_err = RuntimeError(f"unexpected health body: {body}")
-                else:
-                    last_err = RuntimeError(f"health returned {resp.status_code}")
-            except httpx.HTTPError as e:
-                last_err = e
-            await asyncio.sleep(poll_interval)
+    with logfire.span(
+        "wait for llama at {url}",
+        url=url, timeout=timeout, poll_interval=poll_interval,
+    ) as span:
+        start_time = asyncio.get_event_loop().time()
+        deadline = start_time + timeout
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            while asyncio.get_event_loop().time() < deadline:
+                try:
+                    resp = await client.get(url)
+                    if resp.status_code == 200:
+                        body: dict = {}
+                        try:
+                            body = resp.json()
+                        except Exception:
+                            pass
+                        status = body.get("status") if isinstance(body, dict) else None
+                        if status == "ok" or not body:
+                            span.set_attribute(
+                                "wait_seconds",
+                                asyncio.get_event_loop().time() - start_time,
+                            )
+                            logfire.info("llama-server healthy", url=url)
+                            return
+                        last_err = RuntimeError(f"unexpected health body: {body}")
+                    else:
+                        last_err = RuntimeError(f"health returned {resp.status_code}")
+                except httpx.HTTPError as e:
+                    last_err = e
+                await asyncio.sleep(poll_interval)
 
     raise LlamaStartupError(
         f"llama-server at {url} did not become healthy within {timeout}s. "
@@ -340,21 +368,24 @@ def stop_llama(proc: subprocess.Popen | None, grace_seconds: float = SHUTDOWN_GR
     if proc is None:
         return
     if proc.poll() is not None:
-        log.info("llama-server already exited (rc=%s)", proc.returncode)
+        logfire.info("llama-server already exited", returncode=proc.returncode)
         return
-    log.info("terminating llama-server pid=%s", proc.pid)
+    logfire.info("terminating llama-server", pid=proc.pid)
     try:
         proc.terminate()
     except Exception as e:
-        log.warning("terminate failed: %s", e)
+        logfire.warn("terminate failed", error=str(e))
     try:
         proc.wait(timeout=grace_seconds)
-        log.info("llama-server exited gracefully (rc=%s)", proc.returncode)
+        logfire.info("llama-server exited gracefully", returncode=proc.returncode)
         return
     except subprocess.TimeoutExpired:
-        log.warning("llama-server did not exit in %ss; sending SIGKILL", grace_seconds)
+        logfire.warn(
+            "llama-server did not exit in time; sending SIGKILL",
+            grace_seconds=grace_seconds,
+        )
     try:
         proc.kill()
         proc.wait(timeout=2.0)
-    except Exception as e:
-        log.error("kill failed: %s", e)
+    except Exception:
+        logfire.exception("llama kill failed")

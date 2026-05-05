@@ -7,7 +7,7 @@ See **`README.md`** for stack, run/test commands, scenario authoring, project la
 ## Where the engine lives
 
 - `npc_service/src/npc_service/spine.py` — deterministic state machine. No LLM calls.
-- `npc_service/src/npc_service/agents.py` — chat + classifier agents. The module docstring + inline comments cover non-obvious choices; read them before "improving."
+- `npc_service/src/npc_service/agents.py` — three agents (chat, classifier, summary) + history-compaction processor wired onto the chat agent. The module docstring + inline comments cover non-obvious choices; read them before "improving."
 - `npc_service/src/npc_service/main.py` — FastAPI endpoints, SSE streaming, beat dispatch.
 - `npc_service/src/npc_service/models.py` — Pydantic schemas (authoring + runtime + DTOs).
 - `npc_service/scenario.yaml` — content layer. The engine is content-agnostic.
@@ -20,6 +20,11 @@ See **`README.md`** for stack, run/test commands, scenario authoring, project la
 - **Beat-id prefix must equal the beat's `thread` field.** The spine treats the prefix as the source of truth (`thread_id_from_beat_id`); `Scenario._cross_references` enforces this at load.
 - **Same-tick beat mutex depends on YAML authoring order.** Terminals must appear before any loop they suppress, so they enter `extra_fired` first. Validation doesn't check order.
 - **Email metadata for chat turns is derived, not authored** — sender from dossier, recipient from `Scenario.player_email`, subject from `reply_subject_for_email`. Anchored beats also pull `recipient` from `Scenario.player_email`; they're NPC→player by construction.
+
+## Running tests
+
+- `make test` — fast, no llama, runs by default.
+- `cd npc_service && uv run pytest -m integration` — live llama (boot one with `make llama`). Local model, so $0/run — use liberally before shipping any prompt or agent change; they're the only tests that catch prompt drift and llama-server endpoint contract changes.
 
 ## Don't "clean up" without reading the comment first
 
