@@ -1,12 +1,14 @@
-"""The five LLM agents: CHAT_AGENT, CLASSIFIER_AGENT, SUMMARY_AGENT, FACT_CHECKER_AGENT, DIRECTOR_AGENT.
+"""The four LLM agents: CHAT_AGENT, CLASSIFIER_AGENT, SUMMARY_AGENT, FACT_CHECKER_AGENT, DIRECTOR_AGENT.
 
-CHAT_AGENT renders one email body per turn. It uses Pydantic AI's native
-`message_history` for the per-thread conversation, plain-text `output_type=str`
-so the assistant turn lands as a `TextPart` (clean for subsequent turns), and
-dynamic `@instructions` keyed on `ChatDeps` to layer dossier, optional plot
-directive, and current commitments per run. An `@output_validator` engages
-ONLY when the firing beat sets `spec.validate_facts=True`: it runs the
-fact-checker against the beat's must_include_facts / must_not lists and
+CHAT_AGENT renders one email body per turn — both ordinary chat turns and
+the closing epilogue. It uses Pydantic AI's native `message_history` for the
+per-thread conversation, plain-text `output_type=str` so the assistant turn
+lands as a `TextPart` (clean for subsequent turns), and dynamic
+`@instructions` keyed on `ChatDeps` to layer dossier, optional plot directive,
+current commitments, and — when ChatDeps carries an `epilogue_digest` — the
+closing-email framing plus the per-run digest. An `@output_validator`
+engages ONLY when the firing beat sets `spec.validate_facts=True`: it runs
+the fact-checker against the beat's must_include_facts / must_not lists and
 raises ModelRetry on any miss. Default-off keeps loop beats free of
 validator latency.
 
@@ -79,7 +81,7 @@ class ChatDeps:
     """Per-run injection for the chat agent.
 
     `plot_directive` is None for chat-turn fallbacks (free conversation in
-    character) and is a `BeatSpec` when a PlotBeat is firing on this turn —
+    character) and is a `BeatSpec` when a beat is firing on this turn —
     in which case the directive is layered into the prompt as authored
     intent / must-include / must-not.
 
@@ -89,11 +91,18 @@ class ChatDeps:
     surfaces them with the `commitment.` prefix stripped. Snapshotting
     in deps keeps deps immutable for the duration of one agent run, which
     matches the `plot_directive` pattern.
+
+    `epilogue_digest`, when set, switches the chat agent into closing-email
+    mode: the `_epilogue_framing_block` instructions decorator emits the
+    closing-email rules and `_epilogue_digest_block` surfaces the run
+    digest verbatim. Caller passes `message_history=None` for epilogue
+    runs so the agent works off the digest, not the live thread history.
     """
 
     npc: NPCDossier
     plot_directive: BeatSpec | None
     commitments: dict[str, tuple[float, str]] = field(default_factory=dict)
+    epilogue_digest: str | None = None
 
 
 # ───────────────────────── system prompts ─────────────────────────
@@ -188,19 +197,9 @@ Provide a one-sentence rationale: which signal in the digest decided it.
 """
 
 
-_EPILOGUE_SYSTEM_PROMPT = """You are writing the closing email of an interactive scenario. The player has reached a terminal beat — this email IS the ending.
+_EPILOGUE_FRAMING = """EPILOGUE MODE: This is the closing email of the scenario. The player has reached a terminal beat — this email IS the ending.
 
-You will receive:
-- The DOSSIER for the NPC sending the closing email.
-- A PLOT DIRECTIVE describing the specific tone, intent, and required content of this terminal.
-- A RUN DIGEST: commitments made during play, the player's classifier-axis history, the order of fired beats, and 2-3 verbatim pivot replies that defined this playthrough.
-
-Tailor the closing email to THIS run. Reference the digest — quote or echo a pivot reply, name a specific commitment, acknowledge a register the player held throughout — without reading like a template. Stay strictly inside the dossier voice and the directive's must-include / must-not lists.
-
-OUTPUT FORMAT (strict):
-- Body text only. No subject line. No "From:" / "To:" / "Date:" headers.
-- Sign off only if the dossier specifies a sign-off.
-- No JSON, no markdown code fences, no meta-commentary.
+Tailor the closing email to THIS run. Reference the digest below — quote or echo a pivot reply, name a specific commitment, acknowledge a register the player held throughout — without reading like a template. Stay strictly inside the dossier voice and the directive's must-include / must-not lists.
 """
 
 
@@ -228,7 +227,6 @@ class AgentBundle:
     summary_agent: Agent
     fact_checker_agent: Agent
     director_agent: Agent
-    epilogue_agent: Agent
 
 
 # ───────────────────────── director output (dynamic) ─────────────────────────
@@ -269,14 +267,11 @@ def build_director_output_type(eligible_beat_ids: list[str]):
 def _attach_chat_deps_instructions(
     agent: Agent,
     *,
-    directive_label: str,
-    validator_log_label: str,
     fact_checker_agent: Agent,
 ) -> None:
-    """Wire the dossier / directive / commitments / fact-check decorators
-    onto a ChatDeps-typed agent. Shared between chat and epilogue — they
-    consume the same ChatDeps shape and only differ in the directive header
-    label and the logfire violation-event label."""
+    """Wire the dossier / directive / commitments / epilogue / fact-check
+    decorators onto the chat agent. The epilogue decorators are no-ops
+    when `ChatDeps.epilogue_digest is None` (the regular chat-turn case)."""
 
     @agent.instructions
     def _dossier_block(ctx: RunContext[ChatDeps]) -> str:
@@ -287,6 +282,9 @@ def _attach_chat_deps_instructions(
         spec = ctx.deps.plot_directive
         if spec is None:
             return ""
+        directive_label = (
+            "this terminal" if ctx.deps.epilogue_digest is not None else "this turn only"
+        )
         must_include = "\n".join(f"  - {f}" for f in spec.must_include_facts) or "  (none specified)"
         must_not = "\n".join(f"  - {f}" for f in spec.must_not) or "  (none specified)"
         return (
@@ -304,6 +302,18 @@ def _attach_chat_deps_instructions(
         body = "\n".join(f"  {line}" for line in lines)
         return f"CURRENT COMMITMENTS:\n{body}"
 
+    @agent.instructions
+    def _epilogue_framing_block(ctx: RunContext[ChatDeps]) -> str:
+        if ctx.deps.epilogue_digest is None:
+            return ""
+        return _EPILOGUE_FRAMING
+
+    @agent.instructions
+    def _epilogue_digest_block(ctx: RunContext[ChatDeps]) -> str:
+        if ctx.deps.epilogue_digest is None:
+            return ""
+        return ctx.deps.epilogue_digest
+
     @agent.output_validator
     async def _validate_against_directive(
         ctx: RunContext[ChatDeps], output: str
@@ -319,9 +329,12 @@ def _attach_chat_deps_instructions(
             )
         )
         fc = result.output
+        validator_label = (
+            "epilogue body" if ctx.deps.epilogue_digest is not None else "candidate body"
+        )
         if fc.missing_facts or fc.violations:
             logfire.info(
-                f"fact_checker flagged {validator_log_label}",
+                f"fact_checker flagged {validator_label}",
                 missing_facts=fc.missing_facts,
                 violations=fc.violations,
             )
@@ -394,8 +407,6 @@ def build_agents(
 
     _attach_chat_deps_instructions(
         chat_agent,
-        directive_label="this turn only",
-        validator_log_label="candidate body",
         fact_checker_agent=fact_checker_agent,
     )
 
@@ -425,31 +436,12 @@ def build_agents(
         model_settings={"max_tokens": 512, "temperature": 0.3},
     )
 
-    # Epilogue runs the same ChatDeps shape as the chat agent but a different
-    # system prompt — closing email against a run digest, not a turn.
-    epilogue_agent: Agent[ChatDeps, str] = Agent(
-        model,
-        name="epilogue_agent",
-        deps_type=ChatDeps,
-        output_type=str,
-        instructions=_EPILOGUE_SYSTEM_PROMPT,
-        model_settings={"max_tokens": 800, "temperature": 1.0, "top_p": 0.95, "extra_body": {"top_k": 64}},
-        retries=2,
-    )
-    _attach_chat_deps_instructions(
-        epilogue_agent,
-        directive_label="this terminal",
-        validator_log_label="epilogue body",
-        fact_checker_agent=fact_checker_agent,
-    )
-
     return AgentBundle(
         chat_agent=chat_agent,
         classifier_agent=classifier_agent,
         summary_agent=summary_agent,
         fact_checker_agent=fact_checker_agent,
         director_agent=director_agent,
-        epilogue_agent=epilogue_agent,
     )
 
 

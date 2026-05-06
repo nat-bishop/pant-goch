@@ -12,15 +12,14 @@ import pytest
 from pydantic import ValidationError
 
 from npc_service.models import (
-    AnchoredBeat,
     AxisResult,
+    Beat,
     BeatFired,
     BeatSpec,
     ClassifyReply,
     Email,
     InboxState,
     Not_,
-    PlotBeat,
     QualityDef,
     RecentClassifierValue,
     Reply,
@@ -30,7 +29,6 @@ from npc_service.models import (
 from npc_service.spine import (
     apply_classification,
     apply_writes,
-    evaluate_completes_when,
     evaluate_predicate,
     find_due_beats,
     reply_subject_for_email,
@@ -58,15 +56,13 @@ def _build_minimal_scenario() -> Scenario:
         "beats": [
             {
                 "id": "aria.welcome",
-                "type": "anchored",
                 "thread": "aria",
-                "from": "aria@x",
+                "npc": "aria",
                 "subject": "Welcome",
-                "authored_prose": "Welcome.",
+                "spec": {"pre_authored_prose": "Welcome."},
             },
             {
                 "id": "aria.complete_warm",
-                "type": "plot",
                 "thread": "aria",
                 "npc": "aria",
                 "ends_session": True,
@@ -79,7 +75,6 @@ def _build_minimal_scenario() -> Scenario:
             },
             {
                 "id": "aria.complete_standard",
-                "type": "plot",
                 "thread": "aria",
                 "npc": "aria",
                 "ends_session": True,
@@ -92,7 +87,6 @@ def _build_minimal_scenario() -> Scenario:
             },
             {
                 "id": "aria.loop",
-                "type": "plot",
                 "thread": "aria",
                 "npc": "aria",
                 "multi_turn": True,
@@ -142,7 +136,6 @@ def test_scenario_loads_and_is_internally_consistent(scenario: Scenario):
 
 def test_loop_is_multi_turn_with_classifier(scenario: Scenario):
     loop = scenario.beat_by_id["aria.loop"]
-    assert isinstance(loop, PlotBeat)
     assert loop.multi_turn is True
     assert loop.ends_session is False
     assert len(loop.classify_reply_axes) == 1
@@ -154,8 +147,8 @@ def test_loop_is_multi_turn_with_classifier(scenario: Scenario):
 def test_terminals_carry_ends_session_flag(scenario: Scenario):
     warm = scenario.beat_by_id["aria.complete_warm"]
     standard = scenario.beat_by_id["aria.complete_standard"]
-    assert isinstance(warm, PlotBeat) and warm.ends_session is True
-    assert isinstance(standard, PlotBeat) and standard.ends_session is True
+    assert warm.ends_session is True
+    assert standard.ends_session is True
 
 
 def test_initial_state_starts_clean(state: InboxState, scenario: Scenario):
@@ -178,12 +171,12 @@ def test_from_scenario_auto_pends_every_beat(state: InboxState):
 
 
 def test_boot_tick_fires_aria_welcome(state: InboxState, scenario: Scenario):
-    """An anchored beat with no preconditions fires on the first scheduler
+    """A pre-authored beat with no preconditions fires on the first scheduler
     tick. The loop and terminals stay pending — they require player replies."""
     due = find_due_beats(state, scenario)
     due_ids = [b.id for b in due]
     assert due_ids == ["aria.welcome"]
-    assert isinstance(due[0], AnchoredBeat)
+    assert due[0].spec.pre_authored_prose is not None
 
 
 # ───────────────────────── predicate evaluation ─────────────────────────
@@ -282,18 +275,6 @@ def test_apply_classification_off_spec_returns_false(
     applied = apply_classification(state, scenario, classify, "garbage")
     assert applied is None
     assert state.qualities["engagement"] == 3.0
-
-
-# ───────────────────────── multi-turn / completes_when ─────────────────────────
-
-
-def test_evaluate_completes_when_empty_returns_true(
-    state: InboxState, scenario: Scenario
-):
-    """An empty completes_when means the beat completes on first render."""
-    welcome = scenario.beat_by_id["aria.welcome"]
-    assert welcome.completes_when == []
-    assert evaluate_completes_when(state, welcome) is True
 
 
 # ───────────────────────── loop scheduling ─────────────────────────

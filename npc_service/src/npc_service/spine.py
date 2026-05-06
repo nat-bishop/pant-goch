@@ -170,16 +170,16 @@ def apply_writes(
 
 
 def find_due_beats(state: InboxState, scenario: Scenario) -> list[Beat]:
-    """Return every pending beat whose preconditions (authored + runtime) all
-    pass on this tick. The Director (`agents.director_agent`) picks one from
-    this list; the spine no longer resolves same-tick mutex itself.
+    """Return every pending beat whose preconditions all pass on this tick.
+    The Director (`agents.director_agent`) picks one from this list; the
+    spine no longer resolves same-tick mutex itself.
 
     Beats stay in `pending_beats` until they're added to `fired_beat_ids`.
-    Fire-once beats (empty `completes_when`) get added by `_fire_beat`
-    immediately after rendering, so they're pruned on the next tick.
-    Multi-turn beats stay re-fireable until their `completes_when` predicates
-    pass — `_fire_beat` only marks them complete then, so they re-appear in
-    the due list each tick until satisfied.
+    Fire-once beats land in `fired_beat_ids` immediately after rendering, so
+    they're pruned on the next tick. `multi_turn` beats never enter
+    `fired_beat_ids` via their own state — they re-appear in the due list
+    each tick until a sibling beat's mutex (e.g. `Not_(BeatFired terminal)`)
+    catches them.
     """
     due: list[Beat] = []
     pending_by_id = {pb.beat_id: pb for pb in state.pending_beats}
@@ -190,13 +190,12 @@ def find_due_beats(state: InboxState, scenario: Scenario) -> list[Beat]:
             continue
         if beat.id in state.fired_beat_ids:
             continue
-        all_preds = list(beat.preconditions) + list(pb.runtime_preconditions)
-        if not all(evaluate_predicate(p, state) for p in all_preds):
+        if not all(evaluate_predicate(p, state) for p in beat.preconditions):
             continue
         due.append(beat)
 
     # Prune completed beats from pending; keep multi-turn beats around so
-    # they re-fire on subsequent ticks until completes_when passes.
+    # they re-fire on subsequent ticks until a mutex catches them.
     still_pending: list[PendingBeat] = []
     for pb in state.pending_beats:
         if pb.beat_id in state.fired_beat_ids:
@@ -207,16 +206,6 @@ def find_due_beats(state: InboxState, scenario: Scenario) -> list[Beat]:
         still_pending.append(pb)
     state.pending_beats = still_pending
     return due
-
-
-def evaluate_completes_when(state: InboxState, beat: Beat) -> bool:
-    """A beat with empty `completes_when` always completes on first render
-    (legacy fire-once semantics). A beat with non-empty `completes_when`
-    completes only when all predicates pass.
-    """
-    if not beat.completes_when:
-        return True
-    return all(evaluate_predicate(p, state) for p in beat.completes_when)
 
 
 # ───────────────────────── reply-subject helper ─────────────────────────

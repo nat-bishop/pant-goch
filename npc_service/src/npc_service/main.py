@@ -13,13 +13,13 @@ import subprocess
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import AsyncIterator, Iterator
+from typing import AsyncIterator
 
 import logfire
 from logfire import ConsoleOptions
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exception_handlers import http_exception_handler
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import StreamingResponse
 from pydantic_ai.messages import ModelResponse, TextPart
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
@@ -45,14 +45,13 @@ from .launcher import (
     wait_healthy,
 )
 from .models import (
-    AnchoredBeat,
     AxisResult,
     Beat,
+    BeatSpec,
     ClassifyReply,
     Email,
     InboxState,
     OpenRequest,
-    PlotBeat,
     Reply,
     Scenario,
     SendRequest,
@@ -61,7 +60,6 @@ from .models import (
 from .spine import (
     apply_classification,
     apply_writes,
-    evaluate_completes_when,
     find_due_beats,
     reply_subject_for_email,
 )
@@ -248,67 +246,55 @@ async def _fire_beat(
 ) -> Email | None:
     """Fire a beat and produce its email.
 
-    AnchoredBeats ship verbatim; the rendered email seeds `thread_messages`
-    so the chat agent's next run sees the anchored prose as a prior turn.
+    Two render paths:
+    - `spec.pre_authored_prose` set → ship verbatim (no LLM call). The
+      rendered email seeds `thread_messages` so the chat agent's next run
+      sees the prose as a prior assistant turn.
+    - otherwise → run the chat agent with `plot_directive=beat.spec`, using
+      the current player_body as user_prompt. Terminals (`ends_session`)
+      go through the epilogue agent instead, which receives a richer
+      per-run digest. Caller must pass player_body for chat-driven beats —
+      they're triggered by /send ticks where a body always exists.
 
-    PlotBeats run the chat agent with `plot_directive=beat.spec`, using the
-    current player_body as user_prompt. Caller must pass player_body for
-    PlotBeats — they're triggered by /send ticks where a body always exists.
-
-    Multi-turn lifecycle: if the beat has a non-empty `completes_when` AND
-    the gate is already met at fire-time, mark complete WITHOUT rendering
-    (returns None). Otherwise render. After rendering, the beat is added
-    to `fired_beat_ids` only if `completes_when` is empty (legacy fire-once)
-    OR has just been met. Multi-turn beats with unmet gates stay out of
-    `fired_beat_ids` so `find_due_beats` re-fires them on subsequent ticks.
+    Fire-once beats land in `fired_beat_ids` immediately after rendering;
+    `multi_turn` beats stay out of `fired_beat_ids` so `find_due_beats`
+    re-fires them on subsequent ticks until a sibling mutex catches them.
     """
     assert STATE is not None and SCENARIO is not None and AGENTS is not None
     if beat.id in STATE.fired_beat_ids:
         return None
 
-    # Writes apply *before* the silent-complete check so the fact of
-    # completion is recorded even on the no-render path.
-    if isinstance(beat, PlotBeat) and beat.spec.writes:
+    if beat.spec.writes:
         apply_writes(STATE, SCENARIO, beat.spec.writes)
 
-    # If a multi-turn beat's gate is already satisfied (e.g. the
-    # just-applied classifier bumped its quality past the threshold),
-    # complete silently — no render — and let the chain advance.
-    if beat.completes_when and evaluate_completes_when(STATE, beat):
-        STATE.fired_beat_ids.add(beat.id)
-        logfire.info("beat completed without render", beat_id=beat.id)
-        return None
-
-    # No span wrapper here: AnchoredBeat fires are sub-millisecond (a memcpy
-    # plus a log line) and the PlotBeat path is 1:1 with `_render_via_chat_agent`,
+    # No span wrapper here: pre-authored fires are sub-millisecond (a memcpy
+    # plus a log line) and the chat-agent path is 1:1 with `_render_via_chat_agent`,
     # which carries its own llm-tagged span. Adding a `fire_beat` layer here
     # only deepened the trace tree without filtering value. `beat_id` is
-    # threaded onto `render_chat` via `beat=`, so the PlotBeat fire is still
-    # searchable by beat id.
-    email: Email | None = None
-    if isinstance(beat, AnchoredBeat):
+    # threaded onto `render_chat` via `beat=`, so the chat-driven fire is
+    # still searchable by beat id.
+    if beat.spec.pre_authored_prose is not None:
+        npc = SCENARIO.npc_by_id[beat.npc]
         email = Email(
             id=f"email_{uuid.uuid4().hex[:8]}",
             beat_id=beat.id,
             thread_id=beat.thread,
             folder="Inbox",
-            sender=beat.from_,
+            sender=npc.email_address,
             recipient=SCENARIO.player_email,
             subject=beat.subject,
-            body=beat.authored_prose.strip(),
-            sent_at_label=beat.sent_at or "just now",
+            body=beat.spec.pre_authored_prose.strip(),
+            sent_at_label="just now",
         )
         _seed_thread_history(beat.thread, email.body)
         logfire.info(
-            "fire anchored beat {beat_id}",
+            "fire pre-authored beat {beat_id}",
             beat_id=beat.id, thread=beat.thread, subject=beat.subject,
         )
-    elif isinstance(beat, PlotBeat):
+    else:
         assert player_body is not None, (
-            "PlotBeat fires require a player body — they trigger only on /send ticks"
+            "chat-driven beats require a player body — they trigger only on /send ticks"
         )
-        # Terminals are the epilogue: they go through the epilogue agent
-        # with a richer run digest. Everything else uses the chat agent.
         renderer = _render_via_epilogue_agent if beat.ends_session else _render_via_chat_agent
         email = await renderer(
             npc_id=beat.npc,
@@ -320,23 +306,21 @@ async def _fire_beat(
             subject=beat.subject,
         )
 
-    is_plot = isinstance(beat, PlotBeat)
-    if email is not None:
-        STATE.emails.append(email)
-        if is_plot and beat.ends_session:
-            STATE.ended = True
-            STATE.end_reason = beat.id
+    STATE.emails.append(email)
+    if beat.ends_session:
+        STATE.ended = True
+        STATE.end_reason = beat.id
 
     # multi_turn beats never enter fired_beat_ids; they stop firing
     # only when preconditions stop holding (typical pattern: mutex via
     # Not_(BeatFired …) against terminals that supersede them).
-    if not (is_plot and beat.multi_turn) and not beat.completes_when:
+    if not beat.multi_turn:
         STATE.fired_beat_ids.add(beat.id)
     return email
 
 
 def _seed_thread_history(thread_id: str, body: str) -> None:
-    """Anchored emails on NPC threads land in `thread_messages` as
+    """Pre-authored emails on NPC threads land in `thread_messages` as
     `ModelResponse(TextPart)` so the chat agent's next run sees them as
     prior assistant turns. System threads (no NPC) skip this — there's no
     chat agent for them."""
@@ -350,23 +334,25 @@ def _seed_thread_history(thread_id: str, body: str) -> None:
 
 async def _render_email(
     *,
-    agent,
     npc_id: str,
     thread_id: str,
     user_prompt: str,
     in_reply_to_email_id: str | None,
-    plot_directive,
+    plot_directive: BeatSpec | None,
     beat_id: str | None,
     subject: str | None,
     message_history: list | None = None,
     append_history: bool = False,
+    epilogue_digest: str | None = None,
     span_label: str = "render to {npc} on {thread}",
     extra_span_attrs: dict | None = None,
 ) -> Email:
-    """Single LLM-render path. Builds ChatDeps, runs `agent`, wraps failures as
-    ChatAgentFailure, returns the assembled Email. If `append_history=True`,
-    extends `STATE.thread_messages[thread_id]` with `result.new_messages()`.
-    """
+    """Single LLM-render path. Builds ChatDeps, runs the chat agent, wraps
+    failures as ChatAgentFailure, returns the assembled Email. If
+    `append_history=True`, extends `STATE.thread_messages[thread_id]` with
+    `result.new_messages()`. When `epilogue_digest` is set, ChatDeps
+    switches the agent into closing-email mode (different system framing,
+    digest surfaced via `@instructions`)."""
     assert STATE is not None and SCENARIO is not None and AGENTS is not None
     npc = SCENARIO.npc_by_id[npc_id]
     deps = ChatDeps(
@@ -377,6 +363,7 @@ async def _render_email(
             SCENARIO.quality_defaults,
             SCENARIO.quality_descriptions,
         ),
+        epilogue_digest=epilogue_digest,
     )
 
     with LLM_LOGFIRE.span(
@@ -387,7 +374,7 @@ async def _render_email(
         **(extra_span_attrs or {}),
     ) as span:
         try:
-            result = await agent.run(
+            result = await AGENTS.chat_agent.run(
                 user_prompt,
                 message_history=message_history,
                 deps=deps,
@@ -424,7 +411,6 @@ async def _render_email(
         subject=derived_subject,
         body=body,
         sent_at_label="just now",
-        in_reply_to_beat=in_reply_to_email_id,
     )
 
 
@@ -434,16 +420,15 @@ async def _render_via_chat_agent(
     thread_id: str,
     player_body: str,
     in_reply_to_email_id: str | None,
-    plot_directive,
+    plot_directive: BeatSpec | None,
     beat_id: str | None,
     subject: str | None,
 ) -> Email:
-    """Render path for chat turns and non-terminal PlotBeat fires. Appends to
+    """Render path for chat turns and non-terminal beat fires. Appends to
     thread_messages so the next turn sees this exchange in conversation history."""
     assert STATE is not None
     history = STATE.thread_messages.setdefault(thread_id, [])
     return await _render_email(
-        agent=AGENTS.chat_agent if AGENTS else None,
         npc_id=npc_id,
         thread_id=thread_id,
         user_prompt=player_body,
@@ -468,30 +453,28 @@ async def _render_via_epilogue_agent(
     thread_id: str,
     player_body: str,
     in_reply_to_email_id: str | None,
-    plot_directive,
+    plot_directive: BeatSpec | None,
     beat_id: str | None,
     subject: str | None,
 ) -> Email:
-    """Render path for terminal beats. Builds a per-run digest and runs the
-    epilogue agent (separate system prompt, no message history)."""
-    assert AGENTS is not None
+    """Render path for terminal beats. Same chat agent as ordinary turns,
+    but ChatDeps carries an `epilogue_digest` that flips it into
+    closing-email mode (the `_epilogue_framing_block` and
+    `_epilogue_digest_block` instruction decorators in `agents.py` only
+    activate when the digest is set). No message history — the digest is
+    the run summary."""
     digest = _build_epilogue_digest()
-    user_prompt = (
-        f"{digest}\n\n"
-        f"PLAYER'S MOST RECENT REPLY (the one that immediately precedes this terminal):\n"
-        f"{player_body}"
-    )
     return await _render_email(
-        agent=AGENTS.epilogue_agent,
         npc_id=npc_id,
         thread_id=thread_id,
-        user_prompt=user_prompt,
+        user_prompt=player_body,
         in_reply_to_email_id=in_reply_to_email_id,
         plot_directive=plot_directive,
         beat_id=beat_id,
         subject=subject,
         message_history=None,
         append_history=False,
+        epilogue_digest=digest,
         span_label="render epilogue to {npc} on {thread}",
         extra_span_attrs={"digest_preview": digest[:300]},
     )
@@ -611,18 +594,16 @@ async def _select_beat(due: list[Beat]) -> Beat | None:
 
 
 def _intent_summary_for(beat: Beat) -> str:
-    """One-line summary used in the Director's eligible-beat list. For plot
-    beats, the first line of `spec.intent` (truncated). For anchored beats,
-    the subject."""
-    if isinstance(beat, PlotBeat):
-        first_line = beat.spec.intent.strip().splitlines()[0] if beat.spec.intent.strip() else "(no intent)"
-        if len(first_line) > 200:
-            first_line = first_line[:197] + "..."
-        suffix = " [TERMINAL]" if beat.ends_session else (" [multi-turn]" if beat.multi_turn else "")
-        return f"{first_line}{suffix}"
-    if isinstance(beat, AnchoredBeat):
-        return f"(authored email: '{beat.subject}')"
-    return "(unknown beat type)"
+    """One-line summary used in the Director's eligible-beat list. Pre-authored
+    beats surface as the subject; chat-driven beats use the first line of
+    `spec.intent` (truncated)."""
+    if beat.spec.pre_authored_prose is not None:
+        return f"(pre-authored email: '{beat.subject}')"
+    first_line = beat.spec.intent.strip().splitlines()[0] if beat.spec.intent.strip() else "(no intent)"
+    if len(first_line) > 200:
+        first_line = first_line[:197] + "..."
+    suffix = " [TERMINAL]" if beat.ends_session else (" [multi-turn]" if beat.multi_turn else "")
+    return f"{first_line}{suffix}"
 
 
 async def _tick(
@@ -631,8 +612,8 @@ async def _tick(
     in_response_to: str | None = None,
 ) -> tuple[list[Email], set[str]]:
     """Walk the beat scheduler. Returns (newly-emitted emails, set of thread
-    ids where a PlotBeat fired this tick). The thread-id set lets the caller
-    decide whether a chat-turn fallback is still needed.
+    ids where a chat-driven beat fired this tick). The thread-id set lets
+    the caller decide whether a chat-turn fallback is still needed.
 
     Selection: `find_due_beats` returns every eligible beat; `_select_beat`
     asks the Director to pick one (or short-circuits at 0/1 due). Exactly
@@ -652,9 +633,11 @@ async def _tick(
                 in_response_to=in_response_to,
             )
             if e is not None:
-                new_emails.append(e)
-                if isinstance(chosen, PlotBeat):
+                # Only chat-driven (non-pre-authored) fires count as
+                # covering the thread for the chat-turn fallback purposes.
+                if chosen.spec.pre_authored_prose is None:
                     plot_fired_threads.add(chosen.thread)
+                new_emails.append(e)
         span.set_attribute("new_email_count", len(new_emails))
         return new_emails, plot_fired_threads
 
@@ -787,7 +770,6 @@ async def _send_stream(req: SendRequest) -> AsyncIterator[bytes]:
                 subject=reply_subject_for_email(STATE, req.in_reply_to),
                 body=body,
                 sent_at_label="just now",
-                in_reply_to_beat=req.in_reply_to,
                 is_read=True,
             )
             STATE.emails.append(send_email)
@@ -806,7 +788,7 @@ async def _send_stream(req: SendRequest) -> AsyncIterator[bytes]:
             # `accumulate=true` engagement axis whose value gates the
             # complete_warm vs complete_standard split). _tick must see the
             # post-classifier qualities to make terminal decisions.
-            recipient_npc = _infer_recipient_npc_id(req.recipient)
+            recipient_npc = req.recipient_npc_id or _resolve_recipient_npc_id(req.recipient)
             replied_beat = (
                 SCENARIO.beat_by_id.get(in_reply_email.beat_id)
                 if in_reply_email and in_reply_email.beat_id else None
@@ -820,10 +802,9 @@ async def _send_stream(req: SendRequest) -> AsyncIterator[bytes]:
                     axes=axes,
                 )
                 if results is not None:
-                    for event in _apply_axis_results(
+                    _apply_axis_results(
                         axes=axes, results=results, replied_beat_id=replied_beat.id, reply=reply,
-                    ):
-                        yield event
+                    )
 
             try:
                 new_emails, plot_fired_threads = await _tick(
@@ -831,10 +812,10 @@ async def _send_stream(req: SendRequest) -> AsyncIterator[bytes]:
                     in_response_to=send_email.id,
                 )
 
-                # Chat-turn fallback fires when no PlotBeat covered this
-                # thread. In the steady state aria.loop is multi-turn and
-                # fires on every tick after the welcome reply, so this branch
-                # only matters for threads without a covering loop beat.
+                # Chat-turn fallback fires when no chat-driven beat covered
+                # this thread. In the steady state aria.loop is multi-turn
+                # and fires on every tick after the welcome reply, so this
+                # branch only matters for threads without a covering loop beat.
                 if (
                     recipient_npc is not None
                     and thread_id is not None
@@ -920,7 +901,7 @@ def _apply_axis_results(
     results: list[AxisResult],
     replied_beat_id: str,
     reply: Reply,
-) -> Iterator[bytes]:
+) -> None:
     """Apply each authored axis in YAML order against the classifier's
     returned results. Defense-in-depth, single pass over `results` to
     categorize, then a pass over `axes` to apply:
@@ -930,9 +911,7 @@ def _apply_axis_results(
       → keep the first, logfire-warn the rest.
     - Missing axis (LLM omitted an authored quality) → logfire-warn, skip.
     - Off-spec value (not in `allowed_values`) → `apply_classification`
-      returns None, logfire-warn, no SSE event, no append onto Reply.
-
-    Emits one `classified` SSE event per applied axis, in YAML axis order.
+      returns None, logfire-warn, no append onto Reply.
     """
     assert STATE is not None and SCENARIO is not None
     authored_identifiers = {a.identifier for a in axes}
@@ -969,12 +948,6 @@ def _apply_axis_results(
             )
             continue
         reply.classifier_results.append(applied)
-        yield _sse({
-            "type": "classified",
-            "quality": axis.identifier,
-            "value": r.value,
-            "score": axis.map[r.value],
-        })
 
 
 def _persona_blurb_for_recipient(recipient: str, npc_id: str | None) -> str:
@@ -984,7 +957,10 @@ def _persona_blurb_for_recipient(recipient: str, npc_id: str | None) -> str:
     return f"{n.display_name} — {n.relationship_to_owner}"
 
 
-def _infer_recipient_npc_id(recipient: str) -> str | None:
+def _resolve_recipient_npc_id(recipient: str) -> str | None:
+    """Fallback when the client doesn't pass `recipient_npc_id` on /send —
+    fuzzy-match the recipient string against dossier display name / id.
+    Newer clients should always pass the id directly."""
     if SCENARIO is None:
         return None
     needle = recipient.lower()
@@ -994,26 +970,16 @@ def _infer_recipient_npc_id(recipient: str) -> str | None:
     return None
 
 
-@app.post("/reset")
-async def post_reset() -> JSONResponse:
-    """Re-initialise state; useful for testing."""
-    if SCENARIO is None:
-        raise HTTPException(503, "scenario not loaded")
-    logfire.info("/reset")
-    await _bootstrap_state()
-    assert STATE is not None
-    return JSONResponse(STATE.public_view())
-
-
 async def _bootstrap_state() -> None:
-    """Init state from scenario; fire any beats already due (anchored beats
-    with empty preconditions land here on the first tick)."""
+    """Init state from scenario; fire any beats already due (pre-authored
+    beats with empty preconditions land here on the first tick)."""
     global STATE
     assert SCENARIO is not None
     STATE = InboxState.from_scenario(SCENARIO)
-    # Boot tick fires AnchoredBeats with empty preconditions (e.g.
-    # aria.welcome). PlotBeats are auto-pended too but require a player /send
-    # to satisfy `player_replies_to_thread_gte`, so they can't fire here.
+    # Boot tick fires pre-authored beats with empty preconditions (e.g.
+    # aria.welcome). Chat-driven beats are auto-pended too but require a
+    # player /send to satisfy `player_replies_to_thread_gte`, so they
+    # can't fire here.
     await _tick(player_body=None, in_response_to=None)
 
 
@@ -1040,7 +1006,6 @@ def _email_full(email: Email) -> dict:
         **_email_summary(email),
         "body": email.body,
         "beat_id": email.beat_id,
-        "in_reply_to_beat": email.in_reply_to_beat,
     }
 
 

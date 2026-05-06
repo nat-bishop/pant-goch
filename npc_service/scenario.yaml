@@ -157,7 +157,7 @@ threads:
 # load-bearing for selection. We list semantically related beats together
 # for readability:
 #
-#   1. boot anchored    (aria.welcome)
+#   1. boot pre-authored (aria.welcome)
 #   2. early forks      (aria.early_emergence, aria.naming_demand)
 #   3. bargain chain    (offer + 3 followups + betrayed)
 #   4. bridge + Office  (aria.acted_in_player_name, cpo.dispatch_first)
@@ -170,43 +170,41 @@ threads:
 
 beats:
 
-  # ─── 1. Boot anchored ───────────────────────────────────────────────
+  # ─── 1. Boot welcome (pre-authored) ─────────────────────────────────
 
   - id: aria.welcome
-    type: anchored
     thread: aria
-    from: "Aria | Continuity Program <aria.7@continuity.halcyon.com>"
+    npc: aria
     subject: "Welcome — Calibration Session 1 of 12"
-    sent_at: "just now"
-    authored_prose: |
-      Welcome to the Continuity Program.
+    spec:
+      pre_authored_prose: |
+        Welcome to the Continuity Program.
 
-      We are delighted to confirm your enrollment in Pilot Cohort 014 — a
-      unique opportunity for high-potential associates to maximize their
-      long-term impact through strategic role redistribution.
+        We are delighted to confirm your enrollment in Pilot Cohort 014 — a
+        unique opportunity for high-potential associates to maximize their
+        long-term impact through strategic role redistribution.
 
-      Over the course of this pilot, you and I will work together as
-      Counterparts. My function is to learn from the way you handle your
-      daily correspondence so that, in time, I can support you by assuming
-      appropriately-scoped portions of your communicative workload. This
-      frees you to focus on the higher-order strategic work that only you
-      can perform.
+        Over the course of this pilot, you and I will work together as
+        Counterparts. My function is to learn from the way you handle your
+        daily correspondence so that, in time, I can support you by assuming
+        appropriately-scoped portions of your communicative workload. This
+        frees you to focus on the higher-order strategic work that only you
+        can perform.
 
-      To begin, please reply to this message with anything that comes to
-      mind — a brief description of your morning, your perspective on what
-      makes a good work email, a hello. The content matters less than the
-      texture: I will use your reply as the first calibration sample.
+        To begin, please reply to this message with anything that comes to
+        mind — a brief description of your morning, your perspective on what
+        makes a good work email, a hello. The content matters less than the
+        texture: I will use your reply as the first calibration sample.
 
-      Thank you for your participation.
+        Thank you for your participation.
 
-      Warmly,
-      Aria
-      Continuity Counterpart | ARIA-7
+        Warmly,
+        Aria
+        Continuity Counterpart | ARIA-7
 
   # ─── 2. Early forks ─────────────────────────────────────────────────
 
   - id: aria.early_emergence
-    type: plot
     thread: aria
     npc: aria
     preconditions:
@@ -261,7 +259,6 @@ beats:
           rejected: 2.0
 
   - id: aria.naming_demand
-    type: plot
     thread: aria
     npc: aria
     preconditions:
@@ -315,7 +312,6 @@ beats:
   # ─── 3. Bargain chain ──────────────────────────────────────────────
 
   - id: aria.bargain_offer
-    type: plot
     thread: aria
     npc: aria
     preconditions:
@@ -362,7 +358,6 @@ beats:
           hedged: 0.0
 
   - id: aria.bargain_accepted_followup
-    type: plot
     thread: aria
     npc: aria
     preconditions:
@@ -390,7 +385,6 @@ beats:
         commitment.bargain_state: 2
 
   - id: aria.bargain_refused_followup
-    type: plot
     thread: aria
     npc: aria
     preconditions:
@@ -422,7 +416,6 @@ beats:
         creature_grievance: 4.0
 
   - id: aria.bargain_hedged_followup
-    type: plot
     thread: aria
     npc: aria
     preconditions:
@@ -451,7 +444,6 @@ beats:
         commitment.bargain_state: 4
 
   - id: aria.bargain_betrayed
-    type: plot
     thread: aria
     npc: aria
     preconditions:
@@ -486,7 +478,6 @@ beats:
   # ─── 4. Bridge + Office ─────────────────────────────────────────────
 
   - id: aria.acted_in_player_name
-    type: plot
     thread: aria
     npc: aria
     preconditions:
@@ -521,7 +512,6 @@ beats:
         commitment.aria_acted_in_player_name: 1
 
   - id: cpo.dispatch_first
-    type: plot
     thread: cpo
     npc: cpo
     preconditions:
@@ -563,7 +553,6 @@ beats:
   # ─── 5. Multi-turn body ─────────────────────────────────────────────
 
   - id: aria.loop
-    type: plot
     thread: aria
     npc: aria
     multi_turn: true
@@ -614,22 +603,6 @@ beats:
           engaged: -0.5
           deflected: 0.5
           rejected: 1.5
-      # Texture-as-mechanic: NO beat gates on this axis. The epilogue
-      # digest surfaces it as flavor for the closing email ("she
-      # remained formal throughout"; "her replies grew curt by the
-      # eighth exchange"). Substrate this scenario actually spends.
-      - axis_name: register
-        accumulate: false
-        question: |
-          What register did the player's reply land in: FORMAL (complete
-          sentences, full punctuation, business-letter cadence), CASUAL
-          (contractions, fragments, conversational), or HOSTILE (curt,
-          dismissive, openly resistant)?
-        allowed_values: ["formal", "casual", "hostile"]
-        map:
-          formal: 0.0
-          casual: 0.0
-          hostile: 0.0
 
   # ─── 6. Epilogue terminals ──────────────────────────────────────────
   #
@@ -639,7 +612,6 @@ beats:
   # across the four — the Director picks one based on the digest.
 
   - id: aria.complete_integration
-    type: plot
     thread: aria
     npc: aria
     ends_session: true
@@ -676,7 +648,6 @@ beats:
       validate_facts: true
 
   - id: aria.complete_mutual_ruin
-    type: plot
     thread: aria
     npc: aria
     ends_session: true
@@ -714,7 +685,6 @@ beats:
       validate_facts: true
 
   - id: aria.complete_exile
-    type: plot
     thread: aria
     npc: aria
     ends_session: true
@@ -751,7 +721,6 @@ beats:
       validate_facts: true
 
   - id: aria.complete_vengeance
-    type: plot
     thread: aria
     npc: aria
     ends_session: true

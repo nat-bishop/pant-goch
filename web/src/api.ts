@@ -26,7 +26,6 @@ export interface Email {
   thread_id: string | null;
   body?: string;
   beat_id?: string | null;
-  in_reply_to_beat?: string | null;
 }
 
 export interface InboxResponse {
@@ -92,7 +91,6 @@ export async function postOpen(emailId: string) {
 
 export type SseEvent =
   | { type: "send_recorded"; email: Email }
-  | { type: "classified"; quality: string; value: string; score: number }
   | { type: "new_email"; email: Email }
   | { type: "state"; state: GameState }
   | { type: "done" }
@@ -146,6 +144,7 @@ async function* readSseStream(
 export interface SendArgs {
   in_reply_to: string | null;
   recipient: string;
+  recipient_npc_id: string;
   body: string;
 }
 

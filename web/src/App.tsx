@@ -1,7 +1,8 @@
 import { useEffect } from "react";
 import { Email, NpcInfo } from "./api";
-import { AppShell } from "./components/AppShell";
+import { AppHeader } from "./components/AppHeader";
 import { ChatHeader } from "./components/ChatHeader";
+import { ChatSidebar } from "./components/ChatSidebar";
 import { MessageComposer } from "./components/MessageComposer";
 import { MessageList } from "./components/MessageList";
 import { useTheme } from "./hooks/useTheme";
@@ -31,9 +32,17 @@ export default function App() {
 
   const emails = chatMessages[view.chatId] ?? [];
   return (
-    <AppShell>
-      <NpcChat npc={selectedNpc} emails={emails} />
-    </AppShell>
+    <div className="flex h-full flex-col bg-bg-sidebar text-text">
+      <AppHeader />
+      <div className="flex flex-1 overflow-hidden">
+        <ChatSidebar />
+        <div className="flex flex-1 overflow-hidden pb-2 pr-2">
+          <main className="flex flex-1 flex-col overflow-hidden rounded-xl border border-border/50 bg-bg shadow-[0_2px_8px_rgba(0,0,0,0.06),_0_8px_24px_rgba(0,0,0,0.08)] dark:border-white/5 dark:shadow-[0_2px_8px_rgba(0,0,0,0.4),_0_12px_32px_rgba(0,0,0,0.55)]">
+            <NpcChat npc={selectedNpc} emails={emails} />
+          </main>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -60,6 +69,7 @@ function NpcChat({ npc, emails }: { npc: NpcInfo; emails: Email[] }) {
         <MessageComposer
           inReplyTo={target.id}
           recipient={target.from}
+          recipientNpcId={npc.id}
           recipientName={stripAddress(target.from)}
         />
       )}

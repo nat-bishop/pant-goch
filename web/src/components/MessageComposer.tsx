@@ -7,12 +7,14 @@ import { useStore } from "../store";
 interface Props {
   inReplyTo: string | null;
   recipient: string;
+  recipientNpcId: string;
   recipientName: string;
 }
 
 export function MessageComposer({
   inReplyTo,
   recipient,
+  recipientNpcId,
   recipientName,
 }: Props) {
   const [body, setBody] = useState("");
@@ -33,7 +35,12 @@ export function MessageComposer({
   const onSend = async () => {
     if (!canSend) return;
     setBody("");
-    await run(streamSend({ in_reply_to: inReplyTo, recipient, body: trimmed }));
+    await run(streamSend({
+      in_reply_to: inReplyTo,
+      recipient,
+      recipient_npc_id: recipientNpcId,
+      body: trimmed,
+    }));
   };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
