@@ -35,14 +35,12 @@ export function MessageGroup({ emails }: Props) {
       >
         {emails.map((email, i) => {
           const position = positionFor(i, emails.length);
-          const eyebrow = email.beat_id ? email.subject : undefined;
           return (
             <MessageBubble
               key={email.id}
               body={email.body ?? email.preview}
               variant={own ? "me" : "them"}
               position={position}
-              eyebrow={eyebrow}
             />
           );
         })}

@@ -16,6 +16,7 @@ export function useStreamSend() {
     appendEmailOptimistic,
     setPendingTypingFor,
     openChat,
+    recordTickDecision,
   } = useStore();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -43,6 +44,10 @@ export function useStreamSend() {
             setPendingTypingFor(currentChat);
             typingShown = true;
           }
+        } else if (ev.type === "tick_decision") {
+          // Always record (cheap), the DebugPanel decides whether to render.
+          // Production builds tree-shake the panel and ignore this state.
+          recordTickDecision(ev.decision);
         } else if (ev.type === "error") {
           setError(ev.message);
         } else if (ev.type === "done") {

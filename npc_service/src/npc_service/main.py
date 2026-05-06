@@ -48,22 +48,26 @@ from .models import (
     AnchoredBeat,
     AxisResult,
     Beat,
+    BeatEligibility,
     ClassifyReply,
     Email,
     InboxState,
     OpenRequest,
     PlotBeat,
+    QualityDelta,
     Reply,
     Scenario,
     SendRequest,
+    TickDecision,
     load_scenario,
 )
 from .spine import (
     apply_classification,
     apply_writes,
+    apply_writes_by_axis,
     evaluate_completes_when,
     find_due_beats,
-    reply_subject_for_email,
+    quality_delta_for_classifier,
 )
 
 
@@ -245,8 +249,15 @@ async def _fire_beat(
     *,
     player_body: str | None,
     in_response_to: str | None,
-) -> Email | None:
-    """Fire a beat and produce its email.
+) -> tuple[Email | None, list[QualityDelta], int | None]:
+    """Fire a beat and produce its email plus tick-decision side info.
+
+    Returns `(email, write_deltas, multi_turn_turn)`:
+      - `email`: the rendered email, or None on silent-complete.
+      - `write_deltas`: any quality changes from `spec.writes` (empty if
+        the beat has none, or if writes were no-ops).
+      - `multi_turn_turn`: 1-indexed fire count for multi-turn PlotBeats
+        (computed after the email is appended), None for other shapes.
 
     AnchoredBeats ship verbatim; the rendered email seeds `thread_messages`
     so the chat agent's next run sees the anchored prose as a prior turn.
@@ -257,19 +268,30 @@ async def _fire_beat(
 
     Multi-turn lifecycle: if the beat has a non-empty `completes_when` AND
     the gate is already met at fire-time, mark complete WITHOUT rendering
-    (returns None). Otherwise render. After rendering, the beat is added
+    (email=None). Otherwise render. After rendering, the beat is added
     to `fired_beat_ids` only if `completes_when` is empty (legacy fire-once)
     OR has just been met. Multi-turn beats with unmet gates stay out of
     `fired_beat_ids` so `find_due_beats` re-fires them on subsequent ticks.
     """
     assert STATE is not None and SCENARIO is not None and AGENTS is not None
     if beat.id in STATE.fired_beat_ids:
-        return None
+        return None, [], None
 
     # Writes apply *before* the silent-complete check so the fact of
-    # completion is recorded even on the no-render path.
+    # completion is recorded even on the no-render path. `apply_writes`
+    # logs each before→after change and returns the resulting deltas
+    # (no-op writes are filtered out by it).
+    write_deltas: list[QualityDelta] = []
     if isinstance(beat, PlotBeat) and beat.spec.writes:
-        apply_writes(STATE, SCENARIO, beat.spec.writes)
+        write_deltas = apply_writes(
+            STATE, SCENARIO, beat.spec.writes, beat_id=beat.id,
+        )
+    if isinstance(beat, PlotBeat) and beat.spec.writes_by_axis is not None:
+        # Per-arm writes apply AFTER flat writes; on a key collision the arm
+        # value wins (lets `writes` carry a default the arm can override).
+        write_deltas = write_deltas + apply_writes_by_axis(
+            STATE, SCENARIO, beat.spec.writes_by_axis, beat_id=beat.id,
+        )
 
     # If a multi-turn beat's gate is already satisfied (e.g. the
     # just-applied classifier bumped its quality past the threshold),
@@ -277,7 +299,7 @@ async def _fire_beat(
     if beat.completes_when and evaluate_completes_when(STATE, beat):
         STATE.fired_beat_ids.add(beat.id)
         logfire.info("beat completed without render", beat_id=beat.id)
-        return None
+        return None, write_deltas, None
 
     # No span wrapper here: AnchoredBeat fires are sub-millisecond (a memcpy
     # plus a log line) and the PlotBeat path is 1:1 with `_render_via_chat_agent`,
@@ -286,6 +308,8 @@ async def _fire_beat(
     # threaded onto `render_chat` via `beat=`, so the PlotBeat fire is still
     # searchable by beat id.
     email: Email | None = None
+    is_plot = isinstance(beat, PlotBeat)
+    is_multi = is_plot and beat.multi_turn
     if isinstance(beat, AnchoredBeat):
         email = Email(
             id=f"email_{uuid.uuid4().hex[:8]}",
@@ -294,19 +318,29 @@ async def _fire_beat(
             folder="Inbox",
             sender=beat.from_,
             recipient=SCENARIO.player_email,
-            subject=beat.subject,
             body=beat.authored_prose.strip(),
             sent_at_label=beat.sent_at or "just now",
         )
         _seed_thread_history(beat.thread, email.body)
         logfire.info(
             "fire anchored beat {beat_id}",
-            beat_id=beat.id, thread=beat.thread, subject=beat.subject,
+            beat_id=beat.id, thread=beat.thread,
         )
     elif isinstance(beat, PlotBeat):
         assert player_body is not None, (
             "PlotBeat fires require a player body — they trigger only on /send ticks"
         )
+        if is_multi:
+            # 1-indexed turn count: prior fires + this one. Counted before
+            # the new email is appended so the log reads "turn 1" on the
+            # first fire (when no prior loop emails exist).
+            prior_fires = sum(1 for e in STATE.emails if e.beat_id == beat.id)
+            logfire.info(
+                "continue multi-turn beat {beat_id} (turn {turn})",
+                beat_id=beat.id, turn=prior_fires + 1,
+            )
+        else:
+            logfire.info("fire plot beat {beat_id}", beat_id=beat.id)
         # Terminals are the epilogue: they go through the epilogue agent
         # with a richer run digest. Everything else uses the chat agent.
         renderer = _render_via_epilogue_agent if beat.ends_session else _render_via_chat_agent
@@ -317,22 +351,23 @@ async def _fire_beat(
             in_reply_to_email_id=in_response_to,
             plot_directive=beat.spec,
             beat_id=beat.id,
-            subject=beat.subject,
         )
 
-    is_plot = isinstance(beat, PlotBeat)
+    multi_turn_turn: int | None = None
     if email is not None:
         STATE.emails.append(email)
         if is_plot and beat.ends_session:
             STATE.ended = True
             STATE.end_reason = beat.id
+        if is_multi:
+            multi_turn_turn = sum(1 for e in STATE.emails if e.beat_id == beat.id)
 
     # multi_turn beats never enter fired_beat_ids; they stop firing
     # only when preconditions stop holding (typical pattern: mutex via
     # Not_(BeatFired …) against terminals that supersede them).
-    if not (is_plot and beat.multi_turn) and not beat.completes_when:
+    if not is_multi and not beat.completes_when:
         STATE.fired_beat_ids.add(beat.id)
-    return email
+    return email, write_deltas, multi_turn_turn
 
 
 def _seed_thread_history(thread_id: str, body: str) -> None:
@@ -357,7 +392,6 @@ async def _render_email(
     in_reply_to_email_id: str | None,
     plot_directive,
     beat_id: str | None,
-    subject: str | None,
     message_history: list | None = None,
     append_history: bool = False,
     span_label: str = "render to {npc} on {thread}",
@@ -411,9 +445,6 @@ async def _render_email(
         span.set_attribute("response_preview", result.output.strip()[:200])
 
     body = result.output.strip()
-    derived_subject = subject if subject is not None else reply_subject_for_email(
-        STATE, in_reply_to_email_id
-    )
     return Email(
         id=f"email_{uuid.uuid4().hex[:8]}",
         beat_id=beat_id,
@@ -421,7 +452,6 @@ async def _render_email(
         folder="Inbox",
         sender=npc.email_address,
         recipient=SCENARIO.player_email,
-        subject=derived_subject,
         body=body,
         sent_at_label="just now",
         in_reply_to_beat=in_reply_to_email_id,
@@ -436,7 +466,6 @@ async def _render_via_chat_agent(
     in_reply_to_email_id: str | None,
     plot_directive,
     beat_id: str | None,
-    subject: str | None,
 ) -> Email:
     """Render path for chat turns and non-terminal PlotBeat fires. Appends to
     thread_messages so the next turn sees this exchange in conversation history."""
@@ -450,7 +479,6 @@ async def _render_via_chat_agent(
         in_reply_to_email_id=in_reply_to_email_id,
         plot_directive=plot_directive,
         beat_id=beat_id,
-        subject=subject,
         message_history=list(history),
         append_history=True,
         span_label="render chat to {npc} on {thread}",
@@ -470,7 +498,6 @@ async def _render_via_epilogue_agent(
     in_reply_to_email_id: str | None,
     plot_directive,
     beat_id: str | None,
-    subject: str | None,
 ) -> Email:
     """Render path for terminal beats. Builds a per-run digest and runs the
     epilogue agent (separate system prompt, no message history)."""
@@ -489,7 +516,6 @@ async def _render_via_epilogue_agent(
         in_reply_to_email_id=in_reply_to_email_id,
         plot_directive=plot_directive,
         beat_id=beat_id,
-        subject=subject,
         message_history=None,
         append_history=False,
         span_label="render epilogue to {npc} on {thread}",
@@ -553,15 +579,30 @@ def _fired_beat_ids_in_order(*, last: int | None = None) -> list[str]:
 # ───────────────────────── scheduler tick ─────────────────────────
 
 
-async def _select_beat(due: list[Beat]) -> Beat | None:
-    """Pick one beat from the due list. Short-circuits at 0 or 1 due (most
-    ticks); calls the Director when ≥2 are eligible. Returns None when no
-    beat should fire (empty due, or Director chose "none")."""
+async def _select_beat(
+    due: list[Beat],
+) -> tuple[Beat | None, str, str | None]:
+    """Pick one beat from the due list and report (beat, method, rationale).
+
+    Method is one of:
+      - "none"     — no beats due, or Director chose "none"
+      - "sole"     — exactly one beat due, auto-selected without an LLM call
+      - "director" — ≥2 due, the Director made the call (rationale carries
+                     its one-sentence justification)
+
+    The rationale is None for "none" and "sole" cases. The tuple shape is
+    consumed by `_tick` to populate the per-tick `TickDecision` payload.
+    """
     assert STATE is not None and AGENTS is not None
     if not due:
-        return None
+        logfire.info("no beats eligible this tick")
+        return None, "none", None
     if len(due) == 1:
-        return due[0]
+        logfire.info(
+            "single beat eligible — auto-selected {beat_id}",
+            beat_id=due[0].id,
+        )
+        return due[0], "sole", None
 
     by_id = {b.id: b for b in due}
     user_prompt = build_director_user_prompt(
@@ -588,7 +629,7 @@ async def _select_beat(due: list[Beat]) -> Beat | None:
                 "director_agent failed; defaulting to first eligible",
                 eligible=[b.id for b in due],
             )
-            return due[0]
+            return due[0], "director", "(director failed; fell back to first eligible)"
         choice = result.output
         chosen_id = getattr(choice, "chosen_beat_id", None)
         rationale = getattr(choice, "rationale", "")
@@ -600,20 +641,20 @@ async def _select_beat(due: list[Beat]) -> Beat | None:
             eligible=[b.id for b in due],
         )
         if chosen_id == "none":
-            return None
+            return None, "none", rationale
         if chosen_id not in by_id:
             logfire.warn(
                 "director returned an id not in eligible set; defaulting to first",
                 returned=chosen_id, eligible=[b.id for b in due],
             )
-            return due[0]
-        return by_id[chosen_id]
+            return due[0], "director", rationale or "(director returned invalid id; fell back to first eligible)"
+        return by_id[chosen_id], "director", rationale
 
 
 def _intent_summary_for(beat: Beat) -> str:
     """One-line summary used in the Director's eligible-beat list. For plot
     beats, the first line of `spec.intent` (truncated). For anchored beats,
-    the subject."""
+    a preview of the authored prose."""
     if isinstance(beat, PlotBeat):
         first_line = beat.spec.intent.strip().splitlines()[0] if beat.spec.intent.strip() else "(no intent)"
         if len(first_line) > 200:
@@ -621,7 +662,11 @@ def _intent_summary_for(beat: Beat) -> str:
         suffix = " [TERMINAL]" if beat.ends_session else (" [multi-turn]" if beat.multi_turn else "")
         return f"{first_line}{suffix}"
     if isinstance(beat, AnchoredBeat):
-        return f"(authored email: '{beat.subject}')"
+        prose_lines = [ln for ln in beat.authored_prose.strip().splitlines() if ln.strip()]
+        first_line = prose_lines[0] if prose_lines else beat.id
+        if len(first_line) > 80:
+            first_line = first_line[:77] + "..."
+        return f"(authored email: {first_line})"
     return "(unknown beat type)"
 
 
@@ -629,34 +674,82 @@ async def _tick(
     *,
     player_body: str | None = None,
     in_response_to: str | None = None,
-) -> tuple[list[Email], set[str]]:
-    """Walk the beat scheduler. Returns (newly-emitted emails, set of thread
-    ids where a PlotBeat fired this tick). The thread-id set lets the caller
-    decide whether a chat-turn fallback is still needed.
+    classifier_deltas: list[QualityDelta] | None = None,
+) -> tuple[list[Email], set[str], TickDecision]:
+    """Walk the beat scheduler. Returns
+    `(newly-emitted emails, threads where a PlotBeat fired, decision)`.
 
-    Selection: `find_due_beats` returns every eligible beat; `_select_beat`
-    asks the Director to pick one (or short-circuits at 0/1 due). Exactly
-    one beat fires per tick.
+    The thread-id set lets the caller decide whether a chat-turn fallback
+    is still needed. The `TickDecision` bundles every iteration-relevant
+    decision the engine made on this tick — eligibility, selection, quality
+    deltas, what fired — and is shipped to the in-browser debug overlay
+    via the `tick_decision` SSE event AND attached to the tick span as
+    queryable Logfire attributes.
+
+    `classifier_deltas` carries any quality writes that already happened
+    upstream (the player-reply classifier in `_send_stream` runs before
+    `_tick` so terminals can read post-classifier qualities). They're
+    folded into the same `quality_deltas` list as `spec.writes` from the
+    fired beat — the overlay's "what changed this tick" panel is the
+    union of both sources.
     """
     assert STATE is not None and SCENARIO is not None
     new_emails: list[Email] = []
     plot_fired_threads: set[str] = set()
+    quality_deltas: list[QualityDelta] = list(classifier_deltas or [])
 
     with logfire.span("tick (in response to {in_response_to})", in_response_to=in_response_to) as span:
-        due = find_due_beats(STATE, SCENARIO)
-        chosen = await _select_beat(due)
+        eligible, eligibility_report = find_due_beats(STATE, SCENARIO)
+        # One log line per value-blocked beat, so the "why didn't this fire?"
+        # answer reads inline in the terminal alongside selection + writes.
+        # Beats blocked on a structural prereq (BeatFired not yet) are
+        # already filtered out of the report by find_due_beats.
+        for be in eligibility_report:
+            if be.status == "blocked" and be.blocked_by:
+                logfire.info(
+                    "beat {beat_id} blocked: {reason}",
+                    beat_id=be.beat_id, reason=be.blocked_by,
+                )
+
+        chosen, selection, rationale = await _select_beat(eligible)
+        chosen_beat_id = chosen.id if chosen is not None else None
+        fired_beat_id: str | None = None
+        multi_turn_turn: int | None = None
         if chosen is not None:
-            e = await _fire_beat(
+            e, write_deltas, turn = await _fire_beat(
                 chosen,
                 player_body=player_body,
                 in_response_to=in_response_to,
             )
+            quality_deltas.extend(write_deltas)
             if e is not None:
                 new_emails.append(e)
+                fired_beat_id = chosen.id
+                multi_turn_turn = turn
                 if isinstance(chosen, PlotBeat):
                     plot_fired_threads.add(chosen.thread)
+
+        decision = TickDecision(
+            in_response_to=in_response_to,
+            eligible=eligibility_report,
+            selection=selection,
+            chosen_beat_id=chosen_beat_id,
+            chosen_rationale=rationale,
+            quality_deltas=quality_deltas,
+            fired_beat_id=fired_beat_id,
+            multi_turn_turn=multi_turn_turn,
+        )
+        # Span attributes give Logfire UI users a queryable overview without
+        # parsing message strings. The full decision lands as `decision`;
+        # individual rollups land alongside for filtering ("ticks with
+        # quality_delta_count > 0", etc.).
+        span.set_attribute("decision", decision.model_dump())
+        span.set_attribute("eligible_count", len(eligible))
+        span.set_attribute("selection", selection)
+        span.set_attribute("fired_beat_id", fired_beat_id)
+        span.set_attribute("quality_delta_count", len(quality_deltas))
         span.set_attribute("new_email_count", len(new_emails))
-        return new_emails, plot_fired_threads
+        return new_emails, plot_fired_threads, decision
 
 
 # ───────────────────────── endpoints ─────────────────────────
@@ -784,7 +877,6 @@ async def _send_stream(req: SendRequest) -> AsyncIterator[bytes]:
                 folder="Sent",
                 sender="you",
                 recipient=req.recipient,
-                subject=reply_subject_for_email(STATE, req.in_reply_to),
                 body=body,
                 sent_at_label="just now",
                 in_reply_to_beat=req.in_reply_to,
@@ -812,6 +904,7 @@ async def _send_stream(req: SendRequest) -> AsyncIterator[bytes]:
                 if in_reply_email and in_reply_email.beat_id else None
             )
             axes = list(replied_beat.classify_reply_axes) if replied_beat else []
+            classifier_deltas: list[QualityDelta] = []
             if axes:
                 results = await _classify_player_reply(
                     recipient_blurb=_persona_blurb_for_recipient(req.recipient, recipient_npc),
@@ -822,13 +915,15 @@ async def _send_stream(req: SendRequest) -> AsyncIterator[bytes]:
                 if results is not None:
                     for event in _apply_axis_results(
                         axes=axes, results=results, replied_beat_id=replied_beat.id, reply=reply,
+                        out_deltas=classifier_deltas,
                     ):
                         yield event
 
             try:
-                new_emails, plot_fired_threads = await _tick(
+                new_emails, plot_fired_threads, decision = await _tick(
                     player_body=body,
                     in_response_to=send_email.id,
+                    classifier_deltas=classifier_deltas,
                 )
 
                 # Chat-turn fallback fires when no PlotBeat covered this
@@ -847,7 +942,6 @@ async def _send_stream(req: SendRequest) -> AsyncIterator[bytes]:
                         in_reply_to_email_id=send_email.id,
                         plot_directive=None,
                         beat_id=None,
-                        subject=None,
                     )
                     STATE.emails.append(chat_email)
                     new_emails.append(chat_email)
@@ -873,6 +967,7 @@ async def _send_stream(req: SendRequest) -> AsyncIterator[bytes]:
             for ne in new_emails:
                 yield _sse({"type": "new_email", "email": _email_full(ne)})
 
+            yield _sse({"type": "tick_decision", "decision": decision.model_dump()})
             yield _sse({"type": "state", "state": STATE.public_view()})
             yield _sse({"type": "done"})
 
@@ -920,6 +1015,7 @@ def _apply_axis_results(
     results: list[AxisResult],
     replied_beat_id: str,
     reply: Reply,
+    out_deltas: list[QualityDelta],
 ) -> Iterator[bytes]:
     """Apply each authored axis in YAML order against the classifier's
     returned results. Defense-in-depth, single pass over `results` to
@@ -933,6 +1029,10 @@ def _apply_axis_results(
       returns None, logfire-warn, no SSE event, no append onto Reply.
 
     Emits one `classified` SSE event per applied axis, in YAML axis order.
+    Appends a `QualityDelta` to `out_deltas` for each quality-writing axis
+    whose value actually changed; `_tick` folds those into the
+    `TickDecision.quality_deltas` so the debug overlay shows "what
+    changed this tick" in one place.
     """
     assert STATE is not None and SCENARIO is not None
     authored_identifiers = {a.identifier for a in axes}
@@ -960,6 +1060,10 @@ def _apply_axis_results(
                 beat_id=replied_beat_id, identifier=axis.identifier,
             )
             continue
+        before = (
+            STATE.qualities.get(axis.quality)
+            if axis.quality is not None else None
+        )
         applied = apply_classification(STATE, SCENARIO, axis, r.value, r.rationale)
         if applied is None:
             logfire.warn(
@@ -969,6 +1073,13 @@ def _apply_axis_results(
             )
             continue
         reply.classifier_results.append(applied)
+        after = (
+            STATE.qualities.get(axis.quality)
+            if axis.quality is not None else None
+        )
+        delta = quality_delta_for_classifier(axis, before, after)
+        if delta is not None:
+            out_deltas.append(delta)
         yield _sse({
             "type": "classified",
             "quality": axis.identifier,
@@ -1014,6 +1125,7 @@ async def _bootstrap_state() -> None:
     # Boot tick fires AnchoredBeats with empty preconditions (e.g.
     # aria.welcome). PlotBeats are auto-pended too but require a player /send
     # to satisfy `player_replies_to_thread_gte`, so they can't fire here.
+    # The TickDecision from boot is discarded — there's no SSE consumer.
     await _tick(player_body=None, in_response_to=None)
 
 
@@ -1026,7 +1138,6 @@ def _email_summary(email: Email) -> dict:
         "id": email.id,
         "from": email.sender,
         "to": email.recipient,
-        "subject": email.subject,
         "sent_at": email.sent_at_label,
         "is_read": email.is_read,
         "preview": email.body[:140] + ("…" if len(email.body) > 140 else ""),

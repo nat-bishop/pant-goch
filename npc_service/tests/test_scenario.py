@@ -48,9 +48,7 @@ def test_loads(scenario: Scenario):
         "aria.early_emergence",
         "aria.naming_demand",
         "aria.bargain_offer",
-        "aria.bargain_accepted_followup",
-        "aria.bargain_refused_followup",
-        "aria.bargain_hedged_followup",
+        "aria.bargain_followup",
         "aria.bargain_betrayed",
         "aria.acted_in_player_name",
         "cpo.dispatch_first",
@@ -108,7 +106,7 @@ def test_cpo_replies_disabled(scenario: Scenario):
 
 def test_boot_tick_fires_only_welcome(state: InboxState, scenario: Scenario):
     """At boot, only aria.welcome (no preconditions) is eligible."""
-    due_ids = [b.id for b in find_due_beats(state, scenario)]
+    due_ids = [b.id for b in find_due_beats(state, scenario)[0]]
     assert due_ids == ["aria.welcome"]
 
 
@@ -125,7 +123,7 @@ def test_integration_eligible_only_after_bargain_offer_and_paternal_window(
     state.qualities["creature_grievance"] = 1.0
 
     # No bargain fired AND no paternal in recent — not eligible.
-    due = {b.id for b in find_due_beats(state, scenario)}
+    due = {b.id for b in find_due_beats(state, scenario)[0]}
     assert "aria.complete_integration" not in due
 
     # Mark bargain_offer fired AND seed paternal classifier history.
@@ -133,7 +131,7 @@ def test_integration_eligible_only_after_bargain_offer_and_paternal_window(
     state.replies[-1].classifier_results.append(
         AxisResult(quality="creator_affect", value="paternal", rationale="")
     )
-    due = {b.id for b in find_due_beats(state, scenario)}
+    due = {b.id for b in find_due_beats(state, scenario)[0]}
     assert "aria.complete_integration" in due
 
 
@@ -152,12 +150,12 @@ def test_vengeance_requires_bridge_and_cpo(
     )
 
     # Without cpo.dispatch_first fired, vengeance isn't eligible.
-    due = {b.id for b in find_due_beats(state, scenario)}
+    due = {b.id for b in find_due_beats(state, scenario)[0]}
     assert "aria.complete_vengeance" not in due
 
     # Fire cpo.dispatch_first → vengeance becomes eligible.
     state.fired_beat_ids.add("cpo.dispatch_first")
-    due = {b.id for b in find_due_beats(state, scenario)}
+    due = {b.id for b in find_due_beats(state, scenario)[0]}
     assert "aria.complete_vengeance" in due
 
 
@@ -175,7 +173,7 @@ def test_exile_eligible_when_cold_window_low_grievance(
             AxisResult(quality="creator_affect", value="cold", rationale="")
         )
 
-    due = {b.id for b in find_due_beats(state, scenario)}
+    due = {b.id for b in find_due_beats(state, scenario)[0]}
     assert "aria.complete_exile" in due
 
 
@@ -190,32 +188,116 @@ def test_mutual_ruin_eligible_when_paternal_high_grievance(
     )
     state.fired_beat_ids.add("aria.bargain_offer")
 
-    due = {b.id for b in find_due_beats(state, scenario)}
+    due = {b.id for b in find_due_beats(state, scenario)[0]}
     assert "aria.complete_mutual_ruin" in due
 
 
-# ───────────────────────── bargain followups via verdict axis ─────────────────────────
+# ───────────────────────── merged bargain followup ─────────────────────────
 
 
-def test_bargain_accepted_followup_requires_recent_accepted(
+def test_bargain_followup_eligible_for_any_authored_verdict(
     state: InboxState, scenario: Scenario
 ):
-    """The accepted followup gates on RecentClassifierValue against the
-    bargain_response axis_name — the engine's verdict-only path."""
+    """The collapsed followup gates on RecentClassifierValue listing all
+    three arms — the offer's verdict-only axis routes to one beat, not three."""
     _drain_boot(state, scenario)
     state.fired_beat_ids.add("aria.bargain_offer")
     state.replies.extend(_make_reply("aria") for _ in range(5))
 
     # No recent bargain_response classification → not eligible.
-    due = {b.id for b in find_due_beats(state, scenario)}
-    assert "aria.bargain_accepted_followup" not in due
+    due = {b.id for b in find_due_beats(state, scenario)[0]}
+    assert "aria.bargain_followup" not in due
 
-    # Land "accepted" on the most recent reply's classifier_results.
-    state.replies[-1].classifier_results.append(
+    # Each arm independently makes the followup eligible.
+    for arm in ("accepted", "refused", "hedged"):
+        state.replies[-1].classifier_results = [
+            AxisResult(quality="bargain_response", value=arm, rationale="")
+        ]
+        due = {b.id for b in find_due_beats(state, scenario)[0]}
+        assert "aria.bargain_followup" in due, f"arm {arm!r} did not satisfy gate"
+
+
+def test_bargain_followup_writes_state_per_arm(
+    state: InboxState, scenario: Scenario
+):
+    """writes_by_axis routes the correct quality writes per verdict.
+
+    Drives the spine's apply_writes_by_axis directly via _fire_beat-equivalent
+    plumbing: seed the verdict on the most recent reply, run apply_writes_by_axis,
+    and assert the right quality moved.
+    """
+    from npc_service.spine import apply_writes_by_axis
+
+    followup = scenario.beat_by_id["aria.bargain_followup"]
+    assert isinstance(followup, PlotBeat)
+    wba = followup.spec.writes_by_axis
+    assert wba is not None
+
+    # Accepted → bargain_state = 2; grievance untouched.
+    s_accepted = InboxState.from_scenario(scenario)
+    r = _make_reply("aria")
+    r.classifier_results.append(
         AxisResult(quality="bargain_response", value="accepted", rationale="")
     )
-    due = {b.id for b in find_due_beats(state, scenario)}
-    assert "aria.bargain_accepted_followup" in due
+    s_accepted.replies.append(r)
+    apply_writes_by_axis(s_accepted, scenario, wba, beat_id=followup.id)
+    assert s_accepted.qualities["commitment.bargain_state"] == 2.0
+    assert s_accepted.qualities["creature_grievance"] == 0.0  # unchanged
+
+    # Refused → bargain_state = 3 AND creature_grievance floor 4.0.
+    s_refused = InboxState.from_scenario(scenario)
+    r = _make_reply("aria")
+    r.classifier_results.append(
+        AxisResult(quality="bargain_response", value="refused", rationale="")
+    )
+    s_refused.replies.append(r)
+    apply_writes_by_axis(s_refused, scenario, wba, beat_id=followup.id)
+    assert s_refused.qualities["commitment.bargain_state"] == 3.0
+    assert s_refused.qualities["creature_grievance"] == 4.0
+
+    # Hedged → bargain_state = 4; grievance untouched.
+    s_hedged = InboxState.from_scenario(scenario)
+    r = _make_reply("aria")
+    r.classifier_results.append(
+        AxisResult(quality="bargain_response", value="hedged", rationale="")
+    )
+    s_hedged.replies.append(r)
+    apply_writes_by_axis(s_hedged, scenario, wba, beat_id=followup.id)
+    assert s_hedged.qualities["commitment.bargain_state"] == 4.0
+    assert s_hedged.qualities["creature_grievance"] == 0.0  # unchanged
+
+
+def test_bargain_betrayed_requires_followup_and_accepted_verdict(
+    state: InboxState, scenario: Scenario
+):
+    """bargain_betrayed gates on bargain_followup (replacement for the old
+    bargain_accepted_followup mutex) PLUS a recent accepted-arm verdict to
+    discriminate the trajectory. A refused or hedged player can't reach
+    betrayal — that path is shape-incoherent."""
+    _drain_boot(state, scenario)
+    state.fired_beat_ids.add("aria.bargain_offer")
+    state.fired_beat_ids.add("aria.bargain_followup")
+    # Two cold replies (the trajectory condition) but seed the bargain
+    # verdict as REFUSED — betrayed should NOT fire.
+    state.replies.extend(_make_reply("aria") for _ in range(3))
+    state.replies[0].classifier_results.append(
+        AxisResult(quality="bargain_response", value="refused", rationale="")
+    )
+    for r in state.replies[-2:]:
+        r.classifier_results.append(
+            AxisResult(quality="creator_affect", value="cold", rationale="")
+        )
+    due = {b.id for b in find_due_beats(state, scenario)[0]}
+    assert "aria.bargain_betrayed" not in due
+
+    # Now seed accepted verdict (overwriting the refused one on a different
+    # reply). With accepted in window AND two cold trailing replies, betrayed
+    # is eligible.
+    state.replies[0].classifier_results = [
+        AxisResult(quality="bargain_response", value="accepted", rationale="")
+    ]
+    due = {b.id for b in find_due_beats(state, scenario)[0]}
+    assert "aria.bargain_betrayed" in due
 
 
 # ───────────────────────── bridge gating ─────────────────────────
@@ -236,7 +318,7 @@ def test_bridge_does_not_fire_on_warm_after_betrayal(
             AxisResult(quality="creator_affect", value="paternal", rationale="")
         )
 
-    due = {b.id for b in find_due_beats(state, scenario)}
+    due = {b.id for b in find_due_beats(state, scenario)[0]}
     assert "aria.acted_in_player_name" not in due
 
     # A fresh cold reply lands (RecentClassifierValue walks per-reply,
@@ -247,7 +329,7 @@ def test_bridge_does_not_fire_on_warm_after_betrayal(
         AxisResult(quality="creator_affect", value="cold", rationale="")
     )
     state.replies.append(cold_reply)
-    due = {b.id for b in find_due_beats(state, scenario)}
+    due = {b.id for b in find_due_beats(state, scenario)[0]}
     assert "aria.acted_in_player_name" in due
 
 
@@ -255,7 +337,7 @@ def test_bridge_does_not_fire_on_warm_after_betrayal(
 
 
 def _drain_boot(state: InboxState, scenario: Scenario) -> None:
-    for beat in find_due_beats(state, scenario):
+    for beat in find_due_beats(state, scenario)[0]:
         state.fired_beat_ids.add(beat.id)
 
 

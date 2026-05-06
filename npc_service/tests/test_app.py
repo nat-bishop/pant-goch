@@ -24,9 +24,8 @@ from .conftest import consume_sse
 
 
 CHAT_TURN_PROSE = (
-    "Thank you for your reply. I have logged it as a calibration sample and look "
-    "forward to our continued partnership.\n\n"
-    "Warmly,\nAria\nContinuity Counterpart | ARIA-7"
+    "Thank you for your reply. I have logged it as a calibration sample "
+    "and look forward to our continued partnership."
 )
 
 
@@ -57,7 +56,12 @@ def client(monkeypatch):
     monkeypatch.setattr(main, "EXTERNAL_LLAMA_PROBE_TIMEOUT_SECONDS", 0.1)
 
     async def _first_eligible(due):
-        return due[0] if due else None
+        # Mirrors the production `_select_beat` 3-tuple return shape:
+        # (chosen, selection-method, rationale). Selection is "sole" since
+        # we deterministically pick the first due — bypasses the Director.
+        if not due:
+            return None, "none", None
+        return due[0], "sole", None
     monkeypatch.setattr(main, "_select_beat", _first_eligible)
 
     with TestClient(main.app) as c:
@@ -210,6 +214,47 @@ def test_first_send_fires_loop(client):
     assert "aria.loop" not in main.STATE.fired_beat_ids
     # Welcome has no classify_reply → no classification on this send.
     assert not any(e["type"] == "classified" for e in events)
+
+
+def test_send_emits_tick_decision_event(client):
+    """Every successful /send emits a structured `tick_decision` SSE event
+    after `new_email` and before `state` + `done`. Frontend's debug panel
+    consumes it; backend always emits regardless of client. Shape mirrors
+    the `TickDecision` Pydantic model — eligibility report, selection
+    method, fired beat id, multi-turn turn count."""
+    welcome = client.get("/inbox").json()["folders"]["Inbox"][0]
+    events = list(consume_sse(client.stream("POST", "/send", json={
+        "in_reply_to": welcome["id"],
+        "recipient": "Aria",
+        "body": "happy to be here",
+    })))
+    decisions = [e for e in events if e["type"] == "tick_decision"]
+    assert len(decisions) == 1
+    decision = decisions[0]["decision"]
+
+    # Required fields present (full TickDecision shape).
+    for field in (
+        "in_response_to", "eligible", "selection",
+        "chosen_beat_id", "quality_deltas", "fired_beat_id",
+    ):
+        assert field in decision
+
+    # First send fired aria.loop (multi-turn, turn 1) under the test
+    # harness's first-eligible Director stub.
+    assert decision["fired_beat_id"] == "aria.loop"
+    assert decision["chosen_beat_id"] == "aria.loop"
+    assert decision["multi_turn_turn"] == 1
+    assert decision["selection"] == "sole"
+
+    # Eligibility report includes aria.loop as eligible.
+    eligible_ids = {be["beat_id"] for be in decision["eligible"]}
+    assert "aria.loop" in eligible_ids
+
+    # Event ordering: tick_decision lands after new_email and before state+done.
+    types = [e["type"] for e in events]
+    assert types.index("tick_decision") > types.index("new_email")
+    assert types.index("tick_decision") < types.index("state")
+    assert types.index("state") < types.index("done")
 
 
 def test_loop_re_fires_across_sends(client):

@@ -315,6 +315,14 @@ def _attach_chat_deps_instructions(
             return output
         if not spec.must_include_facts and not spec.must_not:
             return output  # load-time validator should reject this; defensive
+        # `ctx.retries` is a `dict[str, int]` in current Pydantic AI (per-tool
+        # retry counters). Sum the values for an overall attempt count and
+        # 1-index for human-readable logs ("attempt 1" reads better than
+        # "attempt 0"). Both pass and fail log it so "succeeded after 2
+        # retries" is as visible as "still flagged on attempt 1."
+        retries = ctx.retries
+        prior = sum(retries.values()) if isinstance(retries, dict) else int(retries or 0)
+        attempt = prior + 1
         result = await fact_checker_agent.run(
             build_fact_checker_user_prompt(
                 output, spec.must_include_facts, spec.must_not
@@ -323,11 +331,16 @@ def _attach_chat_deps_instructions(
         fc = result.output
         if fc.missing_facts or fc.violations:
             logfire.info(
-                f"fact_checker flagged {validator_log_label}",
+                f"fact_checker flagged {validator_log_label} on attempt {{attempt}}",
+                attempt=attempt,
                 missing_facts=fc.missing_facts,
                 violations=fc.violations,
             )
             raise ModelRetry(_format_fact_retry_message(fc))
+        logfire.info(
+            f"fact_checker passed {validator_log_label} on attempt {{attempt}}",
+            attempt=attempt,
+        )
         return output
 
 

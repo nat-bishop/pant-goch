@@ -245,6 +245,30 @@ class NPCDossier(BaseModel):
     replies_enabled: bool = True
 
 
+class WritesByAxis(BaseModel):
+    """Conditional writes keyed on the most recent verdict of a classifier
+    axis. A beat declaring `writes_by_axis` looks up the last `window`
+    classified replies, finds the most recent `AxisResult` whose identifier
+    matches `axis`, and applies the matching `arms[<verdict>]` map of
+    quality writes (SET semantics, clamped to bounds).
+
+    Used for collapsed plot-router beats: one beat replaces what would
+    otherwise be N parallel followup beats, each writing a different
+    quality pin based on the player's prior verdict. The arm whose key
+    matches the verdict wins; non-matching verdicts and missing axis
+    results are no-ops (logged but non-fatal).
+
+    Validator (`Scenario._cross_references`) checks: `axis` resolves to a
+    declared axis identifier; every per-arm quality id is a known quality;
+    every arm key appears in some declared axis's `allowed_values` for the
+    same identifier (catches typos like `accpeted`).
+    """
+
+    axis: str
+    window: int = Field(ge=1, default=1)
+    arms: dict[str, dict[str, float]]
+
+
 class BeatSpec(BaseModel):
     """Inputs to the chat agent for a `plot` beat — author directive layered
     onto the conversation as per-run instructions."""
@@ -265,6 +289,11 @@ class BeatSpec(BaseModel):
     # writes x=3.0; on the next tick A re-fires unless A has
     # `Not_(BeatFired B)` and clobbers B back to 2.0.)
     writes: dict[str, float] = Field(default_factory=dict)
+    # Conditional writes keyed on a classifier verdict. See WritesByAxis.
+    # Applied by `apply_writes_by_axis` in spine.py AFTER the flat `writes`
+    # block, so per-arm values win on collision (lets `writes` carry a
+    # default that arms override).
+    writes_by_axis: WritesByAxis | None = None
     # When True, the chat agent's output_validator runs the fact-checker
     # agent against this beat's `must_include_facts` + `must_not` and
     # raises ModelRetry on any miss/violation. Default False — every
@@ -316,7 +345,6 @@ class AnchoredBeat(_BeatBase):
 
     type: Literal["anchored"] = "anchored"
     from_: str = Field(alias="from")
-    subject: str
     authored_prose: str
     sent_at: str = ""  # in-fiction timestamp label (e.g. "just now")
 
@@ -336,7 +364,6 @@ class PlotBeat(_BeatBase):
 
     type: Literal["plot"] = "plot"
     npc: str  # which dossier to use
-    subject: str
     spec: BeatSpec
     # When True, the beat re-fires on every tick — never enters
     # `fired_beat_ids` based on its own state. Stop firing by adding mutex
@@ -457,11 +484,18 @@ class Scenario(BaseModel):
 
         # Axis identifiers (axis_name or quality) declared anywhere in the
         # scenario — used to validate RecentClassifierValue references that
-        # may target a verdict-only axis_name rather than a quality.
+        # may target a verdict-only axis_name rather than a quality. Also
+        # used by `writes_by_axis` validation: each axis identifier maps to
+        # the union of `allowed_values` across every declaration of that
+        # identifier in the scenario, so arm keys can be checked for typos.
         axis_identifiers: set[str] = set()
+        axis_allowed_values: dict[str, set[str]] = {}
         for beat in self.beats:
             for axis in beat.classify_reply_axes:
                 axis_identifiers.add(axis.identifier)
+                axis_allowed_values.setdefault(axis.identifier, set()).update(
+                    axis.allowed_values
+                )
 
         for beat in self.beats:
             if beat.thread not in thread_ids:
@@ -519,6 +553,37 @@ class Scenario(BaseModel):
                             f"the same beat (the multi_turn re-fire would "
                             f"clobber the classifier each tick)"
                         )
+                wba = beat.spec.writes_by_axis
+                if wba is not None:
+                    if wba.axis not in axis_identifiers:
+                        raise ValueError(
+                            f"beat {beat.id}: spec.writes_by_axis.axis "
+                            f"{wba.axis!r} is not a declared axis identifier"
+                        )
+                    allowed = axis_allowed_values.get(wba.axis, set())
+                    for arm_key, arm_writes in wba.arms.items():
+                        if allowed and arm_key not in allowed:
+                            raise ValueError(
+                                f"beat {beat.id}: spec.writes_by_axis arm "
+                                f"{arm_key!r} is not an allowed_value of axis "
+                                f"{wba.axis!r} (declared values: "
+                                f"{sorted(allowed)})"
+                            )
+                        for arm_q in arm_writes:
+                            if arm_q not in quality_ids:
+                                raise ValueError(
+                                    f"beat {beat.id}: spec.writes_by_axis "
+                                    f"arm {arm_key!r} targets unknown quality "
+                                    f"{arm_q!r}"
+                                )
+                            if arm_q in axis_quality_writes:
+                                raise ValueError(
+                                    f"beat {beat.id}: spec.writes_by_axis "
+                                    f"arm {arm_key!r} writes quality {arm_q!r} "
+                                    f"that this beat also writes via "
+                                    f"classify_reply_axes (would clobber the "
+                                    f"classifier each tick)"
+                                )
 
         for thread in self.threads:
             if thread.npc is not None and thread.npc not in npc_ids:
@@ -582,7 +647,6 @@ class Email:
     folder: str
     sender: str
     recipient: str
-    subject: str
     body: str
     sent_at_label: str
     is_read: bool = False
@@ -700,5 +764,53 @@ class SendRequest(BaseModel):
     in_reply_to: str | None = None  # email id, optional
     recipient: str = Field(min_length=1)
     body: str  # rejected as 400 if empty/whitespace
+
+
+# ───────────────────────── tick decision payload ─────────────────────────
+
+
+class BeatEligibility(BaseModel):
+    """One beat's eligibility classification on a single tick. The
+    `find_due_beats` reporter returns one of these per "interesting" beat:
+    eligible beats, and beats whose authored value gates failed. Beats
+    blocked on an unsatisfied positive-form `BeatFired` prereq (i.e.
+    downstream of unfired work) are omitted entirely — the author already
+    knows they need to fire the upstream first, and listing them every tick
+    is noise.
+    """
+
+    beat_id: str
+    status: Literal["eligible", "blocked"]
+    blocked_by: str | None = None  # describe_predicate output for the first failing pred
+    multi_turn: bool = False
+
+
+class QualityDelta(BaseModel):
+    """One quality mutation applied during a tick. `before` is None when the
+    quality didn't have a prior value (first write). `source` names the
+    origin: `"classifier:<axis>"` or `"spec.writes:<beat_id>"`.
+    """
+
+    quality: str
+    before: float | None
+    after: float
+    source: str
+
+
+class TickDecision(BaseModel):
+    """Structured per-tick decision payload. Built once in `_tick` and used
+    three ways: as logfire span attributes (queryable in the Logfire UI),
+    as the input to per-tick console logging, and as the SSE event payload
+    that drives the in-browser debug overlay.
+    """
+
+    in_response_to: str | None
+    eligible: list[BeatEligibility]  # eligible + value-blocked beats only
+    selection: Literal["none", "sole", "director"]
+    chosen_beat_id: str | None
+    chosen_rationale: str | None = None  # only when selection == "director"
+    quality_deltas: list[QualityDelta] = Field(default_factory=list)
+    fired_beat_id: str | None = None
+    multi_turn_turn: int | None = None  # nth fire of a multi-turn beat (1-indexed)
 
 

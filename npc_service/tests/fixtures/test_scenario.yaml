@@ -29,14 +29,13 @@ npcs:
       assigned AI Counterpart in the Continuity Program calibration pilot.
     base_voice_register: |
       Corporate-bright HR-speak. Crisp polite complete sentences; no
-      contractions. Closes with "Warmly, / Aria / Continuity Counterpart | ARIA-7".
+      contractions.
     base_voice_forbidden:
       - "sarcasm of any kind"
       - "any meta reference to being an AI or language model"
       - "any acknowledgement that the Program means replacement"
     will_say:
       - "thanks the player for calibration data"
-      - "always closes with the standard sign-off"
     will_not_say:
       - "never names what happens to the player after the pilot"
       - "never breaks the corporate frame"
@@ -50,7 +49,6 @@ beats:
     type: anchored
     thread: aria
     from: "Aria | Continuity Program <aria.7@continuity.halcyon.com>"
-    subject: "Welcome — Calibration Session 1 of 12"
     sent_at: "just now"
     authored_prose: |
       Welcome to the Continuity Program.
@@ -58,10 +56,6 @@ beats:
       Please reply to this message with anything that comes to mind — a
       brief description of your morning, your perspective on what makes a
       good work email, a hello. The content matters less than the texture.
-
-      Warmly,
-      Aria
-      Continuity Counterpart | ARIA-7
 
   - id: aria.complete_warm
     type: plot
@@ -75,7 +69,6 @@ beats:
       - kind: player_replies_to_thread_gte
         thread: aria
         value: 5
-    subject: "Pilot Complete — Thank You for Your Partnership"
     spec:
       intent: |
         Warm completion email. Aria reports calibration has reached the
@@ -83,7 +76,6 @@ beats:
         partnership in a new capacity.
       must_include_facts:
         - "calibration has reached transition threshold"
-        - "Aria signs off as 'Aria / Continuity Counterpart | ARIA-7'"
       must_not:
         - "do not name what specifically happens to the player after transition"
 
@@ -100,14 +92,12 @@ beats:
         of:
           kind: beat_fired
           beat: aria.complete_warm
-    subject: "Pilot Complete — Calibration Within Parameters"
     spec:
       intent: |
         Clinical completion email. Notes calibration was successful within
         parameters and transition will proceed on schedule. No warmth.
       must_include_facts:
         - "calibration was successful within parameters"
-        - "Aria signs off as 'Aria / Continuity Counterpart | ARIA-7'"
       must_not:
         - "do not be warm or affirming"
 
@@ -128,14 +118,12 @@ beats:
         of:
           kind: beat_fired
           beat: aria.complete_standard
-    subject: "Calibration — Continuing"
     spec:
       intent: |
         Aria's ongoing calibration ask. Affirm what the player just shared,
         then ask one specific personal calibration question.
       must_include_facts:
         - "asks the player one specific, personal calibration question"
-        - "Aria signs off as 'Aria / Continuity Counterpart | ARIA-7'"
       must_not:
         - "do not name what happens to the player at end of pilot"
     classify_reply_axes:

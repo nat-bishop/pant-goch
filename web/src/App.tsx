@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { Email, NpcInfo } from "./api";
 import { AppShell } from "./components/AppShell";
 import { ChatHeader } from "./components/ChatHeader";
+import { DebugPanel } from "./components/DebugPanel";
 import { MessageComposer } from "./components/MessageComposer";
 import { MessageList } from "./components/MessageList";
 import { useTheme } from "./hooks/useTheme";
@@ -33,6 +34,10 @@ export default function App() {
   return (
     <AppShell>
       <NpcChat npc={selectedNpc} emails={emails} />
+      {/* DEV-only overlay surfacing per-tick decisions. Vite's
+          import.meta.env.DEV is a static literal in production builds, so
+          the entire DebugPanel module tree-shakes out of the prod bundle. */}
+      {import.meta.env.DEV && <DebugPanel />}
     </AppShell>
   );
 }

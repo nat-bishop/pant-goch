@@ -70,11 +70,9 @@ function groupBySender(emails: Email[]): Email[][] {
   const groups: Email[][] = [];
   for (const e of emails) {
     const last = groups[groups.length - 1];
-    if (last && last[0]!.from === e.from && !e.beat_id && !last[0]!.beat_id) {
+    if (last && last[0]!.from === e.from) {
       last.push(e);
     } else {
-      // PlotBeat / anchored emails always start a new group so their eyebrow
-      // (the authored subject) reads cleanly as a single labeled message.
       groups.push([e]);
     }
   }

@@ -7,7 +7,6 @@ interface Props {
   body: string;
   variant: BubbleVariant;
   position?: BubblePosition;
-  eyebrow?: string;
 }
 
 const RADIUS_FULL = "1rem";
@@ -36,7 +35,6 @@ export function MessageBubble({
   body,
   variant,
   position = "single",
-  eyebrow,
 }: Props) {
   const own = variant === "me";
 
@@ -47,16 +45,6 @@ export function MessageBubble({
         own ? "items-end" : "items-start",
       )}
     >
-      {eyebrow && (
-        <div
-          className={clsx(
-            "mb-1 px-1 text-[10px] font-medium uppercase tracking-[0.12em] text-text-muted",
-            own ? "self-end" : "self-start",
-          )}
-        >
-          {eyebrow}
-        </div>
-      )}
       <div
         className={clsx(
           "max-w-[min(560px,75%)] whitespace-pre-line break-words px-3.5 py-2 text-[14px] leading-[1.45]",

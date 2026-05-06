@@ -18,7 +18,6 @@ export interface Email {
   id: string;
   from: string;
   to: string;
-  subject: string;
   sent_at: string;
   is_read: boolean;
   preview: string;
@@ -90,10 +89,36 @@ export async function postOpen(emailId: string) {
 
 // SSE helpers ─────────────────────────────────────────────────────────
 
+export interface BeatEligibility {
+  beat_id: string;
+  status: "eligible" | "blocked";
+  blocked_by: string | null;
+  multi_turn: boolean;
+}
+
+export interface QualityDelta {
+  quality: string;
+  before: number | null;
+  after: number;
+  source: string;
+}
+
+export interface TickDecision {
+  in_response_to: string | null;
+  eligible: BeatEligibility[];
+  selection: "none" | "sole" | "director";
+  chosen_beat_id: string | null;
+  chosen_rationale: string | null;
+  quality_deltas: QualityDelta[];
+  fired_beat_id: string | null;
+  multi_turn_turn: number | null;
+}
+
 export type SseEvent =
   | { type: "send_recorded"; email: Email }
   | { type: "classified"; quality: string; value: string; score: number }
   | { type: "new_email"; email: Email }
+  | { type: "tick_decision"; decision: TickDecision }
   | { type: "state"; state: GameState }
   | { type: "done" }
   | { type: "error"; message: string };

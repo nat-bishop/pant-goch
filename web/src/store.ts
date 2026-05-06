@@ -7,7 +7,9 @@ import {
   Email,
   GameState,
   NpcInfo,
+  QualityDelta,
   ScenarioResponse,
+  TickDecision,
   getInbox,
   getScenario,
   getThread,
@@ -18,6 +20,12 @@ import { sleep, typingDelayMs } from "./util/pacing";
 
 // Thread id; backend is authoritative. Was a `"aria"` literal pre-multi-NPC.
 export type ChatId = string;
+
+// Debug overlay keeps a rolling history of quality changes across ticks
+// so the author can scan "what moved engagement up over the last few
+// turns" without trawling the terminal log. Cap is small — the panel is
+// scannable, not an audit log.
+const QUALITY_HISTORY_CAP = 50;
 
 interface Store {
   bootStarted: boolean;
@@ -31,12 +39,19 @@ interface Store {
   firstOpenForChat: Set<string>;
   theme: Theme;
 
+  // Debug overlay (DEV-only consumer; backend always emits the source data).
+  lastTickDecision: TickDecision | null;
+  qualityHistory: QualityDelta[];
+  debugCollapsed: boolean;
+
   boot(): Promise<void>;
   refreshInbox(): Promise<void>;
   openChat(chatId: ChatId): Promise<void>;
   appendEmailOptimistic(email: Email): void;
   setPendingTypingFor(threadId: string | null): void;
   setTheme(theme: Theme): void;
+  recordTickDecision(decision: TickDecision): void;
+  setDebugCollapsed(collapsed: boolean): void;
 }
 
 export const useStore = create<Store>()((set, get) => ({
@@ -50,6 +65,9 @@ export const useStore = create<Store>()((set, get) => ({
   pendingTypingFor: null,
   firstOpenForChat: new Set(),
   theme: detectInitialTheme(),
+  lastTickDecision: null,
+  qualityHistory: [],
+  debugCollapsed: false,
 
   async boot() {
     // React StrictMode double-mounts in dev; without this guard, boot() runs
@@ -138,5 +156,17 @@ export const useStore = create<Store>()((set, get) => ({
 
   setTheme(theme) {
     set({ theme });
+  },
+
+  recordTickDecision(decision) {
+    const merged = [...get().qualityHistory, ...decision.quality_deltas];
+    set({
+      lastTickDecision: decision,
+      qualityHistory: merged.slice(-QUALITY_HISTORY_CAP),
+    });
+  },
+
+  setDebugCollapsed(collapsed) {
+    set({ debugCollapsed: collapsed });
   },
 }));

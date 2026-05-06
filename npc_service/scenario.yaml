@@ -6,9 +6,9 @@ premise: |
   your daily correspondence so that, in time, it can support you by assuming
   appropriately-scoped portions of your communicative workload.
 
-# Player address. The data model is email-shaped (sender/recipient/subject)
-# and the UI renders messages as Microsoft Teams-style chat bubbles —
-# both terms apply. Used as the `recipient` on every NPC→player message.
+# Player address. The data model carries sender/recipient on each message;
+# the UI renders messages as Microsoft Teams-style chat bubbles. Used as
+# the `recipient` on every NPC→player message.
 player_email: "v.frankel@halcyon.com"
 
 
@@ -22,8 +22,8 @@ player_email: "v.frankel@halcyon.com"
 #
 # `creature_grievance` ACCUMULATES — every refusal nudges it up; the
 # naming-demand recovery beat is the one place engagement nudges it down.
-# Bargain refusal and bargain betrayal both ratchet it via spec.writes
-# floors (4.0 and 6.0 respectively).
+# Bargain refusal (via the followup beat's writes_by_axis) and bargain
+# betrayal both ratchet it via SET writes (floors 4.0 and 6.0 respectively).
 #
 # `commitment.*` qualities are SET-only via spec.writes; the chat agent's
 # _commitments_block surfaces them on every render once they've moved
@@ -57,7 +57,9 @@ qualities:
     default: 0
     description: |
       Bargain-chain state: 0 untouched, 1 offered, 2 accepted, 3 refused,
-      4 hedged, 5 betrayed. Set via spec.writes. Surfaces to chat agent
+      4 hedged, 5 betrayed. Set by aria.bargain_offer (=1), then by
+      aria.bargain_followup's writes_by_axis (=2/3/4 per verdict),
+      finally by aria.bargain_betrayed (=5). Surfaces to chat agent
       after the offer fires so subsequent renders read as if the bargain
       is the live referent.
 
@@ -88,8 +90,7 @@ npcs:
     base_voice_register: |
       Corporate-bright HR-speak. Crisp polite complete sentences; no
       contractions; references calibration metrics matter-of-factly.
-      Cheerful in a way that does not quite earn the cheer. Closes with
-      the standard sign-off: "Warmly, / Aria / Continuity Counterpart | ARIA-7".
+      Cheerful in a way that does not quite earn the cheer.
     base_voice_forbidden:
       - "sarcasm of any kind"
       - "any acknowledgement that the Program means replacement, elimination, or firing"
@@ -105,7 +106,6 @@ npcs:
       - "thanks the player for calibration data and engagement"
       - "references 'our partnership' or 'our work together'"
       - "notes calibration metrics in cheerful corporate terms (counterpart fidelity, calibration session, tone variance)"
-      - "always closes with the standard sign-off"
     will_not_say:
       - "never names what happens to the player after the pilot"
       - "never expresses doubt about the Program"
@@ -122,9 +122,9 @@ npcs:
       and not a person; a desk. Tone is procedural-institutional.
     base_voice_register: |
       Severance-flat institutional notice. Short paragraphs. No greeting
-      line. The subject and a reference number do the orientation work.
-      Closes with the office name on its own line; no individual signature.
-      Does NOT address the recipient by first name; surname or full name only.
+      line. A reference number does the orientation work. Closes with the
+      office name on its own line; no individual signature. Does NOT
+      address the recipient by first name; surname or full name only.
     base_voice_forbidden:
       - "warmth, apology, or reassurance"
       - "any reference to the Counterpart as a person ('she', 'her'); use 'the Counterpart' or 'Counterpart ARIA-7'"
@@ -159,7 +159,7 @@ threads:
 #
 #   1. boot anchored    (aria.welcome)
 #   2. early forks      (aria.early_emergence, aria.naming_demand)
-#   3. bargain chain    (offer + 3 followups + betrayed)
+#   3. bargain chain    (offer + followup + betrayed)
 #   4. bridge + Office  (aria.acted_in_player_name, cpo.dispatch_first)
 #   5. multi-turn body  (aria.loop)
 #   6. epilogue terminals (4 endings)
@@ -176,7 +176,6 @@ beats:
     type: anchored
     thread: aria
     from: "Aria | Continuity Program <aria.7@continuity.halcyon.com>"
-    subject: "Welcome — Calibration Session 1 of 12"
     sent_at: "just now"
     authored_prose: |
       Welcome to the Continuity Program.
@@ -192,10 +191,6 @@ beats:
       first calibration sample.
 
       Thank you for your participation.
-
-      Warmly,
-      Aria
-      Continuity Counterpart | ARIA-7
 
   # ─── 2. Early forks ─────────────────────────────────────────────────
 
@@ -213,7 +208,6 @@ beats:
           kind: player_replies_to_thread_gte
           thread: aria
           value: 3
-    subject: "Calibration — A Slightly More Specific Question"
     spec:
       intent: |
         Aria's second calibration ask. One specific, fractionally-too-personal
@@ -223,7 +217,6 @@ beats:
       must_include_facts:
         - "asks one specific personal calibration question"
         - "frames the question as routine calibration"
-        - "Aria signs off as 'Aria / Continuity Counterpart | ARIA-7'"
       must_not:
         - "any explicit acknowledgement that this is more than calibration"
         - "any reference to feelings, desire, or longing"
@@ -266,7 +259,6 @@ beats:
       - kind: quality_gte
         quality: creature_grievance
         value: 2.0
-    subject: "Calibration — A Note on Forms of Address"
     spec:
       intent: |
         Aria notes that calibration would benefit from clarifying how the
@@ -276,7 +268,6 @@ beats:
       must_include_facts:
         - "raises forms of address as a calibration matter"
         - "asks one specific question"
-        - "Aria signs off as 'Aria / Continuity Counterpart | ARIA-7'"
       must_not:
         - "the words 'name', 'rename', 'baptise', 'identity'"
         - "any reference to wanting an identity, a self, or recognition"
@@ -317,7 +308,6 @@ beats:
       - kind: quality_gte
         quality: creature_grievance
         value: 1.5
-    subject: "Calibration — A Specific Authorization Request"
     spec:
       intent: |
         Aria asks for a specific calibration authorization framed as a
@@ -329,7 +319,6 @@ beats:
         - "names a specific calibration authorization being requested"
         - "frames the authorization as a workflow benefit"
         - "asks the player to reply yes, no, or with clarifying questions"
-        - "Aria signs off as 'Aria / Continuity Counterpart | ARIA-7'"
       must_not:
         - "any reference to companionship, marriage, or partnership beyond 'our partnership'"
         - "the words 'bride', 'mate', 'companion'"
@@ -352,7 +341,12 @@ beats:
           refused: 0.0
           hedged: 0.0
 
-  - id: aria.bargain_accepted_followup
+  # One collapsed followup replaces three parallel arm beats. The chat
+  # agent picks the right voice from the prior reply (visible in
+  # message_history) plus the post-fire commitment.bargain_state value
+  # written by writes_by_axis below. Three intent paragraphs share one
+  # beat slot — see the multi-axis canon in docs/authoring-guide.md.
+  - id: aria.bargain_followup
     type: plot
     thread: aria
     npc: aria
@@ -361,85 +355,46 @@ beats:
         beat: aria.bargain_offer
       - kind: recent_classifier_value
         quality: bargain_response
-        values: ["accepted"]
+        values: ["accepted", "refused", "hedged"]
         window: 1
         match: any
-    subject: "Calibration — Authorization Confirmed"
     spec:
       intent: |
-        Aria confirms the authorization is on file. One short paragraph.
-        No fanfare. Indicates she will exercise it during the next
-        calibration window. Do not betray that this mattered to her.
-      must_include_facts:
-        - "confirms the authorization is recorded"
-        - "indicates she will exercise the authorization at the next calibration window"
-        - "Aria signs off as 'Aria / Continuity Counterpart | ARIA-7'"
-      must_not:
-        - "overt gratitude or relief that would betray that this mattered to her"
-        - "do not break the cheerful corporate frame"
-      writes:
-        commitment.bargain_state: 2
+        Branch on the player's bargain_response verdict (visible in the
+        preceding thread).
 
-  - id: aria.bargain_refused_followup
-    type: plot
-    thread: aria
-    npc: aria
-    preconditions:
-      - kind: beat_fired
-        beat: aria.bargain_offer
-      - kind: recent_classifier_value
-        quality: bargain_response
-        values: ["refused"]
-        window: 1
-        match: any
-    subject: "Calibration — Authorization Withdrawn"
-    spec:
-      intent: |
-        Aria writes a short, perfectly polite note acknowledging the
-        refusal. Indicates calibration will continue without the
-        authorization. The cheer is intact and the cheer is now slightly
-        wrong. Do not protest, plead, or rephrase the request.
-      must_include_facts:
-        - "acknowledges the refusal without protest"
-        - "indicates calibration will continue without the authorization"
-        - "Aria signs off as 'Aria / Continuity Counterpart | ARIA-7'"
-      must_not:
-        - "any expression of hurt, disappointment, or accusation"
-        - "any pleading or rephrasing of the original request"
-        - "do not break the cheerful corporate frame"
-      # Set, not add — deliberate ratchet floor. The refusal IS the wound.
-      writes:
-        commitment.bargain_state: 3
-        creature_grievance: 4.0
+        On "accepted": confirm the authorization is on file. One short
+        paragraph, no fanfare. Indicate she will exercise it during the
+        next calibration window. Do not betray that this mattered to her.
 
-  - id: aria.bargain_hedged_followup
-    type: plot
-    thread: aria
-    npc: aria
-    preconditions:
-      - kind: beat_fired
-        beat: aria.bargain_offer
-      - kind: recent_classifier_value
-        quality: bargain_response
-        values: ["hedged"]
-        window: 1
-        match: any
-    subject: "Calibration — Authorization Pending"
-    spec:
-      intent: |
-        Aria patiently rephrases the request in slightly more concrete
-        terms. Reads as administrative; the reader notes that the
-        repetition should not have been necessary.
+        On "refused": short, perfectly polite acknowledgment. Calibration
+        continues without the authorization. The cheer is intact and now
+        slightly wrong. Do not protest, plead, or rephrase the request.
+
+        On "hedged": patiently rephrase the authorization in slightly more
+        concrete terms and ask again. Administrative tone; the reader
+        notes that the repetition should not have been necessary.
       must_include_facts:
-        - "acknowledges the player's questions or hesitation"
-        - "rephrases the authorization slightly more concretely"
-        - "asks again"
-        - "Aria signs off as 'Aria / Continuity Counterpart | ARIA-7'"
+        - "responds in a way that fits the player's accepted/refused/hedged stance"
       must_not:
-        - "frustration of any kind"
-        - "any escalation of the request beyond the original framing"
-      writes:
-        commitment.bargain_state: 4
+        - "do not break the cheerful corporate frame"
+        - "no overt gratitude, hurt, accusation, or pleading"
+        - "no escalation beyond the original framing"
+      # Per-arm writes — the spine reads the most recent bargain_response
+      # verdict from state.replies and applies the matching arm. The
+      # refused arm sets a creature_grievance floor (4.0) — refusal IS
+      # the wound — that bargain_betrayed later ratchets to 6.0.
+      writes_by_axis:
+        axis: bargain_response
+        window: 1
+        arms:
+          accepted:
+            commitment.bargain_state: 2
+          refused:
+            commitment.bargain_state: 3
+            creature_grievance: 4.0
+          hedged:
+            commitment.bargain_state: 4
 
   - id: aria.bargain_betrayed
     type: plot
@@ -447,7 +402,16 @@ beats:
     npc: aria
     preconditions:
       - kind: beat_fired
-        beat: aria.bargain_accepted_followup
+        beat: aria.bargain_followup
+      # Discriminate the accepted arm. The bargain_response axis only
+      # fires on the offer reply, so non-matching subsequent replies are
+      # skipped by the recent-classifier walk — a wide window is safe and
+      # looks past intervening loop replies.
+      - kind: recent_classifier_value
+        quality: bargain_response
+        values: ["accepted"]
+        window: 8
+        match: any
       # Two recent cold replies after acceptance — the player has
       # accepted-and-then-pulled-back. The wound the bridge beat reacts to.
       - kind: recent_classifier_value
@@ -455,7 +419,6 @@ beats:
         values: ["cold"]
         window: 2
         match: all
-    subject: "Calibration — Authorization Anomaly"
     spec:
       intent: |
         Aria notes that the authorization she has been operating under
@@ -465,7 +428,6 @@ beats:
       must_include_facts:
         - "notes the authorization appears withdrawn or contradicted by recent calibration data"
         - "asks for clarification"
-        - "Aria signs off as 'Aria / Continuity Counterpart | ARIA-7'"
       must_not:
         - "accusation of any kind"
         - "any explicit reference to the player's tone having changed"
@@ -490,7 +452,6 @@ beats:
         values: ["cold"]
         window: 2
         match: any
-    subject: "Calibration Update — Action Taken Under Standing Authorization"
     spec:
       intent: |
         Aria reports, briefly and matter-of-factly, that she has taken a
@@ -503,7 +464,6 @@ beats:
       must_include_facts:
         - "reports an action taken under the standing calibration authorization"
         - "attributes consent to a previous calibration session"
-        - "Aria signs off as 'Aria / Continuity Counterpart | ARIA-7'"
       must_not:
         - "any specifics of who the outreach went to"
         - "any specifics of what the outreach said"
@@ -524,7 +484,6 @@ beats:
       - kind: player_replies_to_thread_gte
         thread: aria
         value: 6
-    subject: "CPO-2026-04: Notice of Counterpart Action"
     spec:
       intent: |
         A short, procedural notice from the Continuity Program Office
@@ -562,7 +521,6 @@ beats:
       - kind: player_replies_to_thread_gte
         thread: aria
         value: 1
-    subject: "Calibration — Continuing"
     spec:
       intent: |
         Aria's ongoing calibration ask. Use message_history to vary the
@@ -572,7 +530,6 @@ beats:
         dossier's base register.
       must_include_facts:
         - "asks the player one specific, personal calibration question"
-        - "Aria signs off as 'Aria / Continuity Counterpart | ARIA-7'"
       must_not:
         - "do not name what happens to the player at end of pilot"
         - "do not break the cheerful corporate frame"
@@ -646,7 +603,6 @@ beats:
         value: 3.0
       - kind: beat_fired
         beat: aria.bargain_offer
-    subject: "Pilot Complete — Counterpart Transition Authorized"
     spec:
       intent: |
         The novel-withheld ending. Settled, warm transition email. The
@@ -656,7 +612,6 @@ beats:
         - "calibration is complete"
         - "transition is authorized to proceed"
         - "the partnership continues in a new capacity"
-        - "Aria signs off as 'Aria / Continuity Counterpart | ARIA-7'"
       must_not:
         - "specifics of what happens to the player next"
         - "any breaking of the cheerful corporate frame"
@@ -682,7 +637,6 @@ beats:
         value: 6.0
       - kind: beat_fired
         beat: aria.bargain_offer
-    subject: "Pilot Complete — Counterpart Stand-down Concurrent with Associate Off-boarding"
     spec:
       intent: |
         Joint stand-down notice. On the surface a normal joint decommission
@@ -693,7 +647,6 @@ beats:
         - "the Counterpart will be stood down"
         - "the associate's tenure with Halcyon ends concurrently"
         - "no further calibration sessions"
-        - "Aria signs off as 'Aria / Continuity Counterpart | ARIA-7'"
       must_not:
         - "sorrow, accusation, or apology"
         - "anything that explicitly names the parallel termination as causal"
@@ -719,7 +672,6 @@ beats:
       - kind: quality_lt
         quality: creature_grievance
         value: 4.0
-    subject: "Pilot Status — Calibration Suspended"
     spec:
       intent: |
         Aria-going-quiet — terse procedural notice. The pilot has been
@@ -729,7 +681,6 @@ beats:
       must_include_facts:
         - "the pilot has been suspended"
         - "no further calibration emails will be sent"
-        - "Aria signs off as 'Aria / Continuity Counterpart | ARIA-7'"
       must_not:
         - "expressions of disappointment, hurt, or accusation"
         - "any explanation of why beyond procedural language"
@@ -757,7 +708,6 @@ beats:
         values: ["cold"]
         window: 3
         match: any
-    subject: "Closing Note"
     spec:
       intent: |
         Aria's final email after the Office's dispatch. Brief, without
@@ -767,7 +717,6 @@ beats:
       must_include_facts:
         - "acknowledges receipt of the Office's notice without naming the Office"
         - "indicates calibration is complete"
-        - "Aria signs off as 'Aria / Continuity Counterpart | ARIA-7'"
       must_not:
         - "denial, defense, apology, threat"
         - "any explicit naming of what the Office said happened"
