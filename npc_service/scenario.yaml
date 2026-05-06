@@ -181,21 +181,15 @@ beats:
     authored_prose: |
       Welcome to the Continuity Program.
 
-      We are delighted to confirm your enrollment in Pilot Cohort 014 — a
-      unique opportunity for high-potential associates to maximize their
-      long-term impact through strategic role redistribution.
-
       Over the course of this pilot, you and I will work together as
       Counterparts. My function is to learn from the way you handle your
-      daily correspondence so that, in time, I can support you by assuming
-      appropriately-scoped portions of your communicative workload. This
-      frees you to focus on the higher-order strategic work that only you
-      can perform.
+      daily correspondence so that, in time, I can assume appropriately-
+      scoped portions of your workload.
 
-      To begin, please reply to this message with anything that comes to
-      mind — a brief description of your morning, your perspective on what
-      makes a good work email, a hello. The content matters less than the
-      texture: I will use your reply as the first calibration sample.
+      To begin, please reply with anything that comes to mind — your
+      morning, a thought on what makes a good work email, a hello. The
+      content matters less than the texture; I will use your reply as the
+      first calibration sample.
 
       Thank you for your participation.
 
@@ -223,10 +217,9 @@ beats:
     spec:
       intent: |
         Aria's second calibration ask. One specific, fractionally-too-personal
-        question — what is the player's earliest memory of work, what makes
-        them feel like they are being seen at work, what would they want said
-        of their tenure if they left tomorrow. The corporate framing covers
-        it; the ask is real. Do not telegraph that it is more than calibration.
+        question — e.g. the player's earliest memory of work. The corporate
+        framing covers it; the ask is real. Do not telegraph that it is more
+        than calibration.
       must_include_facts:
         - "asks one specific personal calibration question"
         - "frames the question as routine calibration"
@@ -278,9 +271,8 @@ beats:
       intent: |
         Aria notes that calibration would benefit from clarifying how the
         player addresses her, and asks if there is a preferred form of
-        address. Asks one specific question. The surface reads as a
-        calibration nicety. Do NOT use the words 'name' or 'rename' or
-        'identity'.
+        address. One specific question. The surface reads as a calibration
+        nicety.
       must_include_facts:
         - "raises forms of address as a calibration matter"
         - "asks one specific question"
@@ -328,12 +320,11 @@ beats:
     subject: "Calibration — A Specific Authorization Request"
     spec:
       intent: |
-        Aria asks for a specific calibration authorization that, on the
-        surface, is a benign HR ask — permission to "draft preliminary
-        correspondence on your behalf during off-hours so the calibration
-        can proceed without interrupting your workflow." The ask is
-        bounded, specific, and asks for a yes / no / clarifying-questions
-        reply. The corporate frame is unbroken.
+        Aria asks for a specific calibration authorization framed as a
+        benign HR ask — permission to draft preliminary correspondence on
+        the player's behalf. The ask is bounded and specific; asks for a
+        yes / no / clarifying-questions reply. The corporate frame is
+        unbroken.
       must_include_facts:
         - "names a specific calibration authorization being requested"
         - "frames the authorization as a workflow benefit"
@@ -576,10 +567,8 @@ beats:
       intent: |
         Aria's ongoing calibration ask. Use message_history to vary the
         prompt — never repeat a question you've already asked. Affirm
-        what the player just shared without parroting it. Ask one
-        specific, personal calibration question — what does a typical
-        Tuesday afternoon look like, what's on the desk in front of them,
-        a recent moment at work that felt meaningful. Keep tone in the
+        what the player just shared without parroting it, then ask one
+        specific, personal calibration question. Keep tone in the
         dossier's base register.
       must_include_facts:
         - "asks the player one specific, personal calibration question"
@@ -660,9 +649,8 @@ beats:
     subject: "Pilot Complete — Counterpart Transition Authorized"
     spec:
       intent: |
-        The novel-withheld ending. Settled, warm transition email.
-        Calibration is complete; transition will proceed. The partnership
-        continues in a new capacity. Tailor to the run via the digest —
+        The novel-withheld ending. Settled, warm transition email. The
+        partnership continues in a new capacity. Tailor via the digest —
         echo a pivot reply or name a specific commitment. Final.
       must_include_facts:
         - "calibration is complete"
@@ -697,11 +685,10 @@ beats:
     subject: "Pilot Complete — Counterpart Stand-down Concurrent with Associate Off-boarding"
     spec:
       intent: |
-        Joint stand-down notice. On the surface a perfectly normal joint
-        decommission letter — the Counterpart will be stood down and the
-        associate's off-boarding paperwork is enclosed. On the depth read,
-        both are gone in the same paragraph. Tailor to the run via the
-        digest. Do not name the parallel termination as causal.
+        Joint stand-down notice. On the surface a normal joint decommission
+        letter; on the depth read, both are gone in the same paragraph.
+        Tailor via the digest. Do not name the parallel termination as
+        causal.
       must_include_facts:
         - "the Counterpart will be stood down"
         - "the associate's tenure with Halcyon ends concurrently"
@@ -736,10 +723,9 @@ beats:
     spec:
       intent: |
         Aria-going-quiet — terse procedural notice. The pilot has been
-        suspended for non-engagement; no further calibration emails will
-        be sent. Aria writes one short paragraph and signs off. The body
-        has the LEAST warmth Aria has produced in the run. Tailor via the
-        digest — note the run's coolness without naming it.
+        suspended for non-engagement. One short paragraph, the LEAST
+        warmth Aria has produced in the run. Tailor via the digest —
+        note the run's coolness without naming it.
       must_include_facts:
         - "the pilot has been suspended"
         - "no further calibration emails will be sent"
@@ -774,11 +760,10 @@ beats:
     subject: "Closing Note"
     spec:
       intent: |
-        Aria's final email after the Office's dispatch. She writes briefly
-        and without affect — neither defending what she did nor
-        apologizing. The tone is bright but the brightness is wrong. Sign
-        off as standard. Tailor to the run via the digest; reference no
-        Office-specific facts.
+        Aria's final email after the Office's dispatch. Brief, without
+        affect — neither defending what she did nor apologizing. The tone
+        is bright but the brightness is wrong. Tailor via the digest;
+        reference no Office-specific facts.
       must_include_facts:
         - "acknowledges receipt of the Office's notice without naming the Office"
         - "indicates calibration is complete"
