@@ -69,7 +69,6 @@ def client(monkeypatch):
         with ExitStack() as stack:
             stack.enter_context(main.AGENTS.chat_agent.override(model=_test_model_for_chat()))
             stack.enter_context(main.AGENTS.classifier_agent.override(model=_test_model_for_classifier("deflected")))
-            stack.enter_context(main.AGENTS.epilogue_agent.override(model=_test_model_for_chat()))
             yield c
 
 
@@ -212,8 +211,9 @@ def test_first_send_fires_loop(client):
     assert len(loop_emails) == 1
     # Multi-turn beat: never enters fired_beat_ids on its own.
     assert "aria.loop" not in main.STATE.fired_beat_ids
-    # Welcome has no classify_reply → no classification on this send.
-    assert not any(e["type"] == "classified" for e in events)
+    # Welcome has no classify_reply → no quality moved.
+    assert main.STATE.qualities["engagement"] == 0.0
+    assert main.STATE.replies[-1].classifier_results == []
 
 
 def test_send_emits_tick_decision_event(client):
@@ -319,14 +319,15 @@ def test_classifier_runs_on_reply_to_loop_and_accumulates(client):
     # Override classifier to 'engaged' for the next two sends; engagement
     # should accumulate to 2.0.
     with main.AGENTS.classifier_agent.override(model=_test_model_for_classifier("engaged")):
-        events = list(consume_sse(client.stream("POST", "/send", json={
+        list(consume_sse(client.stream("POST", "/send", json={
             "in_reply_to": loop_email.id, "recipient": "Aria",
             "body": "Tuesday afternoons I usually triage email, then deep work.",
         })))
-        classified = [e for e in events if e["type"] == "classified"]
-        assert len(classified) == 1
-        assert classified[0]["quality"] == "engagement"
-        assert classified[0]["value"] == "engaged"
+        # Per-axis classifier write landed on the just-recorded reply.
+        first_results = main.STATE.replies[-1].classifier_results
+        assert len(first_results) == 1
+        assert first_results[0].quality == "engagement"
+        assert first_results[0].value == "engaged"
 
         next_loop_email = next(
             e for e in reversed(main.STATE.emails) if e.beat_id == "aria.loop"
@@ -435,19 +436,19 @@ def test_classifier_handles_unknown_axis_returned_by_model(client):
         {"quality": "phantom", "value": "anything", "rationale": "(t)"},
     ])
     with main.AGENTS.classifier_agent.override(model=multi):
-        events = list(consume_sse(client.stream("POST", "/send", json={
+        list(consume_sse(client.stream("POST", "/send", json={
             "in_reply_to": loop_email.id, "recipient": "Aria", "body": "yes",
         })))
-    classified = [e for e in events if e["type"] == "classified"]
-    # Only the authored 'engagement' axis emitted.
-    assert len(classified) == 1
-    assert classified[0]["quality"] == "engagement"
+    # Only the authored 'engagement' axis applied.
+    results = main.STATE.replies[-1].classifier_results
+    assert len(results) == 1
+    assert results[0].quality == "engagement"
     assert main.STATE.qualities["engagement"] == 1.0
 
 
 def test_classifier_handles_duplicate_axis_returned_by_model(client):
     """LLM returns two results for the same authored axis. First kept,
-    second logged. One classified event."""
+    second logged."""
     welcome = client.get("/inbox").json()["folders"]["Inbox"][0]
     list(consume_sse(client.stream("POST", "/send", json={
         "in_reply_to": welcome["id"], "recipient": "Aria", "body": "hi",
@@ -459,18 +460,17 @@ def test_classifier_handles_duplicate_axis_returned_by_model(client):
         {"quality": "engagement", "value": "deflected", "rationale": "(dupe)"},
     ])
     with main.AGENTS.classifier_agent.override(model=multi):
-        events = list(consume_sse(client.stream("POST", "/send", json={
+        list(consume_sse(client.stream("POST", "/send", json={
             "in_reply_to": loop_email.id, "recipient": "Aria", "body": "yes",
         })))
-    classified = [e for e in events if e["type"] == "classified"]
-    assert len(classified) == 1
-    assert classified[0]["value"] == "engaged"  # first kept
+    results = main.STATE.replies[-1].classifier_results
+    assert len(results) == 1
+    assert results[0].value == "engaged"  # first kept
 
 
 def test_classifier_handles_off_spec_value(client):
     """Model returns a value outside allowed_values. apply_classification
-    returns False; no SSE event, no append onto Reply.classifier_results,
-    quality unchanged."""
+    returns None; no append onto Reply.classifier_results, quality unchanged."""
     welcome = client.get("/inbox").json()["folders"]["Inbox"][0]
     list(consume_sse(client.stream("POST", "/send", json={
         "in_reply_to": welcome["id"], "recipient": "Aria", "body": "hi",
@@ -482,39 +482,28 @@ def test_classifier_handles_off_spec_value(client):
     ])
     starting_engagement = main.STATE.qualities["engagement"]
     with main.AGENTS.classifier_agent.override(model=multi):
-        events = list(consume_sse(client.stream("POST", "/send", json={
+        list(consume_sse(client.stream("POST", "/send", json={
             "in_reply_to": loop_email.id, "recipient": "Aria", "body": "yes",
         })))
-    classified = [e for e in events if e["type"] == "classified"]
-    assert classified == []
     assert main.STATE.qualities["engagement"] == starting_engagement
     # The reply was recorded but its classifier_results stayed empty.
     last_reply = main.STATE.replies[-1]
     assert last_reply.classifier_results == []
 
 
-def test_classified_events_arrive_before_new_email_and_state(client):
-    """SSE event ordering: classified events arrive before any new_email,
-    state arrives last (just before done). A future UI listener relying on
-    this ordering must not break."""
+def test_sse_event_order_send_recorded_then_new_email_then_state(client):
+    """SSE ordering: send_recorded first, then new_email(s), then state,
+    then done."""
     welcome = client.get("/inbox").json()["folders"]["Inbox"][0]
-    list(consume_sse(client.stream("POST", "/send", json={
+    events = list(consume_sse(client.stream("POST", "/send", json={
         "in_reply_to": welcome["id"], "recipient": "Aria", "body": "hi",
     })))
-    loop_email = next(e for e in main.STATE.emails if e.beat_id == "aria.loop")
-
-    with main.AGENTS.classifier_agent.override(
-        model=_test_model_for_classifier("engaged")
-    ):
-        events = list(consume_sse(client.stream("POST", "/send", json={
-            "in_reply_to": loop_email.id, "recipient": "Aria", "body": "yes",
-        })))
     types = [e["type"] for e in events]
-    classified_idx = types.index("classified")
+    sr_idx = types.index("send_recorded")
     new_email_idx = types.index("new_email")
     state_idx = types.index("state")
     done_idx = types.index("done")
-    assert classified_idx < new_email_idx < state_idx < done_idx
+    assert sr_idx < new_email_idx < state_idx < done_idx
 
 
 def test_apply_classification_appends_to_active_reply_via_send(client):

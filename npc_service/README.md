@@ -71,7 +71,6 @@ then `data: {"type":"done"}`.
 | GET | `/state` | live public game state (per-agent last-contact, action budget, ended flag) |
 | POST | `/action` | SSE — text deltas (per-channel), state event, timeline events, done. Body: `{agent_id, line}` |
 | GET | `/options?agent_id=X` | 2–5 LLM-generated dialogue picks for the named channel; read-only over `HISTORIES[X]` |
-| POST | `/reset` | wipes per-agent histories and handler state |
 | GET | `/events` | SSE — game-end notifications + reset signals (timeline events flow inline through `/action`) |
 
 ## Env vars

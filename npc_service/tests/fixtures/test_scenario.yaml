@@ -2,7 +2,7 @@ title: "Test Scenario"
 premise: |
   Synthesised scenario used by test_app.py and test_history_compaction.py.
   Same shape as the old Continuity Program pilot — engagement quality,
-  welcome anchored, multi-turn loop with one classifier axis, two
+  pre-authored welcome, multi-turn loop with one classifier axis, two
   mutex-chained terminals. Decoupled from the production scenario so
   app-wiring tests stay focused on engine plumbing rather than story
   content.
@@ -46,19 +46,17 @@ threads:
 
 beats:
   - id: aria.welcome
-    type: anchored
     thread: aria
-    from: "Aria | Continuity Program <aria.7@continuity.halcyon.com>"
-    sent_at: "just now"
-    authored_prose: |
-      Welcome to the Continuity Program.
+    npc: aria
+    spec:
+      pre_authored_prose: |
+        Welcome to the Continuity Program.
 
-      Please reply to this message with anything that comes to mind — a
-      brief description of your morning, your perspective on what makes a
-      good work email, a hello. The content matters less than the texture.
+        Please reply to this message with anything that comes to mind — a
+        brief description of your morning, your perspective on what makes a
+        good work email, a hello. The content matters less than the texture.
 
   - id: aria.complete_warm
-    type: plot
     thread: aria
     npc: aria
     ends_session: true
@@ -80,7 +78,6 @@ beats:
         - "do not name what specifically happens to the player after transition"
 
   - id: aria.complete_standard
-    type: plot
     thread: aria
     npc: aria
     ends_session: true
@@ -102,7 +99,6 @@ beats:
         - "do not be warm or affirming"
 
   - id: aria.loop
-    type: plot
     thread: aria
     npc: aria
     multi_turn: true

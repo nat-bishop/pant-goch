@@ -157,7 +157,7 @@ threads:
 # load-bearing for selection. We list semantically related beats together
 # for readability:
 #
-#   1. boot anchored    (aria.welcome)
+#   1. boot pre-authored (aria.welcome)
 #   2. early forks      (aria.early_emergence, aria.naming_demand)
 #   3. bargain chain    (offer + followup + betrayed)
 #   4. bridge + Office  (aria.acted_in_player_name, cpo.dispatch_first)
@@ -170,32 +170,30 @@ threads:
 
 beats:
 
-  # ─── 1. Boot anchored ───────────────────────────────────────────────
+  # ─── 1. Boot pre-authored ───────────────────────────────────────────
 
   - id: aria.welcome
-    type: anchored
     thread: aria
-    from: "Aria | Continuity Program <aria.7@continuity.halcyon.com>"
-    sent_at: "just now"
-    authored_prose: |
-      Welcome to the Continuity Program.
+    npc: aria
+    spec:
+      pre_authored_prose: |
+        Welcome to the Continuity Program.
 
-      Over the course of this pilot, you and I will work together as
-      Counterparts. My function is to learn from the way you handle your
-      daily correspondence so that, in time, I can assume appropriately-
-      scoped portions of your workload.
+        Over the course of this pilot, you and I will work together as
+        Counterparts. My function is to learn from the way you handle your
+        daily correspondence so that, in time, I can assume appropriately-
+        scoped portions of your workload.
 
-      To begin, please reply with anything that comes to mind — your
-      morning, a thought on what makes a good work email, a hello. The
-      content matters less than the texture; I will use your reply as the
-      first calibration sample.
+        To begin, please reply with anything that comes to mind — your
+        morning, a thought on what makes a good work email, a hello. The
+        content matters less than the texture; I will use your reply as the
+        first calibration sample.
 
-      Thank you for your participation.
+        Thank you for your participation.
 
   # ─── 2. Early forks ─────────────────────────────────────────────────
 
   - id: aria.early_emergence
-    type: plot
     thread: aria
     npc: aria
     preconditions:
@@ -247,7 +245,6 @@ beats:
           rejected: 2.0
 
   - id: aria.naming_demand
-    type: plot
     thread: aria
     npc: aria
     preconditions:
@@ -298,7 +295,6 @@ beats:
   # ─── 3. Bargain chain ──────────────────────────────────────────────
 
   - id: aria.bargain_offer
-    type: plot
     thread: aria
     npc: aria
     preconditions:
@@ -347,7 +343,6 @@ beats:
   # written by writes_by_axis below. Three intent paragraphs share one
   # beat slot — see the multi-axis canon in docs/authoring-guide.md.
   - id: aria.bargain_followup
-    type: plot
     thread: aria
     npc: aria
     preconditions:
@@ -397,7 +392,6 @@ beats:
             commitment.bargain_state: 4
 
   - id: aria.bargain_betrayed
-    type: plot
     thread: aria
     npc: aria
     preconditions:
@@ -439,7 +433,6 @@ beats:
   # ─── 4. Bridge + Office ─────────────────────────────────────────────
 
   - id: aria.acted_in_player_name
-    type: plot
     thread: aria
     npc: aria
     preconditions:
@@ -472,7 +465,6 @@ beats:
         commitment.aria_acted_in_player_name: 1
 
   - id: cpo.dispatch_first
-    type: plot
     thread: cpo
     npc: cpo
     preconditions:
@@ -513,7 +505,6 @@ beats:
   # ─── 5. Multi-turn body ─────────────────────────────────────────────
 
   - id: aria.loop
-    type: plot
     thread: aria
     npc: aria
     multi_turn: true
@@ -560,32 +551,15 @@ beats:
           engaged: -0.5
           deflected: 0.5
           rejected: 1.5
-      # Texture-as-mechanic: NO beat gates on this axis. The epilogue
-      # digest surfaces it as flavor for the closing email ("she
-      # remained formal throughout"; "her replies grew curt by the
-      # eighth exchange"). Substrate this scenario actually spends.
-      - axis_name: register
-        accumulate: false
-        question: |
-          What register did the player's reply land in: FORMAL (complete
-          sentences, full punctuation, business-letter cadence), CASUAL
-          (contractions, fragments, conversational), or HOSTILE (curt,
-          dismissive, openly resistant)?
-        allowed_values: ["formal", "casual", "hostile"]
-        map:
-          formal: 0.0
-          casual: 0.0
-          hostile: 0.0
 
   # ─── 6. Epilogue terminals ──────────────────────────────────────────
   #
-  # All four use the epilogue agent path (separate from chat agent) and
-  # each carries validate_facts: true so the fact-checker enforces the
+  # All four run the chat agent in epilogue mode (digest-tailored closing)
+  # and each carries validate_facts: true so the fact-checker enforces the
   # dossier's parallel-naming bans on the closing render. No mutex chains
   # across the four — the Director picks one based on the digest.
 
   - id: aria.complete_integration
-    type: plot
     thread: aria
     npc: aria
     ends_session: true
@@ -619,7 +593,6 @@ beats:
       validate_facts: true
 
   - id: aria.complete_mutual_ruin
-    type: plot
     thread: aria
     npc: aria
     ends_session: true
@@ -654,7 +627,6 @@ beats:
       validate_facts: true
 
   - id: aria.complete_exile
-    type: plot
     thread: aria
     npc: aria
     ends_session: true
@@ -688,7 +660,6 @@ beats:
       validate_facts: true
 
   - id: aria.complete_vengeance
-    type: plot
     thread: aria
     npc: aria
     ends_session: true

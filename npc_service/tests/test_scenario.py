@@ -11,7 +11,6 @@ import pytest
 from npc_service.models import (
     AxisResult,
     InboxState,
-    PlotBeat,
     Reply,
     Scenario,
     load_scenario,
@@ -60,21 +59,15 @@ def test_loads(scenario: Scenario):
     }
 
 
-def test_loop_has_three_axes_including_register(scenario: Scenario):
+def test_loop_has_two_axes(scenario: Scenario):
     loop = scenario.beat_by_id["aria.loop"]
-    assert isinstance(loop, PlotBeat)
     assert loop.multi_turn is True
     identifiers = [a.identifier for a in loop.classify_reply_axes]
-    assert identifiers == ["creator_affect", "creature_grievance", "register"]
-    # `register` is a verdict-only axis — quality is None, axis_name is "register".
-    register_axis = loop.classify_reply_axes[2]
-    assert register_axis.quality is None
-    assert register_axis.axis_name == "register"
+    assert identifiers == ["creator_affect", "creature_grievance"]
 
 
 def test_bargain_offer_uses_verdict_only_axis(scenario: Scenario):
     offer = scenario.beat_by_id["aria.bargain_offer"]
-    assert isinstance(offer, PlotBeat)
     assert len(offer.classify_reply_axes) == 1
     axis = offer.classify_reply_axes[0]
     assert axis.quality is None
@@ -89,7 +82,6 @@ def test_terminals_carry_validate_facts(scenario: Scenario):
         "aria.complete_vengeance",
     ):
         beat = scenario.beat_by_id[tid]
-        assert isinstance(beat, PlotBeat)
         assert beat.spec.validate_facts is True
         assert beat.ends_session is True
 
@@ -229,7 +221,6 @@ def test_bargain_followup_writes_state_per_arm(
     from npc_service.spine import apply_writes_by_axis
 
     followup = scenario.beat_by_id["aria.bargain_followup"]
-    assert isinstance(followup, PlotBeat)
     wba = followup.spec.writes_by_axis
     assert wba is not None
 

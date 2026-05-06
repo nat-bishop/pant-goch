@@ -134,11 +134,10 @@ class PlayerRepliesToThreadGte(BaseModel):
 class BeatFired(BaseModel):
     """True iff the named beat has completed (lives in `state.fired_beat_ids`).
 
-    For fire-once beats, "completed" == "rendered once" — they're added to
-    `fired_beat_ids` immediately after rendering. For multi-turn beats
-    (those with non-empty `completes_when`), "completed" means the gate
-    passed: such a beat may render multiple times before completing, and
-    only the completing render adds it to `fired_beat_ids`.
+    Fire-once beats land in `fired_beat_ids` immediately after rendering.
+    Multi-turn beats (`Beat.multi_turn=True`) never enter `fired_beat_ids`
+    via their own state — author a sibling beat that gates on `BeatFired` of
+    the loop's eventual successor under `Not_` if you need mutex.
 
     Use under `Not_` to express mutual exclusion between two beats whose
     other preconditions overlap.
@@ -271,11 +270,24 @@ class WritesByAxis(BaseModel):
 
 class BeatSpec(BaseModel):
     """Inputs to the chat agent for a `plot` beat — author directive layered
-    onto the conversation as per-run instructions."""
+    onto the conversation as per-run instructions.
 
-    intent: str
+    `pre_authored_prose` short-circuits the chat agent entirely: when set,
+    the beat fires the prose verbatim (no LLM call). Use for moments where
+    exact phrasing matters — typically the boot welcome. `intent` becomes
+    optional in that case (it's only consumed by the chat agent).
+    """
+
+    intent: str = ""
     must_include_facts: list[str] = Field(default_factory=list)
     must_not: list[str] = Field(default_factory=list)
+
+    # Pre-authored email body. When set, the beat ships verbatim — no LLM
+    # call, no chat-agent retries, no fact-checker. The body seeds
+    # `thread_messages` as a `ModelResponse(TextPart)` so subsequent chat
+    # agent runs see it as a prior assistant turn, exactly as the chat
+    # agent's own outputs do.
+    pre_authored_prose: str | None = None
 
     # Committed facts the beat fire stamps onto state with SET semantics
     # (no accumulate). Quality bounds clamp via `_clamp_quality`. Authoring
@@ -299,26 +311,48 @@ class BeatSpec(BaseModel):
     # raises ModelRetry on any miss/violation. Default False — every
     # un-flagged beat skips the validator entirely (zero per-render LLM
     # cost). Authors flag this on critical beats (terminals, pivotal
-    # forks); leave it off on chatty multi-turn loops.
+    # forks); leave it off on chatty multi-turn loops or pre-authored beats.
     validate_facts: bool = False
 
     @model_validator(mode="after")
-    def _validate_facts_needs_constraints(self) -> "BeatSpec":
+    def _validate_field_combinations(self) -> "BeatSpec":
+        if not self.intent.strip() and not self.pre_authored_prose:
+            raise ValueError(
+                "BeatSpec: at least one of `intent` or `pre_authored_prose` "
+                "must be set."
+            )
         if self.validate_facts and not (self.must_include_facts or self.must_not):
             raise ValueError(
                 "BeatSpec: validate_facts=True requires at least one entry "
                 "in must_include_facts or must_not — otherwise the validator "
                 "has nothing to check."
             )
+        if self.pre_authored_prose and self.validate_facts:
+            raise ValueError(
+                "BeatSpec: validate_facts has no effect when "
+                "`pre_authored_prose` is set (the prose ships verbatim, "
+                "no chat-agent output to validate)."
+            )
         return self
 
 
-# Beat is a tagged union on `type`. Each variant carries the fields that make
-# sense for it. Common to all: id, thread, preconditions.
+class Beat(BaseModel):
+    """One authored beat. Fires when its preconditions pass.
 
-class _BeatBase(BaseModel):
+    Two render modes, selected by `spec`:
+    - `spec.pre_authored_prose` set → ships verbatim (no LLM call). Used
+      for moments where exact phrasing matters (e.g. the boot welcome).
+    - otherwise → runs the chat agent with `spec` injected as per-run
+      instructions. The agent's reply IS the plot moment.
+
+    `multi_turn` and `ends_session` are independent flags that change firing
+    semantics — see field comments below.
+    """
+
     id: str = Field(min_length=1, pattern=r"^[a-z][a-z0-9_.]*$")
     thread: str
+    npc: str  # which dossier to use (sender + voice + relationship blurb)
+    spec: BeatSpec
     preconditions: list[Predicate] = Field(default_factory=list)
     # Beat-local classifier axes. Empty → no classifier runs for replies
     # to this beat. Multiple axes are batched into a single classifier
@@ -326,61 +360,15 @@ class _BeatBase(BaseModel):
     # one beat, axis quality ids must be unique (and must not collide
     # with any key in this beat's `spec.writes`).
     classify_reply_axes: list[ClassifyReply] = Field(default_factory=list)
-    # Multi-turn lifecycle. Empty → fire-once (legacy semantics: completes on
-    # first render). Non-empty → beat is "completed" only when all predicates
-    # pass; until then, find_due_beats keeps returning it and _fire_beat
-    # re-renders. The chat agent's message_history carries prior asks +
-    # player replies, so on a re-render the LLM differentiates initial vs
-    # rephrase from context (the spec's intent should describe both modes).
-    completes_when: list[Predicate] = Field(default_factory=list)
-
-
-class AnchoredBeat(_BeatBase):
-    """Pre-authored email; ships verbatim. No LLM call.
-
-    Recipient is `Scenario.player_email` — anchored beats are NPC→player by
-    construction. If a future scenario needs a non-player anchored email,
-    add a `to` field back at that time.
-    """
-
-    type: Literal["anchored"] = "anchored"
-    from_: str = Field(alias="from")
-    authored_prose: str
-    sent_at: str = ""  # in-fiction timestamp label (e.g. "just now")
-
-    model_config = {"populate_by_name": True}
-
-
-class PlotBeat(_BeatBase):
-    """Authored directive that modulates one chat-agent turn.
-
-    A PlotBeat fires when its preconditions pass; the spine runs the chat
-    agent with the beat's `spec` injected as per-run instructions. The
-    agent's reply IS the plot moment.
-
-    `multi_turn` and `ends_session` are independent flags that change firing
-    semantics — see field comments below.
-    """
-
-    type: Literal["plot"] = "plot"
-    npc: str  # which dossier to use
-    spec: BeatSpec
     # When True, the beat re-fires on every tick — never enters
     # `fired_beat_ids` based on its own state. Stop firing by adding mutex
     # preconditions (e.g. `Not_(BeatFired aria.complete_warm)`) so terminal
-    # beats can take over. Cleaner than abusing `completes_when` with a
-    # never-True predicate.
+    # beats can take over.
     multi_turn: bool = False
     # When True, `state.ended` flips to True immediately after this beat's
     # email is emitted, with `state.end_reason = beat.id`. Subsequent /open
     # and /send return HTTP 409.
     ends_session: bool = False
-
-
-Beat = Annotated[
-    Union[AnchoredBeat, PlotBeat],
-    Field(discriminator="type"),
-]
 
 
 class Thread(BaseModel):
@@ -508,17 +496,11 @@ class Scenario(BaseModel):
                 raise ValueError(
                     f"beat {beat.id}: id prefix {id_prefix!r} must equal thread {beat.thread!r}"
                 )
-            if isinstance(beat, PlotBeat) and beat.npc not in npc_ids:
+            if beat.npc not in npc_ids:
                 raise ValueError(f"beat {beat.id}: unknown npc {beat.npc!r}")
             for pred in beat.preconditions:
                 _check_predicate_refs(
                     pred, f"beat {beat.id}",
-                    quality_ids, thread_ids, beat_ids, axis_identifiers,
-                )
-            for pred in beat.completes_when:
-                _check_predicate_refs(
-                    pred,
-                    f"beat {beat.id} completes_when",
                     quality_ids, thread_ids, beat_ids, axis_identifiers,
                 )
             local_axis_identifiers: set[str] = set()
@@ -539,51 +521,50 @@ class Scenario(BaseModel):
                 local_axis_identifiers.add(ident)
                 if axis.quality is not None:
                     axis_quality_writes.add(axis.quality)
-            if isinstance(beat, PlotBeat):
-                for write_q in beat.spec.writes:
-                    if write_q not in quality_ids:
+            for write_q in beat.spec.writes:
+                if write_q not in quality_ids:
+                    raise ValueError(
+                        f"beat {beat.id}: spec.writes targets unknown "
+                        f"quality {write_q!r}"
+                    )
+                if write_q in axis_quality_writes:
+                    raise ValueError(
+                        f"beat {beat.id}: spec.writes key {write_q!r} "
+                        f"collides with a classify_reply_axes axis on "
+                        f"the same beat (the multi_turn re-fire would "
+                        f"clobber the classifier each tick)"
+                    )
+            wba = beat.spec.writes_by_axis
+            if wba is not None:
+                if wba.axis not in axis_identifiers:
+                    raise ValueError(
+                        f"beat {beat.id}: spec.writes_by_axis.axis "
+                        f"{wba.axis!r} is not a declared axis identifier"
+                    )
+                allowed = axis_allowed_values.get(wba.axis, set())
+                for arm_key, arm_writes in wba.arms.items():
+                    if allowed and arm_key not in allowed:
                         raise ValueError(
-                            f"beat {beat.id}: spec.writes targets unknown "
-                            f"quality {write_q!r}"
+                            f"beat {beat.id}: spec.writes_by_axis arm "
+                            f"{arm_key!r} is not an allowed_value of axis "
+                            f"{wba.axis!r} (declared values: "
+                            f"{sorted(allowed)})"
                         )
-                    if write_q in axis_quality_writes:
-                        raise ValueError(
-                            f"beat {beat.id}: spec.writes key {write_q!r} "
-                            f"collides with a classify_reply_axes axis on "
-                            f"the same beat (the multi_turn re-fire would "
-                            f"clobber the classifier each tick)"
-                        )
-                wba = beat.spec.writes_by_axis
-                if wba is not None:
-                    if wba.axis not in axis_identifiers:
-                        raise ValueError(
-                            f"beat {beat.id}: spec.writes_by_axis.axis "
-                            f"{wba.axis!r} is not a declared axis identifier"
-                        )
-                    allowed = axis_allowed_values.get(wba.axis, set())
-                    for arm_key, arm_writes in wba.arms.items():
-                        if allowed and arm_key not in allowed:
+                    for arm_q in arm_writes:
+                        if arm_q not in quality_ids:
                             raise ValueError(
-                                f"beat {beat.id}: spec.writes_by_axis arm "
-                                f"{arm_key!r} is not an allowed_value of axis "
-                                f"{wba.axis!r} (declared values: "
-                                f"{sorted(allowed)})"
+                                f"beat {beat.id}: spec.writes_by_axis "
+                                f"arm {arm_key!r} targets unknown quality "
+                                f"{arm_q!r}"
                             )
-                        for arm_q in arm_writes:
-                            if arm_q not in quality_ids:
-                                raise ValueError(
-                                    f"beat {beat.id}: spec.writes_by_axis "
-                                    f"arm {arm_key!r} targets unknown quality "
-                                    f"{arm_q!r}"
-                                )
-                            if arm_q in axis_quality_writes:
-                                raise ValueError(
-                                    f"beat {beat.id}: spec.writes_by_axis "
-                                    f"arm {arm_key!r} writes quality {arm_q!r} "
-                                    f"that this beat also writes via "
-                                    f"classify_reply_axes (would clobber the "
-                                    f"classifier each tick)"
-                                )
+                        if arm_q in axis_quality_writes:
+                            raise ValueError(
+                                f"beat {beat.id}: spec.writes_by_axis "
+                                f"arm {arm_key!r} writes quality {arm_q!r} "
+                                f"that this beat also writes via "
+                                f"classify_reply_axes (would clobber the "
+                                f"classifier each tick)"
+                            )
 
         for thread in self.threads:
             if thread.npc is not None and thread.npc not in npc_ids:
@@ -636,9 +617,9 @@ def load_scenario(path: str | Path) -> Scenario:
 class Email:
     """A concrete email instance in the inbox.
 
-    Sources: anchored beat (`authored_prose`), chat-turn render, or PlotBeat
-    render (chat agent with author directive). `thread_id` is set at emission
-    so neither client nor spine has to parse it back out of beat ids.
+    Sources: pre-authored beat (`spec.pre_authored_prose`), chat-agent
+    render, or player send. `thread_id` is set at emission so neither
+    client nor spine has to parse it back out of beat ids.
     """
 
     id: str
@@ -650,7 +631,6 @@ class Email:
     body: str
     sent_at_label: str
     is_read: bool = False
-    in_reply_to_beat: str | None = None
 
 
 @dataclass
@@ -674,15 +654,9 @@ class Reply:
 
 @dataclass
 class PendingBeat:
-    """A beat queued to fire when its preconditions become satisfied.
-
-    `runtime_preconditions` are AND'd with the beat's authored preconditions
-    at scheduling time. Currently unused at runtime — kept on the schema for
-    extensibility and exercised by the spine tests.
-    """
+    """A beat queued to fire when its preconditions become satisfied."""
 
     beat_id: str
-    runtime_preconditions: list[Predicate] = field(default_factory=list)
 
 
 @dataclass
@@ -762,7 +736,11 @@ class OpenRequest(BaseModel):
 
 class SendRequest(BaseModel):
     in_reply_to: str | None = None  # email id, optional
-    recipient: str = Field(min_length=1)
+    recipient: str = Field(min_length=1)  # display string for the email "to" field
+    # NPC dossier id the client knows it's writing to. Optional for
+    # backwards compat — when omitted, the server fuzzy-matches `recipient`
+    # against dossier names. Newer clients always pass this directly.
+    recipient_npc_id: str | None = None
     body: str  # rejected as 400 if empty/whitespace
 
 

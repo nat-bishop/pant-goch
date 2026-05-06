@@ -38,7 +38,6 @@ from .models import (
     Not_,
     PendingBeat,
     PlayerRepliesToThreadGte,
-    PlotBeat,
     Predicate,
     QualityDelta,
     QualityGte,
@@ -372,11 +371,11 @@ def find_due_beats(
     surfaces and the debug overlay displays.
 
     Beats stay in `pending_beats` until they're added to `fired_beat_ids`.
-    Fire-once beats (empty `completes_when`) get added by `_fire_beat`
-    immediately after rendering, so they're pruned on the next tick.
-    Multi-turn beats stay re-fireable until their `completes_when` predicates
-    pass — `_fire_beat` only marks them complete then, so they re-appear in
-    the due list each tick until satisfied.
+    Fire-once beats land in `fired_beat_ids` immediately after rendering, so
+    they're pruned on the next tick. `multi_turn` beats never enter
+    `fired_beat_ids` via their own state — they re-appear in the due list
+    each tick until a sibling beat's mutex (e.g. `Not_(BeatFired terminal)`)
+    catches them.
     """
     eligible: list[Beat] = []
     report: list[BeatEligibility] = []
@@ -388,17 +387,17 @@ def find_due_beats(
             continue
         if beat.id in state.fired_beat_ids:
             continue
-        all_preds = list(beat.preconditions) + list(pb.runtime_preconditions)
         first_failed = next(
-            (p for p in all_preds if not evaluate_predicate(p, state)), None
+            (p for p in beat.preconditions if not evaluate_predicate(p, state)),
+            None,
         )
-        is_multi = isinstance(beat, PlotBeat) and beat.multi_turn
+        is_multi = beat.multi_turn
         if first_failed is None:
             eligible.append(beat)
             report.append(BeatEligibility(
                 beat_id=beat.id, status="eligible", multi_turn=is_multi,
             ))
-        elif _has_unsatisfied_structural_prereq(all_preds, state):
+        elif _has_unsatisfied_structural_prereq(beat.preconditions, state):
             # Downstream of unfired work — omit from report (noise).
             continue
         else:
@@ -409,7 +408,7 @@ def find_due_beats(
             ))
 
     # Prune completed beats from pending; keep multi-turn beats around so
-    # they re-fire on subsequent ticks until completes_when passes.
+    # they re-fire on subsequent ticks until a mutex catches them.
     still_pending: list[PendingBeat] = []
     for pb in state.pending_beats:
         if pb.beat_id in state.fired_beat_ids:
@@ -440,14 +439,6 @@ def _has_unsatisfied_structural_prereq(
     return False
 
 
-def evaluate_completes_when(state: InboxState, beat: Beat) -> bool:
-    """A beat with empty `completes_when` always completes on first render
-    (legacy fire-once semantics). A beat with non-empty `completes_when`
-    completes only when all predicates pass.
-    """
-    if not beat.completes_when:
-        return True
-    return all(evaluate_predicate(p, state) for p in beat.completes_when)
 
 
 def thread_id_from_beat_id(beat_id: str | None) -> str | None:
