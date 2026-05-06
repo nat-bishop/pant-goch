@@ -36,7 +36,10 @@ from .models import (
     ClassifyReply,
     InboxState,
     Not_,
+    Or_,
     PendingBeat,
+    PlayerCanonEntry,
+    PlayerCanonExists,
     PlayerRepliesToThreadGte,
     Predicate,
     QualityDelta,
@@ -74,6 +77,10 @@ def evaluate_predicate(pred: Predicate, state: InboxState) -> bool:
         return _evaluate_recent_classifier_value(pred, state)
     if isinstance(pred, Not_):
         return not evaluate_predicate(pred.of, state)
+    if isinstance(pred, Or_):
+        return any(evaluate_predicate(sub, state) for sub in pred.of)
+    if isinstance(pred, PlayerCanonExists):
+        return pred.name in state.player_canon
     raise TypeError(f"unhandled predicate: {type(pred).__name__}")
 
 
@@ -309,6 +316,41 @@ def apply_writes_by_axis(
                 quality=quality_id, before=before, after=new, source=source_label,
             ))
     return deltas
+
+
+# ───────────────────────── player canon mutation ─────────────────────────
+
+
+def apply_canon_extraction(
+    state: InboxState,
+    candidates: list,  # list[CanonCandidate] from agents.py — typed loosely to avoid an import cycle
+    turn_of_origin: int,
+    salience_threshold: float = 0.5,
+) -> list[str]:
+    """Promote extractor-agent candidates above the salience threshold into
+    `state.player_canon`. REPLACE semantics on key collision (later mention
+    overwrites earlier — supports "actually call me Robert" mid-session).
+
+    The caller is responsible for substring-validating each candidate's
+    `literal_text_quote` against the player's reply BEFORE handing it here;
+    candidates whose quote isn't a substring of the actual reply must be
+    dropped at the orchestration boundary, not silently here.
+
+    Returns the list of canon keys that were created or replaced this call.
+    """
+    promoted: list[str] = []
+    for c in candidates:
+        if c.salience < salience_threshold:
+            continue
+        state.player_canon[c.key] = PlayerCanonEntry(
+            summary=c.summary,
+            literal_text_quote=c.literal_text_quote,
+            salience=c.salience,
+            category=c.category,
+            turn_of_origin=turn_of_origin,
+        )
+        promoted.append(c.key)
+    return promoted
 
 
 def apply_writes(

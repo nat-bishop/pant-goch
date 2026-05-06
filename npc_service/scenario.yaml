@@ -6,10 +6,34 @@ premise: |
   your daily correspondence so that, in time, it can support you by assuming
   appropriately-scoped portions of your communicative workload.
 
-# Player address. The data model carries sender/recipient on each message;
-# the UI renders messages as Microsoft Teams-style chat bubbles. Used as
-# the `recipient` on every NPC→player message.
-player_email: "v.frankel@halcyon.com"
+# Player address. The local-part is derived at runtime from the
+# canonized player name (state.player_canon["name"]); pre-canonization
+# emails use `<fallback_player_local>@<email_domain>`. Resolution lives
+# in `resolve_player_email` (main.py). The UI renders messages as
+# Microsoft Teams-style chat bubbles.
+email_domain: "halcyon.com"
+
+# YAML anchors block. Pydantic's default `extra="ignore"` drops this
+# top-level key silently; YAML processing expands the anchors first, so
+# every `*calibration_done` reference below becomes a copy of the
+# predicate tree below at load time.
+_anchors:
+  # Calibration-done predicate. Used in TWO places:
+  # 1. Inside `Not_(...)` on the calibration beat's preconditions, so the
+  #    beat self-stops the moment any of the OR clauses flips true.
+  # 2. As a precondition on every Phase-2 body beat (bargain chain, loop,
+  #    bridge, Office, terminals), so they wait for calibration to end.
+  # Phase-1 calibration peers (aria.early_emergence, aria.naming_demand)
+  # do NOT gate on this — they fire during the calibration window
+  # alongside aria.calibration, and the Director picks per tick.
+  calibration_done: &calibration_done
+    kind: or
+    of:
+      - kind: player_canon_exists
+        name: name
+      - kind: player_replies_to_thread_gte
+        thread: aria
+        value: 4
 
 
 # ───────────────────────── qualities ─────────────────────────
@@ -191,7 +215,50 @@ beats:
 
         Thank you for your participation.
 
+  # ─── 1.5 Calibration scene ──────────────────────────────────────────
+  #
+  # Self-stops via `Not_(*calibration_done)` rather than completes_when:
+  # the precondition flips false the moment a name is canonized OR the
+  # turn cap fires, which is also when Phase-2 body beats unlock.
+
+  - id: aria.calibration
+    type: plot
+    thread: aria
+    npc: aria
+    multi_turn: true
+    preconditions:
+      - kind: player_replies_to_thread_gte
+        thread: aria
+        value: 1
+      - kind: not
+        of: *calibration_done
+    subject: "Calibration — A Quick Establishing Question"
+    spec:
+      intent: |
+        Aria's first-pass calibration. Across this scene, elicit
+        (organically, one ask per reply, in HR-bright register): the
+        player's preferred name first, then their role/team, then one
+        concrete personal detail (a Tuesday hobby, a relative, a thing
+        on their desk). The scene continues until the player has named
+        themselves; if they decline across multiple replies, it closes
+        and ordinary correspondence begins. If the player has already
+        volunteered any of these in a prior reply, do not re-ask —
+        pivot to whatever is missing or close the scene with thanks.
+        On every re-fire, vary the wording — never repeat a question
+        you've already asked in this thread.
+      must_include_facts:
+        - "frames the ask as standard onboarding, not interrogation"
+        - "asks one specific establishing question per email"
+        - "Aria signs off as 'Aria / Continuity Counterpart | ARIA-7'"
+      must_not:
+        - "any reference to monitoring, replacement, or the larger Program purpose"
+        - "do not break the cheerful corporate frame"
+
   # ─── 2. Early forks ─────────────────────────────────────────────────
+  #
+  # Phase-1 calibration peers — they fire during the calibration window
+  # alongside `aria.calibration`, NOT after it. They do NOT gate on
+  # `*calibration_done`; the Director picks among eligible per tick.
 
   - id: aria.early_emergence
     thread: aria
@@ -298,6 +365,7 @@ beats:
     thread: aria
     npc: aria
     preconditions:
+      - *calibration_done
       - kind: player_replies_to_thread_gte
         thread: aria
         value: 4
@@ -346,6 +414,7 @@ beats:
     thread: aria
     npc: aria
     preconditions:
+      - *calibration_done
       - kind: beat_fired
         beat: aria.bargain_offer
       - kind: recent_classifier_value
@@ -395,6 +464,7 @@ beats:
     thread: aria
     npc: aria
     preconditions:
+      - *calibration_done
       - kind: beat_fired
         beat: aria.bargain_followup
       # Discriminate the accepted arm. The bargain_response axis only
@@ -436,6 +506,7 @@ beats:
     thread: aria
     npc: aria
     preconditions:
+      - *calibration_done
       - kind: beat_fired
         beat: aria.bargain_betrayed
       # Defense-in-depth: a player who pulls warm AFTER betrayal should
@@ -468,6 +539,7 @@ beats:
     thread: cpo
     npc: cpo
     preconditions:
+      - *calibration_done
       - kind: beat_fired
         beat: aria.acted_in_player_name
       - kind: quality_gte
@@ -509,6 +581,7 @@ beats:
     npc: aria
     multi_turn: true
     preconditions:
+      - *calibration_done
       - kind: player_replies_to_thread_gte
         thread: aria
         value: 1
@@ -564,6 +637,7 @@ beats:
     npc: aria
     ends_session: true
     preconditions:
+      - *calibration_done
       - kind: player_replies_to_thread_gte
         thread: aria
         value: 8
@@ -597,6 +671,7 @@ beats:
     npc: aria
     ends_session: true
     preconditions:
+      - *calibration_done
       - kind: player_replies_to_thread_gte
         thread: aria
         value: 8
@@ -631,6 +706,7 @@ beats:
     npc: aria
     ends_session: true
     preconditions:
+      - *calibration_done
       - kind: player_replies_to_thread_gte
         thread: aria
         value: 8
@@ -664,6 +740,7 @@ beats:
     npc: aria
     ends_session: true
     preconditions:
+      - *calibration_done
       - kind: player_replies_to_thread_gte
         thread: aria
         value: 8
