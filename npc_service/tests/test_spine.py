@@ -367,7 +367,7 @@ def test_find_due_beats_omits_structurally_blocked_beats_from_report(
     """
     # Synthesize a downstream beat that requires aria.complete_warm to fire.
     sc = Scenario.model_validate({
-        "title": "T", "premise": "P", "email_domain": "x", "player_email": "p@x",
+        "title": "T", "premise": "P", "email_domain": "x",
         "qualities": [{"id": "engagement", "type": "float", "min": 0.0, "max": 10.0, "default": 0.0}],
         "npcs": [{"id": "aria", "display_name": "Aria", "email_address": "aria@x"}],
         "threads": [{"id": "aria", "npc": "aria"}],
@@ -1226,7 +1226,6 @@ def test_multi_turn_beat_self_stops_when_exit_predicate_flips():
                 "thread": "aria",
                 "npc": "aria",
                 "multi_turn": True,
-                "subject": "Calibration",
                 "preconditions": [
                     {
                         "kind": "player_replies_to_thread_gte",
@@ -1304,7 +1303,6 @@ def test_or_predicate_evaluation_in_preconditions():
                 "type": "plot",
                 "thread": "aria",
                 "npc": "aria",
-                "subject": "Body",
                 "preconditions": [
                     {
                         "kind": "or",

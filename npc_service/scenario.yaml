@@ -232,7 +232,6 @@ beats:
         value: 1
       - kind: not
         of: *calibration_done
-    subject: "Calibration — A Quick Establishing Question"
     spec:
       intent: |
         Aria's first-pass calibration. Across this scene, elicit
