@@ -37,7 +37,7 @@ download-model: $(MODEL)
 
 .PHONY: llama
 llama: $(MODEL)
-	$(LLAMA_BIN) -m $(MODEL) --host $(LLAMA_HOST) --port $(LLAMA_PORT) -c 8192 --jinja --reasoning off -ngl 99
+	$(LLAMA_BIN) -m $(MODEL) --host $(LLAMA_HOST) --port $(LLAMA_PORT) -c 8192 --jinja --reasoning on --reasoning-format deepseek -ngl 99
 
 .PHONY: sidecar
 sidecar:

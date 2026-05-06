@@ -41,7 +41,7 @@ from dataclasses import dataclass, field
 import httpx
 import logfire
 from pydantic import BaseModel
-from pydantic_ai import Agent, ModelRetry, RunContext, ToolOutput
+from pydantic_ai import Agent, ModelRetry, NativeOutput, RunContext
 from pydantic_ai.messages import ModelMessage
 
 from .models import (
@@ -214,7 +214,7 @@ def build_agents(
     fact_checker_agent = Agent(
         model,
         name="fact_checker_agent",
-        output_type=ToolOutput(FactCheckResult),
+        output_type=NativeOutput(FactCheckResult),
         instructions=_FACT_CHECKER_SYSTEM_PROMPT,
         # Tight budget — the agent only emits two short lists. The
         # 2048 budget the classifier uses is overkill here.
@@ -299,7 +299,7 @@ def build_agents(
     classifier_agent = Agent(
         model,
         name="classifier_agent",
-        output_type=ToolOutput(list[AxisResult]),
+        output_type=NativeOutput(list[AxisResult]),
         instructions=_CLASSIFIER_SYSTEM_PROMPT,
         # Headroom: Gemma 4 E4B sometimes preambles before emitting the
         # tool call. At max_tokens=256 it regularly hit `finish_reasons=

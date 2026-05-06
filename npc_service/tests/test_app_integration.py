@@ -105,19 +105,30 @@ def test_live_first_send_fires_loop(live_client):
     ids=["substantive→engaged", "dismissive→deflected"],
 )
 async def test_live_classifier_picks_correct_value(live_classifier, reply_body, expected):
+    from npc_service.models import ClassifyReply
+
+    axes = [
+        ClassifyReply(
+            quality="engagement",
+            question="Is the player engaging substantively or deflecting?",
+            allowed_values=["engaged", "deflected"],
+            map={"engaged": 1.0, "deflected": -1.0},
+        )
+    ]
     prompt = build_classifier_user_prompt(
         recipient_blurb="Aria — continuity counterpart",
         prior_email_body="Could you tell me how you typically structure a Tuesday?",
         reply_body=reply_body,
-        question="Is the player engaging substantively or deflecting?",
-        allowed_values=["engaged", "deflected"],
+        axes=axes,
     )
 
     result = await live_classifier.run(prompt)
-    assert result.output.value in ("engaged", "deflected"), (
-        f"classifier returned off-spec: {result.output.value!r}"
+    assert len(result.output) == 1, f"expected 1 axis result, got {result.output!r}"
+    axis = result.output[0]
+    assert axis.value in ("engaged", "deflected"), (
+        f"classifier returned off-spec: {axis.value!r}"
     )
-    assert result.output.value == expected, (
-        f"reply {reply_body!r} classified as {result.output.value!r}, "
-        f"rationale: {result.output.rationale!r}"
+    assert axis.value == expected, (
+        f"reply {reply_body!r} classified as {axis.value!r}, "
+        f"rationale: {axis.rationale!r}"
     )

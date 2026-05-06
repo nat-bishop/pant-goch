@@ -199,7 +199,8 @@ def _build_command(cfg: LlamaConfig) -> list[str]:
         "--port", str(cfg.port),
         "-c", str(cfg.ctx),
         "--jinja",  # REQUIRED for Gemma chat template
-        "--reasoning", "off",  # REQUIRED for Gemma 4 E-models — default-on thinking swallows output
+        "--reasoning", "on",  # Per Gemma 4 best practices; reasoning-format keeps it out of body
+        "--reasoning-format", "deepseek",  # Pulls thinking into `reasoning_content` (separate field)
         "-ngl", str(cfg.ngl),
     ]
     cmd += cfg.extra_args

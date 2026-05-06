@@ -4,6 +4,7 @@ real LLM. Verifies wiring: lifespan boots, the welcome anchored beat lands,
 beats that author classify_reply, the multi-turn loop re-fires across sends,
 engagement accumulates, and ends_session terminals flip state.ended.
 """
+import json
 from contextlib import ExitStack
 
 import pytest
@@ -12,6 +13,7 @@ from pydantic_ai.exceptions import UnexpectedModelBehavior
 from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.models.test import TestModel
+from pydantic_ai.profiles import ModelProfile
 from pydantic_ai.providers.openai import OpenAIProvider
 
 import npc_service.main as main
@@ -51,20 +53,36 @@ def _test_model_for_chat(text: str = CHAT_TURN_PROSE) -> TestModel:
     return TestModel(custom_output_text=text)
 
 
+# NativeOutput requires the model to advertise json-schema support; TestModel's
+# default profile is tool-mode only.
+_NATIVE_OUTPUT_PROFILE = ModelProfile(
+    supports_json_schema_output=True, default_structured_output_mode="native"
+)
+
+
 def _test_model_for_classifier(value: str, quality: str = "engagement") -> TestModel:
     """Single-axis convenience — returns one AxisResult inside the list
     output type the multi-axis classifier now uses. Continuity Program
-    tests use the default quality='engagement' for aria.loop's only axis."""
-    return TestModel(custom_output_args=[
-        {"quality": quality, "value": value, "rationale": "(test)"},
-    ])
+    tests use the default quality='engagement' for aria.loop's only axis.
+
+    The classifier uses NativeOutput; Pydantic AI wraps a `list[X]` schema
+    as `{"response": [...]}` for OpenAI-compat structured outputs."""
+    return TestModel(
+        custom_output_text=json.dumps({
+            "response": [{"quality": quality, "value": value, "rationale": "(test)"}],
+        }),
+        profile=_NATIVE_OUTPUT_PROFILE,
+    )
 
 
 def _test_model_for_classifier_multi(results: list[dict]) -> TestModel:
     """Multi-axis variant — pass a list of {quality, value, rationale} dicts.
     Used by tests that exercise the batched per-axis flow and the
     defense-in-depth paths (missing / duplicate / unknown axes)."""
-    return TestModel(custom_output_args=results)
+    return TestModel(
+        custom_output_text=json.dumps({"response": results}),
+        profile=_NATIVE_OUTPUT_PROFILE,
+    )
 
 
 # ───────────────────────── boot + read-only endpoints ─────────────────────────
@@ -504,9 +522,12 @@ async def test_validator_passes_when_fact_checker_returns_clean():
             model=TestModel(custom_output_text="ok"),
         ))
         stack.enter_context(bundle.fact_checker_agent.override(
-            model=TestModel(custom_output_args={
-                "missing_facts": [], "violations": [],
-            }),
+            model=TestModel(
+                custom_output_text=json.dumps({
+                    "missing_facts": [], "violations": [],
+                }),
+                profile=_NATIVE_OUTPUT_PROFILE,
+            ),
         ))
         result = await bundle.chat_agent.run("hello", deps=_validator_test_deps())
     assert result.output.strip() == "ok"
@@ -523,9 +544,12 @@ async def test_validator_raises_when_fact_checker_flags():
             model=TestModel(custom_output_text="ok"),
         ))
         stack.enter_context(bundle.fact_checker_agent.override(
-            model=TestModel(custom_output_args={
-                "missing_facts": ["thank the player"], "violations": [],
-            }),
+            model=TestModel(
+                custom_output_text=json.dumps({
+                    "missing_facts": ["thank the player"], "violations": [],
+                }),
+                profile=_NATIVE_OUTPUT_PROFILE,
+            ),
         ))
         with pytest.raises(UnexpectedModelBehavior):
             await bundle.chat_agent.run("hello", deps=_validator_test_deps())
