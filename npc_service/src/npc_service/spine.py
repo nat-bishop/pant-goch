@@ -151,6 +151,13 @@ def describe_predicate(pred: Predicate, state: InboxState) -> str:
         )
     if isinstance(pred, Not_):
         return f"not({describe_predicate(pred.of, state)})"
+    if isinstance(pred, Or_):
+        return "or(" + " | ".join(describe_predicate(sub, state) for sub in pred.of) + ")"
+    if isinstance(pred, PlayerCanonExists):
+        entry = state.player_canon.get(pred.name)
+        if entry is None:
+            return f"player_canon({pred.name}) — not yet"
+        return f"player_canon({pred.name})={entry.summary}"
     raise TypeError(f"unhandled predicate: {type(pred).__name__}")
 
 

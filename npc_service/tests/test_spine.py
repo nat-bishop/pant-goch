@@ -16,10 +16,14 @@ from npc_service.models import (
     Beat,
     BeatFired,
     BeatSpec,
+    CanonCategory,
     ClassifyReply,
     Email,
     InboxState,
     Not_,
+    Or_,
+    PlayerCanonEntry,
+    PlayerCanonExists,
     PlayerRepliesToThreadGte,
     QualityDef,
     QualityGte,
@@ -280,6 +284,50 @@ def test_describe_not_unwraps_inner(state: InboxState):
     assert "engagement>=4 got 2.5" in out
 
 
+def test_describe_or_joins_subpredicates(state: InboxState):
+    state.qualities["engagement"] = 2.5
+    pred = Or_(of=[
+        QualityGte(quality="engagement", value=4.0),
+        QualityLt(quality="engagement", value=1.0),
+    ])
+    out = describe_predicate(pred, state)
+    assert out.startswith("or(")
+    assert " | " in out
+    assert "engagement>=4 got 2.5" in out
+    assert "engagement<1 got 2.5" in out
+
+
+def test_describe_or_recurses_into_arms(state: InboxState):
+    """Mirrors the scenario.yaml `calibration_done` anchor shape."""
+    pred = Or_(of=[
+        PlayerCanonExists(name="name"),
+        PlayerRepliesToThreadGte(thread="aria", value=4),
+    ])
+    out = describe_predicate(pred, state)
+    assert "player_canon(name)" in out
+    assert "replies(aria)>=4 got 0" in out
+
+
+def test_describe_player_canon_exists_unset_says_not_yet(state: InboxState):
+    state.player_canon.pop("name", None)
+    out = describe_predicate(PlayerCanonExists(name="name"), state)
+    assert "not yet" in out
+    assert "name" in out
+
+
+def test_describe_player_canon_exists_set_includes_value(state: InboxState):
+    state.player_canon["name"] = PlayerCanonEntry(
+        summary="Henry",
+        literal_text_quote="I'm Henry",
+        salience=0.9,
+        category=CanonCategory.NAME,
+        turn_of_origin=1,
+    )
+    out = describe_predicate(PlayerCanonExists(name="name"), state)
+    assert "Henry" in out
+    assert "not yet" not in out
+
+
 # ───────────────────────── find_due_beats eligibility report ─────────────────────────
 
 
@@ -319,7 +367,7 @@ def test_find_due_beats_omits_structurally_blocked_beats_from_report(
     """
     # Synthesize a downstream beat that requires aria.complete_warm to fire.
     sc = Scenario.model_validate({
-        "title": "T", "premise": "P", "player_email": "p@x",
+        "title": "T", "premise": "P", "email_domain": "x", "player_email": "p@x",
         "qualities": [{"id": "engagement", "type": "float", "min": 0.0, "max": 10.0, "default": 0.0}],
         "npcs": [{"id": "aria", "display_name": "Aria", "email_address": "aria@x"}],
         "threads": [{"id": "aria", "npc": "aria"}],
@@ -1207,26 +1255,26 @@ def test_multi_turn_beat_self_stops_when_exit_predicate_flips():
     state = InboxState.from_scenario(scenario)
 
     # 0 replies: post-welcome predicate fails, beat NOT due.
-    assert [b.id for b in find_due_beats(state, scenario)] == []
+    assert [b.id for b in find_due_beats(state, scenario)[0]] == []
 
     # 1 reply, no canon: beat IS due.
     state.replies.append(Reply(
         id="r1", thread_id="aria", beat_responded_to=None, recipient="A", body="hi",
     ))
-    assert [b.id for b in find_due_beats(state, scenario)] == ["aria.calibration"]
+    assert [b.id for b in find_due_beats(state, scenario)[0]] == ["aria.calibration"]
 
     # 2 replies, no canon: still due.
     state.replies.append(Reply(
         id="r2", thread_id="aria", beat_responded_to=None, recipient="A", body="ok",
     ))
-    assert [b.id for b in find_due_beats(state, scenario)] == ["aria.calibration"]
+    assert [b.id for b in find_due_beats(state, scenario)[0]] == ["aria.calibration"]
 
     # Name canonized: <exit> flips True, Not_(<exit>) flips False, beat NOT due.
     state.player_canon["name"] = PlayerCanonEntry(
         summary="Marcus", literal_text_quote="I'm Marcus", salience=0.9,
         category="name", turn_of_origin=2,
     )
-    assert [b.id for b in find_due_beats(state, scenario)] == []
+    assert [b.id for b in find_due_beats(state, scenario)[0]] == []
 
     # Drop the canon entry, advance to 4 replies: cap fires, beat NOT due.
     del state.player_canon["name"]
@@ -1235,7 +1283,7 @@ def test_multi_turn_beat_self_stops_when_exit_predicate_flips():
             id=f"r{i}", thread_id="aria", beat_responded_to=None, recipient="A",
             body=f"reply {i}",
         ))
-    assert [b.id for b in find_due_beats(state, scenario)] == []
+    assert [b.id for b in find_due_beats(state, scenario)[0]] == []
 
 
 def test_or_predicate_evaluation_in_preconditions():
@@ -1276,18 +1324,18 @@ def test_or_predicate_evaluation_in_preconditions():
     })
     state = InboxState.from_scenario(scenario)
     # 0 replies, no canon → Or_ False → not due.
-    assert [b.id for b in find_due_beats(state, scenario)] == []
+    assert [b.id for b in find_due_beats(state, scenario)[0]] == []
     # Add one reply but no canon → Or_ still False (cap not hit, no name).
     state.replies.append(Reply(
         id="r1", thread_id="aria", beat_responded_to=None, recipient="A", body="hi",
     ))
-    assert [b.id for b in find_due_beats(state, scenario)] == []
+    assert [b.id for b in find_due_beats(state, scenario)[0]] == []
     # Cap satisfied via 4 replies → Or_ True (no canon needed).
     for i in range(2, 5):
         state.replies.append(Reply(
             id=f"r{i}", thread_id="aria", beat_responded_to=None, recipient="A", body="x",
         ))
-    assert [b.id for b in find_due_beats(state, scenario)] == ["aria.body"]
+    assert [b.id for b in find_due_beats(state, scenario)[0]] == ["aria.body"]
 
 
 # ───────────────────────── helpers ─────────────────────────

@@ -69,6 +69,12 @@ def client(monkeypatch):
         with ExitStack() as stack:
             stack.enter_context(main.AGENTS.chat_agent.override(model=_test_model_for_chat()))
             stack.enter_context(main.AGENTS.classifier_agent.override(model=_test_model_for_classifier("deflected")))
+            # Without this override the extractor_agent runs against the
+            # OpenAI provider configured for localhost:8080 on every /send
+            # (asyncio.gather'd with the classifier). When llama isn't up,
+            # each call hangs on httpx connect/read until timing out — adding
+            # ~5-7 s per send and dragging the suite past 4 minutes.
+            stack.enter_context(main.AGENTS.extractor_agent.override(model=_test_model_for_extractor_empty()))
             yield c
 
 
@@ -104,6 +110,15 @@ def _test_model_for_classifier_multi(results: list[dict]) -> TestModel:
     defense-in-depth paths (missing / duplicate / unknown axes)."""
     return TestModel(
         custom_output_text=json.dumps({"response": results}),
+        profile=_NATIVE_OUTPUT_PROFILE,
+    )
+
+
+def _test_model_for_extractor_empty() -> TestModel:
+    """Stub the extractor to return zero candidates so app-wiring tests
+    don't trigger player_canon writes nor wait on a real LLM call."""
+    return TestModel(
+        custom_output_text=json.dumps({"candidates": []}),
         profile=_NATIVE_OUTPUT_PROFILE,
     )
 

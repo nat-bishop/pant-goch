@@ -10,7 +10,9 @@ import pytest
 
 from npc_service.models import (
     AxisResult,
+    CanonCategory,
     InboxState,
+    PlayerCanonEntry,
     Reply,
     Scenario,
     load_scenario,
@@ -340,6 +342,9 @@ def test_bargain_betrayed_requires_followup_and_accepted_verdict(
     discriminate the trajectory. A refused or hedged player can't reach
     betrayal — that path is shape-incoherent."""
     _drain_boot(state, scenario)
+    # bargain_betrayed gates on *calibration_done; seed the canon name so
+    # the calibration scene closes and Phase-2 body beats unlock.
+    _seed_canon_name(state)
     state.fired_beat_ids.add("aria.bargain_offer")
     state.fired_beat_ids.add("aria.bargain_followup")
     # Two cold replies (the trajectory condition) but seed the bargain
@@ -413,4 +418,16 @@ def _make_reply(thread: str | None) -> Reply:
         beat_responded_to=None,
         recipient="Aria",
         body="(test reply)",
+    )
+
+
+def _seed_canon_name(state: InboxState, name: str = "Marcus") -> None:
+    """Drop a name into player_canon so `*calibration_done` is satisfied —
+    Phase-2 body beats become eligible without needing to add 4 replies."""
+    state.player_canon["name"] = PlayerCanonEntry(
+        summary=name,
+        literal_text_quote=f"I'm {name}",
+        salience=0.9,
+        category=CanonCategory.NAME,
+        turn_of_origin=0,
     )
