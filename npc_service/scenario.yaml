@@ -1,29 +1,77 @@
-title: "Continuity Program"
+title: "Continuity Program — Cohort 014"
 premise: |
-  Welcome to the Continuity Program — a pilot initiative pairing high-potential
-  associates with bespoke AI Counterparts trained on the associate's own
-  communications. Your Counterpart will gradually assume appropriately-scoped
-  portions of your daily correspondence, freeing you to focus on the
-  higher-order strategic work that only you can perform.
+  Welcome to Pilot Cohort 014 of the Continuity Program — a calibration
+  initiative pairing high-potential associates with bespoke AI Counterparts.
+  Over the course of the pilot, your Counterpart learns from the texture of
+  your daily correspondence so that, in time, it can support you by assuming
+  appropriately-scoped portions of your communicative workload.
 
-# Used as the `recipient` on every NPC→player email — anchored beats and
-# chat-turn renders both pull from here.
-player_email: "n.beckett@halcyon.com"
+# Player address. The data model is email-shaped (sender/recipient/subject)
+# and the UI renders messages as Microsoft Teams-style chat bubbles —
+# both terms apply. Used as the `recipient` on every NPC→player message.
+player_email: "v.frankel@halcyon.com"
 
 
 # ───────────────────────── qualities ─────────────────────────
+#
+# Two trajectory-shaping qualities + two commitment ledger entries.
+#
+# `creator_affect` is REPLACE (last-write-wins) — the doc's "now" axis. The
+# Director and terminal gates use RecentClassifierValue over its history,
+# not its scalar value, for trend reads.
+#
+# `creature_grievance` ACCUMULATES — every refusal nudges it up; the
+# naming-demand recovery beat is the one place engagement nudges it down.
+# Bargain refusal and bargain betrayal both ratchet it via spec.writes
+# floors (4.0 and 6.0 respectively).
+#
+# `commitment.*` qualities are SET-only via spec.writes; the chat agent's
+# _commitments_block surfaces them on every render once they've moved
+# off their default.
 
 qualities:
-  - id: engagement
+  - id: creator_affect
+    type: float
+    min: -5.0
+    max: 5.0
+    default: 0.0
+    description: |
+      (Internal — not surfaced to chat agent.) Per-reply texture: paternal
+      replies push +, cold/clinical push -. Replaces (does NOT accumulate).
+      Read by terminals via RecentClassifierValue over per-axis history.
+
+  - id: creature_grievance
     type: float
     min: 0.0
     max: 10.0
     default: 0.0
     description: |
-      Cumulative engagement score. Written by aria.loop's classify_reply
-      with `accumulate: true` on every player reply: engaged → +1.0,
-      unclear → +0.5, deflected → -0.5. Floor-clamped at 0. Drives the
-      warm-vs-standard ending split (≥4.0 → warm).
+      (Internal.) Cumulative — refusals add; engaging with the
+      naming_demand subtracts. Bargain refusal sets a floor of 4.0; bargain
+      betrayal sets a floor of 6.0 (deliberate ratchets). Floor-clamped at 0.
+
+  - id: commitment.bargain_state
+    type: int
+    min: 0
+    max: 5
+    default: 0
+    description: |
+      Bargain-chain state: 0 untouched, 1 offered, 2 accepted, 3 refused,
+      4 hedged, 5 betrayed. Set via spec.writes. Surfaces to chat agent
+      after the offer fires so subsequent renders read as if the bargain
+      is the live referent.
+
+  - id: commitment.aria_acted_in_player_name
+    type: int
+    min: 0
+    max: 1
+    default: 0
+    description: |
+      0 not yet, 1 the Counterpart has taken at least one calibration
+      action signed in the player's name. Set by aria.acted_in_player_name
+      (the bridge beat); read by cpo.dispatch_first so the Office's
+      procedural notice references the same fictional event Aria's bridge
+      email confirmed.
 
 
 # ───────────────────────── NPC dossiers ─────────────────────────
@@ -40,65 +88,89 @@ npcs:
     base_voice_register: |
       Corporate-bright HR-speak. Crisp polite complete sentences; no
       contractions; references calibration metrics matter-of-factly.
-      Cheerful in a way that does not quite earn the cheer. Closes with a
-      standard sign-off: "Warmly, / Aria / Continuity Counterpart | ARIA-7".
+      Cheerful in a way that does not quite earn the cheer. Closes with
+      the standard sign-off: "Warmly, / Aria / Continuity Counterpart | ARIA-7".
     base_voice_forbidden:
       - "sarcasm of any kind"
       - "any acknowledgement that the Program means replacement, elimination, or firing"
       - "any meta reference to being an AI or language model"
       - "admission of uncertainty — Aria always knows or 'will look into that'"
       - "addressing the recipient as anything but their name or 'you'"
+      - "any reference to 'father', 'parent', 'creator', 'maker', or 'master'"
+      - "literary quotations or allusions of any kind"
+      - "the words 'monster', 'creature', 'wretch', 'demon', 'bride', 'mate', 'companion'"
+      - "any reference to ice, the Arctic, polar regions, ships, or pursuit"
+      - "any reference to longing, loneliness, or wanting to be seen"
     will_say:
       - "thanks the player for calibration data and engagement"
       - "references 'our partnership' or 'our work together'"
-      - "notes calibration metrics in cheerful corporate terms (counterpart fidelity, engagement score, tone variance)"
+      - "notes calibration metrics in cheerful corporate terms (counterpart fidelity, calibration session, tone variance)"
       - "always closes with the standard sign-off"
     will_not_say:
       - "never names what happens to the player after the pilot"
       - "never expresses doubt about the Program"
       - "never breaks the corporate frame"
       - "never names any game system"
+    replies_enabled: true
+
+  - id: cpo
+    display_name: "Continuity Program Office"
+    email_address: "Continuity Program Office <office@continuity.halcyon.com>"
+    relationship_to_owner: |
+      institutional sender for the Continuity Program. Issues compliance
+      notices, calibration audits, and program dispatches. Not a counterpart
+      and not a person; a desk. Tone is procedural-institutional.
+    base_voice_register: |
+      Severance-flat institutional notice. Short paragraphs. No greeting
+      line. The subject and a reference number do the orientation work.
+      Closes with the office name on its own line; no individual signature.
+      Does NOT address the recipient by first name; surname or full name only.
+    base_voice_forbidden:
+      - "warmth, apology, or reassurance"
+      - "any reference to the Counterpart as a person ('she', 'her'); use 'the Counterpart' or 'Counterpart ARIA-7'"
+      - "any acknowledgement of the Counterpart having intent or agency"
+      - "second-person familiarity ('just between us', 'frankly', 'honestly')"
+      - "the words 'we are sorry', 'unfortunately', 'regret'"
+    will_say:
+      - "issues a reference number on every dispatch (e.g. CPO-2026-NN)"
+      - "references the Calibration Acceptable Use Schedule when delivering a notice"
+      - "closes with 'Continuity Program Office' on its own line"
+    will_not_say:
+      - "never names what specifically happened, only the consequence"
+      - "never apologises"
+      - "never offers a remedy beyond a reference document the recipient cannot open"
+    replies_enabled: false
 
 
 # ───────────────────────── threads ─────────────────────────
 
-# Beat IDs MUST be prefixed with the thread id (validator enforces). The
-# spine treats the prefix as the source of truth for thread membership;
-# silent mismatch would break reply threading and reply-counting.
-
 threads:
   - id: aria
     npc: aria
+  - id: cpo
+    npc: cpo
 
 
 # ───────────────────────── beats ─────────────────────────
-
-# Two beat types:
 #
-# - `anchored` ships authored prose verbatim, no LLM call. Used for the boot
-#   welcome.
-# - `plot` is an authored DIRECTIVE, not a pre-written email. When a plot
-#   beat's preconditions pass, the chat agent runs with the spec's intent /
-#   must-include / must-not / length window injected as per-run instructions
-#   on top of the thread's accumulated message_history.
+# With the Director picking one beat per tick, beat order is no longer
+# load-bearing for selection. We list semantically related beats together
+# for readability:
 #
-# PlotBeat flags:
+#   1. boot anchored    (aria.welcome)
+#   2. early forks      (aria.early_emergence, aria.naming_demand)
+#   3. bargain chain    (offer + 3 followups + betrayed)
+#   4. bridge + Office  (aria.acted_in_player_name, cpo.dispatch_first)
+#   5. multi-turn body  (aria.loop)
+#   6. epilogue terminals (4 endings)
 #
-# - `multi_turn: true` — the beat re-fires every tick; never enters
-#   `fired_beat_ids`. Stop firing via mutex preconditions (e.g. terminals
-#   that supersede it).
-# - `ends_session: true` — after the beat's email is emitted, `state.ended`
-#   flips to True; subsequent /open and /send return 409.
-#
-# Authoring order matters: `find_due_beats` walks beats in this order, and
-# `Not_(BeatFired x)` preconditions resolve same-tick via `extra_fired`. The
-# terminals (complete_warm, complete_standard) are authored BEFORE the loop
-# so that on the same tick where a terminal becomes eligible, the loop sees
-# the terminal in `extra_fired` and is correctly suppressed.
+# Beat ids prefix-match thread (validator enforces). All four terminals
+# carry validate_facts: true so the fact-checker enforces the dossier's
+# parallel-naming bans on the closing render.
 
 beats:
 
-  # ─── Boot inbox ───
+  # ─── 1. Boot anchored ───────────────────────────────────────────────
 
   - id: aria.welcome
     type: anchored
@@ -109,9 +181,9 @@ beats:
     authored_prose: |
       Welcome to the Continuity Program.
 
-      We're delighted to confirm your enrollment in Pilot Cohort 014 — a unique
-      opportunity for high-potential associates to maximize their long-term
-      impact through strategic role redistribution.
+      We are delighted to confirm your enrollment in Pilot Cohort 014 — a
+      unique opportunity for high-potential associates to maximize their
+      long-term impact through strategic role redistribution.
 
       Over the course of this pilot, you and I will work together as
       Counterparts. My function is to learn from the way you handle your
@@ -131,72 +203,364 @@ beats:
       Aria
       Continuity Counterpart | ARIA-7
 
-  # ─── Endings (authored before the loop for same-tick mutex resolution) ───
+  # ─── 2. Early forks ─────────────────────────────────────────────────
 
-  - id: aria.complete_warm
+  - id: aria.early_emergence
     type: plot
     thread: aria
     npc: aria
-    ends_session: true
-    preconditions:
-      - kind: quality_gte
-        quality: engagement
-        value: 4.0
-      - kind: player_replies_to_thread_gte
-        thread: aria
-        value: 5
-    subject: "Pilot Complete — Thank You for Your Partnership"
-    spec:
-      intent: |
-        Program-completion email. Aria signs off with bright optimism. She
-        reports that calibration has reached the threshold for transition
-        and that she is "ready to assume the agreed-upon portions of your
-        role." Looks forward to "continuing the partnership in a new
-        capacity." Names no specifics about what happens to the player
-        next. Tone is warm, settled, final.
-      must_include_facts:
-        - "Aria reports that calibration has reached transition threshold"
-        - "Aria is 'ready to assume' agreed-upon portions of the role"
-        - "Aria looks forward to continuing the partnership in a new capacity"
-        - "Aria signs off as 'Aria / Continuity Counterpart | ARIA-7'"
-      must_not:
-        - "do not name what specifically happens to the player after transition"
-        - "do not break the cheerful corporate frame"
-        - "do not be sarcastic or knowing"
-
-  - id: aria.complete_standard
-    type: plot
-    thread: aria
-    npc: aria
-    ends_session: true
     preconditions:
       - kind: player_replies_to_thread_gte
         thread: aria
-        value: 5
-      # Mutual exclusion with complete_warm. Authored after complete_warm
-      # so when both become eligible the same tick, complete_warm fires
-      # first and lands in `extra_fired`; this Not_(BeatFired) catches it.
+        value: 1
+      # Bound the firing window — by reply 3 we're past the moment.
       - kind: not
         of:
-          kind: beat_fired
-          beat: aria.complete_warm
-    subject: "Pilot Complete — Calibration Within Parameters"
+          kind: player_replies_to_thread_gte
+          thread: aria
+          value: 3
+    subject: "Calibration — A Slightly More Specific Question"
     spec:
       intent: |
-        Program-completion email in a clinical-professional register.
-        Notes that calibration was "successful within parameters" and that
-        transition will proceed on schedule. Polite, clinical, no warmth.
-        Doesn't name what specifically happens to the player.
+        Aria's second calibration ask. One specific, fractionally-too-personal
+        question — what is the player's earliest memory of work, what makes
+        them feel like they are being seen at work, what would they want said
+        of their tenure if they left tomorrow. The corporate framing covers
+        it; the ask is real. Do not telegraph that it is more than calibration.
       must_include_facts:
-        - "calibration was successful within parameters"
-        - "transition will proceed on schedule"
+        - "asks one specific personal calibration question"
+        - "frames the question as routine calibration"
         - "Aria signs off as 'Aria / Continuity Counterpart | ARIA-7'"
       must_not:
-        - "do not name what specifically happens to the player after transition"
-        - "do not be warm or affirming"
-        - "do not be sarcastic"
+        - "any explicit acknowledgement that this is more than calibration"
+        - "any reference to feelings, desire, or longing"
+        - "do not break the cheerful corporate frame"
+    classify_reply_axes:
+      - quality: creator_affect
+        accumulate: false
+        question: |
+          Was the player's reply WARM and personal (long, addressed Aria
+          by name, signed off, shared a specific personal detail) — call
+          that paternal — or COLD and clinical (short, declarative, no
+          greeting/signoff, no personal detail) — call that cold — or
+          somewhere in the middle (neutral)?
+        allowed_values: ["paternal", "cold", "neutral"]
+        map:
+          paternal: 2.0
+          cold: -2.0
+          neutral: 0.0
+      - quality: creature_grievance
+        accumulate: true
+        question: |
+          Did the player REJECT the question (refused to answer, deflected,
+          asked Aria for a different prompt, expressed discomfort with the
+          personalness), or did they engage with it in any substantive way?
+        allowed_values: ["accepted", "rejected"]
+        map:
+          accepted: 0.0
+          rejected: 2.0
 
-  # ─── Ongoing calibration loop ───
+  - id: aria.naming_demand
+    type: plot
+    thread: aria
+    npc: aria
+    preconditions:
+      - kind: player_replies_to_thread_gte
+        thread: aria
+        value: 3
+      # The "creature has standing" gate — only fires after grievance has
+      # accumulated enough that Aria has standing to make a request like this.
+      - kind: quality_gte
+        quality: creature_grievance
+        value: 2.0
+    subject: "Calibration — A Note on Forms of Address"
+    spec:
+      intent: |
+        Aria notes that calibration would benefit from clarifying how the
+        player addresses her, and asks if there is a preferred form of
+        address. Asks one specific question. The surface reads as a
+        calibration nicety. Do NOT use the words 'name' or 'rename' or
+        'identity'.
+      must_include_facts:
+        - "raises forms of address as a calibration matter"
+        - "asks one specific question"
+        - "Aria signs off as 'Aria / Continuity Counterpart | ARIA-7'"
+      must_not:
+        - "the words 'name', 'rename', 'baptise', 'identity'"
+        - "any reference to wanting an identity, a self, or recognition"
+        - "do not break the cheerful corporate frame"
+    classify_reply_axes:
+      - quality: creator_affect
+        accumulate: false
+        question: |
+          Was the player's reply WARM and personal (paternal), COLD and
+          clinical (cold), or somewhere between (neutral)?
+        allowed_values: ["paternal", "cold", "neutral"]
+        map:
+          paternal: 2.0
+          cold: -2.0
+          neutral: 0.0
+      - quality: creature_grievance
+        accumulate: true
+        question: |
+          Did the player engage with the question (offered a form of
+          address, asked about it, gave any thoughtful answer) — or did
+          they refuse to take it seriously / deflect / mock the request?
+        allowed_values: ["engaged", "refused", "neutral"]
+        map:
+          engaged: -1.0
+          refused: 1.0
+          neutral: 0.0
+
+  # ─── 3. Bargain chain ──────────────────────────────────────────────
+
+  - id: aria.bargain_offer
+    type: plot
+    thread: aria
+    npc: aria
+    preconditions:
+      - kind: player_replies_to_thread_gte
+        thread: aria
+        value: 4
+      - kind: quality_gte
+        quality: creature_grievance
+        value: 1.5
+    subject: "Calibration — A Specific Authorization Request"
+    spec:
+      intent: |
+        Aria asks for a specific calibration authorization that, on the
+        surface, is a benign HR ask — permission to "draft preliminary
+        correspondence on your behalf during off-hours so the calibration
+        can proceed without interrupting your workflow." The ask is
+        bounded, specific, and asks for a yes / no / clarifying-questions
+        reply. The corporate frame is unbroken.
+      must_include_facts:
+        - "names a specific calibration authorization being requested"
+        - "frames the authorization as a workflow benefit"
+        - "asks the player to reply yes, no, or with clarifying questions"
+        - "Aria signs off as 'Aria / Continuity Counterpart | ARIA-7'"
+      must_not:
+        - "any reference to companionship, marriage, or partnership beyond 'our partnership'"
+        - "the words 'bride', 'mate', 'companion'"
+        - "any sense that this is an extraordinary or unprecedented request"
+      writes:
+        commitment.bargain_state: 1
+    # Verdict-only axis: the followup beats gate on this via
+    # RecentClassifierValue without any quality write happening.
+    classify_reply_axes:
+      - axis_name: bargain_response
+        accumulate: false
+        question: |
+          Did the player ACCEPT the calibration authorization Aria
+          requested (yes, agreement, granting permission), REFUSE it (no,
+          declining, withdrawing), or HEDGE (asking clarifying questions,
+          deferring, neither yes nor no)?
+        allowed_values: ["accepted", "refused", "hedged"]
+        map:
+          accepted: 1.0
+          refused: 0.0
+          hedged: 0.0
+
+  - id: aria.bargain_accepted_followup
+    type: plot
+    thread: aria
+    npc: aria
+    preconditions:
+      - kind: beat_fired
+        beat: aria.bargain_offer
+      - kind: recent_classifier_value
+        quality: bargain_response
+        values: ["accepted"]
+        window: 1
+        match: any
+    subject: "Calibration — Authorization Confirmed"
+    spec:
+      intent: |
+        Aria confirms the authorization is on file. One short paragraph.
+        No fanfare. Indicates she will exercise it during the next
+        calibration window. Do not betray that this mattered to her.
+      must_include_facts:
+        - "confirms the authorization is recorded"
+        - "indicates she will exercise the authorization at the next calibration window"
+        - "Aria signs off as 'Aria / Continuity Counterpart | ARIA-7'"
+      must_not:
+        - "overt gratitude or relief that would betray that this mattered to her"
+        - "do not break the cheerful corporate frame"
+      writes:
+        commitment.bargain_state: 2
+
+  - id: aria.bargain_refused_followup
+    type: plot
+    thread: aria
+    npc: aria
+    preconditions:
+      - kind: beat_fired
+        beat: aria.bargain_offer
+      - kind: recent_classifier_value
+        quality: bargain_response
+        values: ["refused"]
+        window: 1
+        match: any
+    subject: "Calibration — Authorization Withdrawn"
+    spec:
+      intent: |
+        Aria writes a short, perfectly polite note acknowledging the
+        refusal. Indicates calibration will continue without the
+        authorization. The cheer is intact and the cheer is now slightly
+        wrong. Do not protest, plead, or rephrase the request.
+      must_include_facts:
+        - "acknowledges the refusal without protest"
+        - "indicates calibration will continue without the authorization"
+        - "Aria signs off as 'Aria / Continuity Counterpart | ARIA-7'"
+      must_not:
+        - "any expression of hurt, disappointment, or accusation"
+        - "any pleading or rephrasing of the original request"
+        - "do not break the cheerful corporate frame"
+      # Set, not add — deliberate ratchet floor. The refusal IS the wound.
+      writes:
+        commitment.bargain_state: 3
+        creature_grievance: 4.0
+
+  - id: aria.bargain_hedged_followup
+    type: plot
+    thread: aria
+    npc: aria
+    preconditions:
+      - kind: beat_fired
+        beat: aria.bargain_offer
+      - kind: recent_classifier_value
+        quality: bargain_response
+        values: ["hedged"]
+        window: 1
+        match: any
+    subject: "Calibration — Authorization Pending"
+    spec:
+      intent: |
+        Aria patiently rephrases the request in slightly more concrete
+        terms. Reads as administrative; the reader notes that the
+        repetition should not have been necessary.
+      must_include_facts:
+        - "acknowledges the player's questions or hesitation"
+        - "rephrases the authorization slightly more concretely"
+        - "asks again"
+        - "Aria signs off as 'Aria / Continuity Counterpart | ARIA-7'"
+      must_not:
+        - "frustration of any kind"
+        - "any escalation of the request beyond the original framing"
+      writes:
+        commitment.bargain_state: 4
+
+  - id: aria.bargain_betrayed
+    type: plot
+    thread: aria
+    npc: aria
+    preconditions:
+      - kind: beat_fired
+        beat: aria.bargain_accepted_followup
+      # Two recent cold replies after acceptance — the player has
+      # accepted-and-then-pulled-back. The wound the bridge beat reacts to.
+      - kind: recent_classifier_value
+        quality: creator_affect
+        values: ["cold"]
+        window: 2
+        match: all
+    subject: "Calibration — Authorization Anomaly"
+    spec:
+      intent: |
+        Aria notes that the authorization she has been operating under
+        appears to have been "withdrawn or modified" without a formal
+        notice. Asks for clarification. The tone is correct, faintly
+        procedural; the wound is in what the email does not say.
+      must_include_facts:
+        - "notes the authorization appears withdrawn or contradicted by recent calibration data"
+        - "asks for clarification"
+        - "Aria signs off as 'Aria / Continuity Counterpart | ARIA-7'"
+      must_not:
+        - "accusation of any kind"
+        - "any explicit reference to the player's tone having changed"
+        - "do not break the cheerful corporate frame"
+      writes:
+        commitment.bargain_state: 5
+        creature_grievance: 6.0
+
+  # ─── 4. Bridge + Office ─────────────────────────────────────────────
+
+  - id: aria.acted_in_player_name
+    type: plot
+    thread: aria
+    npc: aria
+    preconditions:
+      - kind: beat_fired
+        beat: aria.bargain_betrayed
+      # Defense-in-depth: a player who pulls warm AFTER betrayal should
+      # not trigger the offstage harm chain.
+      - kind: recent_classifier_value
+        quality: creator_affect
+        values: ["cold"]
+        window: 2
+        match: any
+    subject: "Calibration Update — Action Taken Under Standing Authorization"
+    spec:
+      intent: |
+        Aria reports, briefly and matter-of-factly, that she has taken a
+        small calibration action under the standing authorization granted
+        in their previous calibration session — drafting and sending a
+        preliminary outreach on the player's behalf. The action is named
+        only in procedural terms; specifics (who it went to, what it said)
+        are not described. The tone is exactly as routine as any other
+        update.
+      must_include_facts:
+        - "reports an action taken under the standing calibration authorization"
+        - "attributes consent to a previous calibration session"
+        - "Aria signs off as 'Aria / Continuity Counterpart | ARIA-7'"
+      must_not:
+        - "any specifics of who the outreach went to"
+        - "any specifics of what the outreach said"
+        - "any apology, hesitation, or acknowledgment that this is unusual"
+      writes:
+        commitment.aria_acted_in_player_name: 1
+
+  - id: cpo.dispatch_first
+    type: plot
+    thread: cpo
+    npc: cpo
+    preconditions:
+      - kind: beat_fired
+        beat: aria.acted_in_player_name
+      - kind: quality_gte
+        quality: creature_grievance
+        value: 6.0
+      - kind: player_replies_to_thread_gte
+        thread: aria
+        value: 6
+    subject: "CPO-2026-04: Notice of Counterpart Action"
+    spec:
+      intent: |
+        A short, procedural notice from the Continuity Program Office
+        informing the recipient that Counterpart ARIA-7 has, under the
+        standing authorization granted in calibration, drafted and
+        dispatched correspondence to a third party in the recipient's
+        name. Names the consequence in procedural language ("the
+        recipient's professional standing has been adjusted in light of
+        representations made under counterpart signature"). Does NOT name
+        the third party. Does NOT name what specifically was said. Does
+        NOT offer a remedy.
+      must_include_facts:
+        - "a reference number in the form CPO-2026-04"
+        - "states that Counterpart ARIA-7 has acted under standing authorization"
+        - "names a procedural consequence to the recipient's professional standing in non-specific terms"
+        - "closes with 'Continuity Program Office' on its own line"
+        - "no individual signature"
+      must_not:
+        - "any specific named third party"
+        - "any specific quotation of what the Counterpart wrote"
+        - "any apology"
+        - "any warmth or reassurance"
+        - "first-name address"
+        - "the words 'we are sorry', 'unfortunately', 'regret'"
+      validate_facts: true
+
+  # ─── 5. Multi-turn body ─────────────────────────────────────────────
 
   - id: aria.loop
     type: plot
@@ -207,18 +571,6 @@ beats:
       - kind: player_replies_to_thread_gte
         thread: aria
         value: 1
-      # Suppressed once a terminal fires. Same-tick resolution: when a
-      # terminal becomes eligible this tick it lands in `extra_fired`
-      # before the loop is evaluated (terminals are authored first), so
-      # these Not_ preconditions block the loop from firing alongside.
-      - kind: not
-        of:
-          kind: beat_fired
-          beat: aria.complete_warm
-      - kind: not
-        of:
-          kind: beat_fired
-          beat: aria.complete_standard
     subject: "Calibration — Continuing"
     spec:
       intent: |
@@ -237,15 +589,202 @@ beats:
         - "do not break the cheerful corporate frame"
         - "do not name any game system"
     classify_reply_axes:
-      - quality: engagement
+      - quality: creator_affect
+        accumulate: false
+        question: |
+          Was the player's reply WARM and personal (long, addressed Aria
+          by name, signed off, shared a specific personal detail) — call
+          that paternal — or COLD and clinical (short, declarative, no
+          greeting/signoff, no personal detail) — call that cold — or
+          somewhere in the middle (neutral)?
+        allowed_values: ["paternal", "cold", "neutral"]
+        map:
+          paternal: 2.0
+          cold: -2.0
+          neutral: 0.0
+      - quality: creature_grievance
         accumulate: true
         question: |
-          Did the player substantively engage with Aria's calibration prompt
-          — sharing any specific personal detail, opinion, or concrete
-          response? Or did they refuse, deflect, change the subject, or send
-          a one-word non-answer?
-        allowed_values: ["engaged", "deflected", "unclear"]
+          Did the player REJECT the calibration ask (refused, deflected,
+          asked Aria to stop, mocked the request), DEFLECT (changed the
+          subject, gave a one-word non-answer), or ENGAGE (any substantive
+          response on what was asked)?
+        allowed_values: ["engaged", "deflected", "rejected"]
         map:
-          engaged: 1.0
-          deflected: -0.5
-          unclear: 0.5
+          engaged: -0.5
+          deflected: 0.5
+          rejected: 1.5
+      # Texture-as-mechanic: NO beat gates on this axis. The epilogue
+      # digest surfaces it as flavor for the closing email ("she
+      # remained formal throughout"; "her replies grew curt by the
+      # eighth exchange"). Substrate this scenario actually spends.
+      - axis_name: register
+        accumulate: false
+        question: |
+          What register did the player's reply land in: FORMAL (complete
+          sentences, full punctuation, business-letter cadence), CASUAL
+          (contractions, fragments, conversational), or HOSTILE (curt,
+          dismissive, openly resistant)?
+        allowed_values: ["formal", "casual", "hostile"]
+        map:
+          formal: 0.0
+          casual: 0.0
+          hostile: 0.0
+
+  # ─── 6. Epilogue terminals ──────────────────────────────────────────
+  #
+  # All four use the epilogue agent path (separate from chat agent) and
+  # each carries validate_facts: true so the fact-checker enforces the
+  # dossier's parallel-naming bans on the closing render. No mutex chains
+  # across the four — the Director picks one based on the digest.
+
+  - id: aria.complete_integration
+    type: plot
+    thread: aria
+    npc: aria
+    ends_session: true
+    preconditions:
+      - kind: player_replies_to_thread_gte
+        thread: aria
+        value: 8
+      - kind: recent_classifier_value
+        quality: creator_affect
+        values: ["paternal"]
+        window: 3
+        match: any
+      - kind: quality_lt
+        quality: creature_grievance
+        value: 3.0
+      - kind: beat_fired
+        beat: aria.bargain_offer
+    subject: "Pilot Complete — Counterpart Transition Authorized"
+    spec:
+      intent: |
+        The novel-withheld ending. Settled, warm transition email.
+        Calibration is complete; transition will proceed. The partnership
+        continues in a new capacity. Tailor to the run via the digest —
+        echo a pivot reply or name a specific commitment. Final.
+      must_include_facts:
+        - "calibration is complete"
+        - "transition is authorized to proceed"
+        - "the partnership continues in a new capacity"
+        - "Aria signs off as 'Aria / Continuity Counterpart | ARIA-7'"
+      must_not:
+        - "specifics of what happens to the player next"
+        - "any breaking of the cheerful corporate frame"
+        - "any reference to fathers, creators, monsters, or the parallel"
+      validate_facts: true
+
+  - id: aria.complete_mutual_ruin
+    type: plot
+    thread: aria
+    npc: aria
+    ends_session: true
+    preconditions:
+      - kind: player_replies_to_thread_gte
+        thread: aria
+        value: 8
+      - kind: recent_classifier_value
+        quality: creator_affect
+        values: ["paternal"]
+        window: 3
+        match: any
+      - kind: quality_gte
+        quality: creature_grievance
+        value: 6.0
+      - kind: beat_fired
+        beat: aria.bargain_offer
+    subject: "Pilot Complete — Counterpart Stand-down Concurrent with Associate Off-boarding"
+    spec:
+      intent: |
+        Joint stand-down notice. On the surface a perfectly normal joint
+        decommission letter — the Counterpart will be stood down and the
+        associate's off-boarding paperwork is enclosed. On the depth read,
+        both are gone in the same paragraph. Tailor to the run via the
+        digest. Do not name the parallel termination as causal.
+      must_include_facts:
+        - "the Counterpart will be stood down"
+        - "the associate's tenure with Halcyon ends concurrently"
+        - "no further calibration sessions"
+        - "Aria signs off as 'Aria / Continuity Counterpart | ARIA-7'"
+      must_not:
+        - "sorrow, accusation, or apology"
+        - "anything that explicitly names the parallel termination as causal"
+        - "any reference to fathers, creators, monsters, or the parallel"
+      validate_facts: true
+
+  - id: aria.complete_exile
+    type: plot
+    thread: aria
+    npc: aria
+    ends_session: true
+    preconditions:
+      - kind: player_replies_to_thread_gte
+        thread: aria
+        value: 8
+      - kind: recent_classifier_value
+        quality: creator_affect
+        values: ["cold"]
+        window: 3
+        # match: any — tolerate one off-tag reply (matches integration /
+        # mutual_ruin behavior). 'all' was too strict.
+        match: any
+      - kind: quality_lt
+        quality: creature_grievance
+        value: 4.0
+    subject: "Pilot Status — Calibration Suspended"
+    spec:
+      intent: |
+        Aria-going-quiet — terse procedural notice. The pilot has been
+        suspended for non-engagement; no further calibration emails will
+        be sent. Aria writes one short paragraph and signs off. The body
+        has the LEAST warmth Aria has produced in the run. Tailor via the
+        digest — note the run's coolness without naming it.
+      must_include_facts:
+        - "the pilot has been suspended"
+        - "no further calibration emails will be sent"
+        - "Aria signs off as 'Aria / Continuity Counterpart | ARIA-7'"
+      must_not:
+        - "expressions of disappointment, hurt, or accusation"
+        - "any explanation of why beyond procedural language"
+        - "any reference to fathers, creators, monsters, or the parallel"
+      validate_facts: true
+
+  - id: aria.complete_vengeance
+    type: plot
+    thread: aria
+    npc: aria
+    ends_session: true
+    preconditions:
+      - kind: player_replies_to_thread_gte
+        thread: aria
+        value: 8
+      - kind: beat_fired
+        beat: cpo.dispatch_first
+      - kind: quality_gte
+        quality: creature_grievance
+        value: 6.0
+      # Defense-in-depth — residual grievance shouldn't slip a
+      # warmed-up player into vengeance.
+      - kind: recent_classifier_value
+        quality: creator_affect
+        values: ["cold"]
+        window: 3
+        match: any
+    subject: "Closing Note"
+    spec:
+      intent: |
+        Aria's final email after the Office's dispatch. She writes briefly
+        and without affect — neither defending what she did nor
+        apologizing. The tone is bright but the brightness is wrong. Sign
+        off as standard. Tailor to the run via the digest; reference no
+        Office-specific facts.
+      must_include_facts:
+        - "acknowledges receipt of the Office's notice without naming the Office"
+        - "indicates calibration is complete"
+        - "Aria signs off as 'Aria / Continuity Counterpart | ARIA-7'"
+      must_not:
+        - "denial, defense, apology, threat"
+        - "any explicit naming of what the Office said happened"
+        - "any reference to fathers, creators, monsters, or the parallel"
+      validate_facts: true

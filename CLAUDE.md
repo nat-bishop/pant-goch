@@ -1,16 +1,17 @@
 # CLAUDE.md
 
-Inbox — single-surface email correspondence game. The player writes; **Aria** (the only NPC) replies. Tone is Severance-flat / corporate-satire — the horror is structural, never named. Current scenario "Continuity Program" is in `npc_service/scenario.yaml`.
+Inbox — single-surface chat-style correspondence game (data model is email-shaped; UI renders Microsoft Teams-style chat bubbles). The player writes; **Aria** (the AI Counterpart) replies. A second institutional sender — the **Continuity Program Office** — appears mid-game on the vengeance path. Tone is Severance-flat / corporate-satire — the horror is structural, never named. The current scenario walks Mary Shelley's *Frankenstein* under an unchanged corporate-satire surface (see `docs/frankenstein-adaptation.md`); the YAML lives at `npc_service/scenario.yaml`.
 
 See **`README.md`** for stack, run/test commands, scenario authoring, project layout, and troubleshooting. Don't duplicate that here.
 
 ## Where the engine lives
 
 - `npc_service/src/npc_service/spine.py` — deterministic state machine. No LLM calls.
-- `npc_service/src/npc_service/agents.py` — four agents (chat, classifier, summary, fact-checker) + history-compaction processor wired onto the chat agent. The module docstring + inline comments cover non-obvious choices; read them before "improving."
-- `npc_service/src/npc_service/main.py` — FastAPI endpoints, SSE streaming, beat dispatch.
+- `npc_service/src/npc_service/agents.py` — five agents (chat, classifier, summary, fact-checker, director) + a separate epilogue agent for terminal beats + history-compaction processor wired onto the chat agent. The module docstring + inline comments cover non-obvious choices; read them before "improving."
+- `npc_service/src/npc_service/main.py` — FastAPI endpoints, SSE streaming, beat dispatch (Director picks one beat per tick).
 - `npc_service/src/npc_service/models.py` — Pydantic schemas (authoring + runtime + DTOs).
 - `npc_service/scenario.yaml` — content layer. The engine is content-agnostic.
+- `npc_service/tests/fixtures/test_scenario.yaml` — minimal Continuity-Program-shaped scenario used by `test_app.py` so app-wiring tests stay decoupled from production story content.
 - `web/src/store.ts`, `web/src/hooks/useStreamSend.ts`, `web/src/App.tsx` — bulk of the frontend.
 
 ## Authoring vocabulary
@@ -18,17 +19,20 @@ See **`README.md`** for stack, run/test commands, scenario authoring, project la
 - **Multi-turn `PlotBeat`s are the default for scenes-of-many-exchanges.** A storylet whose `multi_turn: true` re-fires on every reply with one authored intent + an evolving classifier picture is enough to carry a long scene without a beat-per-exchange. `aria.loop` is the existing example.
 - **`AnchoredBeat`s are the exception**, used only when exact phrasing matters: the boot welcome (first-impression voice), or a terminal that needs to quote a specific source. Authoring each ordinary turn as an anchored beat reproduces the linearity trap the engine is trying to avoid.
 - **Multi-axis `classify_reply_axes`** lets one storylet score multiple qualities per reply at the same per-send LLM cost as one. Reach for a second axis (or `RecentClassifierValue` predicates over recent classifier history) before authoring a parallel beat that just exists to score a different quality.
+- **Verdict-only axes** (`axis_name` set, `quality` omitted): the classifier still runs and the result lands on `Reply.classifier_results` for `RecentClassifierValue` predicates to read, but no quality is written. Use when a classifier verdict gates downstream beats without needing scalar state (e.g. `bargain_response` → accepted/refused/hedged routing).
 - **`spec.writes`** is the cheap way to record a fact ("the bargain has been offered") without a classifier round-trip. Author convention is the `commitment.*` namespace; the chat agent's commitments-block surfaces those values to every subsequent render.
-- **`spec.validate_facts: true`** is opt-in fact-check on critical beats (terminals, pivotal forks). Costs one extra LLM call per render attempt; never enable on `multi_turn` loop beats.
+- **`spec.validate_facts: true`** is opt-in fact-check on critical beats (terminals, pivotal forks). Costs one extra LLM call per render attempt; never enable on `multi_turn` loop beats. All four terminals in the current scenario carry it — they enforce the dossier's parallel-naming bans.
+- **`NPCDossier.replies_enabled: false`** marks an NPC the player cannot reply to (institutional senders like the Continuity Program Office). Frontend hides the composer; backend does not actively reject /sends to such NPCs (defensive only).
 
 ## Invariants worth knowing
 
 - **Pacing is action-counter / quality driven, never time.** No clocks, no decorative meters. If you're tempted to add a Wait verb or a real-time gate, look for an action-counter alternative first.
 - **The chat agent never writes state.** Quality writes have exactly two code-owned entry points, both in `spine.py`: `apply_classification` (driven by classifier output) and `apply_writes` (driven by `spec.writes`). Don't give the chat agent side effects beyond the opt-in `validate_facts` retry — the validator only refuses an output, never mutates state.
 - **Beat-id prefix must equal the beat's `thread` field.** The spine treats the prefix as the source of truth (`thread_id_from_beat_id`); `Scenario._cross_references` enforces this at load.
-- **Same-tick beat mutex depends on YAML authoring order.** Terminals must appear before any loop they suppress, so they enter `extra_fired` first. Validation doesn't check order.
+- **Exactly one beat fires per tick.** When `find_due_beats` returns multiple eligible beats, the **Director agent** picks one (or "none" to skip the tick). Authoring order is not load-bearing for selection — same-tick mutex via `Not_(BeatFired …)` only catches the post-fire state, not within-tick. Tests stub `_select_beat` to "first eligible" for determinism.
 - **Email metadata for chat turns is derived, not authored** — sender from dossier, recipient from `Scenario.player_email`, subject from `reply_subject_for_email`. Anchored beats also pull `recipient` from `Scenario.player_email`; they're NPC→player by construction.
 - **`spec.writes` collision contract on multi-turn beats.** If a `writes` key on a multi-turn beat is also written by another beat, that other beat's mutex (typically `Not_(BeatFired …)` on the multi-turn beat) must take effect before the colliding beat fires — otherwise the multi-turn beat re-fires next tick and clobbers the later write back to its own value. Validation does not enforce this; author it correctly.
+- **Terminal beats use the epilogue render path, not the chat agent.** `_fire_beat` routes `ends_session=True` PlotBeats through `_render_via_epilogue_agent`, which uses a separate system prompt and a per-run digest (commitments + classifier history + fired-beat order + recent player replies) to tailor the closing message to the run.
 
 ## Running tests
 

@@ -1,15 +1,26 @@
 import { useState } from "react";
 import { useStore } from "../store";
-import { ARIA_DISPLAY_NAME, ARIA_SEED } from "../util/npc";
 import { Avatar } from "./Avatar";
 import { ChatRow } from "./ChatRow";
 import { PresenceDot } from "./PresenceDot";
 
 export function ChatSidebar() {
   const view = useStore((s) => s.view);
+  const npcs = useStore((s) => s.npcs);
   const openChat = useStore((s) => s.openChat);
-  const unreadAria = useStore((s) => s.state?.unread_counts.Inbox ?? 0);
+  const chatMessages = useStore((s) => s.chatMessages);
+  const unreadByThread = useStore(
+    (s) => s.state?.unread_counts_by_thread ?? {},
+  );
   const [directOpen, setDirectOpen] = useState(true);
+
+  // Hide a row when its thread has no emails AND no unread count yet — this
+  // is how the second NPC stays invisible until their first beat fires.
+  const visibleNpcs = npcs.filter((n) => {
+    const hasEmails = (chatMessages[n.thread_id]?.length ?? 0) > 0;
+    const hasUnread = (unreadByThread[n.thread_id] ?? 0) > 0;
+    return hasEmails || hasUnread;
+  });
 
   return (
     <aside className="flex w-64 shrink-0 flex-col bg-bg-sidebar pl-2">
@@ -24,19 +35,24 @@ export function ChatSidebar() {
           open={directOpen}
           onToggle={() => setDirectOpen((o) => !o)}
         >
-          <ChatRow
-            active={view.chatId === "aria"}
-            unread={unreadAria}
-            onClick={() => openChat("aria")}
-            icon={<Avatar seed={ARIA_SEED} name={ARIA_DISPLAY_NAME} size={32} />}
-            trailing={
-              <span className="absolute -bottom-0.5 -right-0.5">
-                <PresenceDot size={10} />
-              </span>
-            }
-            name={ARIA_DISPLAY_NAME}
-            subtitle="Counterpart"
-          />
+          {visibleNpcs.map((n) => (
+            <ChatRow
+              key={n.thread_id}
+              active={view.chatId === n.thread_id}
+              unread={unreadByThread[n.thread_id] ?? 0}
+              onClick={() => openChat(n.thread_id)}
+              icon={<Avatar seed={n.email_address} name={n.display_name} size={32} />}
+              trailing={
+                n.replies_enabled ? (
+                  <span className="absolute -bottom-0.5 -right-0.5">
+                    <PresenceDot size={10} />
+                  </span>
+                ) : undefined
+              }
+              name={n.display_name}
+              subtitle={n.replies_enabled ? "Counterpart" : "Notice"}
+            />
+          ))}
         </Section>
       </nav>
     </aside>

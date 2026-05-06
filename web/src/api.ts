@@ -38,6 +38,7 @@ export interface GameState {
   ended: boolean;
   end_reason: string | null;
   unread_counts: Record<string, number>;
+  unread_counts_by_thread: Record<string, number>;
 }
 
 export interface ThreadResponse {
@@ -45,10 +46,24 @@ export interface ThreadResponse {
   emails: Email[];
 }
 
-export async function getScenario() {
+export interface NpcInfo {
+  id: string;
+  display_name: string;
+  email_address: string;
+  thread_id: string;
+  replies_enabled: boolean;
+}
+
+export interface ScenarioResponse {
+  title: string;
+  premise: string;
+  npcs: NpcInfo[];
+}
+
+export async function getScenario(): Promise<ScenarioResponse> {
   const r = await fetch(`${API}/scenario`);
   await ensureOk(r, "scenario");
-  return (await r.json()) as { title: string; premise: string };
+  return r.json();
 }
 
 export async function getInbox(): Promise<InboxResponse> {

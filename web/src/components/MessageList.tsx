@@ -1,9 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
-import { Email } from "../api";
+import { Email, NpcInfo } from "../api";
 import { useScrollAnchor } from "../hooks/useScrollAnchor";
 import { useStore } from "../store";
-import { stripAddress } from "../util/email";
-import { ARIA_DISPLAY_NAME, ARIA_SEED } from "../util/npc";
 import { MessageGroup } from "./MessageGroup";
 import { NewMessagePill } from "./NewMessagePill";
 import { TypingIndicator } from "./TypingIndicator";
@@ -11,9 +9,10 @@ import { TypingIndicator } from "./TypingIndicator";
 interface Props {
   chatId: string;
   emails: Email[];
+  npc: NpcInfo;
 }
 
-export function MessageList({ chatId, emails }: Props) {
+export function MessageList({ chatId, emails, npc }: Props) {
   const pendingTypingFor = useStore((s) => s.pendingTypingFor);
   const showTyping = pendingTypingFor === chatId;
   const { ref, isAtBottom, scrollToBottom, recompute } =
@@ -46,10 +45,6 @@ export function MessageList({ chatId, emails }: Props) {
     lastCount.current = 0;
   }, [chatId]);
 
-  const npc = useMemo(() => emails.find((e) => e.from !== "you"), [emails]);
-  const npcSeed = npc?.from ?? ARIA_SEED;
-  const npcName = npc ? stripAddress(npc.from) : ARIA_DISPLAY_NAME;
-
   return (
     <div className="relative flex-1 overflow-hidden">
       <div
@@ -61,7 +56,9 @@ export function MessageList({ chatId, emails }: Props) {
           {groups.map((g, i) => (
             <MessageGroup key={`${g[0]!.id}-${i}`} emails={g} />
           ))}
-          {showTyping && <TypingIndicator seed={npcSeed} name={npcName} />}
+          {showTyping && (
+            <TypingIndicator seed={npc.email_address} name={npc.display_name} />
+          )}
         </div>
       </div>
       {!isAtBottom && <NewMessagePill onClick={() => scrollToBottom("smooth")} />}

@@ -26,6 +26,12 @@ export function useStreamSend() {
     const queue: Email[] = [];
     const currentChat = view.chatId;
     let typingShown = false;
+    if (currentChat === null) {
+      // No chat selected — should be impossible while a composer is active
+      // (App gates on view.chatId before rendering MessageComposer). Bail.
+      setBusy(false);
+      return;
+    }
 
     try {
       for await (const ev of stream) {

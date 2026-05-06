@@ -6,6 +6,8 @@ import { create } from "zustand";
 import {
   Email,
   GameState,
+  NpcInfo,
+  ScenarioResponse,
   getInbox,
   getScenario,
   getThread,
@@ -14,14 +16,16 @@ import {
 import { detectInitialTheme, type Theme } from "./hooks/useTheme";
 import { sleep, typingDelayMs } from "./util/pacing";
 
-export type ChatId = "aria";
+// Thread id; backend is authoritative. Was a `"aria"` literal pre-multi-NPC.
+export type ChatId = string;
 
 interface Store {
   bootStarted: boolean;
   bootError: string | null;
   scenario: { title: string; premise: string } | null;
+  npcs: NpcInfo[];
   state: GameState | null;
-  view: { chatId: ChatId };
+  view: { chatId: ChatId | null };
   chatMessages: Record<string, Email[]>;
   pendingTypingFor: string | null;
   firstOpenForChat: Set<string>;
@@ -39,8 +43,9 @@ export const useStore = create<Store>()((set, get) => ({
   bootStarted: false,
   bootError: null,
   scenario: null,
+  npcs: [],
   state: null,
-  view: { chatId: "aria" },
+  view: { chatId: null },
   chatMessages: {},
   pendingTypingFor: null,
   firstOpenForChat: new Set(),
@@ -54,8 +59,18 @@ export const useStore = create<Store>()((set, get) => ({
     set({ bootStarted: true });
     try {
       const [scenario, inbox] = await Promise.all([getScenario(), getInbox()]);
-      set({ scenario, state: inbox.state, bootError: null });
-      await get().openChat(get().view.chatId);
+      const sc = scenario as ScenarioResponse;
+      set({
+        scenario: { title: sc.title, premise: sc.premise },
+        npcs: sc.npcs,
+        state: inbox.state,
+        bootError: null,
+      });
+      const initialChat = sc.npcs[0]?.thread_id ?? null;
+      if (initialChat) {
+        set({ view: { chatId: initialChat } });
+        await get().openChat(initialChat);
+      }
     } catch (err) {
       set({ bootError: err instanceof Error ? err.message : String(err) });
     }
@@ -80,10 +95,11 @@ export const useStore = create<Store>()((set, get) => ({
     const unreadIds = new Set(unread.map((e) => e.id));
     const seen = t.emails.filter((e) => !unreadIds.has(e.id));
 
-    // Replay unread Aria messages through the typing indicator on first
-    // session-open of the chat. The very first interaction begins with
-    // "Aria is typing…" instead of the welcome already being there.
-    if (wasFirstOpen && chatId === "aria" && unread.length > 0) {
+    // First session-open of this chat: replay unread NPC messages through
+    // the typing indicator. Applies to any NPC's first arrival, not just
+    // Aria — a second NPC whose first beat fires mid-game also type-replays
+    // when the player first opens that thread.
+    if (wasFirstOpen && unread.length > 0) {
       set({
         chatMessages: { ...get().chatMessages, [chatId]: seen },
       });

@@ -32,20 +32,40 @@ CHAT_TURN_PROSE = (
 
 @pytest.fixture
 def client(monkeypatch):
-    """Boot the app with no llama-server and override both agents with a
-    TestModel that returns canned outputs.
+    """Boot the app with no llama-server and override agents with TestModels
+    that return canned outputs.
+
+    Loads `tests/fixtures/test_scenario.yaml` (a synthesised single-quality
+    Continuity-Program-shaped scenario) instead of the production
+    scenario.yaml — keeps app-wiring tests focused on engine plumbing
+    rather than story content.
 
     Default classifier value is 'deflected' so engagement starts moving
     backwards by default; individual tests override per-call when they need
     'engaged' to push past the warm-ending threshold.
+
+    `_select_beat` is monkeypatched to "first eligible" so beat selection
+    is deterministic in tests — replicates the old extra_fired ordering
+    (terminals are authored before the loop in the fixture, so first-eligible
+    picks the terminal when both are due). The real Director (LLM-driven)
+    is exercised via integration tests against llama.
     """
+    from pathlib import Path
+    fixture_path = Path(__file__).parent / "fixtures" / "test_scenario.yaml"
+    monkeypatch.setenv("SCENARIO_PATH", str(fixture_path))
     monkeypatch.setenv("LAUNCH_LLAMA", "false")
     monkeypatch.setattr(main, "EXTERNAL_LLAMA_PROBE_TIMEOUT_SECONDS", 0.1)
+
+    async def _first_eligible(due):
+        return due[0] if due else None
+    monkeypatch.setattr(main, "_select_beat", _first_eligible)
+
     with TestClient(main.app) as c:
         assert main.AGENTS is not None
         with ExitStack() as stack:
             stack.enter_context(main.AGENTS.chat_agent.override(model=_test_model_for_chat()))
             stack.enter_context(main.AGENTS.classifier_agent.override(model=_test_model_for_classifier("deflected")))
+            stack.enter_context(main.AGENTS.epilogue_agent.override(model=_test_model_for_chat()))
             yield c
 
 
@@ -98,8 +118,15 @@ def test_scenario(client):
     r = client.get("/scenario")
     assert r.status_code == 200
     j = r.json()
-    assert j["title"] == "Continuity Program"
+    assert j["title"] == "Test Scenario"
     assert "premise" in j
+    # The /scenario endpoint now returns the npcs list with thread mapping
+    # and replies_enabled — used by the frontend to render multi-NPC chats.
+    assert "npcs" in j
+    assert any(n["id"] == "aria" for n in j["npcs"])
+    aria = next(n for n in j["npcs"] if n["id"] == "aria")
+    assert aria["thread_id"] == "aria"
+    assert aria["replies_enabled"] is True
 
 
 def test_state_starts_clean(client):

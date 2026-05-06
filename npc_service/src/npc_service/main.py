@@ -29,9 +29,13 @@ from .agents import (
     ChatDeps,
     build_agents,
     build_classifier_user_prompt,
+    build_director_output_type,
+    build_director_user_prompt,
+    build_recent_classifier_history,
     commitments_snapshot,
     make_llama_token_counter,
 )
+from pydantic_ai import NativeOutput
 from .config import Settings
 from .launcher import (
     LlamaStartupError,
@@ -303,7 +307,10 @@ async def _fire_beat(
         assert player_body is not None, (
             "PlotBeat fires require a player body — they trigger only on /send ticks"
         )
-        email = await _render_via_chat_agent(
+        # Terminals are the epilogue: they go through the epilogue agent
+        # with a richer run digest. Everything else uses the chat agent.
+        renderer = _render_via_epilogue_agent if beat.ends_session else _render_via_chat_agent
+        email = await renderer(
             npc_id=beat.npc,
             thread_id=beat.thread,
             player_body=player_body,
@@ -341,22 +348,24 @@ def _seed_thread_history(thread_id: str, body: str) -> None:
     history.append(ModelResponse(parts=[TextPart(content=body)]))
 
 
-async def _render_via_chat_agent(
+async def _render_email(
     *,
+    agent,
     npc_id: str,
     thread_id: str,
-    player_body: str,
+    user_prompt: str,
     in_reply_to_email_id: str | None,
     plot_directive,
     beat_id: str | None,
     subject: str | None,
+    message_history: list | None = None,
+    append_history: bool = False,
+    span_label: str = "render to {npc} on {thread}",
+    extra_span_attrs: dict | None = None,
 ) -> Email:
-    """Single rendering path used by both chat turns (no plot directive) and
-    PlotBeat fires (directive injected via deps).
-
-    Appends `result.new_messages()` to thread_messages so future turns see
-    the player's body and the NPC's reply as the next two messages in the
-    Pydantic AI conversation.
+    """Single LLM-render path. Builds ChatDeps, runs `agent`, wraps failures as
+    ChatAgentFailure, returns the assembled Email. If `append_history=True`,
+    extends `STATE.thread_messages[thread_id]` with `result.new_messages()`.
     """
     assert STATE is not None and SCENARIO is not None and AGENTS is not None
     npc = SCENARIO.npc_by_id[npc_id]
@@ -369,34 +378,33 @@ async def _render_via_chat_agent(
             SCENARIO.quality_descriptions,
         ),
     )
-    history = STATE.thread_messages.setdefault(thread_id, [])
 
     with LLM_LOGFIRE.span(
-        "render chat to {npc} on {thread}",
+        span_label,
         npc=npc_id,
         thread=thread_id,
         beat=beat_id,
-        plot=plot_directive is not None,
-        history_len=len(history),
-        prompt_preview=player_body[:200],
+        **(extra_span_attrs or {}),
     ) as span:
         try:
-            result = await AGENTS.chat_agent.run(
-                player_body,
-                message_history=list(history),
+            result = await agent.run(
+                user_prompt,
+                message_history=message_history,
                 deps=deps,
             )
         except Exception as e:
             # Llama hiccup, schema/tool error, or history-processor failure
             # (e.g. /tokenize unreachable). Re-raise as ChatAgentFailure so
             # the SSE stream emits a structured `error` event instead of
-            # tearing the connection. Mirrors the classifier degraded path.
+            # tearing the connection.
             logfire.exception(
-                "chat_agent run failed",
+                "render agent run failed",
                 npc=npc_id, thread=thread_id, beat=beat_id,
             )
             raise ChatAgentFailure(str(e)) from e
-        history.extend(result.new_messages())
+        if append_history:
+            history = STATE.thread_messages.setdefault(thread_id, [])
+            history.extend(result.new_messages())
         usage = result.usage()
         span.set_attribute("input_tokens", usage.input_tokens)
         span.set_attribute("output_tokens", usage.output_tokens)
@@ -406,7 +414,6 @@ async def _render_via_chat_agent(
     derived_subject = subject if subject is not None else reply_subject_for_email(
         STATE, in_reply_to_email_id
     )
-
     return Email(
         id=f"email_{uuid.uuid4().hex[:8]}",
         beat_id=beat_id,
@@ -421,7 +428,201 @@ async def _render_via_chat_agent(
     )
 
 
+async def _render_via_chat_agent(
+    *,
+    npc_id: str,
+    thread_id: str,
+    player_body: str,
+    in_reply_to_email_id: str | None,
+    plot_directive,
+    beat_id: str | None,
+    subject: str | None,
+) -> Email:
+    """Render path for chat turns and non-terminal PlotBeat fires. Appends to
+    thread_messages so the next turn sees this exchange in conversation history."""
+    assert STATE is not None
+    history = STATE.thread_messages.setdefault(thread_id, [])
+    return await _render_email(
+        agent=AGENTS.chat_agent if AGENTS else None,
+        npc_id=npc_id,
+        thread_id=thread_id,
+        user_prompt=player_body,
+        in_reply_to_email_id=in_reply_to_email_id,
+        plot_directive=plot_directive,
+        beat_id=beat_id,
+        subject=subject,
+        message_history=list(history),
+        append_history=True,
+        span_label="render chat to {npc} on {thread}",
+        extra_span_attrs={
+            "plot": plot_directive is not None,
+            "history_len": len(history),
+            "prompt_preview": player_body[:200],
+        },
+    )
+
+
+async def _render_via_epilogue_agent(
+    *,
+    npc_id: str,
+    thread_id: str,
+    player_body: str,
+    in_reply_to_email_id: str | None,
+    plot_directive,
+    beat_id: str | None,
+    subject: str | None,
+) -> Email:
+    """Render path for terminal beats. Builds a per-run digest and runs the
+    epilogue agent (separate system prompt, no message history)."""
+    assert AGENTS is not None
+    digest = _build_epilogue_digest()
+    user_prompt = (
+        f"{digest}\n\n"
+        f"PLAYER'S MOST RECENT REPLY (the one that immediately precedes this terminal):\n"
+        f"{player_body}"
+    )
+    return await _render_email(
+        agent=AGENTS.epilogue_agent,
+        npc_id=npc_id,
+        thread_id=thread_id,
+        user_prompt=user_prompt,
+        in_reply_to_email_id=in_reply_to_email_id,
+        plot_directive=plot_directive,
+        beat_id=beat_id,
+        subject=subject,
+        message_history=None,
+        append_history=False,
+        span_label="render epilogue to {npc} on {thread}",
+        extra_span_attrs={"digest_preview": digest[:300]},
+    )
+
+
+def _build_epilogue_digest() -> str:
+    """Per-run digest passed to the epilogue agent in the user prompt.
+
+    Sections: commitments (delta from defaults), per-axis classifier
+    history (most-recent-first), fired beats in order, last 3 player
+    replies verbatim. The dossier and plot directive are already injected
+    via @instructions; this digest is the run-tailored payload.
+    """
+    assert STATE is not None and SCENARIO is not None
+    # Commitments: filter to commitment.* qualities ≠ default; format with prefix stripped.
+    commits_dict = commitments_snapshot(
+        STATE.qualities,
+        SCENARIO.quality_defaults,
+        SCENARIO.quality_descriptions,
+    )
+    commit_lines = [
+        f"  {k.split('.', 1)[1]} = {v:g}" for k, (v, _desc) in commits_dict.items()
+    ] or ["  (no commitments yet)"]
+
+    history = build_recent_classifier_history(STATE.replies, axes=None, per_axis=5)
+    history_lines = [f"  {axis}: {', '.join(values)}" for axis, values in history.items()]
+    history_block = "\n".join(history_lines) or "  (no replies classified)"
+
+    fired_in_order = _fired_beat_ids_in_order()
+    fired_block = ", ".join(fired_in_order) if fired_in_order else "(none)"
+
+    # most recent last for natural reading order; trim defensively in case of
+    # very long player pastes.
+    recent_replies = list(STATE.replies)[-3:]
+    reply_block_parts = [f"  - {r.body.strip()[:1000]}" for r in recent_replies]
+    reply_block = "\n".join(reply_block_parts) or "  (no replies)"
+
+    return (
+        "RUN DIGEST:\n"
+        f"Commitments:\n" + "\n".join(commit_lines) + "\n"
+        f"Classifier history (last 5 per axis, most-recent-first):\n{history_block}\n"
+        f"Fired beats (oldest → newest): {fired_block}\n"
+        f"Recent player replies verbatim:\n{reply_block}"
+    )
+
+
+def _fired_beat_ids_in_order(*, last: int | None = None) -> list[str]:
+    """Fired-beat ids in emit order — read off Email.beat_id where set,
+    since state.fired_beat_ids is a set with no order guarantee. `last`
+    slices the tail (e.g. for the Director's recent-fire history)."""
+    assert STATE is not None
+    ids = [
+        e.beat_id for e in STATE.emails
+        if e.beat_id is not None and e.beat_id in STATE.fired_beat_ids
+    ]
+    return ids[-last:] if last is not None else ids
+
+
 # ───────────────────────── scheduler tick ─────────────────────────
+
+
+async def _select_beat(due: list[Beat]) -> Beat | None:
+    """Pick one beat from the due list. Short-circuits at 0 or 1 due (most
+    ticks); calls the Director when ≥2 are eligible. Returns None when no
+    beat should fire (empty due, or Director chose "none")."""
+    assert STATE is not None and AGENTS is not None
+    if not due:
+        return None
+    if len(due) == 1:
+        return due[0]
+
+    by_id = {b.id: b for b in due}
+    user_prompt = build_director_user_prompt(
+        qualities=dict(STATE.qualities),
+        recent_classifier_history=build_recent_classifier_history(
+            STATE.replies, axes=None, per_axis=5,
+        ),
+        recent_fire_history=_fired_beat_ids_in_order(last=6),
+        eligible=[
+            {"id": b.id, "intent_summary": _intent_summary_for(b)} for b in due
+        ],
+    )
+    output_type = NativeOutput(build_director_output_type([b.id for b in due]))
+
+    with LLM_LOGFIRE.span(
+        "director picks among {n} eligible",
+        n=len(due),
+        eligible=[b.id for b in due],
+    ) as span:
+        try:
+            result = await AGENTS.director_agent.run(user_prompt, output_type=output_type)
+        except Exception:
+            logfire.exception(
+                "director_agent failed; defaulting to first eligible",
+                eligible=[b.id for b in due],
+            )
+            return due[0]
+        choice = result.output
+        chosen_id = getattr(choice, "chosen_beat_id", None)
+        rationale = getattr(choice, "rationale", "")
+        span.set_attribute("chosen_beat_id", chosen_id)
+        span.set_attribute("rationale", rationale)
+        logfire.info(
+            "director picked {chosen}",
+            chosen=chosen_id, rationale=rationale,
+            eligible=[b.id for b in due],
+        )
+        if chosen_id == "none":
+            return None
+        if chosen_id not in by_id:
+            logfire.warn(
+                "director returned an id not in eligible set; defaulting to first",
+                returned=chosen_id, eligible=[b.id for b in due],
+            )
+            return due[0]
+        return by_id[chosen_id]
+
+
+def _intent_summary_for(beat: Beat) -> str:
+    """One-line summary used in the Director's eligible-beat list. For plot
+    beats, the first line of `spec.intent` (truncated). For anchored beats,
+    the subject."""
+    if isinstance(beat, PlotBeat):
+        first_line = beat.spec.intent.strip().splitlines()[0] if beat.spec.intent.strip() else "(no intent)"
+        if len(first_line) > 200:
+            first_line = first_line[:197] + "..."
+        suffix = " [TERMINAL]" if beat.ends_session else (" [multi-turn]" if beat.multi_turn else "")
+        return f"{first_line}{suffix}"
+    if isinstance(beat, AnchoredBeat):
+        return f"(authored email: '{beat.subject}')"
+    return "(unknown beat type)"
 
 
 async def _tick(
@@ -432,22 +633,28 @@ async def _tick(
     """Walk the beat scheduler. Returns (newly-emitted emails, set of thread
     ids where a PlotBeat fired this tick). The thread-id set lets the caller
     decide whether a chat-turn fallback is still needed.
+
+    Selection: `find_due_beats` returns every eligible beat; `_select_beat`
+    asks the Director to pick one (or short-circuits at 0/1 due). Exactly
+    one beat fires per tick.
     """
     assert STATE is not None and SCENARIO is not None
     new_emails: list[Email] = []
     plot_fired_threads: set[str] = set()
 
     with logfire.span("tick (in response to {in_response_to})", in_response_to=in_response_to) as span:
-        for beat in find_due_beats(STATE, SCENARIO):
+        due = find_due_beats(STATE, SCENARIO)
+        chosen = await _select_beat(due)
+        if chosen is not None:
             e = await _fire_beat(
-                beat,
+                chosen,
                 player_body=player_body,
                 in_response_to=in_response_to,
             )
             if e is not None:
                 new_emails.append(e)
-                if isinstance(beat, PlotBeat):
-                    plot_fired_threads.add(beat.thread)
+                if isinstance(chosen, PlotBeat):
+                    plot_fired_threads.add(chosen.thread)
         span.set_attribute("new_email_count", len(new_emails))
         return new_emails, plot_fired_threads
 
@@ -468,9 +675,27 @@ async def health() -> dict:
 async def get_scenario() -> dict:
     if SCENARIO is None:
         raise HTTPException(503, "scenario not loaded")
+    # Per-NPC payload includes the canonical thread (each NPC owns at most
+    # one in current scenarios; takes the first matching thread). The
+    # frontend uses this to render multiple chat rows dynamically without
+    # any per-id conditionals.
+    npcs_payload: list[dict] = []
+    for npc in SCENARIO.npcs:
+        thread_id = next(
+            (t.id for t in SCENARIO.threads if t.npc == npc.id),
+            None,
+        )
+        npcs_payload.append({
+            "id": npc.id,
+            "display_name": npc.display_name,
+            "email_address": npc.email_address,
+            "thread_id": thread_id,
+            "replies_enabled": npc.replies_enabled,
+        })
     return {
         "title": SCENARIO.title,
         "premise": SCENARIO.premise,
+        "npcs": npcs_payload,
     }
 
 
@@ -670,7 +895,7 @@ async def _classify_player_reply(
     assert AGENTS is not None
     with LLM_LOGFIRE.span(
         "classify reply for {qualities}",
-        qualities=[a.quality for a in axes],
+        qualities=[a.identifier for a in axes],
         reply_preview=reply_body[:200],
     ) as span:
         try:
@@ -710,43 +935,43 @@ def _apply_axis_results(
     Emits one `classified` SSE event per applied axis, in YAML axis order.
     """
     assert STATE is not None and SCENARIO is not None
-    authored_qualities = {a.quality for a in axes}
-    by_quality: dict[str, AxisResult] = {}
+    authored_identifiers = {a.identifier for a in axes}
+    by_identifier: dict[str, AxisResult] = {}
     for r in results:
-        if r.quality not in authored_qualities:
+        if r.quality not in authored_identifiers:
             logfire.warn(
                 "classifier returned unauthored axis; dropped",
-                beat_id=replied_beat_id, quality=r.quality, value=r.value,
+                beat_id=replied_beat_id, identifier=r.quality, value=r.value,
             )
             continue
-        if r.quality in by_quality:
+        if r.quality in by_identifier:
             logfire.warn(
                 "classifier returned duplicate axis result; first kept",
-                beat_id=replied_beat_id, quality=r.quality,
+                beat_id=replied_beat_id, identifier=r.quality,
             )
             continue
-        by_quality[r.quality] = r
+        by_identifier[r.quality] = r
 
     for axis in axes:
-        r = by_quality.get(axis.quality)
+        r = by_identifier.get(axis.identifier)
         if r is None:
             logfire.warn(
                 "classifier missing axis result; quality unchanged",
-                beat_id=replied_beat_id, quality=axis.quality,
+                beat_id=replied_beat_id, identifier=axis.identifier,
             )
             continue
         applied = apply_classification(STATE, SCENARIO, axis, r.value, r.rationale)
         if applied is None:
             logfire.warn(
                 "classifier returned off-spec value; quality unchanged",
-                beat_id=replied_beat_id, quality=axis.quality,
+                beat_id=replied_beat_id, identifier=axis.identifier,
                 value=r.value, allowed=axis.allowed_values,
             )
             continue
         reply.classifier_results.append(applied)
         yield _sse({
             "type": "classified",
-            "quality": axis.quality,
+            "quality": axis.identifier,
             "value": r.value,
             "score": axis.map[r.value],
         })

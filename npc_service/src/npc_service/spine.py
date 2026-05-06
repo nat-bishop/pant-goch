@@ -11,6 +11,11 @@ Two rules this module enforces:
    output, with optional `accumulate`) and `apply_writes` (driven by a beat's
    authored `spec.writes`, SET-only for committed facts). Both share
    `_clamp_quality`. No other code path mutates `state.qualities`.
+
+Beat selection: `find_due_beats` returns every pending beat whose
+preconditions pass. When more than one beat is eligible on the same tick,
+the LLM Director (in `agents.py`) picks one — the spine no longer maintains
+same-tick mutex tracking. Authoring order is not load-bearing for selection.
 """
 from __future__ import annotations
 
@@ -36,16 +41,13 @@ from .models import (
 # ───────────────────────── predicate evaluation ─────────────────────────
 
 
-def evaluate_predicate(
-    pred: Predicate,
-    state: InboxState,
-    extra_fired: frozenset[str] | set[str] = frozenset(),
-) -> bool:
-    """`extra_fired` is a tick-local set of beat ids that are about to fire
-    on this same tick. BeatFired predicates check both `state.fired_beat_ids`
-    and `extra_fired`, so a Not(BeatFired) precondition can express mutual
-    exclusion between two beats that become eligible simultaneously.
-    `find_due_beats` is the only caller that passes a non-empty value.
+def evaluate_predicate(pred: Predicate, state: InboxState) -> bool:
+    """Evaluate one predicate against current state.
+
+    `BeatFired` only checks `state.fired_beat_ids` — the same-tick mutex
+    machinery (extra_fired) is gone. With the Director picking one beat
+    per tick, two beats becoming eligible together is a normal case
+    resolved by the Director, not a hand-authored mutex chain.
     """
     if isinstance(pred, QualityGte):
         v = state.qualities.get(pred.quality)
@@ -57,11 +59,11 @@ def evaluate_predicate(
         n = sum(1 for r in state.replies if r.thread_id == pred.thread)
         return n >= pred.value
     if isinstance(pred, BeatFired):
-        return pred.beat in state.fired_beat_ids or pred.beat in extra_fired
+        return pred.beat in state.fired_beat_ids
     if isinstance(pred, RecentClassifierValue):
         return _evaluate_recent_classifier_value(pred, state)
     if isinstance(pred, Not_):
-        return not evaluate_predicate(pred.of, state, extra_fired)
+        return not evaluate_predicate(pred.of, state)
     raise TypeError(f"unhandled predicate: {type(pred).__name__}")
 
 
@@ -69,16 +71,20 @@ def _evaluate_recent_classifier_value(
     pred: RecentClassifierValue, state: InboxState
 ) -> bool:
     """Walk replies in reverse, collecting up to `pred.window` axis results
-    for `pred.quality`. Replies without a matching-quality result are
-    skipped (they don't fill a window slot). Resolve `pred.match` against
+    whose identifier matches `pred.quality`. Replies without a matching axis
+    are skipped (they don't fill a window slot). Resolve `pred.match` against
     the count of collected results whose value ∈ pred.values.
+
+    Note: `pred.quality` is matched against `AxisResult.quality`, which is
+    the axis identifier (axis_name or quality) — so verdict-only axes show
+    up here under their `axis_name`.
     """
     collected: list[str] = []
     for reply in reversed(state.replies):
         for axis in reply.classifier_results:
             if axis.quality == pred.quality:
                 collected.append(axis.value)
-                break  # axis-uniqueness invariant: ≤1 per reply per quality
+                break  # axis-uniqueness invariant: ≤1 per reply per axis
         if len(collected) >= pred.window:
             break
 
@@ -112,30 +118,36 @@ def apply_classification(
     value: str,
     rationale: str = "",
 ) -> AxisResult | None:
-    """Apply a classifier axis output to the named quality.
+    """Apply a classifier axis output.
 
     Returns the resulting `AxisResult` on success, or None if `value`
     isn't in the authored map. The caller is responsible for appending
     the returned `AxisResult` onto an active `Reply.classifier_results`
     if it wants `RecentClassifierValue` predicates to see this write.
 
-    With `accumulate=False` (default) the mapped score replaces the quality.
-    With `accumulate=True` it's added to the current value — used for
-    cumulative signals like aria.loop's engagement. Both paths share
-    `_clamp_quality`.
+    Two modes:
+    - When `classify_reply.quality` is set: the mapped score writes to that
+      quality (replace by default; add when `accumulate=True`). Both paths
+      share `_clamp_quality`.
+    - When `classify_reply.quality is None`: this is a verdict-only axis.
+      No quality write happens; the AxisResult still returns so the caller
+      can append it onto Reply.classifier_results for RecentClassifierValue.
     """
     score = classify_reply.map.get(value)
     if score is None:
         return None
-    if classify_reply.accumulate:
-        cur = state.qualities.get(classify_reply.quality, 0.0)
-        new = cur + score
-    else:
-        new = score
-    state.qualities[classify_reply.quality] = _clamp_quality(
-        new, classify_reply.quality, scenario
+    if classify_reply.quality is not None:
+        if classify_reply.accumulate:
+            cur = state.qualities.get(classify_reply.quality, 0.0)
+            new = cur + score
+        else:
+            new = score
+        state.qualities[classify_reply.quality] = _clamp_quality(
+            new, classify_reply.quality, scenario
+        )
+    return AxisResult(
+        quality=classify_reply.identifier, value=value, rationale=rationale
     )
-    return AxisResult(quality=classify_reply.quality, value=value, rationale=rationale)
 
 
 def apply_writes(
@@ -158,9 +170,9 @@ def apply_writes(
 
 
 def find_due_beats(state: InboxState, scenario: Scenario) -> list[Beat]:
-    """Return all pending beats whose preconditions (authored + runtime) all
-    pass on this tick. Pending beats survive to the next tick when not yet
-    eligible.
+    """Return every pending beat whose preconditions (authored + runtime) all
+    pass on this tick. The Director (`agents.director_agent`) picks one from
+    this list; the spine no longer resolves same-tick mutex itself.
 
     Beats stay in `pending_beats` until they're added to `fired_beat_ids`.
     Fire-once beats (empty `completes_when`) get added by `_fire_beat`
@@ -168,14 +180,9 @@ def find_due_beats(state: InboxState, scenario: Scenario) -> list[Beat]:
     Multi-turn beats stay re-fireable until their `completes_when` predicates
     pass — `_fire_beat` only marks them complete then, so they re-appear in
     the due list each tick until satisfied.
-
-    Pending beats are evaluated in scenario authoring order — that's how
-    authors break ties when two beats sharing a tick reference each other
-    via BeatFired (e.g., aria.complete_warm and aria.complete_standard).
     """
     due: list[Beat] = []
     pending_by_id = {pb.beat_id: pb for pb in state.pending_beats}
-    just_due_ids: set[str] = set()
 
     for beat in scenario.beats:
         pb = pending_by_id.get(beat.id)
@@ -184,14 +191,9 @@ def find_due_beats(state: InboxState, scenario: Scenario) -> list[Beat]:
         if beat.id in state.fired_beat_ids:
             continue
         all_preds = list(beat.preconditions) + list(pb.runtime_preconditions)
-        if not all(evaluate_predicate(p, state, just_due_ids) for p in all_preds):
+        if not all(evaluate_predicate(p, state) for p in all_preds):
             continue
         due.append(beat)
-        # Only shadow downstream `BeatFired` predicates if this beat will
-        # actually complete this tick — otherwise a multi-turn beat that
-        # is rendering-but-not-yet-completing would falsely satisfy them.
-        if evaluate_completes_when(state, beat, just_due_ids):
-            just_due_ids.add(beat.id)
 
     # Prune completed beats from pending; keep multi-turn beats around so
     # they re-fire on subsequent ticks until completes_when passes.
@@ -207,24 +209,14 @@ def find_due_beats(state: InboxState, scenario: Scenario) -> list[Beat]:
     return due
 
 
-def evaluate_completes_when(
-    state: InboxState,
-    beat: Beat,
-    extra_fired: frozenset[str] | set[str] = frozenset(),
-) -> bool:
+def evaluate_completes_when(state: InboxState, beat: Beat) -> bool:
     """A beat with empty `completes_when` always completes on first render
     (legacy fire-once semantics). A beat with non-empty `completes_when`
     completes only when all predicates pass.
-
-    `extra_fired` mirrors the parameter on `evaluate_predicate`: pass the
-    tick-local "just due" set when checking from inside `find_due_beats` so
-    `BeatFired` predicates can resolve same-tick. `_fire_beat` calls with
-    the default empty set — by then `find_due_beats` has already returned
-    and the rendering loop is processing one beat at a time.
     """
     if not beat.completes_when:
         return True
-    return all(evaluate_predicate(p, state, extra_fired) for p in beat.completes_when)
+    return all(evaluate_predicate(p, state) for p in beat.completes_when)
 
 
 # ───────────────────────── reply-subject helper ─────────────────────────

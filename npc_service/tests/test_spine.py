@@ -37,10 +37,87 @@ from npc_service.spine import (
 )
 
 
+def _build_minimal_scenario() -> Scenario:
+    """A tiny synthesized scenario that exercises every engine path the spine
+    tests need: one accumulating quality (`engagement`), one anchored welcome,
+    a multi-turn loop, and two mutex-chained terminals (warm + standard).
+
+    Decoupled from the production scenario.yaml so spine tests stay focused
+    on engine mechanics rather than on whichever scenario happens to ship."""
+    return Scenario.model_validate({
+        "title": "Test Scenario",
+        "premise": "Synthetic fixture for spine tests.",
+        "player_email": "p@x",
+        "qualities": [
+            {"id": "engagement", "type": "float", "min": 0.0, "max": 10.0, "default": 0.0},
+        ],
+        "npcs": [
+            {"id": "aria", "display_name": "Aria", "email_address": "aria@x"},
+        ],
+        "threads": [{"id": "aria", "npc": "aria"}],
+        "beats": [
+            {
+                "id": "aria.welcome",
+                "type": "anchored",
+                "thread": "aria",
+                "from": "aria@x",
+                "subject": "Welcome",
+                "authored_prose": "Welcome.",
+            },
+            {
+                "id": "aria.complete_warm",
+                "type": "plot",
+                "thread": "aria",
+                "npc": "aria",
+                "ends_session": True,
+                "subject": "Done — warm",
+                "preconditions": [
+                    {"kind": "player_replies_to_thread_gte", "thread": "aria", "value": 5},
+                    {"kind": "quality_gte", "quality": "engagement", "value": 4.0},
+                ],
+                "spec": {"intent": "warm finale"},
+            },
+            {
+                "id": "aria.complete_standard",
+                "type": "plot",
+                "thread": "aria",
+                "npc": "aria",
+                "ends_session": True,
+                "subject": "Done — standard",
+                "preconditions": [
+                    {"kind": "player_replies_to_thread_gte", "thread": "aria", "value": 5},
+                    {"kind": "not", "of": {"kind": "beat_fired", "beat": "aria.complete_warm"}},
+                ],
+                "spec": {"intent": "standard finale"},
+            },
+            {
+                "id": "aria.loop",
+                "type": "plot",
+                "thread": "aria",
+                "npc": "aria",
+                "multi_turn": True,
+                "subject": "Continuing",
+                "preconditions": [
+                    {"kind": "player_replies_to_thread_gte", "thread": "aria", "value": 1},
+                    {"kind": "not", "of": {"kind": "beat_fired", "beat": "aria.complete_warm"}},
+                    {"kind": "not", "of": {"kind": "beat_fired", "beat": "aria.complete_standard"}},
+                ],
+                "spec": {"intent": "ask another question"},
+                "classify_reply_axes": [{
+                    "quality": "engagement",
+                    "question": "Did the player engage?",
+                    "allowed_values": ["engaged", "deflected"],
+                    "map": {"engaged": 1.0, "deflected": -0.5},
+                    "accumulate": True,
+                }],
+            },
+        ],
+    })
+
+
 @pytest.fixture(scope="module")
 def scenario() -> Scenario:
-    path = Path(__file__).resolve().parents[1] / "scenario.yaml"
-    return load_scenario(path)
+    return _build_minimal_scenario()
 
 
 @pytest.fixture
@@ -52,10 +129,9 @@ def state(scenario: Scenario) -> InboxState:
 
 
 def test_scenario_loads_and_is_internally_consistent(scenario: Scenario):
-    assert scenario.title == "Continuity Program"
+    assert scenario.title == "Test Scenario"
     assert {n.id for n in scenario.npcs} == {"aria"}
     assert {t.id for t in scenario.threads} == {"aria"}
-    # 4 beats: welcome + two endings + the ongoing loop.
     assert {b.id for b in scenario.beats} == {
         "aria.welcome",
         "aria.complete_warm",
@@ -277,27 +353,36 @@ def test_complete_warm_blocked_below_reply_count(
     assert "aria.complete_warm" not in due_ids
 
 
-def test_complete_mutex_warm_wins_when_engagement_high(
+def test_both_terminals_eligible_when_paths_overlap(
     state: InboxState, scenario: Scenario
 ):
-    """Both endings become eligible at replies≥5; complete_warm comes first
-    in authoring order. When it fires, complete_standard's
-    Not_(BeatFired complete_warm) catches the same-tick fire via
-    `extra_fired` and stays out of the due list."""
+    """With extra_fired removed, find_due_beats returns every beat whose
+    preconditions hold — including both terminals when their gates overlap.
+    The Director (in `_tick`, not exercised here) picks one. The same-tick
+    mutex via Not_(BeatFired) in the existing scenario stops short of
+    suppressing the sibling — both come back in the eligible list, and
+    selection happens at the Director layer."""
     _drain_boot(state, scenario)
     state.replies.extend(_make_reply(thread="aria") for _ in range(5))
     state.qualities["engagement"] = 5.0
 
     due_ids = [b.id for b in find_due_beats(state, scenario)]
+    # Both terminals are individually eligible (their authored preconditions
+    # all pass — the Not_(BeatFired complete_warm) on complete_standard
+    # only catches once complete_warm has actually been fired).
     assert "aria.complete_warm" in due_ids
-    assert "aria.complete_standard" not in due_ids
+    assert "aria.complete_standard" in due_ids
+    # The loop is also eligible (Not_(BeatFired) on terminals isn't yet
+    # satisfied). Director arbitrates.
+    assert "aria.loop" in due_ids
 
 
 def test_complete_standard_fires_when_engagement_low(
     state: InboxState, scenario: Scenario
 ):
-    """5 replies, engagement below threshold → complete_warm blocked,
-    complete_standard fires."""
+    """5 replies, engagement below threshold → complete_warm blocked
+    (its quality_gte engagement >= 4.0 fails), complete_standard remains
+    eligible."""
     _drain_boot(state, scenario)
     state.replies.extend(_make_reply(thread="aria") for _ in range(5))
     state.qualities["engagement"] = 1.0
@@ -307,20 +392,23 @@ def test_complete_standard_fires_when_engagement_low(
     assert "aria.complete_standard" in due_ids
 
 
-def test_endings_block_loop_same_tick(
+def test_loop_blocked_after_terminal_added_to_fired_ids(
     state: InboxState, scenario: Scenario
 ):
-    """The ending beats are authored before the loop, so when both become
-    eligible the same tick, find_due_beats evaluates the ending first; it
-    enters `extra_fired`; the loop's Not_(BeatFired complete_*) preconditions
-    catch it and the loop is not in the due list this tick."""
+    """Once a terminal id lands in `state.fired_beat_ids`, the loop's
+    Not_(BeatFired complete_warm) precondition catches it. This is the
+    PERSISTENT mutex (post-fire), not the same-tick one — same-tick mutex
+    is now Director-handled."""
     _drain_boot(state, scenario)
     state.replies.extend(_make_reply(thread="aria") for _ in range(5))
     state.qualities["engagement"] = 5.0
+    # Simulate a Director pick + fire of complete_warm.
+    state.fired_beat_ids.add("aria.complete_warm")
 
     due_ids = [b.id for b in find_due_beats(state, scenario)]
-    assert "aria.complete_warm" in due_ids
     assert "aria.loop" not in due_ids
+    # complete_standard's Not_(BeatFired complete_warm) also catches it now.
+    assert "aria.complete_standard" not in due_ids
 
 
 # ───────────────────────── apply_classification → Reply.classifier_results ─────────────────────────
@@ -568,6 +656,86 @@ def test_load_rejects_duplicate_axis_quality_within_one_beat():
     beat = _plot_beat(classify_reply_axes=[_classify_axis(), _classify_axis()])
     with pytest.raises(ValidationError):
         Scenario.model_validate(_scenario_dict(beats=[beat]))
+
+
+def test_load_rejects_duplicate_axis_identifier_when_axis_name_used():
+    """Two axes on one beat sharing the same axis_name (or quality) are
+    rejected — the dedup key is `axis.identifier`, which is axis_name or
+    quality."""
+    a1 = {
+        "axis_name": "verdict",
+        "question": "?",
+        "allowed_values": ["a", "b"],
+        "map": {"a": 1.0, "b": 0.0},
+    }
+    a2 = {
+        "axis_name": "verdict",
+        "question": "?",
+        "allowed_values": ["x", "y"],
+        "map": {"x": 1.0, "y": 0.0},
+    }
+    beat = _plot_beat(classify_reply_axes=[a1, a2])
+    with pytest.raises(ValidationError):
+        Scenario.model_validate(_scenario_dict(beats=[beat]))
+
+
+def test_load_accepts_verdict_only_axis_with_axis_name():
+    """An axis with `quality=None, axis_name=<id>` is the verdict-only
+    pattern — no quality write, but the AxisResult still records on the
+    Reply for RecentClassifierValue predicates."""
+    axis = {
+        "axis_name": "bargain_response",
+        "question": "?",
+        "allowed_values": ["accepted", "refused"],
+        "map": {"accepted": 1.0, "refused": 0.0},
+    }
+    beat = _plot_beat(classify_reply_axes=[axis])
+    Scenario.model_validate(_scenario_dict(beats=[beat]))  # no raise
+
+
+def test_classify_reply_requires_quality_or_axis_name():
+    """A ClassifyReply with neither `quality` nor `axis_name` is invalid."""
+    with pytest.raises(ValidationError):
+        ClassifyReply(
+            question="?",
+            allowed_values=["a", "b"],
+            map={"a": 1.0, "b": 0.0},
+        )
+
+
+def test_apply_classification_quality_none_does_not_write():
+    """Verdict-only axis: no quality write, but AxisResult returns so the
+    caller can append to Reply.classifier_results."""
+    scenario = _scenario_with_commitment_qualities()
+    state = InboxState.from_scenario(scenario)
+    classify = ClassifyReply(
+        axis_name="bargain_response",
+        question="?",
+        allowed_values=["accepted", "refused"],
+        map={"accepted": 1.0, "refused": 0.0},
+    )
+    qualities_before = dict(state.qualities)
+    result = apply_classification(state, scenario, classify, "accepted")
+    assert result is not None
+    assert result.quality == "bargain_response"  # axis identifier
+    assert result.value == "accepted"
+    assert state.qualities == qualities_before  # no write happened
+
+
+def test_recent_classifier_value_matches_axis_name(state: InboxState):
+    """RecentClassifierValue.quality matches the axis identifier — for
+    verdict-only axes that's the axis_name."""
+    state.replies = [
+        _reply_with_axis("aria", "bargain_response", "accepted"),
+    ]
+    pred = RecentClassifierValue(
+        quality="bargain_response", values=["accepted"], window=1, match="any"
+    )
+    assert evaluate_predicate(pred, state) is True
+    pred_miss = RecentClassifierValue(
+        quality="bargain_response", values=["refused"], window=1, match="any"
+    )
+    assert evaluate_predicate(pred_miss, state) is False
 
 
 def test_load_rejects_writes_collision_with_axis_on_same_beat():

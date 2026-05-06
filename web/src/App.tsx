@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { Email } from "./api";
+import { Email, NpcInfo } from "./api";
 import { AppShell } from "./components/AppShell";
 import { ChatHeader } from "./components/ChatHeader";
 import { MessageComposer } from "./components/MessageComposer";
@@ -7,13 +7,14 @@ import { MessageList } from "./components/MessageList";
 import { useTheme } from "./hooks/useTheme";
 import { useStore } from "./store";
 import { stripAddress } from "./util/email";
-import { ARIA_DISPLAY_NAME, ARIA_SEED } from "./util/npc";
 
 export default function App() {
   const boot = useStore((s) => s.boot);
   const bootError = useStore((s) => s.bootError);
   const scenario = useStore((s) => s.scenario);
+  const npcs = useStore((s) => s.npcs);
   const state = useStore((s) => s.state);
+  const view = useStore((s) => s.view);
   const chatMessages = useStore((s) => s.chatMessages);
 
   useTheme();
@@ -22,42 +23,40 @@ export default function App() {
     boot();
   }, [boot]);
 
-  if (bootError) {
-    return (
-      <div className="flex h-full items-center justify-center bg-bg text-sm text-text-muted">
-        sidecar unreachable: {bootError}
-      </div>
-    );
-  }
+  if (bootError) return <Centered>sidecar unreachable: {bootError}</Centered>;
+  if (!scenario || !state || !view.chatId) return <Centered>…</Centered>;
 
-  if (!scenario || !state) {
-    return (
-      <div className="flex h-full items-center justify-center bg-bg text-sm text-text-muted">
-        …
-      </div>
-    );
-  }
+  const selectedNpc = npcs.find((n) => n.thread_id === view.chatId);
+  if (!selectedNpc) return <Centered>…</Centered>;
 
-  const emails = chatMessages.aria ?? [];
-
+  const emails = chatMessages[view.chatId] ?? [];
   return (
     <AppShell>
-      <AriaChat emails={emails} />
+      <NpcChat npc={selectedNpc} emails={emails} />
     </AppShell>
   );
 }
 
-function AriaChat({ emails }: { emails: Email[] }) {
+function Centered({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="flex h-full items-center justify-center bg-bg text-sm text-text-muted">
+      {children}
+    </div>
+  );
+}
+
+function NpcChat({ npc, emails }: { npc: NpcInfo; emails: Email[] }) {
   const target = pickComposeTarget(emails);
+  const subtitle = npc.replies_enabled ? "Counterpart · Active" : "Notice";
   return (
     <>
       <ChatHeader
-        seed={ARIA_SEED}
-        name={ARIA_DISPLAY_NAME}
-        subtitle="Counterpart · Active"
+        seed={npc.email_address}
+        name={npc.display_name}
+        subtitle={subtitle}
       />
-      <MessageList chatId="aria" emails={emails} />
-      {target && (
+      <MessageList chatId={npc.thread_id} emails={emails} npc={npc} />
+      {npc.replies_enabled && target && (
         <MessageComposer
           inReplyTo={target.id}
           recipient={target.from}

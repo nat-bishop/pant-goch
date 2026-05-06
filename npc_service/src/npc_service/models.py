@@ -32,21 +32,34 @@ from pydantic_ai.messages import ModelMessage
 class ClassifyReply(BaseModel):
     """Beat-local LLM classifier authored on one axis of a beat's
     `classify_reply_axes` list. When the player replies to that beat's email,
-    each axis is judged and the result is written to its named quality.
+    each axis is judged and the result is recorded.
 
-    Multiple axes per beat are batched into a single classifier call and
-    each axis writes independently to its own quality. The classifier never
-    touches state outside the named quality.
+    Two modes:
+    - Quality-writing axis (`quality` set): the mapped score is written to
+      the named quality (replace or accumulate per `accumulate` flag).
+    - Verdict-only axis (`quality=None`, `axis_name` set): no quality write,
+      but the AxisResult still lands on `Reply.classifier_results` so
+      `RecentClassifierValue` predicates keyed on the same axis identifier
+      can read it. Used when the classifier verdict is consumed by a
+      preconditional gate, not a quality-driven one.
+
+    `axis_name` is the identifier `RecentClassifierValue` matches on. If
+    omitted, it defaults to `quality`. At least one of the two must be set.
+
+    Multiple axes per beat are batched into a single classifier call.
+    Within one beat, axis identifiers (axis_name or quality) must be unique.
     """
 
-    quality: str
+    quality: str | None = None
+    axis_name: str | None = None
     question: str
     allowed_values: list[str] = Field(min_length=2)
     map: dict[str, float]
     # When True, apply_classification adds the mapped score to the existing
     # quality value (clamped) rather than overwriting it. Used for cumulative
     # signals like aria.loop's engagement score, where every reply moves the
-    # quality by the mapped delta.
+    # quality by the mapped delta. Ignored when `quality is None` (verdict-
+    # only axes don't write at all).
     accumulate: bool = False
 
     @model_validator(mode="after")
@@ -58,15 +71,36 @@ class ClassifyReply(BaseModel):
             )
         return self
 
+    @model_validator(mode="after")
+    def _identifier_required(self) -> "ClassifyReply":
+        if self.quality is None and self.axis_name is None:
+            raise ValueError(
+                "classify_reply axis: at least one of `quality` or "
+                "`axis_name` must be set"
+            )
+        return self
+
+    @property
+    def identifier(self) -> str:
+        """The key used by AxisResult and RecentClassifierValue to refer to
+        this axis. Prefer `axis_name`; fall back to `quality` when omitted."""
+        return self.axis_name or self.quality  # type: ignore[return-value]
+
 
 class AxisResult(BaseModel):
     """One classifier axis's output. Stored on `Reply.classifier_results`
-    immediately after `apply_classification` accepts the value, so recent-
-    window predicates can read player history off `state.replies` directly
-    rather than maintaining a parallel ring buffer.
+    immediately after the classifier writes (or, for verdict-only axes,
+    after the value is accepted), so recent-window predicates can read
+    player history off `state.replies` directly rather than maintaining a
+    parallel ring buffer.
+
+    `quality` is the axis identifier — populated from
+    `ClassifyReply.identifier` (axis_name or quality). The field name is
+    historical; it identifies an axis, which may or may not correspond to
+    a state quality.
     """
 
-    quality: str
+    quality: str  # axis identifier (axis_name or quality)
     value: str
     rationale: str = ""
 
@@ -201,6 +235,14 @@ class NPCDossier(BaseModel):
     base_voice_forbidden: list[str] = Field(default_factory=list)
     will_say: list[str] = Field(default_factory=list)
     will_not_say: list[str] = Field(default_factory=list)
+    # When False, the frontend hides the composer for this NPC's thread —
+    # the NPC sends but the player cannot reply. Used for institutional
+    # senders (e.g. a Compliance Office) that exist as one-way notices.
+    # The backend does not enforce this; a /send to a no-reply NPC would
+    # fall through silently (the chat-turn fallback only fires when the
+    # thread has no covering plot beat, which institutional one-shots
+    # naturally don't have either).
+    replies_enabled: bool = True
 
 
 class BeatSpec(BaseModel):
@@ -413,6 +455,14 @@ class Scenario(BaseModel):
         thread_ids = {t.id for t in self.threads}
         beat_ids = {b.id for b in self.beats}
 
+        # Axis identifiers (axis_name or quality) declared anywhere in the
+        # scenario — used to validate RecentClassifierValue references that
+        # may target a verdict-only axis_name rather than a quality.
+        axis_identifiers: set[str] = set()
+        for beat in self.beats:
+            for axis in beat.classify_reply_axes:
+                axis_identifiers.add(axis.identifier)
+
         for beat in self.beats:
             if beat.thread not in thread_ids:
                 raise ValueError(f"beat {beat.id}: unknown thread {beat.thread!r}")
@@ -428,27 +478,33 @@ class Scenario(BaseModel):
                 raise ValueError(f"beat {beat.id}: unknown npc {beat.npc!r}")
             for pred in beat.preconditions:
                 _check_predicate_refs(
-                    pred, f"beat {beat.id}", quality_ids, thread_ids, beat_ids
+                    pred, f"beat {beat.id}",
+                    quality_ids, thread_ids, beat_ids, axis_identifiers,
                 )
             for pred in beat.completes_when:
                 _check_predicate_refs(
                     pred,
                     f"beat {beat.id} completes_when",
-                    quality_ids, thread_ids, beat_ids,
+                    quality_ids, thread_ids, beat_ids, axis_identifiers,
                 )
-            axis_qualities: set[str] = set()
+            local_axis_identifiers: set[str] = set()
+            axis_quality_writes: set[str] = set()
             for axis in beat.classify_reply_axes:
-                if axis.quality not in quality_ids:
+                if axis.quality is not None and axis.quality not in quality_ids:
                     raise ValueError(
                         f"beat {beat.id}: classify_reply_axes quality "
                         f"{axis.quality!r} is not a known quality"
                     )
-                if axis.quality in axis_qualities:
+                ident = axis.identifier
+                if ident in local_axis_identifiers:
                     raise ValueError(
                         f"beat {beat.id}: classify_reply_axes has two axes "
-                        f"targeting the same quality {axis.quality!r}"
+                        f"with the same identifier {ident!r} (set distinct "
+                        f"`axis_name` values to disambiguate)"
                     )
-                axis_qualities.add(axis.quality)
+                local_axis_identifiers.add(ident)
+                if axis.quality is not None:
+                    axis_quality_writes.add(axis.quality)
             if isinstance(beat, PlotBeat):
                 for write_q in beat.spec.writes:
                     if write_q not in quality_ids:
@@ -456,7 +512,7 @@ class Scenario(BaseModel):
                             f"beat {beat.id}: spec.writes targets unknown "
                             f"quality {write_q!r}"
                         )
-                    if write_q in axis_qualities:
+                    if write_q in axis_quality_writes:
                         raise ValueError(
                             f"beat {beat.id}: spec.writes key {write_q!r} "
                             f"collides with a classify_reply_axes axis on "
@@ -477,6 +533,7 @@ def _check_predicate_refs(
     quality_ids: set[str],
     thread_ids: set[str],
     beat_ids: set[str],
+    axis_identifiers: set[str],
 ) -> None:
     if isinstance(pred, (QualityGte, QualityLt)) and pred.quality not in quality_ids:
         raise ValueError(f"{where}: predicate references unknown quality {pred.quality!r}")
@@ -484,10 +541,20 @@ def _check_predicate_refs(
         raise ValueError(f"{where}: PlayerRepliesToThreadGte references unknown thread {pred.thread!r}")
     if isinstance(pred, BeatFired) and pred.beat not in beat_ids:
         raise ValueError(f"{where}: BeatFired references unknown beat {pred.beat!r}")
-    if isinstance(pred, RecentClassifierValue) and pred.quality not in quality_ids:
-        raise ValueError(f"{where}: RecentClassifierValue references unknown quality {pred.quality!r}")
+    if isinstance(pred, RecentClassifierValue):
+        # RecentClassifierValue.quality is an axis identifier — it may name
+        # a state quality (when the axis writes one) OR a verdict-only
+        # axis_name (when the axis is gate-driven, no quality write).
+        if pred.quality not in quality_ids and pred.quality not in axis_identifiers:
+            raise ValueError(
+                f"{where}: RecentClassifierValue references unknown axis "
+                f"identifier {pred.quality!r} (must be a quality id or a "
+                f"classify_reply_axes axis_name)"
+            )
     if isinstance(pred, Not_):
-        _check_predicate_refs(pred.of, where, quality_ids, thread_ids, beat_ids)
+        _check_predicate_refs(
+            pred.of, where, quality_ids, thread_ids, beat_ids, axis_identifiers,
+        )
 
 
 def load_scenario(path: str | Path) -> Scenario:
@@ -597,6 +664,7 @@ class InboxState:
             "ended": self.ended,
             "end_reason": self.end_reason,
             "unread_counts": self._unread_counts(),
+            "unread_counts_by_thread": self._unread_counts_by_thread(),
         }
 
     def _unread_counts(self) -> dict[str, int]:
@@ -608,6 +676,17 @@ class InboxState:
             if not e.is_read:
                 by_folder.setdefault(e.folder, set()).add(e.thread_id)
         return {folder: len(threads) for folder, threads in by_folder.items()}
+
+    def _unread_counts_by_thread(self) -> dict[str, int]:
+        """Per-thread unread email count for the Inbox folder. Frontend uses
+        this to badge each chat row independently — the Inbox-wide count
+        from `_unread_counts` collapses across threads."""
+        by_thread: dict[str, int] = {}
+        for e in self.emails:
+            if e.is_read or e.folder != "Inbox" or e.thread_id is None:
+                continue
+            by_thread[e.thread_id] = by_thread.get(e.thread_id, 0) + 1
+        return by_thread
 
 
 # ───────────────────────── HTTP DTOs ─────────────────────────
