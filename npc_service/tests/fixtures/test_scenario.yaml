@@ -7,7 +7,8 @@ premise: |
   app-wiring tests stay focused on engine plumbing rather than story
   content.
 
-player_email: "n.beckett@halcyon.com"
+email_domain: "halcyon.com"
+fallback_player_local: "n.beckett"
 
 qualities:
   - id: engagement

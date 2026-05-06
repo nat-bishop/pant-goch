@@ -45,6 +45,7 @@ def test_loads(scenario: Scenario):
     }
     assert {b.id for b in scenario.beats} == {
         "aria.welcome",
+        "aria.calibration",
         "aria.early_emergence",
         "aria.naming_demand",
         "aria.bargain_offer",
@@ -60,6 +61,85 @@ def test_loads(scenario: Scenario):
         "aria.complete_exile",
         "aria.complete_vengeance",
     }
+
+
+def test_email_domain_required(scenario: Scenario):
+    """Production scenario uses email_domain (not the legacy player_email).
+    Recipient resolution is dynamic — `<canonized_name>@<email_domain>` if a
+    name has been extracted, else `<fallback_player_local>@<email_domain>`."""
+    assert scenario.email_domain == "halcyon.com"
+    assert scenario.player_email is None
+
+
+def test_calibration_beat_self_stops_via_not_calibration_done(scenario: Scenario):
+    """`aria.calibration` is multi-turn with `Not_(*calibration_done)` in its
+    preconditions — that's how it self-stops without using completes_when.
+    The calibration_done predicate is `Or_(PlayerCanonExists("name"),
+    PlayerRepliesToThreadGte("aria", 4))`."""
+    from npc_service.models import Not_, Or_, PlayerCanonExists, PlayerRepliesToThreadGte
+
+    cal = scenario.beat_by_id["aria.calibration"]
+    assert isinstance(cal, PlotBeat)
+    assert cal.multi_turn is True
+    # Find the Not_(Or_(...)) precondition.
+    not_preds = [p for p in cal.preconditions if isinstance(p, Not_)]
+    assert len(not_preds) == 1
+    inner = not_preds[0].of
+    assert isinstance(inner, Or_)
+    kinds = {type(s) for s in inner.of}
+    assert PlayerCanonExists in kinds
+    assert PlayerRepliesToThreadGte in kinds
+
+
+def test_phase2_body_beats_gate_on_calibration_done(scenario: Scenario):
+    """Every Phase-2 body beat (bargain chain, loop, bridge, terminals) must
+    carry an `Or_(PlayerCanonExists("name"), PlayerRepliesToThreadGte(...))`
+    in its preconditions — the YAML anchor expansion at load time."""
+    from npc_service.models import Or_, PlayerCanonExists, PlayerRepliesToThreadGte
+
+    phase2 = [
+        "aria.bargain_offer",
+        "aria.bargain_accepted_followup",
+        "aria.bargain_refused_followup",
+        "aria.bargain_hedged_followup",
+        "aria.bargain_betrayed",
+        "aria.acted_in_player_name",
+        "cpo.dispatch_first",
+        "aria.loop",
+        "aria.complete_integration",
+        "aria.complete_mutual_ruin",
+        "aria.complete_exile",
+        "aria.complete_vengeance",
+    ]
+    for bid in phase2:
+        beat = scenario.beat_by_id[bid]
+        # Every one of these starts with the anchor expansion.
+        or_preds = [p for p in beat.preconditions if isinstance(p, Or_)]
+        assert or_preds, f"{bid} missing *calibration_done Or_ predicate"
+        kinds_in_or = {type(s) for s in or_preds[0].of}
+        assert PlayerCanonExists in kinds_in_or, (
+            f"{bid}'s Or_ should include PlayerCanonExists for name"
+        )
+        assert PlayerRepliesToThreadGte in kinds_in_or, (
+            f"{bid}'s Or_ should include PlayerRepliesToThreadGte for cap"
+        )
+
+
+def test_phase1_calibration_peers_do_not_gate_on_calibration_done(scenario: Scenario):
+    """`aria.early_emergence` and `aria.naming_demand` are calibration peers,
+    not body beats — they fire DURING the calibration window and the
+    Director picks among them per tick. They must NOT carry the
+    *calibration_done gate."""
+    from npc_service.models import Or_, PlayerCanonExists
+
+    for bid in ("aria.early_emergence", "aria.naming_demand"):
+        beat = scenario.beat_by_id[bid]
+        for pred in beat.preconditions:
+            if isinstance(pred, Or_):
+                kinds = {type(s) for s in pred.of}
+                assert PlayerCanonExists not in kinds, (
+                    f"{bid} should not gate on calibration_done"
+                )
 
 
 def test_loop_has_three_axes_including_register(scenario: Scenario):

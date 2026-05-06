@@ -17,6 +17,7 @@ time and impossible to misspell silently.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import StrEnum
 from functools import cached_property
 from pathlib import Path
 from typing import Annotated, Literal, Union
@@ -188,6 +189,35 @@ class Not_(BaseModel):
     of: "Predicate"
 
 
+class Or_(BaseModel):
+    """Logical OR over a non-empty list of sub-predicates. True iff any
+    element is true.
+
+    Predicate-list AND already exists at the precondition / completes_when
+    level (every entry must pass), so `And_` is not provided — wrap a list
+    instead. `Or_` is needed because list-level OR is not expressible
+    otherwise (the calibration scene's exit condition is the canonical
+    use: name canonized OR turn cap reached).
+    """
+
+    kind: Literal["or"] = "or"
+    of: list["Predicate"] = Field(min_length=1)
+
+
+class PlayerCanonExists(BaseModel):
+    """True iff the named key is present in `state.player_canon`. The
+    extractor agent populates canon on every player reply; predicates in
+    this family are how the spine reads the player's introduced specifics
+    back into branching decisions.
+
+    Canon names are dynamic (extractor-determined), so this predicate is
+    NOT validated against any scenario-load set in `_check_predicate_refs`.
+    """
+
+    kind: Literal["player_canon_exists"] = "player_canon_exists"
+    name: str = Field(min_length=1)
+
+
 Predicate = Annotated[
     Union[
         QualityGte,
@@ -196,12 +226,15 @@ Predicate = Annotated[
         BeatFired,
         RecentClassifierValue,
         Not_,
+        Or_,
+        PlayerCanonExists,
     ],
     Field(discriminator="kind"),
 ]
 
 
 Not_.model_rebuild()
+Or_.model_rebuild()
 
 
 # ───────────────────────── authoring schemas ─────────────────────────
@@ -309,9 +342,9 @@ class _BeatBase(BaseModel):
 class AnchoredBeat(_BeatBase):
     """Pre-authored email; ships verbatim. No LLM call.
 
-    Recipient is `Scenario.player_email` — anchored beats are NPC→player by
-    construction. If a future scenario needs a non-player anchored email,
-    add a `to` field back at that time.
+    Recipient is resolved via `resolve_player_email` — anchored beats are
+    NPC→player by construction. If a future scenario needs a non-player
+    anchored email, add a `to` field back at that time.
     """
 
     type: Literal["anchored"] = "anchored"
@@ -376,11 +409,20 @@ class Scenario(BaseModel):
 
     title: str
     premise: str
-    # The player's email address. Used as the `recipient` on every NPC→player
-    # email — anchored beats and chat-turn renders both source it from here
-    # so the address has exactly one home rather than being read back off the
-    # boot welcome's `to:` field.
-    player_email: str = Field(min_length=1)
+    # The player's email DOMAIN. The local-part is derived at runtime from
+    # `state.player_canon[player_canon_name_key]` once a name has been
+    # canonized by the extractor. Before that, `fallback_player_local` is
+    # used. Recipient resolution lives in `resolve_player_email` (main.py).
+    email_domain: str = Field(min_length=1)
+    # Optional explicit override. Set by tests / legacy fixtures; if set, it
+    # wins over the domain-derived address when no name has been canonized
+    # yet. Kept as a backward-compat hatch — production scenarios should
+    # leave this None and rely on email_domain + fallback_player_local.
+    player_email: str | None = None
+    # Local-part used when the player has not yet been canonized.
+    # Tonally on-key for Continuity Program: the system assigns you an
+    # identifier if you don't give one. Override per scenario as needed.
+    fallback_player_local: str = "candidate"
 
     qualities: list[QualityDef]
     npcs: list[NPCDossier]
@@ -555,6 +597,13 @@ def _check_predicate_refs(
         _check_predicate_refs(
             pred.of, where, quality_ids, thread_ids, beat_ids, axis_identifiers,
         )
+    if isinstance(pred, Or_):
+        for sub in pred.of:
+            _check_predicate_refs(
+                sub, where, quality_ids, thread_ids, beat_ids, axis_identifiers,
+            )
+    # PlayerCanonExists references no scenario-load set (canon names are
+    # dynamic, populated by the extractor at runtime); nothing to validate.
 
 
 def load_scenario(path: str | Path) -> Scenario:
@@ -608,6 +657,50 @@ class Reply:
     classifier_results: list[AxisResult] = field(default_factory=list)
 
 
+class CanonCategory(StrEnum):
+    """Categories of player-introduced specifics the extractor can produce.
+
+    `name` and `role` are special: the extractor's prompt instructs it to key
+    those entries as exactly those literals so downstream gating
+    (`PlayerCanonExists("name")`) and email derivation can rely on them.
+    Other categories use descriptive free-form snake_case keys.
+    """
+
+    NAME = "name"
+    ROLE = "role"
+    PERSON = "person"
+    PLACE = "place"
+    EVENT = "event"
+    DATE = "date"
+    POSSESSION = "possession"
+    CLAIM_ABOUT_SELF = "claim_about_self"
+
+
+@dataclass
+class PlayerCanonEntry:
+    """One entry in the per-playthrough memory of player-introduced specifics.
+
+    Written by the extractor agent (only) when a player reply contains a
+    concrete claim above the salience threshold. REPLACE semantics on key
+    collision: a later mention of the same key overwrites the earlier
+    summary (so "actually call me Robert" canonically replaces "Bob").
+
+    `literal_text_quote` is the verbatim substring of the player's reply
+    that anchored this entry. Required: the extractor's output is dropped
+    if the quote is not a substring of the reply (anti-hallucination guard).
+
+    `salience` is the extractor's confidence that this is a deliberate
+    claim worth remembering (0.0–1.0). The promotion threshold is applied
+    by `apply_canon_extraction`; entries below threshold never reach state.
+    """
+
+    summary: str
+    literal_text_quote: str
+    salience: float
+    category: CanonCategory
+    turn_of_origin: int
+
+
 @dataclass
 class PendingBeat:
     """A beat queued to fire when its preconditions become satisfied.
@@ -640,6 +733,12 @@ class InboxState:
     emails: list[Email] = field(default_factory=list)
     replies: list[Reply] = field(default_factory=list)
     thread_messages: dict[str, list[ModelMessage]] = field(default_factory=dict)
+    # Per-playthrough memory of player-introduced specifics. Written only
+    # by `apply_canon_extraction` (driven by the extractor agent). Surfaced
+    # to the chat agent via `_player_canon_block` (top-K window) and to
+    # predicates via `PlayerCanonExists`. The full ledger feeds the
+    # epilogue digest.
+    player_canon: dict[str, PlayerCanonEntry] = field(default_factory=dict)
     ended: bool = False
     end_reason: str | None = None
 

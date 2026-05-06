@@ -1,11 +1,11 @@
-"""The five LLM agents: CHAT_AGENT, CLASSIFIER_AGENT, SUMMARY_AGENT, FACT_CHECKER_AGENT, DIRECTOR_AGENT.
+"""The six LLM agents: CHAT_AGENT, CLASSIFIER_AGENT, EXTRACTOR_AGENT, SUMMARY_AGENT, FACT_CHECKER_AGENT, DIRECTOR_AGENT, EPILOGUE_AGENT.
 
 CHAT_AGENT renders one email body per turn. It uses Pydantic AI's native
 `message_history` for the per-thread conversation, plain-text `output_type=str`
 so the assistant turn lands as a `TextPart` (clean for subsequent turns), and
 dynamic `@instructions` keyed on `ChatDeps` to layer dossier, optional plot
-directive, and current commitments per run. An `@output_validator` engages
-ONLY when the firing beat sets `spec.validate_facts=True`: it runs the
+directive, current commitments, and player canon per run. An `@output_validator`
+engages ONLY when the firing beat sets `spec.validate_facts=True`: it runs the
 fact-checker against the beat's must_include_facts / must_not lists and
 raises ModelRetry on any miss. Default-off keeps loop beats free of
 validator latency.
@@ -17,6 +17,14 @@ is enforced via the user prompt (not the schema) since values vary per
 axis. The caller validates post-hoc per axis and skips the quality write
 if a returned value is off-spec. Single batched call regardless of axis
 count keeps per-send cost flat.
+
+EXTRACTOR_AGENT runs in parallel with the classifier on every player /send
+(via `asyncio.gather`, so it's latency-neutral). It harvests open-ended
+player-introduced specifics — name, role, named people, places, claims
+about self — into `state.player_canon` after a substring-anchor and
+salience-threshold filter. Distinct from the classifier: closed-set verdict
+on author-defined axes vs. open-ended fact harvesting. The chat agent reads
+canon back through the `_player_canon_block` instructions decorator.
 
 SUMMARY_AGENT runs only inside the chat agent's history_processors, when
 message_history has grown past the configured token budget. It takes the
@@ -57,12 +65,23 @@ from pydantic_ai.messages import ModelMessage
 from .models import (
     AxisResult,
     BeatSpec,
+    CanonCategory,
     ClassifyReply,
     NPCDossier,
+    PlayerCanonEntry,
 )
 
 
 COMMITMENT_PREFIX = "commitment."
+
+# Top-K cap on the player_canon snapshot the chat agent sees per render.
+# The full ledger remains in state.player_canon for predicates and the
+# epilogue digest; this only bounds the chat-agent prompt block size.
+PLAYER_CANON_SURFACE_LIMIT = 10
+# Per-turn salience decay for snapshot ranking — older entries are weighted
+# down by 0.85 ** turns_since_origin, so a recently-introduced fact beats
+# an older one of the same salience.
+PLAYER_CANON_RECENCY_DECAY = 0.85
 
 
 # Type alias: a function that estimates the token cost of a list of messages.
@@ -94,6 +113,11 @@ class ChatDeps:
     npc: NPCDossier
     plot_directive: BeatSpec | None
     commitments: dict[str, tuple[float, str]] = field(default_factory=dict)
+    # Per-render top-K slice of state.player_canon (most relevant entries
+    # by recency × salience). The decorator `_player_canon_block` surfaces
+    # them as a prompt section so the chat agent can quote the player's
+    # stated specifics back without reasoning over message history.
+    player_canon: dict[str, PlayerCanonEntry] = field(default_factory=dict)
 
 
 # ───────────────────────── system prompts ─────────────────────────
@@ -134,6 +158,36 @@ one-sentence rationale per axis (telemetry only).
 
 Return one result per axis, in the order the axes were given:
 [{"quality": "<axis quality>", "value": "<one of that axis's allowed_values>", "rationale": "<one sentence>"}, ...]
+"""
+
+
+_EXTRACTOR_SYSTEM_PROMPT = """You read a single player-written email reply and extract any concrete specifics the player has introduced — facts the world should remember about them.
+
+You will receive:
+- The recipient's persona blurb (who the player is writing to).
+- The most recent prior email in the thread (what the player is replying to).
+- The player's just-typed reply (the new send).
+
+Extract candidates fitting any of these categories:
+- name: the player's preferred name (key it as exactly "name").
+- role: the player's job, team, or professional position (key it as exactly "role").
+- person: a third party the player mentions by name (a relative, colleague, friend).
+- place: a named location the player mentions (a workplace, city, room).
+- event: a specific event the player references (a meeting, an incident, a milestone).
+- date: a specific date or time the player names.
+- possession: a concrete object the player claims to own.
+- claim_about_self: a specific claim the player makes about themselves (a hobby, an opinion held as identity, a habit).
+
+For each candidate, return:
+- key: short snake_case identifier. Use exactly "name" / "role" for those categories. For others, pick a descriptive snake_case key (e.g. "gretchen", "manager_dispute", "tuesday_meditation").
+- summary: a one-line summary of the fact.
+- literal_text_quote: an EXACT verbatim substring from the player's reply that anchors this fact. Required and load-bearing — if your quote is not a substring of the reply, the candidate will be dropped.
+- salience: 0.0–1.0. High (≥0.7) for direct claims ("I'm Gretchen's cousin"). Medium (0.4–0.7) for incidental but specific mentions ("anyway, my brother in Brisbane says..."). Low (<0.4) for ambiguous, hedged, or speculative text.
+- category: one of the categories above.
+
+Do NOT invent facts. Do NOT extrapolate. If the reply contains no concrete specifics, return an empty candidates list. A polite "Hi, looking forward to it" should produce no candidates.
+
+Return: {"candidates": [<one entry per concrete specific>, ...]}.
 """
 
 
@@ -219,12 +273,34 @@ class FactCheckResult(BaseModel):
     violations: list[str]
 
 
+class CanonCandidate(BaseModel):
+    """One extractor-produced canon candidate. Promoted to `state.player_canon`
+    by `apply_canon_extraction` if salience ≥ threshold AND `literal_text_quote`
+    is a verbatim substring of the player's reply.
+    """
+
+    key: str = Field(min_length=1, pattern=r"^[a-z][a-z0-9_]*$")
+    summary: str = Field(min_length=1)
+    literal_text_quote: str = Field(min_length=1)
+    salience: float = Field(ge=0.0, le=1.0)
+    category: CanonCategory
+
+
+class ExtractorOutput(BaseModel):
+    """Structured output of the extractor agent. An empty candidates list is
+    a valid (and common) result — most replies contain no concrete specifics.
+    """
+
+    candidates: list[CanonCandidate] = Field(default_factory=list)
+
+
 @dataclass
 class AgentBundle:
-    """Five agents wired up against one shared model handle."""
+    """Six agents wired up against one shared model handle."""
 
     chat_agent: Agent
     classifier_agent: Agent
+    extractor_agent: Agent
     summary_agent: Agent
     fact_checker_agent: Agent
     director_agent: Agent
@@ -303,6 +379,14 @@ def _attach_chat_deps_instructions(
             return ""
         body = "\n".join(f"  {line}" for line in lines)
         return f"CURRENT COMMITMENTS:\n{body}"
+
+    @agent.instructions
+    def _player_canon_block(ctx: RunContext[ChatDeps]) -> str:
+        lines = format_player_canon(ctx.deps.player_canon)
+        if not lines:
+            return ""
+        body = "\n".join(f"  {line}" for line in lines)
+        return f"PLAYER CANON (specifics the player has introduced — quote the literal_text where natural):\n{body}"
 
     @agent.output_validator
     async def _validate_against_directive(
@@ -413,6 +497,17 @@ def build_agents(
         model_settings={"max_tokens": 2048, "temperature": 1.0, "top_p": 0.95, "extra_body": {"top_k": 64}},
     )
 
+    # Lower temperature than the classifier — extraction is fact-shaped,
+    # not vibes-shaped. 1024 token budget covers preamble + several
+    # candidate entries.
+    extractor_agent = Agent(
+        model,
+        name="extractor_agent",
+        output_type=NativeOutput(ExtractorOutput),
+        instructions=_EXTRACTOR_SYSTEM_PROMPT,
+        model_settings={"max_tokens": 1024, "temperature": 0.3, "top_p": 0.95, "extra_body": {"top_k": 64}},
+    )
+
     # Director defaults to the static fallback output_type; the call site
     # overrides per run with `output_type=NativeOutput(build_director_output_type(ids))`.
     # Lower temperature than the chat agent — selection is a judgement, not
@@ -446,6 +541,7 @@ def build_agents(
     return AgentBundle(
         chat_agent=chat_agent,
         classifier_agent=classifier_agent,
+        extractor_agent=extractor_agent,
         summary_agent=summary_agent,
         fact_checker_agent=fact_checker_agent,
         director_agent=director_agent,
@@ -587,6 +683,26 @@ CLASSIFICATION AXES (return one result per axis, in order):
 For each axis, return {{"quality": "<axis quality id>", "value": "<one allowed value, verbatim>", "rationale": "<one sentence>"}}."""
 
 
+def build_extractor_user_prompt(
+    recipient_blurb: str,
+    prior_email_body: str,
+    reply_body: str,
+) -> str:
+    """Build the extractor's user prompt. Same input shape as the classifier
+    by design — the two agents run on identical inputs in parallel via
+    `asyncio.gather` in the /send orchestration."""
+    return f"""RECIPIENT (who the player is writing to):
+{recipient_blurb}
+
+MOST RECENT PRIOR EMAIL (what the player is replying to):
+{prior_email_body.strip() or '(no prior email)'}
+
+PLAYER'S REPLY (just typed):
+{reply_body}
+
+Extract every concrete specific the player has introduced. Each candidate must include a literal_text_quote that is a verbatim substring of the reply. If the reply contains no concrete specifics, return an empty candidates list."""
+
+
 def build_fact_checker_user_prompt(
     body: str,
     must_include_facts: list[str],
@@ -661,6 +777,56 @@ def commitments_snapshot(
             continue
         out[full_id] = (value, descriptions.get(full_id, ""))
     return out
+
+
+def format_player_canon(canon: dict[str, PlayerCanonEntry]) -> list[str]:
+    """Render a player_canon snapshot as one line per entry. Caller is
+    responsible for the snapshot's bounded size; this just formats.
+
+    Lines are ordered by descending `recency_score × salience` — the same
+    ranking `player_canon_snapshot` applies — so the most-relevant entry
+    appears first under the prompt header.
+    """
+    def _rank(item: tuple[str, PlayerCanonEntry]) -> float:
+        # Recency_score = decay ** turns_since_origin; turns_since_origin is
+        # encoded into the entry by the snapshot-builder, so here we just
+        # rank by salience (snapshot already applied recency).
+        return -item[1].salience
+    lines: list[str] = []
+    for key, entry in sorted(canon.items(), key=_rank):
+        line = f'{key}: "{entry.summary}" — quoted: "{entry.literal_text_quote}"'
+        lines.append(line)
+    return lines
+
+
+def player_canon_snapshot(
+    canon: dict[str, PlayerCanonEntry],
+    *,
+    current_turn: int,
+    limit: int = PLAYER_CANON_SURFACE_LIMIT,
+    decay: float = PLAYER_CANON_RECENCY_DECAY,
+) -> dict[str, PlayerCanonEntry]:
+    """Build the per-render player_canon snapshot for ChatDeps.
+
+    Returns at most `limit` entries from the full ledger, ranked by
+    `(decay ** turns_since_origin) × salience` and ordered descending.
+    The full `state.player_canon` remains intact for predicate evaluation
+    and the epilogue digest; only the chat-agent-facing prompt block is
+    bounded.
+
+    `current_turn` should be the count of player replies so far (after
+    appending the just-received reply, if applicable).
+    """
+    if not canon:
+        return {}
+
+    def _rank(item: tuple[str, PlayerCanonEntry]) -> float:
+        _, entry = item
+        age = max(0, current_turn - entry.turn_of_origin)
+        return (decay ** age) * entry.salience
+
+    ranked = sorted(canon.items(), key=_rank, reverse=True)[:limit]
+    return dict(ranked)
 
 
 # ───────────────────────── director helpers ─────────────────────────

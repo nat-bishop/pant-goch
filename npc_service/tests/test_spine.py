@@ -47,7 +47,7 @@ def _build_minimal_scenario() -> Scenario:
     return Scenario.model_validate({
         "title": "Test Scenario",
         "premise": "Synthetic fixture for spine tests.",
-        "player_email": "p@x",
+        "email_domain": "x",
         "qualities": [
             {"id": "engagement", "type": "float", "min": 0.0, "max": 10.0, "default": 0.0},
         ],
@@ -616,7 +616,7 @@ def _scenario_dict(*, beats: list[dict], qualities: list[dict] | None = None) ->
     return {
         "title": "T",
         "premise": "P",
-        "player_email": "p@x",
+        "email_domain": "x",
         "qualities": qualities or _BASE_QUALITIES,
         "npcs": [_BASE_NPC],
         "threads": [_BASE_THREAD],
@@ -834,6 +834,141 @@ def test_reply_subject_unknown_email_id():
     state = InboxState()
     assert reply_subject_for_email(state, "nope") == "(no subject)"
     assert reply_subject_for_email(state, None) == "(no subject)"
+
+
+# ───────────────────────── multi-turn self-stop on Not_(<exit>) ─────────────────────────
+
+
+def test_multi_turn_beat_self_stops_when_exit_predicate_flips():
+    """The calibration-scene pattern: a multi-turn beat with `Not_(<exit>)`
+    in its preconditions remains eligible while <exit> is False, and stops
+    being eligible the moment <exit> flips True. No completes_when needed."""
+    from npc_service.models import Or_, PlayerCanonExists, PlayerCanonEntry, PlayerRepliesToThreadGte
+
+    scenario = Scenario.model_validate({
+        "title": "T",
+        "premise": "p",
+        "email_domain": "x",
+        "qualities": [],
+        "npcs": [{"id": "aria", "display_name": "A", "email_address": "a@x"}],
+        "threads": [{"id": "aria", "npc": "aria"}],
+        "beats": [
+            {
+                "id": "aria.calibration",
+                "type": "plot",
+                "thread": "aria",
+                "npc": "aria",
+                "multi_turn": True,
+                "subject": "Calibration",
+                "preconditions": [
+                    {
+                        "kind": "player_replies_to_thread_gte",
+                        "thread": "aria",
+                        "value": 1,
+                    },
+                    {
+                        "kind": "not",
+                        "of": {
+                            "kind": "or",
+                            "of": [
+                                {"kind": "player_canon_exists", "name": "name"},
+                                {
+                                    "kind": "player_replies_to_thread_gte",
+                                    "thread": "aria",
+                                    "value": 4,
+                                },
+                            ],
+                        },
+                    },
+                ],
+                "spec": {"intent": "elicit name"},
+            },
+        ],
+    })
+    state = InboxState.from_scenario(scenario)
+
+    # 0 replies: post-welcome predicate fails, beat NOT due.
+    assert [b.id for b in find_due_beats(state, scenario)] == []
+
+    # 1 reply, no canon: beat IS due.
+    state.replies.append(Reply(
+        id="r1", thread_id="aria", beat_responded_to=None, recipient="A", body="hi",
+    ))
+    assert [b.id for b in find_due_beats(state, scenario)] == ["aria.calibration"]
+
+    # 2 replies, no canon: still due.
+    state.replies.append(Reply(
+        id="r2", thread_id="aria", beat_responded_to=None, recipient="A", body="ok",
+    ))
+    assert [b.id for b in find_due_beats(state, scenario)] == ["aria.calibration"]
+
+    # Name canonized: <exit> flips True, Not_(<exit>) flips False, beat NOT due.
+    state.player_canon["name"] = PlayerCanonEntry(
+        summary="Marcus", literal_text_quote="I'm Marcus", salience=0.9,
+        category="name", turn_of_origin=2,
+    )
+    assert [b.id for b in find_due_beats(state, scenario)] == []
+
+    # Drop the canon entry, advance to 4 replies: cap fires, beat NOT due.
+    del state.player_canon["name"]
+    for i in range(3, 5):
+        state.replies.append(Reply(
+            id=f"r{i}", thread_id="aria", beat_responded_to=None, recipient="A",
+            body=f"reply {i}",
+        ))
+    assert [b.id for b in find_due_beats(state, scenario)] == []
+
+
+def test_or_predicate_evaluation_in_preconditions():
+    """`Or_` short-circuits on first True; an unsatisfiable subpredicate
+    later in the list doesn't poison evaluation."""
+    from npc_service.models import Or_, PlayerCanonExists, PlayerRepliesToThreadGte
+
+    scenario = Scenario.model_validate({
+        "title": "T",
+        "premise": "p",
+        "email_domain": "x",
+        "qualities": [],
+        "npcs": [{"id": "aria", "display_name": "A", "email_address": "a@x"}],
+        "threads": [{"id": "aria", "npc": "aria"}],
+        "beats": [
+            {
+                "id": "aria.body",
+                "type": "plot",
+                "thread": "aria",
+                "npc": "aria",
+                "subject": "Body",
+                "preconditions": [
+                    {
+                        "kind": "or",
+                        "of": [
+                            {"kind": "player_canon_exists", "name": "name"},
+                            {
+                                "kind": "player_replies_to_thread_gte",
+                                "thread": "aria",
+                                "value": 4,
+                            },
+                        ],
+                    },
+                ],
+                "spec": {"intent": "body fires when calibration done"},
+            },
+        ],
+    })
+    state = InboxState.from_scenario(scenario)
+    # 0 replies, no canon → Or_ False → not due.
+    assert [b.id for b in find_due_beats(state, scenario)] == []
+    # Add one reply but no canon → Or_ still False (cap not hit, no name).
+    state.replies.append(Reply(
+        id="r1", thread_id="aria", beat_responded_to=None, recipient="A", body="hi",
+    ))
+    assert [b.id for b in find_due_beats(state, scenario)] == []
+    # Cap satisfied via 4 replies → Or_ True (no canon needed).
+    for i in range(2, 5):
+        state.replies.append(Reply(
+            id=f"r{i}", thread_id="aria", beat_responded_to=None, recipient="A", body="x",
+        ))
+    assert [b.id for b in find_due_beats(state, scenario)] == ["aria.body"]
 
 
 # ───────────────────────── helpers ─────────────────────────

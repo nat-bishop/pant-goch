@@ -27,13 +27,16 @@ from pydantic_ai.providers.openai import OpenAIProvider
 from .agents import (
     AgentBundle,
     ChatDeps,
+    ExtractorOutput,
     build_agents,
     build_classifier_user_prompt,
     build_director_output_type,
     build_director_user_prompt,
+    build_extractor_user_prompt,
     build_recent_classifier_history,
     commitments_snapshot,
     make_llama_token_counter,
+    player_canon_snapshot,
 )
 from pydantic_ai import NativeOutput
 from .config import Settings
@@ -48,6 +51,7 @@ from .models import (
     AnchoredBeat,
     AxisResult,
     Beat,
+    CanonCategory,
     ClassifyReply,
     Email,
     InboxState,
@@ -59,6 +63,7 @@ from .models import (
     load_scenario,
 )
 from .spine import (
+    apply_canon_extraction,
     apply_classification,
     apply_writes,
     evaluate_completes_when,
@@ -293,7 +298,7 @@ async def _fire_beat(
             thread_id=beat.thread,
             folder="Inbox",
             sender=beat.from_,
-            recipient=SCENARIO.player_email,
+            recipient=resolve_player_email(SCENARIO, STATE),
             subject=beat.subject,
             body=beat.authored_prose.strip(),
             sent_at_label=beat.sent_at or "just now",
@@ -377,6 +382,10 @@ async def _render_email(
             SCENARIO.quality_defaults,
             SCENARIO.quality_descriptions,
         ),
+        player_canon=player_canon_snapshot(
+            STATE.player_canon,
+            current_turn=len(STATE.replies),
+        ),
     )
 
     with LLM_LOGFIRE.span(
@@ -420,7 +429,7 @@ async def _render_email(
         thread_id=thread_id,
         folder="Inbox",
         sender=npc.email_address,
-        recipient=SCENARIO.player_email,
+        recipient=resolve_player_email(SCENARIO, STATE),
         subject=derived_subject,
         body=body,
         sent_at_label="just now",
@@ -801,29 +810,63 @@ async def _send_stream(req: SendRequest) -> AsyncIterator[bytes]:
             STATE.replies.append(reply)
             yield _sse({"type": "send_recorded", "email": _email_full(send_email)})
 
-            # Classifier runs serially before _tick because the replied-to
-            # beat may consume its own classifier output (e.g. aria.loop's
-            # `accumulate=true` engagement axis whose value gates the
-            # complete_warm vs complete_standard split). _tick must see the
-            # post-classifier qualities to make terminal decisions.
+            # Both must complete before _tick because find_due_beats reads
+            # state mutated by classifier (qualities) and extractor (canon).
             recipient_npc = _infer_recipient_npc_id(req.recipient)
             replied_beat = (
                 SCENARIO.beat_by_id.get(in_reply_email.beat_id)
                 if in_reply_email and in_reply_email.beat_id else None
             )
             axes = list(replied_beat.classify_reply_axes) if replied_beat else []
-            if axes:
-                results = await _classify_player_reply(
-                    recipient_blurb=_persona_blurb_for_recipient(req.recipient, recipient_npc),
-                    prior_email_body=in_reply_email.body if in_reply_email else "",
-                    reply_body=body,
-                    axes=axes,
-                )
-                if results is not None:
-                    for event in _apply_axis_results(
-                        axes=axes, results=results, replied_beat_id=replied_beat.id, reply=reply,
-                    ):
-                        yield event
+            recipient_blurb = _persona_blurb_for_recipient(req.recipient, recipient_npc)
+            prior_body = in_reply_email.body if in_reply_email else ""
+
+            classifier_coro = _classify_player_reply(
+                recipient_blurb=recipient_blurb,
+                prior_email_body=prior_body,
+                reply_body=body,
+                axes=axes,
+            ) if axes else _none_coro()
+            extractor_coro = _extract_player_canon(
+                recipient_blurb=recipient_blurb,
+                prior_email_body=prior_body,
+                reply_body=body,
+            )
+            classifier_results, extractor_output = await asyncio.gather(
+                classifier_coro, extractor_coro,
+            )
+
+            if axes and classifier_results is not None:
+                for event in _apply_axis_results(
+                    axes=axes, results=classifier_results, replied_beat_id=replied_beat.id, reply=reply,
+                ):
+                    yield event
+
+            if extractor_output is not None and extractor_output.candidates:
+                # Substring-validate each candidate's literal_text_quote
+                # against the actual reply before promoting. This is the
+                # anti-hallucination floor — extractor claims an exact
+                # quote; we drop any candidate whose quote isn't in the
+                # reply text. (Belt-and-suspenders: the prompt asks for
+                # this too.)
+                anchored = [
+                    c for c in extractor_output.candidates
+                    if c.literal_text_quote in body
+                ]
+                dropped = len(extractor_output.candidates) - len(anchored)
+                if dropped:
+                    logfire.warn(
+                        "extractor candidates dropped (literal_text_quote "
+                        "not a substring of reply)",
+                        dropped=dropped,
+                        kept=len(anchored),
+                    )
+                if anchored:
+                    apply_canon_extraction(
+                        STATE,
+                        anchored,
+                        turn_of_origin=len(STATE.replies),
+                    )
 
             try:
                 new_emails, plot_fired_threads = await _tick(
@@ -875,6 +918,98 @@ async def _send_stream(req: SendRequest) -> AsyncIterator[bytes]:
 
             yield _sse({"type": "state", "state": STATE.public_view()})
             yield _sse({"type": "done"})
+
+
+async def _none_coro():
+    """Awaitable yielding None — paired with `_extract_player_canon` in
+    `asyncio.gather` so we can run the extractor solo on beats that
+    authored no `classify_reply_axes`."""
+    return None
+
+
+async def _extract_player_canon(
+    *,
+    recipient_blurb: str,
+    prior_email_body: str,
+    reply_body: str,
+) -> ExtractorOutput | None:
+    """Run the extractor agent against the player's reply. Returns the
+    structured output on success, or None on failure (the call is
+    fail-soft — canon stays unchanged on a failed extraction; the scenario
+    continues without missing data).
+
+    Wrapped in an llm-tagged span so the span row in the trace tree
+    carries reply preview + the count of extracted candidates without
+    requiring a drill-into.
+    """
+    assert AGENTS is not None
+    with LLM_LOGFIRE.span(
+        "extract player canon",
+        reply_preview=reply_body[:200],
+    ) as span:
+        try:
+            result = await AGENTS.extractor_agent.run(
+                build_extractor_user_prompt(
+                    recipient_blurb, prior_email_body, reply_body,
+                )
+            )
+        except Exception:
+            logfire.exception("extractor failed; player_canon unchanged")
+            return None
+        output = result.output
+        span.set_attribute("candidate_count", len(output.candidates))
+        span.set_attribute("candidate_keys", [c.key for c in output.candidates])
+        return output
+
+
+def _slugify_name(name: str) -> str:
+    """Email local-part slug from a free-form display name.
+
+    Rules: lowercase; whitespace runs become a single dot; non-alphanumeric
+    (and non-dot) characters dropped. So `"Marcus Chen"` → `"marcus.chen"`,
+    `"O'Brien"` → `"obrien"`, `"Marcus L. Chen"` → `"marcus.l.chen"`.
+    Empty string in → empty string out (caller should fall back).
+    """
+    out: list[str] = []
+    in_ws = False
+    for ch in name.strip().lower():
+        if ch.isalnum():
+            out.append(ch)
+            in_ws = False
+        elif ch.isspace():
+            if not in_ws and out and out[-1] != ".":
+                out.append(".")
+            in_ws = True
+        else:
+            in_ws = False
+    while out and out[-1] == ".":
+        out.pop()
+    return "".join(out)
+
+
+def resolve_player_email(scenario: Scenario, state: InboxState) -> str:
+    """Recipient address used for every NPC→player email.
+
+    Resolution order:
+    1. If the player has a canonized name in `state.player_canon["name"]`,
+       slugify it and use `<slug>@<email_domain>`. This is the steady state
+       once calibration has run.
+    2. Else if the scenario authored an explicit `player_email`, use it as
+       a back-compat override (test fixtures, legacy scenarios).
+    3. Else fall back to `<fallback_player_local>@<email_domain>` (the
+       pre-canonization default — used during the welcome and any time
+       calibration cap-exited without a name).
+
+    Slugification of an empty name string drops back to the fallback.
+    """
+    name_entry = state.player_canon.get(CanonCategory.NAME.value)
+    if name_entry is not None:
+        slug = _slugify_name(name_entry.summary)
+        if slug:
+            return f"{slug}@{scenario.email_domain}"
+    if scenario.player_email:
+        return scenario.player_email
+    return f"{scenario.fallback_player_local}@{scenario.email_domain}"
 
 
 async def _classify_player_reply(
