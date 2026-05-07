@@ -943,6 +943,15 @@ class InboxState:
 
     qualities: dict[str, float | str] = field(default_factory=dict)
     fired_beat_ids: set[str] = field(default_factory=set)
+    # Analyzer-private. The static analyzer (`scripts/analyze_scenario.py`)
+    # populates this on every fire (one_shot OR scene-first-fire) so its
+    # reply-target enumeration matches the engine's email-based eligibility
+    # rule. The engine itself derives reply targets from `state.emails`, so
+    # this set stays empty in the live runtime — the spine never reads or
+    # writes it. Without this, the analyzer's reachability claims are
+    # unsound on threads whose only beats are scenes (no one_shot to seed
+    # `fired_beat_ids` until the scene exits — chicken-and-egg).
+    ever_fired_beat_ids: set[str] = field(default_factory=set)
     pending_beats: list[PendingBeat] = field(default_factory=list)
     emails: list[Email] = field(default_factory=list)
     replies: list[Reply] = field(default_factory=list)

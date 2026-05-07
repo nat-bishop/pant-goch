@@ -683,7 +683,8 @@ def lint_scenario(
     scenario: Scenario,
     *,
     run_analyzer: bool = True,
-    analyzer_max_states: int = 50_000,
+    analyzer_max_states: int = 300_000,
+    analyzer_progress: bool = False,
 ) -> list[Finding]:
     findings: list[Finding] = [
         *check_scene_write_collision(scenario),
@@ -697,7 +698,7 @@ def lint_scenario(
     if run_analyzer:
         # The static analyzer is heavier (state-space exploration) and lives
         # in a sibling module so its imports stay out of the spec-only lint
-        # path. Default `analyzer_max_states=50_000` matches the standalone
+        # path. Default `analyzer_max_states=300_000` matches the standalone
         # `make analyze-scenario` cap so lint and analyze report identical
         # reachability claims on production-sized scenarios. Tests pass
         # run_analyzer=False to keep individual lint-rule tests focused on
@@ -705,7 +706,11 @@ def lint_scenario(
         from analyze_scenario import (  # noqa: E402 — sibling-module import
             analyze_scenario as _analyze,
         )
-        report = _analyze(scenario, max_states=analyzer_max_states)
+        report = _analyze(
+            scenario,
+            max_states=analyzer_max_states,
+            progress=analyzer_progress,
+        )
         for af in report.to_findings(scenario):
             findings.append(Finding(
                 severity=af.severity, location=af.location,
@@ -750,7 +755,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ERROR: scenario failed to parse: {exc}", file=sys.stderr)
         return 2
 
-    findings = lint_scenario(scenario)
+    findings = lint_scenario(scenario, analyzer_progress=not args.quiet)
 
     has_error = False
     has_warn = False

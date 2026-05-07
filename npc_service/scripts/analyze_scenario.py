@@ -41,14 +41,16 @@ ScenarioGraph overlay.
 from __future__ import annotations
 
 import argparse
-import copy
 import itertools
 import json
 import sys
-from collections import deque
+import time
+from collections import Counter, deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Iterator
+
+import logfire
 
 # Make `from npc_service.X import Y` resolve when the script is invoked
 # directly (`python scripts/analyze_scenario.py`) before the package is
@@ -57,6 +59,23 @@ from typing import Iterable, Iterator
 _PKG_SRC = Path(__file__).resolve().parents[1] / "src"
 if _PKG_SRC.is_dir() and str(_PKG_SRC) not in sys.path:
     sys.path.insert(0, str(_PKG_SRC))
+
+# Standalone analyzer doesn't go through main.py's FastAPI startup, so we
+# configure logfire here. Without this, spine's per-write `logfire.info`
+# call (one per quality write × tens of thousands of explored states) used
+# to fall through logfire's "not configured" path, which prints a full
+# traceback to stderr on EVERY call — burning minutes of wall clock.
+# `min_level="notice"` short-circuits info-level writes before any span
+# work; spine's `logfire.warn` (orphan pending beats etc.) still surfaces.
+# `send_to_logfire="if-token-present"` matches main.py: zero cost when
+# unset, captures analyzer traces when LOGFIRE_TOKEN is exported.
+logfire.configure(
+    service_name="npc_service.analyze",
+    send_to_logfire="if-token-present",
+    console=False,
+    min_level="notice",
+    scrubbing=False,
+)
 
 from npc_service.models import (
     AxisResult,
@@ -88,12 +107,15 @@ from npc_service.spine import (
 )
 
 
-DEFAULT_MAX_STATES = 50_000
+DEFAULT_MAX_STATES = 300_000
 # Replies are trimmed per thread to this floor (above the largest predicate
 # threshold for that thread + the largest recent-classifier window for axes
 # present, which together set the real cap). The floor prevents over-trimming
 # on scenarios with no PlayerRepliesToThreadGte predicates.
 REPLY_KEEP_FLOOR_PER_THREAD = 2
+# Heartbeat cadence for the BFS — see the loop in `analyze_scenario`.
+PROGRESS_EVERY = 5_000
+PROGRESS_INTERVAL_S = 2.0
 
 
 # ───────────────────────── finding shape (matches lint_scenario.py) ─────────────────────────
@@ -147,7 +169,12 @@ class ScenarioProfile:
     recent_classifier_window_caps: dict[str, int]  # quality → max window in any predicate
     qualities_with_effects: frozenset[str]
     qualities_with_predicates: frozenset[str]
-    quality_thresholds: dict[str, list[float]]  # quality → all numeric thresholds referenced
+    # Sorted unique numeric values that any predicate could distinguish for
+    # each quality — i.e., `QualityGte`/`QualityLt` thresholds and numeric
+    # `QualityEquals` targets. Drives `_bucket_quality_value`: two values
+    # falling in the same gap (or hitting the same point) evaluate
+    # identically on every authored predicate, so the BFS can collapse them.
+    quality_discrimination_points: dict[str, list[float]]
 
     @classmethod
     def from_scenario(cls, scenario: Scenario) -> "ScenarioProfile":
@@ -213,6 +240,12 @@ class ScenarioProfile:
         for effect in scenario.effects:
             quals_with_effects.add(effect.quality)
 
+        # Sort + dedup raw threshold/equals values into a per-quality
+        # discrimination-point list used by `_bucket_quality_value`.
+        discrimination_points = {
+            q: sorted(set(vs)) for q, vs in thresholds.items()
+        }
+
         return cls(
             referenced_canon_keys=frozenset(canon_keys),
             referenced_classifier_qualities=frozenset(classifier_qs),
@@ -220,29 +253,82 @@ class ScenarioProfile:
             recent_classifier_window_caps=recent_caps,
             qualities_with_effects=frozenset(quals_with_effects),
             qualities_with_predicates=frozenset(quals_predicates),
-            quality_thresholds=thresholds,
+            quality_discrimination_points=discrimination_points,
         )
 
 
 # ───────────────────────── state signature ─────────────────────────
 
 
-# (qualities tuple, fired set, canon keys, thread reply counts, recent classifier per axis, ended)
+# (qualities tuple, fired set, ever_fired set, canon keys,
+#  thread reply counts, recent classifier per axis, ended)
+# Quality values are predicate-equivalence-class buckets — see
+# `_bucket_quality_value` — so the inner tuple can hold either a raw
+# string (for string qualities or for numeric qualities with no
+# distinguishing predicate) or a `(kind, idx)` tuple from bucketing.
+# Recent-classifier history is stored as a sorted multiset of
+# (value, count) pairs per axis — see `state_signature` for why.
 StateKey = tuple[
-    tuple[tuple[str, float | str], ...],
+    tuple[tuple[str, object], ...],
+    frozenset[str],
     frozenset[str],
     frozenset[str],
     tuple[tuple[str, int], ...],
-    tuple[tuple[str, tuple[str, ...]], ...],
+    tuple[tuple[str, tuple[tuple[str, int], ...]], ...],
     bool,
 ]
 
 
+def _bucket_quality_value(
+    quality: str, value: float | str, profile: ScenarioProfile,
+) -> object:
+    """Project a numeric quality value to its predicate-equivalence-class
+    bucket. String qualities are returned as-is (already discrete).
+
+    For numeric qualities, the bucket is determined by sorted discrimination
+    points P_0 < P_1 < ... < P_k (every threshold + every numeric equals
+    target authored on the scenario). Values land in exactly one of:
+    - `("eq", i)` if value == P_i,
+    - `("lt", i)` if value < P_i and value != P_j for any j < i,
+    - `("gt", k)` if value > P_k.
+
+    Two values with the same bucket key evaluate identically on every
+    `QualityGte` / `QualityLt` / numeric `QualityEquals` predicate the
+    scenario authors, so the BFS can dedup them.
+    """
+    if isinstance(value, str):
+        return value
+    points = profile.quality_discrimination_points.get(quality)
+    if not points:
+        return value  # no predicate distinguishes this quality numerically
+    for i, p in enumerate(points):
+        if value == p:
+            return ("eq", i)
+        if value < p:
+            return ("lt", i)
+    return ("gt", len(points))
+
+
 def state_signature(state: InboxState, profile: ScenarioProfile) -> StateKey:
     """Compress an InboxState to a hashable key for BFS dedup. Only includes
-    dimensions a predicate could ever read."""
-    qualities = tuple(sorted(state.qualities.items()))
+    dimensions a predicate could ever read.
+
+    Qualities are filtered to `profile.qualities_with_predicates` — qualities
+    that no predicate ever reads (surface_to_chat-only, debug counters,
+    tolerated orphans) cannot affect any branching, so distinguishing their
+    values inflates state count without any soundness benefit. Surviving
+    numeric quality values are then bucketed by `_bucket_quality_value` so
+    values within the same predicate-equivalence class collapse.
+    """
+    qualities = tuple(
+        sorted(
+            (k, _bucket_quality_value(k, v, profile))
+            for k, v in state.qualities.items()
+            if k in profile.qualities_with_predicates
+        )
+    )
     fired = frozenset(state.fired_beat_ids)
+    ever_fired = frozenset(state.ever_fired_beat_ids)
     canon_keys = frozenset(
         k for k in state.player_canon if k in profile.referenced_canon_keys
     )
@@ -263,8 +349,10 @@ def state_signature(state: InboxState, profile: ScenarioProfile) -> StateKey:
         capped[tid] = min(cnt, cap)
     thread_reply_counts = tuple(sorted(capped.items()))
 
-    # Per-axis recent classifier history (most-recent-first), bounded to the
-    # max window any RecentClassifierValue predicate uses for that quality.
+    # Per-axis recent classifier history, bounded to the max window any
+    # RecentClassifierValue predicate uses for that quality. Collected
+    # most-recent-first while walking `state.replies` in reverse — order
+    # only matters for the cap-truncation step below.
     recent: dict[str, list[str]] = {}
     for r in reversed(state.replies):
         for axis in r.classifier_results:
@@ -276,14 +364,54 @@ def state_signature(state: InboxState, profile: ScenarioProfile) -> StateKey:
             slots = recent.setdefault(axis.quality, [])
             if len(slots) < cap:
                 slots.append(axis.value)
+    # Coalesce to multiset per axis. Per the evaluator in
+    # `spine.py:_evaluate_recent_classifier_value`, every match mode
+    # (`any`, `all`, integer N) reduces to a count comparison against
+    # the predicate's `values` set — verdict ordering within the recent
+    # window is never read. Sorted (value, count) pairs preserve every
+    # distinction the evaluator can see and discard every distinction
+    # it can't, which collapses sibling BFS states that differ only by
+    # verdict order. If a future predicate type reads ordering, this
+    # needs to revert to ordered tuples (or add a per-axis fallback).
     recent_classifier = tuple(
-        (q, tuple(slots)) for q, slots in sorted(recent.items())
+        (q, tuple(sorted(Counter(slots).items())))
+        for q, slots in sorted(recent.items())
     )
 
-    return (qualities, fired, canon_keys, thread_reply_counts, recent_classifier, state.ended)
+    return (qualities, fired, ever_fired, canon_keys, thread_reply_counts, recent_classifier, state.ended)
 
 
 # ───────────────────────── transitions ─────────────────────────
+
+
+def _clone_state(s: InboxState) -> InboxState:
+    """Analyzer-targeted shallow-then-targeted-deep clone of InboxState.
+
+    Fresh containers for fields the analyzer mutates; aliases for the rest.
+    Mutated by the BFS: `qualities` (apply_literal_effects + classify writes),
+    `fired_beat_ids` (beat fire), `replies` (append-then-trim of synthetic
+    replies), `player_canon` (analyzer-driven additions), `ended`. NOT
+    mutated by the BFS: `pending_beats`, `emails`, `thread_messages`,
+    `end_reason` — aliasing them is sound and saves a deepcopy walk over
+    Reply.classifier_results, ModelMessage histories, etc.
+
+    Critical invariant: existing Reply / PlayerCanonEntry objects are never
+    mutated in place by the analyzer (only added or pruned), so sharing
+    individual entries between sibling states is safe. If this changes,
+    revert to `copy.deepcopy(state)`.
+    """
+    return InboxState(
+        qualities=dict(s.qualities),
+        fired_beat_ids=set(s.fired_beat_ids),
+        ever_fired_beat_ids=set(s.ever_fired_beat_ids),
+        pending_beats=s.pending_beats,
+        emails=s.emails,
+        replies=list(s.replies),
+        thread_messages=s.thread_messages,
+        player_canon=dict(s.player_canon),
+        ended=s.ended,
+        end_reason=s.end_reason,
+    )
 
 
 def _record_synthetic_reply(
@@ -352,11 +480,18 @@ def _apply_beat_fire_state(state: InboxState, beat: Beat, scenario: Scenario) ->
 
     Mirrors `_fire_beat` in main.py minus the chat-agent render — the
     analyzer doesn't care about prose.
+
+    Also stamps `ever_fired_beat_ids` (analyzer-private; see InboxState
+    docstring) so `successors` can enumerate reply targets the way the
+    engine does — every fire renders an email; the player can reply to it
+    even mid-scene. This diverges from `fired_beat_ids` only for scene
+    beats whose `exit_when` isn't yet satisfied.
     """
     apply_literal_effects(state, scenario, beat.spec.effects, beat_id=beat.id)
     # Apply scenario-level literal effects whose `when` evaluates true now.
     apply_literal_effects(state, scenario, scenario.effects, beat_id=None)
 
+    state.ever_fired_beat_ids.add(beat.id)
     if beat.kind == "one_shot":
         state.fired_beat_ids.add(beat.id)
     elif beat.kind == "scene":
@@ -398,19 +533,39 @@ def successors(
     if state.ended:
         return
 
-    # Player can reply to any beat that has fired (over-approximation: real
-    # players reply to recent emails, but for reachability soundness we let
-    # the player reply to anything previously fired). Reply to a scene beat
-    # IS modeled by re-firing it through the next tick's find_due_beats.
-    fired = sorted(state.fired_beat_ids)
-    if not fired:
+    # Player can reply to any beat that has ever fired (one_shot OR scene
+    # first-fire) — the engine renders an email per fire and the player can
+    # reply to any inbox email, including from mid-scene fires. Iterating
+    # `ever_fired_beat_ids` (not `fired_beat_ids`) is required for soundness
+    # on threads whose only beats are scenes; otherwise mid-firing scenes are
+    # invisible to the BFS and reply counts on those threads stay at zero.
+    if not state.ever_fired_beat_ids:
         return
 
-    for replied_beat_id in fired:
-        replied_beat = scenario.beat_by_id.get(replied_beat_id)
-        if replied_beat is None:
+    # Reply-target dedup: `_record_synthetic_reply` stores only `thread_id`
+    # and `classifier_results` (no `beat_responded_to`), so two reply targets
+    # with the same `(thread, per-beat classify signature)` produce identical
+    # synthetic replies — and identical successor states modulo the verdict
+    # cartesian, which is itself a function of the classify signature.
+    # Picking one representative per equivalence class is exact (not an
+    # approximation) and cuts branching when threads carry multiple beats
+    # with the same classify effects (or none).
+    canonical_targets: dict[tuple[str | None, tuple[tuple[str, tuple[str, ...]], ...]], Beat] = {}
+    for replied_beat_id in sorted(state.ever_fired_beat_ids):
+        beat = scenario.beat_by_id.get(replied_beat_id)
+        if beat is None:
             continue
+        per_beat_classify = [e for e in beat.spec.effects if e.is_classify]
+        sig = (
+            beat.thread,
+            tuple(
+                (e.quality, tuple(e.classify.allowed_values))  # type: ignore[union-attr]
+                for e in per_beat_classify
+            ),
+        )
+        canonical_targets.setdefault(sig, beat)
 
+    for replied_beat in canonical_targets.values():
         # Verdict combos: cartesian over classify effects on this beat +
         # scenario classify effects whose `when:` passes in current state.
         classify_effects = _classify_effects_for_reply(state, replied_beat, scenario)
@@ -434,10 +589,13 @@ def successors(
 
         for combo in verdict_combos:
             for canon_key in canon_choices:
-                # One deepcopy per (verdict combo × canon choice). All
-                # state mutations land here; director branches deepcopy
-                # again before applying the beat fire.
-                with_writes = copy.deepcopy(state)
+                # One clone per (verdict combo × canon choice). All state
+                # mutations land here; director branches clone again before
+                # applying the beat fire. `_clone_state` only deep-copies
+                # the fields the analyzer actually mutates (qualities,
+                # fired_beat_ids, replies, player_canon) and aliases the
+                # rest — much faster than copy.deepcopy on the full state.
+                with_writes = _clone_state(state)
                 classifier_results: list[AxisResult] = []
                 for effect, value in zip(classify_effects, combo):
                     applied, _ = apply_classify_effect(
@@ -466,7 +624,7 @@ def successors(
                     yield None, with_writes
                     continue
                 for fired_beat in eligible:
-                    post_fire = copy.deepcopy(with_writes)
+                    post_fire = _clone_state(with_writes)
                     _apply_beat_fire_state(post_fire, fired_beat, scenario)
                     yield fired_beat.id, post_fire
 
@@ -707,91 +865,156 @@ def _find_bound_mismatches(
 
 def analyze_scenario(
     scenario: Scenario, *, max_states: int = DEFAULT_MAX_STATES,
+    progress: bool = False,
 ) -> AnalysisReport:
     """Run the full static analysis. Returns an AnalysisReport ready to be
     converted to Finding objects (for lint integration) or JSON (for the
     sidecar).
+
+    `progress=True` prints a heartbeat to stderr every PROGRESS_EVERY
+    states or PROGRESS_INTERVAL_S seconds (whichever first), so the user
+    sees activity on long CLI runs. Defaults False so tests and library
+    callers get silent behaviour; both `analyze_scenario.main` and
+    `lint_scenario.main` flip it on.
     """
     profile = ScenarioProfile.from_scenario(scenario)
+    scenario_id = getattr(scenario, "id", "scenario")
 
-    # Initial state — boot tick fires anchored beats with empty preconditions.
-    # Mirrors `reset_session` in main.py without the LLM render: literal
-    # effects apply, fired_beat_ids and ended flag update; chat-driven
-    # boot beats render via the LLM in production but their state mutation
-    # is captured by _apply_beat_fire_state.
-    initial = InboxState.from_scenario(scenario)
-    boot_fired = _boot_tick(initial, scenario)
+    with logfire.span(
+        "analyze_scenario {scenario_id}",
+        _level="notice",
+        scenario_id=scenario_id,
+        max_states=max_states,
+        beat_count=len(scenario.beats),
+    ) as span:
+        # Initial state — boot tick fires anchored beats with empty preconditions.
+        # Mirrors `reset_session` in main.py without the LLM render: literal
+        # effects apply, fired_beat_ids and ended flag update; chat-driven
+        # boot beats render via the LLM in production but their state mutation
+        # is captured by _apply_beat_fire_state.
+        initial = InboxState.from_scenario(scenario)
+        boot_fired = _boot_tick(initial, scenario)
 
-    seen: set[StateKey] = set()
-    queue: deque[InboxState] = deque([initial])
-    seen.add(state_signature(initial, profile))
+        seen: set[StateKey] = set()
+        queue: deque[InboxState] = deque([initial])
+        seen.add(state_signature(initial, profile))
 
-    # Boot fires count toward reached even for scene beats that haven't
-    # exited (and so aren't in fired_beat_ids).
-    reached_beats: set[str] = set(boot_fired) | set(initial.fired_beat_ids)
-    quality_bounds: dict[str, tuple[float, float]] = {}
-    quality_string_values: dict[str, set[str]] = {}
-    truncated = False
+        # Boot fires count toward reached even for scene beats that haven't
+        # exited (and so aren't in fired_beat_ids).
+        reached_beats: set[str] = set(boot_fired) | set(initial.fired_beat_ids)
+        quality_bounds: dict[str, tuple[float, float]] = {}
+        quality_string_values: dict[str, set[str]] = {}
+        truncated = False
 
-    def update_bounds(state: InboxState) -> None:
-        for q, v in state.qualities.items():
-            if isinstance(v, (int, float)):
-                fv = float(v)
-                if q not in quality_bounds:
-                    quality_bounds[q] = (fv, fv)
-                else:
-                    lo, hi = quality_bounds[q]
-                    quality_bounds[q] = (min(lo, fv), max(hi, fv))
-            elif isinstance(v, str):
-                quality_string_values.setdefault(q, set()).add(v)
+        def update_bounds(state: InboxState) -> None:
+            for q, v in state.qualities.items():
+                if isinstance(v, (int, float)):
+                    fv = float(v)
+                    if q not in quality_bounds:
+                        quality_bounds[q] = (fv, fv)
+                    else:
+                        lo, hi = quality_bounds[q]
+                        quality_bounds[q] = (min(lo, fv), max(hi, fv))
+                elif isinstance(v, str):
+                    quality_string_values.setdefault(q, set()).add(v)
 
-    update_bounds(initial)
+        update_bounds(initial)
 
-    while queue:
-        if len(seen) >= max_states:
-            truncated = True
-            break
-        current = queue.popleft()
-        for fired_id, succ in successors(current, scenario, profile):
-            key = state_signature(succ, profile)
-            if key in seen:
-                continue
-            seen.add(key)
-            if fired_id is not None:
-                reached_beats.add(fired_id)
-            # Capture scene-beat re-fires too (entering fired_beat_ids on
-            # exit); fired_id may be the same scene id across multiple yields.
-            reached_beats.update(succ.fired_beat_ids)
-            update_bounds(succ)
-            queue.append(succ)
+        # Heartbeat cadence: every PROGRESS_EVERY new states OR every
+        # PROGRESS_INTERVAL_S seconds, whichever first. The check lives
+        # INSIDE the successor loop because the boot state's successors()
+        # is a verdict-cartesian-product expansion that yields tens of
+        # thousands of states in a single call — outer-loop-only checks
+        # would leave the user staring at a blank terminal for minutes.
+        start = time.monotonic()
+        last_progress_states = 0
+        last_progress_time = start
+
+        def _maybe_heartbeat(force: bool = False) -> None:
+            nonlocal last_progress_states, last_progress_time
+            if not progress:
+                return
+            now = time.monotonic()
+            if not force and not (
+                len(seen) - last_progress_states >= PROGRESS_EVERY
+                or now - last_progress_time >= PROGRESS_INTERVAL_S
+            ):
+                return
+            print(
+                f"[analyze] {len(seen):>6} states  "
+                f"{len(reached_beats)}/{len(scenario.beats)} beats  "
+                f"queue={len(queue)}  ({now - start:.1f}s)",
+                file=sys.stderr,
+                flush=True,
+            )
+            last_progress_states = len(seen)
+            last_progress_time = now
+
+        if progress:
+            print(
+                f"[analyze] starting BFS from boot state "
+                f"(cap={max_states} states)",
+                file=sys.stderr,
+                flush=True,
+            )
+
+        while queue:
             if len(seen) >= max_states:
                 truncated = True
                 break
+            current = queue.popleft()
+            for fired_id, succ in successors(current, scenario, profile):
+                key = state_signature(succ, profile)
+                if key in seen:
+                    continue
+                seen.add(key)
+                if fired_id is not None:
+                    reached_beats.add(fired_id)
+                # Capture scene-beat re-fires too (entering fired_beat_ids on
+                # exit); fired_id may be the same scene id across multiple yields.
+                reached_beats.update(succ.fired_beat_ids)
+                update_bounds(succ)
+                queue.append(succ)
+                _maybe_heartbeat()
+                if len(seen) >= max_states:
+                    truncated = True
+                    break
 
-    all_beats = {b.id for b in scenario.beats}
-    unreachable = sorted(all_beats - reached_beats)
+            _maybe_heartbeat()
 
-    orphan_effects, orphan_predicates = _find_orphans(scenario, profile)
-    # Bound mismatches require complete bounds to be reliable. When the
-    # state-space cap is hit, the recorded max for each quality is a lower
-    # bound on the true max — a predicate threshold above it might still
-    # be reachable past the cap. Skip the check when truncated; the
-    # analysis_incomplete warning already tells the author to investigate.
-    bound_mismatches = (
-        _find_bound_mismatches(scenario, quality_bounds) if not truncated else []
-    )
+        all_beats = {b.id for b in scenario.beats}
+        unreachable = sorted(all_beats - reached_beats)
 
-    return AnalysisReport(
-        reached_beats=reached_beats,
-        unreachable_beats=unreachable,
-        quality_bounds=quality_bounds,
-        quality_string_values=quality_string_values,
-        orphan_effects=orphan_effects,
-        orphan_predicates=orphan_predicates,
-        bound_mismatches=bound_mismatches,
-        truncated=truncated,
-        states_explored=len(seen),
-    )
+        orphan_effects, orphan_predicates = _find_orphans(scenario, profile)
+        # Bound mismatches require complete bounds to be reliable. When the
+        # state-space cap is hit, the recorded max for each quality is a lower
+        # bound on the true max — a predicate threshold above it might still
+        # be reachable past the cap. Skip the check when truncated; the
+        # analysis_incomplete warning already tells the author to investigate.
+        bound_mismatches = (
+            _find_bound_mismatches(scenario, quality_bounds) if not truncated else []
+        )
+
+        elapsed = time.monotonic() - start
+        span.set_attributes({
+            "states_explored": len(seen),
+            "beats_reached": len(reached_beats),
+            "beats_unreachable": len(unreachable),
+            "truncated": truncated,
+            "elapsed_s": round(elapsed, 3),
+        })
+
+        return AnalysisReport(
+            reached_beats=reached_beats,
+            unreachable_beats=unreachable,
+            quality_bounds=quality_bounds,
+            quality_string_values=quality_string_values,
+            orphan_effects=orphan_effects,
+            orphan_predicates=orphan_predicates,
+            bound_mismatches=bound_mismatches,
+            truncated=truncated,
+            states_explored=len(seen),
+        )
 
 
 def _boot_tick(state: InboxState, scenario: Scenario) -> set[str]:
@@ -908,7 +1131,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ERROR: scenario failed to parse: {exc}", file=sys.stderr)
         return 2
 
-    report = analyze_scenario(scenario, max_states=args.max_states)
+    report = analyze_scenario(
+        scenario, max_states=args.max_states, progress=not args.quiet,
+    )
     findings = report.to_findings(scenario)
 
     has_error = False

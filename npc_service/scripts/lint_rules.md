@@ -118,7 +118,7 @@ The analyzer is **sound for unreachability**: when it says a beat is unreachable
 
 **SCOPE.** Sound (over-approximating Director and classifier non-determinism, both safe directions for this question). Truncation can produce false unreachable claims; the `analysis_incomplete` finding flags it.
 
-**FALSE POSITIVES.** Provisional WARNs under truncation are common on production-sized scenarios (the production scenario truncates at `max_states=20000` with ~3 beats not yet reached). Raise `--max-states` or accept the WARN if manual playtest confirms reachability.
+**FALSE POSITIVES.** Provisional WARNs under truncation are common on production-sized scenarios. The production scenario truncates at the default `max_states=300_000` (deepest beats — those gated on long quality-build-up chains plus dispatched secondary threads — sit past the BFS frontier). The `analysis_incomplete` finding flags the truncation; raise `--max-states` (analyzer is RAM-bounded, not time-bounded) or accept the WARN if manual playtest confirms reachability.
 
 ## unreachable-terminal
 
@@ -167,3 +167,38 @@ The analyzer is **sound for unreachability**: when it says a beat is unreachable
 **SCOPE.** Always WARN. Authors can either raise `--max-states` (analyzer is RAM-bounded, not time-bounded — ~30 s per 20k states on the production scenario), or treat the WARN as expected and rely on playtest coverage for the rest.
 
 **FALSE POSITIVES.** N/A — this finding IS the disclosure.
+
+---
+
+# Scaling notes
+
+The analyzer is explicit-state forward BFS. State-space size is the budget. The current state signature already coarsens aggressively:
+
+- **Qualities** filtered to those any predicate reads, then bucketed into predicate-equivalence classes (`_bucket_quality_value` in `analyze_scenario.py`). Two `creature_grievance` values that fall in the same gap between authored thresholds collapse to one BFS state.
+- **Reply counts per thread** capped at `max(threshold) + 1`.
+- **Recent classifier history per axis** capped at the largest authored window AND coalesced to a multiset of `(value, count)` pairs. The evaluator (`spine.py:_evaluate_recent_classifier_value`) reads only counts, never order, for every `match` mode (`any`/`all`/integer N), so multiset-equivalent histories collapse to one BFS state.
+- **Reply-target enumeration** dedups beats by `(thread, classify-signature)` since the analyzer's synthetic replies don't carry `beat_responded_to`.
+- **State clone** is a hand-rolled targeted copy (`_clone_state`); only mutated fields are deep-copied.
+
+## What still grows as the scenario grows
+
+| Dimension | Driver | Notes |
+|---|---|---|
+| `qualities` (post-bucket) | new qualities, more thresholds per quality | Linear-ish; bucketing keeps it tame. |
+| `fired_beat_ids` ∪ `ever_fired_beat_ids` | new beats | Combinatorial subset, but mutex-pruned in practice. ~50 beats: probably fine. ~100+: cliff. |
+| `canon_keys` | new `PlayerCanonExists` predicates | ×2 per referenced key. Slow growth. |
+| `thread_reply_counts` | new threads | One new dimension per thread, capped per-thread. Slow. |
+| `recent_classifier` | new classifier axes × value sets × window | **Multiplicative,** but mitigated by multiset coalescing — distinct *orderings* no longer count, only multisets. Each new axis is still a ~5–10× inflation rather than ~25×. |
+| Verdict cartesian per turn | classifier axes per beat | Per-tick branching factor. 2 → 5 axes per beat is a 50-100× inflation in turns-to-explore. |
+
+The two real cliffs: **classifier axes** (multiplicative everywhere) and **beat count past ~50-75** (combinatorial powerset).
+
+## Deferred optimizations, in order of cost
+
+These are NOT implemented today. Reach for them in this order when the analyzer takes more than ~10 minutes on `make lint-scenario`.
+
+1. **Goal-directed backward search.** Today's BFS explores everything from boot and asks "did beat X fire?" When only 1-2 beats are at risk, this is wasteful. Per at-risk beat: walk preconditions backward (regression analysis) and check whether predecessors trace back to boot. Used in symbolic model checkers under names like "regression." Bigger refactor (~300 lines). Right answer when state space genuinely exceeds enumeration capacity but only a handful of beats need verifying.
+
+2. **Symbolic methods (BDDs / SAT-based reachability / IC3-PDR).** What real model-checkers (nuXmv, Spin, hardware verification tools) use when explicit enumeration fails. Massive refactor and adds a solver dependency. Not worth it until the scenario has 100+ beats and millions of reachable states.
+
+3. **Verdict-ordering fallback for new predicate types.** Today's multiset coalescing on `recent_classifier` is sound for every current `match` mode (`any`/`all`/integer N) because the evaluator reads only counts. If a future predicate type is added that *does* read verdict ordering (e.g., "the most recent verdict is X"), state_signature will silently lose paths. Mitigation: detect the new predicate type at profile-build time, mark the affected axes, and fall back to ordered tuples for those axes only. Localized change (~30 lines).
