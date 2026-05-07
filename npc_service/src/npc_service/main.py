@@ -126,11 +126,12 @@ LLM_LOGFIRE = logfire.with_tags("llm")
 
 
 class ChatAgentFailure(Exception):
-    """Raised by `_render_via_chat_agent` when the LLM call (or its history
-    processors) fails. `_send_stream` catches this and surfaces a structured
-    `error` SSE event so the client can recover without seeing a torn HTTP
-    stream. Classifier failures use a separate degraded path (skip the
-    quality write) and don't raise."""
+    """Raised by `_render_email` (called from the reply / outbound /
+    epilogue render entrypoints) when the LLM call (or its history
+    processors) fails. `_send_stream` catches this and surfaces a
+    structured `error` SSE event so the client can recover without seeing
+    a torn HTTP stream. Classifier failures use a separate degraded path
+    (skip the quality write) and don't raise."""
 
 
 # ───────────────────────── globals (set in lifespan) ─────────────────────────
@@ -277,6 +278,7 @@ async def _fire_beat(
     *,
     player_body: str | None,
     in_response_to: str | None,
+    reply_thread_id: str | None,
 ) -> tuple[Email | None, list[QualityDelta], int | None, FactCheckTrace | None]:
     """Fire a beat and produce its email plus tick-decision side info.
 
@@ -289,15 +291,24 @@ async def _fire_beat(
       - `fact_check`: per-attempt validator trace; None unless the beat
         had `validate_facts: true` AND wasn't pre-authored.
 
-    Two render paths:
+    Render paths:
     - `spec.pre_authored_prose` set → ship verbatim (no LLM call). The
       rendered email seeds `thread_messages` so the chat agent's next run
       sees the prose as a prior assistant turn.
-    - otherwise → run the chat agent with `plot_directive=beat.spec`, using
-      the current player_body as user_prompt. Terminals (`ends_session`)
-      additionally inject the per-run epilogue digest into ChatDeps.
-      Caller must pass player_body for chat-driven beats — they're
-      triggered by /send ticks where a body always exists.
+    - chat-driven, beat.thread == reply_thread_id → reply-mode render: the
+      chat agent receives `player_body` as user_prompt and the exchange is
+      appended to thread history.
+    - chat-driven, beat.thread != reply_thread_id (or reply_thread_id is
+      None — boot/autonomous tick) → outbound-mode render: the chat agent
+      receives a synthetic trigger and ChatDeps.outbound_mode=True so it
+      composes an unprompted email rather than respond to the (other-
+      thread) player_body it would otherwise see. Without this split, an
+      off-thread NPC reads the player's other-thread body as if it were
+      addressed to it (Bug #1) and pollutes its own thread history with
+      messages the player never sent there.
+    - terminals (`ends_session`) route through the epilogue renderer in
+      either reply or outbound flavor depending on the same off-thread
+      check.
 
     Scene-vs-one_shot post-fire bookkeeping:
     - one_shot → enters `fired_beat_ids` immediately (fire-once contract).
@@ -319,12 +330,15 @@ async def _fire_beat(
     )
 
     # No span wrapper here: pre-authored fires are sub-millisecond (a memcpy
-    # plus a log line) and the chat-agent path is 1:1 with
-    # `_render_via_chat_agent`, which carries its own llm-tagged span.
-    # Adding a `fire_beat` layer here only deepened the trace tree without
-    # filtering value. `beat_id` is threaded onto `render_chat` via `beat=`,
-    # so the chat-driven fire is still searchable by beat id.
+    # plus a log line) and the chat-agent paths each carry their own
+    # llm-tagged span. Adding a `fire_beat` layer here only deepened the
+    # trace tree without filtering value. `beat_id` is threaded onto each
+    # render via `beat=`, so the chat-driven fire is still searchable by
+    # beat id.
     is_scene = beat.kind == "scene"
+    is_outbound = (
+        reply_thread_id is not None and beat.thread != reply_thread_id
+    )
     email: Email | None
     fact_check: FactCheckTrace | None = None
     if beat.spec.pre_authored_prose is not None:
@@ -345,34 +359,51 @@ async def _fire_beat(
             beat_id=beat.id, thread=beat.thread,
         )
     else:
-        assert player_body is not None, (
-            "chat-driven beats require a player body — they trigger only on /send ticks"
-        )
+        # Outbound chat-driven fires don't use player_body (it was
+        # addressed to a different thread). Reply-mode fires require it.
+        if not is_outbound:
+            assert player_body is not None, (
+                "reply-mode chat-driven beats require a player body — they trigger only on /send ticks"
+            )
         prior_fires = _count_beat_email_fires(beat.id) if is_scene else 0
         if is_scene:
             logfire.info(
-                "continue scene {beat_id} (turn {turn})",
+                "continue scene {beat_id} (turn {turn}, mode={mode})",
                 beat_id=beat.id, turn=prior_fires + 1,
+                mode="outbound" if is_outbound else "reply",
             )
         else:
-            logfire.info("fire plot beat {beat_id}", beat_id=beat.id)
-        # Terminals run the chat agent in epilogue mode (digest in ChatDeps);
-        # everything else runs an ordinary chat turn.
-        renderer = _render_via_epilogue_agent if beat.ends_session else _render_via_chat_agent
+            logfire.info(
+                "fire plot beat {beat_id} (mode={mode})",
+                beat_id=beat.id,
+                mode="outbound" if is_outbound else "reply",
+            )
         # None when the beat didn't opt in — the validator's append-when-non-None
         # check is the single mechanism for keeping unflagged beats trace-free.
         fact_check_log: list[FactCheckAttempt] | None = (
             [] if beat.spec.validate_facts else None
         )
-        email = await renderer(
-            npc_id=beat.npc,
-            thread_id=beat.thread,
-            player_body=player_body,
-            in_reply_to_email_id=in_response_to,
-            plot_directive=beat.spec,
-            beat_id=beat.id,
-            fact_check_log=fact_check_log,
-        )
+        if beat.ends_session:
+            email = await _render_via_epilogue_agent(
+                npc_id=beat.npc,
+                thread_id=beat.thread,
+                player_body=player_body or "",
+                in_reply_to_email_id=in_response_to,
+                plot_directive=beat.spec,
+                beat_id=beat.id,
+                outbound_mode=is_outbound,
+                fact_check_log=fact_check_log,
+            )
+        else:
+            email = await _render_via_chat_agent(
+                npc_id=beat.npc,
+                thread_id=beat.thread,
+                plot_directive=beat.spec,
+                beat_id=beat.id,
+                player_body=player_body,
+                outbound_mode=is_outbound,
+                fact_check_log=fact_check_log,
+            )
         if fact_check_log is not None:
             # Empty list means the validator no-op'd (shouldn't happen since
             # validate_facts requires must_include_facts/must_not at load
@@ -413,6 +444,14 @@ def _seed_thread_history(thread_id: str, body: str) -> None:
     history.append(ModelResponse(parts=[TextPart(content=body)]))
 
 
+# Synthetic user-prompt for outbound-mode renders. Pydantic AI's `Agent.run`
+# expects a non-empty user_prompt; the OUTBOUND_MODE_FRAMING instructions
+# block tells the chat agent that this trigger is system-shaped, not a
+# player message, and that the agent must compose an unprompted outbound
+# email per the directive instead of responding to it.
+_OUTBOUND_TRIGGER_PROMPT = "[system: compose an outbound email per directive]"
+
+
 async def _render_email(
     *,
     npc_id: str,
@@ -423,6 +462,7 @@ async def _render_email(
     message_history: list | None = None,
     append_history: bool = False,
     epilogue_digest: str | None = None,
+    outbound_mode: bool = False,
     fact_check_log: list[FactCheckAttempt] | None = None,
     span_label: str = "render to {npc} on {thread}",
     extra_span_attrs: dict | None = None,
@@ -430,9 +470,12 @@ async def _render_email(
     """Single LLM-render path. Builds ChatDeps, runs the chat agent, wraps
     failures as ChatAgentFailure, returns the assembled Email. If
     `append_history=True`, extends `STATE.thread_messages[thread_id]` with
-    `result.new_messages()`. When `epilogue_digest` is set, ChatDeps
-    switches the agent into closing-email mode (different system framing,
-    digest surfaced via `@instructions`).
+    `result.new_messages()` — except in outbound mode, where only the
+    assistant response is appended (the synthetic trigger is not a real
+    player turn and would pollute the thread's history if persisted).
+    When `epilogue_digest` is set, ChatDeps switches the agent into
+    closing-email mode. When `outbound_mode` is set, ChatDeps activates
+    the OUTBOUND framing block.
 
     `fact_check_log`, when supplied, is a mutable list the validator
     appends to per attempt; `_fire_beat` packages it into a
@@ -453,6 +496,7 @@ async def _render_email(
             current_turn=len(STATE.replies),
         ),
         epilogue_digest=epilogue_digest,
+        outbound_mode=outbound_mode,
         fact_check_log=fact_check_log,
     )
 
@@ -481,7 +525,16 @@ async def _render_email(
             raise ChatAgentFailure(str(e)) from e
         if append_history:
             history = STATE.thread_messages.setdefault(thread_id, [])
-            history.extend(result.new_messages())
+            new_messages = result.new_messages()
+            if outbound_mode:
+                # Drop the synthetic-trigger user-turn from what gets
+                # persisted. ModelRequest carries the user prompt;
+                # ModelResponse carries the assistant's reply. We only
+                # want the assistant response in thread history so a
+                # later reply-mode render doesn't see the trigger as if
+                # the player had typed it.
+                new_messages = [m for m in new_messages if isinstance(m, ModelResponse)]
+            history.extend(new_messages)
         usage = result.usage()
         span.set_attribute("input_tokens", usage.input_tokens)
         span.set_attribute("output_tokens", usage.output_tokens)
@@ -504,30 +557,56 @@ async def _render_via_chat_agent(
     *,
     npc_id: str,
     thread_id: str,
-    player_body: str,
-    in_reply_to_email_id: str | None,
     plot_directive: BeatSpec | None,
     beat_id: str | None,
+    player_body: str | None = None,
+    outbound_mode: bool = False,
     fact_check_log: list[FactCheckAttempt] | None = None,
 ) -> Email:
-    """Render path for chat turns and non-terminal beat fires. Appends to
-    thread_messages so the next turn sees this exchange in conversation history."""
+    """Render path for chat-turn fallbacks and non-terminal beat fires.
+    Modes:
+
+    - reply (`outbound_mode=False`, default): `player_body` is the
+      user_prompt; the resulting exchange (player + assistant turn) is
+      appended to `state.thread_messages[thread_id]`.
+    - outbound (`outbound_mode=True`): the chat agent receives the fixed
+      synthetic trigger and `ChatDeps.outbound_mode=True`; the
+      OUTBOUND_MODE_FRAMING instructions block tells it to compose an
+      unprompted email rather than respond to the trigger. Only the
+      assistant turn is persisted (the synthetic trigger isn't a real
+      player message), so a subsequent reply-mode render on this thread
+      doesn't see the trigger as if the player had typed it.
+
+    Thread history is passed in either mode — an in-flight scene's prior
+    turns are valid context for continuation regardless of which side
+    drove this fire."""
     assert STATE is not None
+    if outbound_mode:
+        user_prompt = _OUTBOUND_TRIGGER_PROMPT
+        span_label = "render outbound to {npc} on {thread}"
+    else:
+        assert player_body is not None, (
+            "reply-mode render requires player_body"
+        )
+        user_prompt = player_body
+        span_label = "render chat to {npc} on {thread}"
     history = STATE.thread_messages.setdefault(thread_id, [])
     return await _render_email(
         npc_id=npc_id,
         thread_id=thread_id,
-        user_prompt=player_body,
+        user_prompt=user_prompt,
         plot_directive=plot_directive,
         beat_id=beat_id,
         message_history=list(history),
         append_history=True,
+        outbound_mode=outbound_mode,
         fact_check_log=fact_check_log,
-        span_label="render chat to {npc} on {thread}",
+        span_label=span_label,
         extra_span_attrs={
             "plot": plot_directive is not None,
             "history_len": len(history),
-            "prompt_preview": player_body[:200],
+            "outbound_mode": outbound_mode,
+            "prompt_preview": user_prompt[:200],
         },
     )
 
@@ -540,6 +619,7 @@ async def _render_via_epilogue_agent(
     in_reply_to_email_id: str | None,
     plot_directive: BeatSpec | None,
     beat_id: str | None,
+    outbound_mode: bool = False,
     fact_check_log: list[FactCheckAttempt] | None = None,
 ) -> Email:
     """Render path for terminal beats. Same chat agent as ordinary turns,
@@ -547,20 +627,30 @@ async def _render_via_epilogue_agent(
     closing-email mode (the `_epilogue_framing_block` and
     `_epilogue_digest_block` instruction decorators in `agents.py` only
     activate when the digest is set). No message history — the digest is
-    the run summary."""
+    the run summary.
+
+    `outbound_mode=True` is set when an off-thread terminal fires (rare in
+    the current scenario, but propagated for correctness): the
+    OUTBOUND_MODE_FRAMING composes alongside epilogue framing and the
+    user_prompt is swapped to the synthetic trigger."""
     digest = _build_epilogue_digest()
+    user_prompt = _OUTBOUND_TRIGGER_PROMPT if outbound_mode else player_body
     return await _render_email(
         npc_id=npc_id,
         thread_id=thread_id,
-        user_prompt=player_body,
+        user_prompt=user_prompt,
         plot_directive=plot_directive,
         beat_id=beat_id,
         message_history=None,
         append_history=False,
         epilogue_digest=digest,
+        outbound_mode=outbound_mode,
         fact_check_log=fact_check_log,
         span_label="render epilogue to {npc} on {thread}",
-        extra_span_attrs={"digest_preview": digest[:300]},
+        extra_span_attrs={
+            "digest_preview": digest[:300],
+            "outbound_mode": outbound_mode,
+        },
     )
 
 
@@ -812,6 +902,45 @@ async def _tick(
                 remaining.append(beat)
         eligible = remaining
 
+        # Defer in-flight off-thread scenes. A scene that has already had
+        # at least one fire is "in motion" — and once in motion, advancing
+        # it requires the player to actually engage on its own thread.
+        # Without this filter, a scene whose `exit_when` keys off
+        # `player_replies_to_thread_gte <its-thread>` would re-fire on every
+        # consecutive same-thread tick on a different thread (the Director
+        # picking it cross-thread because no same-thread scene-continuity
+        # match exists), monologuing while the player is mid-conversation
+        # elsewhere. First fires are still allowed cross-thread so an NPC
+        # can introduce themselves on a tick driven by another NPC's reply.
+        if reply_thread_id is not None:
+            # Single linear scan of STATE.emails to count fires per beat,
+            # then O(1) per-beat lookups in the filter loop. Without this,
+            # the loop would scan STATE.emails once per eligible beat.
+            fire_count: dict[str, int] = {}
+            for em in STATE.emails:
+                if em.beat_id is not None:
+                    fire_count[em.beat_id] = fire_count.get(em.beat_id, 0) + 1
+            report_by_id = {be.beat_id: be for be in eligibility_report}
+            after_defer: list[Beat] = []
+            for beat in eligible:
+                if (
+                    beat.kind == "scene"
+                    and beat.thread != reply_thread_id
+                    and fire_count.get(beat.id, 0) > 0
+                ):
+                    note = f"awaiting reply on {beat.thread}"
+                    logfire.info(
+                        "defer in-flight scene {beat_id}: {reason}",
+                        beat_id=beat.id, reason=note,
+                    )
+                    be = report_by_id.get(beat.id)
+                    if be is not None and be.status == "eligible":
+                        be.status = "deferred"
+                        be.blocked_by = note
+                else:
+                    after_defer.append(beat)
+            eligible = after_defer
+
         # One log line per value-blocked beat, so the "why didn't this fire?"
         # answer reads inline in the terminal alongside selection + writes.
         # Beats blocked on a structural prereq (BeatFired not yet) are
@@ -835,6 +964,7 @@ async def _tick(
                 chosen,
                 player_body=player_body,
                 in_response_to=in_response_to,
+                reply_thread_id=reply_thread_id,
             )
             quality_deltas.extend(write_deltas)
             if e is not None:
@@ -1396,10 +1526,9 @@ async def process_send(rec: RecordedSend) -> SendResult:
         chat_email = await _render_via_chat_agent(
             npc_id=rec.recipient_npc_id,
             thread_id=rec.thread_id,
-            player_body=rec.body,
-            in_reply_to_email_id=rec.send_email.id,
             plot_directive=None,
             beat_id=None,
+            player_body=rec.body,
         )
         STATE.emails.append(chat_email)
         new_emails.append(chat_email)

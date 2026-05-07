@@ -116,6 +116,18 @@ class ChatDeps:
     closing-email rules and `_epilogue_digest_block` surfaces the run
     digest verbatim. Caller passes `message_history=None` for epilogue
     runs so the agent works off the digest, not the live thread history.
+
+    `outbound_mode`, when True, switches the chat agent into unprompted
+    outbound mode — the `_outbound_mode_block` decorator emits framing
+    that tells the agent there is no incoming player message on this
+    thread and the user_prompt it received is a system trigger, not a
+    player message to respond to. Set by `_fire_beat` when a chat-driven
+    beat fires on a thread different from the player's reply thread (e.g.
+    Marcus's intro_scene firing on an Aria-thread tick). Without this
+    flag, the chat agent treats the player's other-thread body as if it
+    were addressed to it and replies in kind. Composes with
+    `epilogue_digest` (an off-thread terminal would set both, though that
+    combination is rare).
     """
 
     npc: NPCDossier
@@ -127,6 +139,7 @@ class ChatDeps:
     # stated specifics back without reasoning over message history.
     player_canon: dict[str, PlayerCanonEntry] = field(default_factory=dict)
     epilogue_digest: str | None = None
+    outbound_mode: bool = False
     # When non-None, the output validator appends one FactCheckAttempt
     # per pass so the debug overlay can render refusals + retry counts.
     # `_fire_beat` is the single caller that sets this (only on beats
@@ -194,13 +207,16 @@ Extract candidates fitting any of these categories:
 - claim_about_self: a specific claim the player makes about themselves (a hobby, an opinion held as identity, a habit).
 
 For each candidate, return:
-- key: short snake_case identifier. Use exactly "name" / "role" for those categories. For others, pick a descriptive snake_case key (e.g. "gretchen", "manager_dispute", "tuesday_meditation").
-- summary: a one-line summary of the fact.
+- key: short snake_case identifier. Use exactly "name" / "role" for those categories. For others, pick a descriptive snake_case key naming the SPECIFIC thing (e.g. "gretchen", "manager_dispute", "tuesday_meditation"). Do NOT use a category name (`event`, `claim_about_self`, etc.) as the key — that's the category, not an identifier. Do NOT emit multiple keys for the same underlying concept; if the reply mentions one calibration pilot, produce one key for it, not three near-synonyms.
+- summary: how to render this fact.
+  - For category `name`: the bare name only ("Marcus Chen"). NOT "The player's name is Marcus Chen", NOT a sentence — just the name as it would appear on a business card.
+  - For category `role`: the bare role string ("Senior PM, Identity Platform"). NOT a sentence.
+  - For all other categories: a one-line summary of the fact in third person.
 - literal_text_quote: an EXACT verbatim substring from the player's reply that anchors this fact. Required and load-bearing — if your quote is not a substring of the reply, the candidate will be dropped.
 - salience: 0.0–1.0. High (≥0.7) for direct claims ("I'm Gretchen's cousin"). Medium (0.4–0.7) for incidental but specific mentions ("anyway, my brother in Brisbane says..."). Low (<0.4) for ambiguous, hedged, or speculative text.
 - category: one of the categories above.
 
-Do NOT invent facts. Do NOT extrapolate. If the reply contains no concrete specifics, return an empty candidates list. A polite "Hi, looking forward to it" should produce no candidates.
+Do NOT invent facts. Do NOT extrapolate. If the player's reply uses a bracketed placeholder like `[Candidate Name]`, `<your name>`, or `[YOUR ROLE HERE]`, that is NOT a real value — DROP that candidate entirely (do not extract a `name` or `role`). If the reply contains no concrete specifics, return an empty candidates list. A polite "Hi, looking forward to it" should produce no candidates.
 
 Return: {"candidates": [<one entry per concrete specific>, ...]}.
 """
@@ -262,6 +278,12 @@ _EPILOGUE_FRAMING = """EPILOGUE MODE: This is the closing email of the scenario.
 Tailor the closing email to THIS run. Reference the digest below — quote or echo a pivot reply, name a specific commitment, acknowledge a register the player held throughout — without reading like a template. Stay strictly inside the dossier voice and the directive's must-include / must-not lists.
 
 Length: one short paragraph plus the sign-off. Two paragraphs only if the digest demands it. Land it; don't unfurl.
+"""
+
+
+_OUTBOUND_MODE_FRAMING = """OUTBOUND MODE: There is no incoming player message on this thread to respond to. The user_prompt you received is a system trigger, not a message from the player — do NOT quote it, echo its text, or treat it as input. The player most recently engaged with a different thread; their words there were not addressed to you.
+
+Compose an outbound email per the dossier voice and the plot directive (intent / must-include / must-not). Do NOT open with reply-mode framing ("thanks for your message", "regarding your last note"). If thread history is present below, this email is a fresh outbound contact in that conversation; if there is no history, this is your first message on this thread.
 """
 
 
@@ -340,9 +362,11 @@ def _attach_chat_deps_instructions(
     *,
     fact_checker_agent: Agent,
 ) -> None:
-    """Wire the dossier / directive / commitments / epilogue / fact-check
-    decorators onto the chat agent. The epilogue decorators are no-ops
-    when `ChatDeps.epilogue_digest is None` (the regular chat-turn case)."""
+    """Wire the dossier / directive / commitments / epilogue / outbound /
+    fact-check decorators onto the chat agent. The epilogue decorators are
+    no-ops when `ChatDeps.epilogue_digest is None`, and the outbound
+    decorator is a no-op when `ChatDeps.outbound_mode is False` (the
+    regular reply-mode chat-turn case)."""
 
     @agent.instructions
     def _dossier_block(ctx: RunContext[ChatDeps]) -> str:
@@ -415,6 +439,12 @@ def _attach_chat_deps_instructions(
         if ctx.deps.epilogue_digest is None:
             return ""
         return ctx.deps.epilogue_digest
+
+    @agent.instructions
+    def _outbound_mode_block(ctx: RunContext[ChatDeps]) -> str:
+        if not ctx.deps.outbound_mode:
+            return ""
+        return _OUTBOUND_MODE_FRAMING
 
     @agent.output_validator
     async def _validate_against_directive(
@@ -490,7 +520,7 @@ def build_agents(
         name="summary_agent",
         output_type=str,
         instructions=_SUMMARY_INSTRUCTIONS,
-        model_settings={"max_tokens": 512, "temperature": 1.0, "top_p": 0.95, "extra_body": {"top_k": 64}},
+        model_settings={"max_tokens": 2048, "temperature": 1.0, "top_p": 0.95, "extra_body": {"top_k": 64}},
     )
 
     fact_checker_agent = Agent(
@@ -498,9 +528,7 @@ def build_agents(
         name="fact_checker_agent",
         output_type=NativeOutput(FactCheckResult),
         instructions=_FACT_CHECKER_SYSTEM_PROMPT,
-        # Tight budget — the agent only emits two short lists. The
-        # 2048 budget the classifier uses is overkill here.
-        model_settings={"max_tokens": 512, "temperature": 0.1},
+        model_settings={"max_tokens": 2048, "temperature": 0.1},
     )
 
     history_processors: list = []
@@ -520,10 +548,10 @@ def build_agents(
         deps_type=ChatDeps,
         output_type=str,
         instructions=_BASE_CHAT_INSTRUCTIONS,
-        model_settings={"max_tokens": 800, "temperature": 1.0, "top_p": 0.95, "extra_body": {"top_k": 64}},
+        model_settings={"max_tokens": 2048, "temperature": 1.0, "top_p": 0.95, "extra_body": {"top_k": 64}},
         history_processors=history_processors,
         # Allow one corrective shot when the fact-checker raises ModelRetry.
-        # Exhaustion is caught at the render call site (`_render_via_chat_agent`)
+        # Exhaustion is caught at the render call site (`_render_email`)
         # so a fact-check miss never breaks a player's session.
         retries=2,
     )
@@ -538,24 +566,17 @@ def build_agents(
         name="classifier_agent",
         output_type=NativeOutput(list[AxisResult]),
         instructions=_CLASSIFIER_SYSTEM_PROMPT,
-        # Headroom: Gemma 4 E4B sometimes preambles before emitting the
-        # tool call. At max_tokens=256 it regularly hit `finish_reasons=
-        # ["length"]` on the first attempt, forcing Pydantic AI to retry
-        # and ~2x the latency. 2048 leaves ample budget for the call plus
-        # any preamble the model wants to write — and now scales over
-        # multiple per-axis result entries in one tool call.
         model_settings={"max_tokens": 2048, "temperature": 1.0, "top_p": 0.95, "extra_body": {"top_k": 64}},
     )
 
     # Lower temperature than the classifier — extraction is fact-shaped,
-    # not vibes-shaped. 1024 token budget covers preamble + several
-    # candidate entries.
+    # not vibes-shaped.
     extractor_agent = Agent(
         model,
         name="extractor_agent",
         output_type=NativeOutput(ExtractorOutput),
         instructions=_EXTRACTOR_SYSTEM_PROMPT,
-        model_settings={"max_tokens": 1024, "temperature": 0.3, "top_p": 0.95, "extra_body": {"top_k": 64}},
+        model_settings={"max_tokens": 2048, "temperature": 0.3, "top_p": 0.95, "extra_body": {"top_k": 64}},
     )
 
     # Director defaults to the static fallback output_type; the call site
@@ -567,7 +588,7 @@ def build_agents(
         name="director_agent",
         output_type=NativeOutput(DirectorChoiceFallback),
         instructions=_DIRECTOR_SYSTEM_PROMPT,
-        model_settings={"max_tokens": 512, "temperature": 0.3},
+        model_settings={"max_tokens": 2048, "temperature": 0.3},
     )
 
     return AgentBundle(

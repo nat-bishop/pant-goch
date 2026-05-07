@@ -47,14 +47,15 @@ export function DebugPanel() {
   }, [qualityHistory]);
 
   const eligibleCounts = useMemo(() => {
-    if (!lastTickDecision) return { eligible: 0, blocked: 0, retired: 0 };
-    let eligible = 0, blocked = 0, retired = 0;
+    if (!lastTickDecision) return { eligible: 0, blocked: 0, retired: 0, deferred: 0 };
+    let eligible = 0, blocked = 0, retired = 0, deferred = 0;
     for (const e of lastTickDecision.eligible) {
       if (e.status === "eligible") eligible++;
       else if (e.status === "retired") retired++;
+      else if (e.status === "deferred") deferred++;
       else blocked++;
     }
-    return { eligible, blocked, retired };
+    return { eligible, blocked, retired, deferred };
   }, [lastTickDecision]);
 
   return (
@@ -91,6 +92,8 @@ export function DebugPanel() {
               lastTickDecision
                 ? `${eligibleCounts.eligible} eligible · ${eligibleCounts.blocked} blocked${
                     eligibleCounts.retired ? ` · ${eligibleCounts.retired} retired` : ""
+                  }${
+                    eligibleCounts.deferred ? ` · ${eligibleCounts.deferred} deferred` : ""
                   }`
                 : null
             }
@@ -206,10 +209,11 @@ function EligibleRow({ entry }: { entry: BeatEligibility }) {
   const [expanded, setExpanded] = useState(false);
   const isBlocked = entry.status === "blocked";
   const isRetired = entry.status === "retired";
+  const isDeferred = entry.status === "deferred";
   const canExpand = isBlocked && entry.predicate_tree && entry.predicate_trace;
   const dotClass = isBlocked
     ? "bg-meter-warn"
-    : isRetired
+    : isRetired || isDeferred
       ? "bg-text-muted/50"
       : "bg-presence-active";
   return (
@@ -221,7 +225,7 @@ function EligibleRow({ entry }: { entry: BeatEligibility }) {
         className={clsx(
           "flex w-full items-center gap-1 text-left",
           canExpand ? "cursor-pointer hover:text-text" : "cursor-default",
-          isRetired && "text-text-muted",
+          (isRetired || isDeferred) && "text-text-muted",
         )}
       >
         <span
@@ -237,11 +241,16 @@ function EligibleRow({ entry }: { entry: BeatEligibility }) {
             <span className="text-text-muted/70">[retired]</span>
           </DebugTooltip>
         )}
+        {isDeferred && (
+          <DebugTooltip content="in-flight scene on a different thread than the player's reply — waiting for the player to engage on its own thread">
+            <span className="text-text-muted/70">[deferred]</span>
+          </DebugTooltip>
+        )}
         {canExpand && (
           <span className="ml-auto text-text-muted/70">{expanded ? "▾" : "▸"}</span>
         )}
       </button>
-      {isBlocked && entry.blocked_by && !expanded && (
+      {(isBlocked || isDeferred) && entry.blocked_by && !expanded && (
         <div className="pl-3 text-text-muted">↳ {entry.blocked_by}</div>
       )}
       {expanded && entry.predicate_tree && entry.predicate_trace && (

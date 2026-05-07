@@ -1064,14 +1064,23 @@ class BeatEligibility(BaseModel):
     exit, surfacing a beat-flavored email the engine already knew was
     unnecessary.
 
+    Scenes with at least one prior fire that are eligible by predicates
+    but whose thread differs from the player's reply thread are reported
+    as `deferred` — the scene is waiting for the player to engage on its
+    own thread before continuing. Prevents an in-flight off-thread scene
+    from monologuing on consecutive same-thread player ticks. `_tick`
+    rewrites the report entry from `eligible` to `deferred` upstream of
+    `_select_beat`. The `blocked_by` field carries a short "awaiting reply
+    on {thread}" note for the debug overlay.
+
     `predicate_tree` and `predicate_trace` are populated only for blocked
     beats — the structured form of the same predicate that `blocked_by`
     renders as one line. Frontend renders them as an interactive tree.
     """
 
     beat_id: str
-    status: Literal["eligible", "blocked", "retired"]
-    blocked_by: str | None = None  # describe_predicate output for the first failing pred
+    status: Literal["eligible", "blocked", "retired", "deferred"]
+    blocked_by: str | None = None  # describe_predicate output for the first failing pred (also reused for deferred's "awaiting reply on …" note)
     is_scene: bool = False
     predicate_tree: Predicate | None = None
     predicate_trace: PredicateTrace | None = None

@@ -108,7 +108,7 @@ interface ComputedLayout {
 }
 
 interface StatusInputs {
-  eligibleNow: { beat_id: string; status: "eligible" | "blocked" | "retired" }[];
+  eligibleNow: { beat_id: string; status: "eligible" | "blocked" | "retired" | "deferred" }[];
   firedBeatIds: Set<string>;
 }
 
@@ -117,7 +117,7 @@ function computeLayout(
   beatMeta: Record<string, BeatMeta>,
   status: StatusInputs,
 ): ComputedLayout {
-  const eligibleStatus = new Map<string, "eligible" | "blocked" | "retired">();
+  const eligibleStatus = new Map<string, "eligible" | "blocked" | "retired" | "deferred">();
   for (const e of status.eligibleNow) eligibleStatus.set(e.beat_id, e.status);
 
   // Discover threads in first-appearance order. Stable for visual
