@@ -44,6 +44,7 @@ from .models import (
     PlayerCanonExists,
     PlayerRepliesToThreadGte,
     Predicate,
+    PredicateTrace,
     QualityDelta,
     QualityEquals,
     QualityGte,
@@ -113,6 +114,58 @@ def _evaluate_recent_classifier_value(
         # Under-filled window can't satisfy "all" — len(collected) < window.
         return matches >= pred.window
     return matches >= pred.match
+
+
+def evaluate_predicate_with_trace(
+    pred: Predicate, state: InboxState
+) -> tuple[bool, PredicateTrace]:
+    """Evaluate a predicate and return both the bool result AND a trace tree
+    that mirrors the predicate's tree shape, with each node carrying its
+    own pass/fail.
+
+    Used by `find_due_beats` for blocked beats so the in-browser debug
+    overlay can render the predicate tree with each node colored by its
+    evaluation result. For an `Or_(A, B, C)` where only B passed but the
+    parent failed (because of an outer `Not_`), the frontend can show
+    exactly which arm satisfied — flat string descriptions can't.
+
+    Cheaper than running `evaluate_predicate` twice over different shapes:
+    leaf evaluation calls back into `evaluate_predicate` (single source of
+    truth for leaf semantics); only `Not_` and `Or_` short-circuit are
+    overridden here so every child still records.
+    """
+    if isinstance(pred, Not_):
+        sub_pass, sub_trace = evaluate_predicate_with_trace(pred.of, state)
+        passed = not sub_pass
+        return passed, PredicateTrace(
+            passed=passed,
+            # Render the negation framing, but expose the inner sub-tree
+            # via children so a tree-renderer can collapse "not(...)" into
+            # an explicit "NOT" header above the inner.
+            label=f"not({sub_trace.label})",
+            children=[sub_trace],
+        )
+    if isinstance(pred, Or_):
+        # Walk every child even after one passes — the frontend wants the
+        # full picture. `evaluate_predicate` short-circuits via `any()`,
+        # which is correct for hot-path eval but wrong here.
+        children: list[PredicateTrace] = []
+        any_passed = False
+        for sub in pred.of:
+            sub_pass, sub_trace = evaluate_predicate_with_trace(sub, state)
+            children.append(sub_trace)
+            if sub_pass:
+                any_passed = True
+        return any_passed, PredicateTrace(
+            passed=any_passed,
+            label="or(" + " | ".join(c.label for c in children) + ")",
+            children=children,
+        )
+    # Leaf: defer to evaluate_predicate (single source of truth for leaf
+    # semantics — RecentClassifierValue's window walk, BeatFired's set
+    # check, etc.). describe_predicate gives the concrete-value label.
+    passed = evaluate_predicate(pred, state)
+    return passed, PredicateTrace(passed=passed, label=describe_predicate(pred, state))
 
 
 def describe_predicate(pred: Predicate, state: InboxState) -> str:
@@ -341,11 +394,18 @@ def apply_classify_effect(
 # ───────────────────────── player canon mutation ─────────────────────────
 
 
+# Promotion threshold for extractor candidates. Below this salience, a
+# candidate is treated as too speculative to commit to canon. Exposed so
+# main.py can categorize candidates (anchor_fail / below_salience /
+# promoted) without duplicating the magic number.
+CANON_SALIENCE_THRESHOLD = 0.5
+
+
 def apply_canon_extraction(
     state: InboxState,
     candidates: list,  # list[CanonCandidate] from agents.py — typed loosely to avoid an import cycle
     turn_of_origin: int,
-    salience_threshold: float = 0.5,
+    salience_threshold: float = CANON_SALIENCE_THRESHOLD,
 ) -> list[str]:
     """Promote extractor-agent candidates above the salience threshold into
     `state.player_canon`. REPLACE semantics on key collision (later mention
@@ -424,10 +484,19 @@ def find_due_beats(
             # Downstream of unfired work — omit from report (noise).
             continue
         else:
+            # Build a structured trace alongside the one-line description so
+            # the debug overlay can render an interactive tree (with each
+            # node colored by its own pass/fail). `blocked_by` stays as the
+            # at-a-glance summary for the per-tick console log + the panel's
+            # collapsed view; `predicate_tree` + `predicate_trace` drive
+            # expand-on-click in the panel.
+            _, trace = evaluate_predicate_with_trace(first_failed, state)
             report.append(BeatEligibility(
                 beat_id=beat.id, status="blocked",
                 blocked_by=describe_predicate(first_failed, state),
                 multi_turn=is_multi,
+                predicate_tree=first_failed,
+                predicate_trace=trace,
             ))
 
     # Prune completed beats from pending; keep multi-turn beats around so

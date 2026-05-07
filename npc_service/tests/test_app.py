@@ -631,6 +631,99 @@ async def test_validator_raises_when_fact_checker_flags():
             await bundle.chat_agent.run("hello", deps=_validator_test_deps())
 
 
+# ───────────────────────── /scenario_meta + /playtest_note ─────────────────────────
+
+
+def test_scenario_meta_returns_qualities_beats_and_graph(client):
+    """The DEV-only debug overlay fetches /scenario_meta once at boot to
+    populate hover tooltips (quality descriptions, beat metadata) and the
+    scenario-graph view. Shape must be stable: each section keyed by id,
+    edges have from/to/kind."""
+    payload = client.get("/scenario_meta").json()
+    assert "qualities" in payload
+    assert "beats" in payload
+    assert "beat_graph" in payload
+
+    # Quality entries carry the authored description + bounds + flags.
+    eng = payload["qualities"]["engagement"]
+    assert "description" in eng
+    assert eng["type"] == "float"
+    assert eng["surface_to_chat"] is False
+
+    # Beat entries carry npc/thread/flags/summary.
+    welcome = payload["beats"]["aria.welcome"]
+    assert welcome["npc"] == "aria"
+    assert welcome["thread"] == "aria"
+    assert welcome["pre_authored"] is True
+
+    # Graph: nodes for every beat, edges only for beats with BeatFired refs.
+    node_ids = {n["id"] for n in payload["beat_graph"]["nodes"]}
+    assert node_ids == set(payload["beats"].keys())
+    # Mutex edge: aria.complete_standard's `Not_(BeatFired complete_warm)`
+    # produces a mutex edge from complete_warm → complete_standard.
+    edges = payload["beat_graph"]["edges"]
+    mutex_pairs = {
+        (e["from"], e["to"]) for e in edges if e["kind"] == "mutex"
+    }
+    assert ("aria.complete_warm", "aria.complete_standard") in mutex_pairs
+
+
+def test_send_emits_canon_and_classifier_history_on_decision(client):
+    """A successful /send's tick_decision payload includes the new
+    structured fields the debug overlay reads — canon snapshot, fired
+    beat ids, classifier history, and (empty) canon_writes when the
+    extractor stub returned no candidates."""
+    welcome = client.get("/inbox").json()["folders"]["Inbox"][0]
+    events = list(consume_sse(client.stream("POST", "/send", json={
+        "in_reply_to": welcome["id"], "recipient": "Aria", "body": "hello",
+    })))
+    decision = next(e for e in events if e["type"] == "tick_decision")["decision"]
+    # Structural fields the panel relies on — present (possibly empty).
+    assert "canon_writes" in decision
+    assert "canon_drops" in decision
+    assert "player_canon" in decision
+    assert "fact_check" in decision
+    assert "classifier_history" in decision
+    assert "fired_beat_ids" in decision
+    # Stub returns zero candidates; canon_writes/drops should be empty.
+    assert decision["canon_writes"] == []
+    assert decision["canon_drops"] == []
+    # Boot-tick fires aria.welcome (pre-authored); first /send fires
+    # aria.loop. Both should now be in the snapshot — welcome enters
+    # fired_beat_ids, loop is multi-turn so it does NOT.
+    assert "aria.welcome" in decision["fired_beat_ids"]
+
+
+def test_playtest_note_writes_jsonl_line(client, tmp_path, monkeypatch):
+    """POST /playtest_note appends one JSONL record to a per-session file
+    under playtest_notes/. Snapshots last_tick_decision + qualities +
+    canon + recent emails so a "wait what was happening" question is
+    answerable from the file alone."""
+    monkeypatch.chdir(tmp_path)
+    # Drive at least one tick so LAST_TICK_DECISION is populated.
+    welcome = client.get("/inbox").json()["folders"]["Inbox"][0]
+    list(consume_sse(client.stream("POST", "/send", json={
+        "in_reply_to": welcome["id"], "recipient": "Aria", "body": "hi",
+    })))
+    res = client.post("/playtest_note", json={"note": "noticed odd phrasing"}).json()
+    assert res["note_count"] == 1
+    notes_path = tmp_path / "playtest_notes" / f"{main.SESSION_ID}.jsonl"
+    assert notes_path.exists()
+    line = notes_path.read_text(encoding="utf-8").strip()
+    rec = json.loads(line)
+    assert rec["note"] == "noticed odd phrasing"
+    assert rec["last_tick_decision"]["fired_beat_id"] == "aria.loop"
+    assert "qualities" in rec
+    assert "player_canon" in rec
+    assert isinstance(rec["recent_emails"], list)
+
+
+def test_playtest_note_rejects_empty_body(client):
+    """Empty notes are useless — reject at the schema layer (Field(min_length=1))."""
+    r = client.post("/playtest_note", json={"note": ""})
+    assert r.status_code == 422
+
+
 # ───────────────────────── helpers ─────────────────────────
 
 

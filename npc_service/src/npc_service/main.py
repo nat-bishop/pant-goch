@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import datetime as dt
 import importlib.metadata
 import json
 import logging
@@ -20,6 +21,7 @@ from logfire import ConsoleOptions
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exception_handlers import http_exception_handler
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 from pydantic_ai.messages import ModelResponse, TextPart
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
@@ -51,12 +53,20 @@ from .models import (
     AxisResult,
     Beat,
     BeatEligibility,
+    BeatFired,
     BeatSpec,
+    CanonCandidate,
     CanonCategory,
+    CanonDropRecord,
     Effect,
     Email,
+    FactCheckAttempt,
+    FactCheckTrace,
     InboxState,
+    Not_,
     OpenRequest,
+    Or_,
+    Predicate,
     QualityDelta,
     Reply,
     Scenario,
@@ -65,6 +75,7 @@ from .models import (
     load_scenario,
 )
 from .spine import (
+    CANON_SALIENCE_THRESHOLD,
     apply_canon_extraction,
     apply_classify_effect,
     apply_literal_effects,
@@ -130,6 +141,16 @@ SETTINGS: Settings | None = None  # populated at lifespan boot; read by hot-path
 LLAMA_PROC: subprocess.Popen | None = None
 ACTION_LOCK = asyncio.Lock()  # serialises mutating endpoints
 EXTERNAL_LLAMA_PROBE_TIMEOUT_SECONDS = 2.0  # tests set this to 0.1 for fast boot
+# Most recent tick decision, updated from `_tick` after every scheduler
+# walk. Read by `/playtest_note` so a one-click annotation captures the
+# engine state at the moment the player flagged something. Held globally
+# rather than threaded through ChatDeps because note submission is
+# completely out-of-band from the /send pipeline.
+LAST_TICK_DECISION: TickDecision | None = None
+# Boot-stamped per-process id used to bucket playtest notes. One JSONL file
+# per server boot under `playtest_notes/{SESSION_ID}.jsonl`. Solo-dev
+# workflow: a fresh process is "this playthrough"; no rotation, no retention.
+SESSION_ID: str | None = None
 
 
 # ───────────────────────── lifespan ─────────────────────────
@@ -137,10 +158,13 @@ EXTERNAL_LLAMA_PROBE_TIMEOUT_SECONDS = 2.0  # tests set this to 0.1 for fast boo
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    global SCENARIO, STATE, AGENTS, SETTINGS, LLAMA_PROC
+    global SCENARIO, STATE, AGENTS, SETTINGS, LLAMA_PROC, SESSION_ID
 
     settings = Settings()
     SETTINGS = settings
+    # Per-boot id used to bucket playtest notes; uuid suffix disambiguates
+    # boots that happen within the same second.
+    SESSION_ID = f"{dt.datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
     scenario_path = settings.scenario_path or Path(__file__).resolve().parents[2] / "scenario.yaml"
     logfire.info("loading scenario from {path}", path=str(scenario_path))
     SCENARIO = load_scenario(scenario_path)
@@ -251,15 +275,17 @@ async def _fire_beat(
     *,
     player_body: str | None,
     in_response_to: str | None,
-) -> tuple[Email | None, list[QualityDelta], int | None]:
+) -> tuple[Email | None, list[QualityDelta], int | None, FactCheckTrace | None]:
     """Fire a beat and produce its email plus tick-decision side info.
 
-    Returns `(email, write_deltas, multi_turn_turn)`:
+    Returns `(email, write_deltas, multi_turn_turn, fact_check)`:
       - `email`: the rendered email, or None on silent-complete.
       - `write_deltas`: any quality changes from literal effects (empty if
         the beat has none, or if writes were no-ops).
       - `multi_turn_turn`: 1-indexed fire count for multi-turn beats
         (computed after the email is appended), None for fire-once beats.
+      - `fact_check`: per-attempt validator trace; None unless the beat
+        had `validate_facts: true` AND wasn't pre-authored.
 
     Two render paths:
     - `spec.pre_authored_prose` set → ship verbatim (no LLM call). The
@@ -273,7 +299,7 @@ async def _fire_beat(
     """
     assert STATE is not None and SCENARIO is not None and AGENTS is not None
     if beat.id in STATE.fired_beat_ids:
-        return None, [], None
+        return None, [], None, None
 
     # Literal effects apply BEFORE rendering so multi-turn re-fires record
     # the new value even if rendering fails. `apply_literal_effects` logs
@@ -292,6 +318,7 @@ async def _fire_beat(
     # so the chat-driven fire is still searchable by beat id.
     is_multi = beat.multi_turn
     email: Email | None
+    fact_check: FactCheckTrace | None = None
     if beat.spec.pre_authored_prose is not None:
         npc = SCENARIO.npc_by_id[beat.npc]
         email = Email(
@@ -327,6 +354,11 @@ async def _fire_beat(
         # Terminals run the chat agent in epilogue mode (digest in ChatDeps);
         # everything else runs an ordinary chat turn.
         renderer = _render_via_epilogue_agent if beat.ends_session else _render_via_chat_agent
+        # None when the beat didn't opt in — the validator's append-when-non-None
+        # check is the single mechanism for keeping unflagged beats trace-free.
+        fact_check_log: list[FactCheckAttempt] | None = (
+            [] if beat.spec.validate_facts else None
+        )
         email = await renderer(
             npc_id=beat.npc,
             thread_id=beat.thread,
@@ -334,7 +366,14 @@ async def _fire_beat(
             in_reply_to_email_id=in_response_to,
             plot_directive=beat.spec,
             beat_id=beat.id,
+            fact_check_log=fact_check_log,
         )
+        if fact_check_log is not None:
+            # Empty list means the validator no-op'd (shouldn't happen since
+            # validate_facts requires must_include_facts/must_not at load
+            # time) — leave fact_check None in that case rather than ship
+            # an attempts=[] payload that's semantically misleading.
+            fact_check = FactCheckTrace(attempts=fact_check_log) if fact_check_log else None
 
     multi_turn_turn: int | None = None
     STATE.emails.append(email)
@@ -349,7 +388,7 @@ async def _fire_beat(
     # Not_(BeatFired …) against terminals that supersede them).
     if not is_multi:
         STATE.fired_beat_ids.add(beat.id)
-    return email, write_deltas, multi_turn_turn
+    return email, write_deltas, multi_turn_turn, fact_check
 
 
 def _seed_thread_history(thread_id: str, body: str) -> None:
@@ -375,6 +414,7 @@ async def _render_email(
     message_history: list | None = None,
     append_history: bool = False,
     epilogue_digest: str | None = None,
+    fact_check_log: list[FactCheckAttempt] | None = None,
     span_label: str = "render to {npc} on {thread}",
     extra_span_attrs: dict | None = None,
 ) -> Email:
@@ -383,7 +423,11 @@ async def _render_email(
     `append_history=True`, extends `STATE.thread_messages[thread_id]` with
     `result.new_messages()`. When `epilogue_digest` is set, ChatDeps
     switches the agent into closing-email mode (different system framing,
-    digest surfaced via `@instructions`)."""
+    digest surfaced via `@instructions`).
+
+    `fact_check_log`, when supplied, is a mutable list the validator
+    appends to per attempt; `_fire_beat` packages it into a
+    `FactCheckTrace` after the render returns."""
     assert STATE is not None and SCENARIO is not None and AGENTS is not None
     npc = SCENARIO.npc_by_id[npc_id]
     deps = ChatDeps(
@@ -400,6 +444,7 @@ async def _render_email(
             current_turn=len(STATE.replies),
         ),
         epilogue_digest=epilogue_digest,
+        fact_check_log=fact_check_log,
     )
 
     with LLM_LOGFIRE.span(
@@ -454,6 +499,7 @@ async def _render_via_chat_agent(
     in_reply_to_email_id: str | None,
     plot_directive: BeatSpec | None,
     beat_id: str | None,
+    fact_check_log: list[FactCheckAttempt] | None = None,
 ) -> Email:
     """Render path for chat turns and non-terminal beat fires. Appends to
     thread_messages so the next turn sees this exchange in conversation history."""
@@ -467,6 +513,7 @@ async def _render_via_chat_agent(
         beat_id=beat_id,
         message_history=list(history),
         append_history=True,
+        fact_check_log=fact_check_log,
         span_label="render chat to {npc} on {thread}",
         extra_span_attrs={
             "plot": plot_directive is not None,
@@ -484,6 +531,7 @@ async def _render_via_epilogue_agent(
     in_reply_to_email_id: str | None,
     plot_directive: BeatSpec | None,
     beat_id: str | None,
+    fact_check_log: list[FactCheckAttempt] | None = None,
 ) -> Email:
     """Render path for terminal beats. Same chat agent as ordinary turns,
     but ChatDeps carries an `epilogue_digest` that flips it into
@@ -501,6 +549,7 @@ async def _render_via_epilogue_agent(
         message_history=None,
         append_history=False,
         epilogue_digest=digest,
+        fact_check_log=fact_check_log,
         span_label="render epilogue to {npc} on {thread}",
         extra_span_attrs={"digest_preview": digest[:300]},
     )
@@ -661,6 +710,8 @@ async def _tick(
     player_body: str | None = None,
     in_response_to: str | None = None,
     classifier_deltas: list[QualityDelta] | None = None,
+    canon_writes: list[CanonCandidate] | None = None,
+    canon_drops: list[CanonDropRecord] | None = None,
 ) -> tuple[list[Email], set[str], TickDecision]:
     """Walk the beat scheduler. Returns
     `(newly-emitted emails, threads where a chat-driven beat fired, decision)`.
@@ -672,12 +723,12 @@ async def _tick(
     via the `tick_decision` SSE event AND attached to the tick span as
     queryable Logfire attributes.
 
-    `classifier_deltas` carries any quality writes that already happened
-    upstream (the player-reply classifier in `_send_stream` runs before
-    `_tick` so terminals can read post-classifier qualities). They're
-    folded into the same `quality_deltas` list as literal effects from the
-    fired beat — the overlay's "what changed this tick" panel is the
-    union of both sources.
+    `classifier_deltas`, `canon_writes`, and `canon_drops` carry the
+    upstream pre-tick state mutations from `_send_stream` (classifier and
+    extractor run before `_tick` so terminals can read post-classifier
+    qualities and canon-gated predicates). They're folded into the
+    TickDecision payload so the overlay surfaces "what changed this tick"
+    in one place across all sources.
     """
     assert STATE is not None and SCENARIO is not None
     new_emails: list[Email] = []
@@ -701,8 +752,9 @@ async def _tick(
         chosen_beat_id = chosen.id if chosen is not None else None
         fired_beat_id: str | None = None
         multi_turn_turn: int | None = None
+        fact_check: FactCheckTrace | None = None
         if chosen is not None:
-            e, write_deltas, turn = await _fire_beat(
+            e, write_deltas, turn, trace = await _fire_beat(
                 chosen,
                 player_body=player_body,
                 in_response_to=in_response_to,
@@ -712,6 +764,7 @@ async def _tick(
                 new_emails.append(e)
                 fired_beat_id = chosen.id
                 multi_turn_turn = turn
+                fact_check = trace
                 # Only chat-driven (non-pre-authored) fires count as covering
                 # the thread for the chat-turn fallback purposes.
                 if chosen.spec.pre_authored_prose is None:
@@ -726,6 +779,28 @@ async def _tick(
             quality_deltas=quality_deltas,
             fired_beat_id=fired_beat_id,
             multi_turn_turn=multi_turn_turn,
+            canon_writes=list(canon_writes or []),
+            canon_drops=list(canon_drops or []),
+            player_canon={
+                k: {
+                    "summary": v.summary,
+                    "literal_text_quote": v.literal_text_quote,
+                    "salience": v.salience,
+                    "category": v.category.value,
+                    "turn_of_origin": v.turn_of_origin,
+                }
+                for k, v in STATE.player_canon.items()
+            },
+            fact_check=fact_check,
+            # Per-axis history snapshot — most-recent-first values per axis,
+            # capped at 10 (matches roughly two screens of pill chips).
+            classifier_history=build_recent_classifier_history(
+                STATE.replies, axes=None, per_axis=10,
+            ),
+            # Snapshot AFTER the fire — so the graph view and post-load
+            # recovery see the up-to-date fired set without per-tick
+            # accumulation logic on the frontend.
+            fired_beat_ids=sorted(STATE.fired_beat_ids),
         )
         # Span attributes give Logfire UI users a queryable overview without
         # parsing message strings. The full decision lands as `decision`;
@@ -737,6 +812,11 @@ async def _tick(
         span.set_attribute("fired_beat_id", fired_beat_id)
         span.set_attribute("quality_delta_count", len(quality_deltas))
         span.set_attribute("new_email_count", len(new_emails))
+        # Stash for /playtest_note so out-of-band annotations can snapshot
+        # the engine state at the moment of capture without reaching back
+        # through SSE history.
+        global LAST_TICK_DECISION
+        LAST_TICK_DECISION = decision
         return new_emails, plot_fired_threads, decision
 
 
@@ -785,6 +865,191 @@ async def get_state() -> dict:
     if STATE is None:
         raise HTTPException(503, "state not initialised")
     return STATE.public_view()
+
+
+class PlaytestNoteRequest(BaseModel):
+    note: str = Field(min_length=1)
+
+
+@app.post("/playtest_note")
+async def post_playtest_note(req: PlaytestNoteRequest) -> dict:
+    """Append one playtest annotation to a per-boot JSONL file.
+
+    Snapshots {timestamp, note, last_tick_decision, qualities, canon,
+    recent_emails (last 10 with body)} so a "wait what was happening when I
+    noticed this" question is answerable from the file alone — no need to
+    re-correlate with logs.
+
+    Returns the count of notes written this session so the panel can show
+    a session counter ("3 notes saved").
+    """
+    if STATE is None or SESSION_ID is None:
+        raise HTTPException(503, "state not initialised")
+    notes_dir = Path("playtest_notes")
+    notes_dir.mkdir(exist_ok=True)
+    notes_path = notes_dir / f"{SESSION_ID}.jsonl"
+    payload = {
+        "timestamp": dt.datetime.now().isoformat(timespec="seconds"),
+        "note": req.note,
+        "session_id": SESSION_ID,
+        "last_tick_decision": (
+            LAST_TICK_DECISION.model_dump() if LAST_TICK_DECISION else None
+        ),
+        "qualities": dict(STATE.qualities),
+        "player_canon": {
+            k: {
+                "summary": v.summary,
+                "literal_text_quote": v.literal_text_quote,
+                "salience": v.salience,
+                "category": v.category.value,
+                "turn_of_origin": v.turn_of_origin,
+            }
+            for k, v in STATE.player_canon.items()
+        },
+        "recent_emails": [
+            {
+                "id": e.id,
+                "beat_id": e.beat_id,
+                "thread_id": e.thread_id,
+                "sender": e.sender,
+                "body": e.body,
+            }
+            for e in STATE.emails[-10:]
+        ],
+    }
+    line = json.dumps(payload, ensure_ascii=False) + "\n"
+    # Append-mode write is atomic on Linux/macOS for sub-PIPE_BUF lines and
+    # sufficient on Windows for our scale. /send is serialized via
+    # ACTION_LOCK; /playtest_note runs concurrently with /send but the OS
+    # append-write is the right primitive for one-line records.
+    with notes_path.open("a", encoding="utf-8") as f:
+        f.write(line)
+    # Cheap count for the panel — line count of the file. Capped at the
+    # current write so we don't re-walk it on every call.
+    return {
+        "session_id": SESSION_ID,
+        "path": str(notes_path),
+        "note_count": _count_lines(notes_path),
+    }
+
+
+def _count_lines(path: Path) -> int:
+    """Plain line-count for the playtest-note counter. Sub-millisecond at
+    realistic note volumes — no need to maintain a counter in memory."""
+    try:
+        with path.open("rb") as f:
+            return sum(1 for _ in f)
+    except FileNotFoundError:
+        return 0
+
+
+@app.get("/scenario_meta")
+async def get_scenario_meta() -> dict:
+    """Static scenario metadata used by the DEV-only debug overlay.
+
+    Returns three sections:
+      - `qualities`: per-quality {description, type, min, max, default,
+        surface_to_chat, allowed_values}. Drives hover tooltips on quality
+        names anywhere they appear in the panel.
+      - `beats`: per-beat metadata (npc, thread, flags, intent/prose
+        summary). Drives hover tooltips on beat ids and the scenario-graph
+        node detail panel.
+      - `beat_graph`: nodes (beat ids in author order) + edges. Edges
+        come in two kinds — `structural` (positive BeatFired prereq:
+        upstream MUST fire first) and `mutex` (Not_(BeatFired): upstream
+        firing BLOCKS this one). Frontend renders both with different
+        glyphs.
+
+    Always-on (not DEV-gated server-side) since the data is harmless and
+    the production frontend doesn't hit it. Computed per request — the
+    scenario has <30 beats so caching is overkill.
+    """
+    if SCENARIO is None:
+        raise HTTPException(503, "scenario not loaded")
+    qualities_payload = {
+        q.id: {
+            "description": q.description,
+            "type": q.type,
+            "min": q.min,
+            "max": q.max,
+            "default": q.default,
+            "surface_to_chat": q.surface_to_chat,
+            "allowed_values": q.allowed_values,
+        }
+        for q in SCENARIO.qualities
+    }
+    beats_payload = {b.id: _beat_meta(b) for b in SCENARIO.beats}
+    return {
+        "qualities": qualities_payload,
+        "beats": beats_payload,
+        "beat_graph": _build_beat_graph(SCENARIO),
+    }
+
+
+def _beat_meta(beat: Beat) -> dict:
+    """One beat's meta payload for /scenario_meta. Same `kind` flags as the
+    Director's intent_summary uses — frontend chooses icons from these."""
+    if beat.spec.pre_authored_prose is not None:
+        # First non-empty line, truncated; matches the Director's preview.
+        prose_lines = [
+            ln for ln in beat.spec.pre_authored_prose.strip().splitlines()
+            if ln.strip()
+        ]
+        summary = (prose_lines[0] if prose_lines else "")[:160]
+    else:
+        first_intent_line = beat.spec.intent.strip().splitlines()[0] if beat.spec.intent.strip() else ""
+        summary = first_intent_line[:160]
+    return {
+        "id": beat.id,
+        "npc": beat.npc,
+        "thread": beat.thread,
+        "multi_turn": beat.multi_turn,
+        "ends_session": beat.ends_session,
+        "pre_authored": beat.spec.pre_authored_prose is not None,
+        "validate_facts": beat.spec.validate_facts,
+        "summary": summary,
+    }
+
+
+def _build_beat_graph(scenario: Scenario) -> dict:
+    """Build the beat adjacency for the scenario-graph view.
+
+    Walk each beat's preconditions and emit one edge per `BeatFired`
+    reference encountered. Positive form (`BeatFired` directly under
+    preconditions / inside `Or_`) is structural; `Not_(BeatFired ...)`
+    is the mutex idiom — same beat reference, different visual glyph.
+
+    Recurses through `Or_`/`Not_` so deeply-nested gates get every
+    underlying BeatFired surfaced. Edges may duplicate if the same
+    upstream is referenced more than once on a beat; the frontend
+    de-duplicates by (from, to, kind) at render.
+    """
+    nodes = [
+        {"id": b.id, "thread": b.thread, "npc": b.npc}
+        for b in scenario.beats
+    ]
+    edges: list[dict] = []
+
+    def walk(pred: Predicate, target: str, in_negation: bool) -> None:
+        if isinstance(pred, BeatFired):
+            kind = "mutex" if in_negation else "structural"
+            edges.append({"from": pred.beat, "to": target, "kind": kind})
+            return
+        if isinstance(pred, Not_):
+            walk(pred.of, target, not in_negation)
+            return
+        if isinstance(pred, Or_):
+            for sub in pred.of:
+                walk(sub, target, in_negation)
+            return
+        # Other predicate kinds reference qualities / threads / canon — not
+        # beat-to-beat edges. Ignored at the graph layer.
+
+    for beat in scenario.beats:
+        for pred in beat.preconditions:
+            walk(pred, beat.id, in_negation=False)
+
+    return {"nodes": nodes, "edges": edges}
 
 
 @app.get("/inbox")
@@ -934,37 +1199,50 @@ async def _send_stream(req: SendRequest) -> AsyncIterator[bytes]:
                     out_deltas=classifier_deltas,
                 )
 
+            canon_writes: list[CanonCandidate] = []
+            canon_drops: list[CanonDropRecord] = []
             if extractor_output is not None and extractor_output.candidates:
-                # Substring-validate each candidate's literal_text_quote
-                # against the actual reply before promoting. This is the
-                # anti-hallucination floor — extractor claims an exact
-                # quote; we drop any candidate whose quote isn't in the
-                # reply text. (Belt-and-suspenders: the prompt asks for
-                # this too.)
-                anchored = [
-                    c for c in extractor_output.candidates
-                    if c.literal_text_quote in body
-                ]
-                dropped = len(extractor_output.candidates) - len(anchored)
-                if dropped:
+                # Categorize every candidate so the debug overlay shows BOTH
+                # what was promoted AND what the extractor proposed but the
+                # engine rejected. Two rejection reasons:
+                #   - anchor_fail: literal_text_quote isn't a verbatim
+                #     substring of the reply (anti-hallucination floor)
+                #   - below_salience: anchored, but extractor confidence
+                #     below the promotion threshold
+                # apply_canon_extraction also enforces the salience floor
+                # internally, so promoted candidates ALWAYS clear it; we
+                # categorize here so canon_drops carries the dropped ones
+                # for surfacing without re-running any logic.
+                promoted: list[CanonCandidate] = []
+                for c in extractor_output.candidates:
+                    if c.literal_text_quote not in body:
+                        canon_drops.append(CanonDropRecord(candidate=c, reason="anchor_fail"))
+                    elif c.salience < CANON_SALIENCE_THRESHOLD:
+                        canon_drops.append(CanonDropRecord(candidate=c, reason="below_salience"))
+                    else:
+                        promoted.append(c)
+                if canon_drops:
                     logfire.warn(
-                        "extractor candidates dropped (literal_text_quote "
-                        "not a substring of reply)",
-                        dropped=dropped,
-                        kept=len(anchored),
+                        "extractor candidates dropped",
+                        anchor_fail=sum(1 for d in canon_drops if d.reason == "anchor_fail"),
+                        below_salience=sum(1 for d in canon_drops if d.reason == "below_salience"),
+                        kept=len(promoted),
                     )
-                if anchored:
+                if promoted:
                     apply_canon_extraction(
                         STATE,
-                        anchored,
+                        promoted,
                         turn_of_origin=len(STATE.replies),
                     )
+                    canon_writes = promoted
 
             try:
                 new_emails, plot_fired_threads, decision = await _tick(
                     player_body=body,
                     in_response_to=send_email.id,
                     classifier_deltas=classifier_deltas,
+                    canon_writes=canon_writes,
+                    canon_drops=canon_drops,
                 )
 
                 # Chat-turn fallback fires when no chat-driven beat covered

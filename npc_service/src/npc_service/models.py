@@ -838,6 +838,23 @@ class PlayerCanonEntry:
     turn_of_origin: int
 
 
+class CanonCandidate(BaseModel):
+    """One extractor-produced canon candidate. Promoted to `state.player_canon`
+    by `apply_canon_extraction` if salience ≥ threshold AND `literal_text_quote`
+    is a verbatim substring of the player's reply.
+
+    Lives in models (not agents.py) so the debug-panel TickDecision payload
+    can reference it without a cyclic import. The extractor agent's
+    ExtractorOutput re-imports this type.
+    """
+
+    key: str = Field(min_length=1, pattern=r"^[a-z][a-z0-9_]*$")
+    summary: str = Field(min_length=1)
+    literal_text_quote: str = Field(min_length=1)
+    salience: float = Field(ge=0.0, le=1.0)
+    category: CanonCategory
+
+
 @dataclass
 class PendingBeat:
     """A beat queued to fire when its preconditions become satisfied."""
@@ -945,6 +962,30 @@ class SendRequest(BaseModel):
 # ───────────────────────── tick decision payload ─────────────────────────
 
 
+class PredicateTrace(BaseModel):
+    """Per-node pass/fail trace mirroring a Predicate's tree shape.
+
+    Produced by `evaluate_predicate_with_trace` for blocked beats so the
+    debug overlay can render the predicate tree with each node colored by
+    its evaluation result (which arm of an `Or_` satisfied vs. didn't,
+    which leaf failed under a `Not_`).
+
+    `label` carries the per-node `describe_predicate` output (concrete
+    values inline, e.g. `engagement>=4.0 got 2.5`) — the frontend renders
+    it verbatim instead of reconstructing leaf descriptions from live
+    state it doesn't have.
+
+    Children layout matches the source Predicate:
+      - `Not_`  → exactly one child (the inverted sub-predicate's trace)
+      - `Or_`   → one child per `of[i]`
+      - leaves  → empty list
+    """
+
+    passed: bool
+    label: str
+    children: list["PredicateTrace"] = Field(default_factory=list)
+
+
 class BeatEligibility(BaseModel):
     """One beat's eligibility classification on a single tick. The
     `find_due_beats` reporter returns one of these per "interesting" beat:
@@ -953,12 +994,18 @@ class BeatEligibility(BaseModel):
     downstream of unfired work) are omitted entirely — the author already
     knows they need to fire the upstream first, and listing them every tick
     is noise.
+
+    `predicate_tree` and `predicate_trace` are populated only for blocked
+    beats — the structured form of the same predicate that `blocked_by`
+    renders as one line. Frontend renders them as an interactive tree.
     """
 
     beat_id: str
     status: Literal["eligible", "blocked"]
     blocked_by: str | None = None  # describe_predicate output for the first failing pred
     multi_turn: bool = False
+    predicate_tree: Predicate | None = None
+    predicate_trace: PredicateTrace | None = None
 
 
 class QualityDelta(BaseModel):
@@ -972,6 +1019,47 @@ class QualityDelta(BaseModel):
     before: float | str | None
     after: float | str
     source: str
+
+
+class CanonDropRecord(BaseModel):
+    """One extractor candidate that did NOT get promoted to player_canon,
+    paired with the reason. Surfaced in the debug overlay so authors can
+    see what the extractor proposed but the engine rejected — currently
+    invisible (only logfire-warned) which makes debugging extractor prompt
+    drift painful.
+
+    Reasons:
+      - "anchor_fail"     — `literal_text_quote` was not a verbatim substring
+                            of the player's reply (anti-hallucination floor)
+      - "below_salience"  — anchored, but extractor confidence was below the
+                            promotion threshold (default 0.5)
+    """
+
+    candidate: CanonCandidate
+    reason: Literal["anchor_fail", "below_salience"]
+
+
+class FactCheckAttempt(BaseModel):
+    """One pass through the chat agent's fact-check validator on a beat
+    flagged `validate_facts: true`. `flagged` attempts trigger ModelRetry
+    so the chat agent re-renders; `passed` attempts let the email through.
+    """
+
+    status: Literal["passed", "flagged"]
+    missing_facts: list[str] = Field(default_factory=list)
+    violations: list[str] = Field(default_factory=list)
+
+
+class FactCheckTrace(BaseModel):
+    """Per-fire fact-check trace, populated only when the firing beat had
+    `validate_facts: true`. Empty `attempts` is impossible — the validator
+    always runs at least once when enabled.
+
+    The frontend reads `attempts[-1].status` to decide whether to render a
+    pass badge or a refusal indicator, and `len(attempts)` for retry count.
+    """
+
+    attempts: list[FactCheckAttempt]
 
 
 class TickDecision(BaseModel):
@@ -989,3 +1077,33 @@ class TickDecision(BaseModel):
     quality_deltas: list[QualityDelta] = Field(default_factory=list)
     fired_beat_id: str | None = None
     multi_turn_turn: int | None = None  # nth fire of a multi-turn beat (1-indexed)
+    # Canon writes from the extractor on this tick. `canon_writes` are the
+    # promoted candidates (anchored + above salience threshold).
+    # `canon_drops` are the candidates the extractor proposed but the
+    # engine rejected, with reason. Both empty on ticks where the extractor
+    # found no candidates (the common case).
+    canon_writes: list[CanonCandidate] = Field(default_factory=list)
+    canon_drops: list[CanonDropRecord] = Field(default_factory=list)
+    # Snapshot of `state.player_canon` AFTER this tick's writes. Lets the
+    # debug overlay show the current ledger without accumulating diffs
+    # locally, and recovers correctly after page reload (next /send
+    # repopulates). Keys map to a flat dict shape mirroring PlayerCanonEntry
+    # plus the key — frontend renders without needing the dataclass.
+    player_canon: dict[str, dict] = Field(default_factory=dict)
+    # Populated only when the fired beat had `validate_facts: true`.
+    fact_check: FactCheckTrace | None = None
+    # Per-axis classifier history snapshot, capped per axis. Built from
+    # state.replies after this tick's classifier writes — so the most
+    # recent verdict appears first in each list. Used by the debug
+    # overlay's classifier section to render sparkline / pill sequences.
+    classifier_history: dict[str, list[str]] = Field(default_factory=dict)
+    # Snapshot of `state.fired_beat_ids` AFTER this tick. Lets the scenario
+    # graph color nodes without the frontend having to accumulate firings
+    # itself (and lets it recover correctly after a page reload).
+    fired_beat_ids: list[str] = Field(default_factory=list)
+
+
+# `PredicateTrace` self-references via `children`; rebuild so Pydantic resolves
+# the forward ref before any instance is constructed. Same pattern as
+# `Not_.model_rebuild()` / `Or_.model_rebuild()` above.
+PredicateTrace.model_rebuild()

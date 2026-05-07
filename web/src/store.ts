@@ -8,10 +8,12 @@ import {
   GameState,
   NpcInfo,
   QualityDelta,
+  ScenarioMeta,
   ScenarioResponse,
   TickDecision,
   getInbox,
   getScenario,
+  getScenarioMeta,
   getThread,
   postOpen,
 } from "./api";
@@ -40,8 +42,13 @@ interface Store {
   theme: Theme;
 
   // Debug overlay (DEV-only consumer; backend always emits the source data).
+  // The panel reads canon / classifier / fired-beat snapshots directly
+  // off `lastTickDecision`; only `qualityHistory` is accumulated locally
+  // (capped) since the decision payload only carries the per-tick deltas.
+  scenarioMeta: ScenarioMeta | null;
   lastTickDecision: TickDecision | null;
   qualityHistory: QualityDelta[];
+  playtestNoteCount: number;
   debugCollapsed: boolean;
 
   boot(): Promise<void>;
@@ -52,6 +59,7 @@ interface Store {
   setTheme(theme: Theme): void;
   recordTickDecision(decision: TickDecision): void;
   setDebugCollapsed(collapsed: boolean): void;
+  bumpPlaytestNoteCount(): void;
 }
 
 export const useStore = create<Store>()((set, get) => ({
@@ -65,8 +73,10 @@ export const useStore = create<Store>()((set, get) => ({
   pendingTypingFor: null,
   firstOpenForChat: new Set(),
   theme: detectInitialTheme(),
+  scenarioMeta: null,
   lastTickDecision: null,
   qualityHistory: [],
+  playtestNoteCount: 0,
   debugCollapsed: false,
 
   async boot() {
@@ -76,12 +86,20 @@ export const useStore = create<Store>()((set, get) => ({
     if (get().bootStarted) return;
     set({ bootStarted: true });
     try {
-      const [scenario, inbox] = await Promise.all([getScenario(), getInbox()]);
+      // scenario_meta runs in parallel with the other boot fetches — it's
+      // a small payload and there's no dependency. DEV-only consumer
+      // (debug panel); production code never reads `scenarioMeta`.
+      const [scenario, inbox, scenarioMeta] = await Promise.all([
+        getScenario(),
+        getInbox(),
+        import.meta.env.DEV ? getScenarioMeta() : Promise.resolve(null),
+      ]);
       const sc = scenario as ScenarioResponse;
       set({
         scenario: { title: sc.title, premise: sc.premise },
         npcs: sc.npcs,
         state: inbox.state,
+        scenarioMeta,
         bootError: null,
       });
       const initialChat = sc.npcs[0]?.thread_id ?? null;
@@ -168,5 +186,9 @@ export const useStore = create<Store>()((set, get) => ({
 
   setDebugCollapsed(collapsed) {
     set({ debugCollapsed: collapsed });
+  },
+
+  bumpPlaytestNoteCount() {
+    set({ playtestNoteCount: get().playtestNoteCount + 1 });
   },
 }));

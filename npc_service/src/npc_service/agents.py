@@ -69,8 +69,9 @@ from pydantic_ai.messages import ModelMessage
 from .models import (
     AxisResult,
     BeatSpec,
-    CanonCategory,
+    CanonCandidate,
     Effect,
+    FactCheckAttempt,
     NPCDossier,
     PlayerCanonEntry,
 )
@@ -126,6 +127,11 @@ class ChatDeps:
     # stated specifics back without reasoning over message history.
     player_canon: dict[str, PlayerCanonEntry] = field(default_factory=dict)
     epilogue_digest: str | None = None
+    # When non-None, the output validator appends one FactCheckAttempt
+    # per pass so the debug overlay can render refusals + retry counts.
+    # `_fire_beat` is the single caller that sets this (only on beats
+    # that opted in via `validate_facts: true`).
+    fact_check_log: list[FactCheckAttempt] | None = None
 
 
 # ───────────────────────── system prompts ─────────────────────────
@@ -274,19 +280,6 @@ class FactCheckResult(BaseModel):
     violations: list[str]
 
 
-class CanonCandidate(BaseModel):
-    """One extractor-produced canon candidate. Promoted to `state.player_canon`
-    by `apply_canon_extraction` if salience ≥ threshold AND `literal_text_quote`
-    is a verbatim substring of the player's reply.
-    """
-
-    key: str = Field(min_length=1, pattern=r"^[a-z][a-z0-9_]*$")
-    summary: str = Field(min_length=1)
-    literal_text_quote: str = Field(min_length=1)
-    salience: float = Field(ge=0.0, le=1.0)
-    category: CanonCategory
-
-
 class ExtractorOutput(BaseModel):
     """Structured output of the extractor agent. An empty candidates list is
     a valid (and common) result — most replies contain no concrete specifics.
@@ -433,11 +426,19 @@ def _attach_chat_deps_instructions(
                 missing_facts=fc.missing_facts,
                 violations=fc.violations,
             )
+            if ctx.deps.fact_check_log is not None:
+                ctx.deps.fact_check_log.append(FactCheckAttempt(
+                    status="flagged",
+                    missing_facts=list(fc.missing_facts),
+                    violations=list(fc.violations),
+                ))
             raise ModelRetry(_format_fact_retry_message(fc))
         logfire.info(
             f"fact_checker passed {validator_label} on attempt {{attempt}}",
             attempt=attempt,
         )
+        if ctx.deps.fact_check_log is not None:
+            ctx.deps.fact_check_log.append(FactCheckAttempt(status="passed"))
         return output
 
 

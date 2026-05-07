@@ -38,6 +38,7 @@ from npc_service.spine import (
     apply_literal_effects,
     describe_predicate,
     evaluate_predicate,
+    evaluate_predicate_with_trace,
     find_due_beats,
 )
 
@@ -1225,6 +1226,78 @@ def test_or_predicate_evaluation_in_preconditions():
             id=f"r{i}", thread_id="aria", beat_responded_to=None, recipient="A", body="x",
         ))
     assert [b.id for b in find_due_beats(state, scenario)[0]] == ["aria.body"]
+
+
+# ───────────────────────── evaluate_predicate_with_trace ─────────────────────────
+
+
+def test_trace_leaf_carries_label_and_pass(state: InboxState):
+    state.qualities["engagement"] = 2.5
+    pred = QualityGte(quality="engagement", value=4.0)
+    passed, trace = evaluate_predicate_with_trace(pred, state)
+    assert passed is False
+    assert trace.passed is False
+    assert "engagement>=4 got 2.5" in trace.label
+    assert trace.children == []
+
+
+def test_trace_or_marks_each_arm(state: InboxState):
+    state.qualities["engagement"] = 2.5
+    pred = Or_(of=[
+        QualityGte(quality="engagement", value=4.0),  # fails (2.5 < 4)
+        QualityLt(quality="engagement", value=5.0),   # passes (2.5 < 5)
+    ])
+    passed, trace = evaluate_predicate_with_trace(pred, state)
+    assert passed is True
+    assert trace.passed is True
+    assert len(trace.children) == 2
+    assert trace.children[0].passed is False
+    assert trace.children[1].passed is True
+
+
+def test_trace_not_inverts_inner(state: InboxState):
+    pred = Not_(of=BeatFired(beat="aria.complete_warm"))
+    passed, trace = evaluate_predicate_with_trace(pred, state)
+    assert passed is True  # complete_warm hasn't fired → Not_(False) = True
+    assert trace.passed is True
+    assert len(trace.children) == 1
+    assert trace.children[0].passed is False
+    assert "not(" in trace.label
+
+
+def test_trace_or_walks_every_child_even_after_one_passes(state: InboxState):
+    # `evaluate_predicate` short-circuits on the first true arm via any();
+    # the trace variant must NOT short-circuit so the panel can show every
+    # arm's status (otherwise the second arm's passed/label is missing).
+    state.qualities["engagement"] = 5.0
+    pred = Or_(of=[
+        QualityGte(quality="engagement", value=4.0),  # passes
+        QualityGte(quality="engagement", value=10.0), # fails
+    ])
+    _, trace = evaluate_predicate_with_trace(pred, state)
+    assert len(trace.children) == 2
+    assert trace.children[0].passed is True
+    assert trace.children[1].passed is False
+    assert "engagement>=10" in trace.children[1].label
+
+
+def test_find_due_beats_populates_predicate_tree_on_blocked(
+    state: InboxState, scenario: Scenario,
+):
+    _drain_boot(state, scenario)
+    state.replies.extend(_make_reply(thread="aria") for _ in range(5))
+    state.qualities["engagement"] = 3.0  # below complete_warm's 4.0 threshold
+
+    _eligible, report = find_due_beats(state, scenario)
+    by_id = {be.beat_id: be for be in report}
+    warm = by_id["aria.complete_warm"]
+    assert warm.status == "blocked"
+    assert warm.predicate_tree is not None
+    assert warm.predicate_trace is not None
+    # The first failing precondition is the QualityGte (engagement 3 < 4),
+    # not the player_replies_to_thread_gte (5 replies satisfies that).
+    assert warm.predicate_tree.kind == "quality_gte"
+    assert warm.predicate_trace.passed is False
 
 
 # ───────────────────────── helpers ─────────────────────────

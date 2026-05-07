@@ -88,18 +88,79 @@ export async function postOpen(emailId: string) {
 
 // SSE helpers ─────────────────────────────────────────────────────────
 
+// Predicate discriminated union — mirrors the Pydantic models. Used by the
+// debug panel's PredicateTree component to render blocked-beat preconditions
+// as an interactive tree. The tree shape exactly matches the backend's
+// `evaluate_predicate_with_trace` output: leaves at the bottom, Or_/Not_
+// in the middle, and matching shape in `PredicateTrace`.
+export type Predicate =
+  | { kind: "quality_gte"; quality: string; value: number }
+  | { kind: "quality_lt"; quality: string; value: number }
+  | { kind: "quality_equals"; quality: string; value: string | number }
+  | { kind: "player_replies_to_thread_gte"; thread: string; value: number }
+  | { kind: "beat_fired"; beat: string }
+  | {
+      kind: "recent_classifier_value";
+      quality: string;
+      values: string[];
+      window: number;
+      match: "any" | "all" | number;
+    }
+  | { kind: "not"; of: Predicate }
+  | { kind: "or"; of: Predicate[] }
+  | { kind: "player_canon_exists"; name: string };
+
+export interface PredicateTrace {
+  passed: boolean;
+  label: string;
+  children: PredicateTrace[];
+}
+
 export interface BeatEligibility {
   beat_id: string;
   status: "eligible" | "blocked";
   blocked_by: string | null;
   multi_turn: boolean;
+  predicate_tree: Predicate | null;
+  predicate_trace: PredicateTrace | null;
 }
 
 export interface QualityDelta {
   quality: string;
-  before: number | null;
-  after: number;
+  before: number | string | null;
+  after: number | string;
   source: string;
+}
+
+export interface CanonCandidate {
+  key: string;
+  summary: string;
+  literal_text_quote: string;
+  salience: number;
+  category: string;
+}
+
+export interface CanonDropRecord {
+  candidate: CanonCandidate;
+  reason: "anchor_fail" | "below_salience";
+}
+
+export interface FactCheckAttempt {
+  status: "passed" | "flagged";
+  missing_facts: string[];
+  violations: string[];
+}
+
+export interface FactCheckTrace {
+  attempts: FactCheckAttempt[];
+}
+
+export interface PlayerCanonEntry {
+  summary: string;
+  literal_text_quote: string;
+  salience: number;
+  category: string;
+  turn_of_origin: number;
 }
 
 export interface TickDecision {
@@ -111,6 +172,78 @@ export interface TickDecision {
   quality_deltas: QualityDelta[];
   fired_beat_id: string | null;
   multi_turn_turn: number | null;
+  canon_writes: CanonCandidate[];
+  canon_drops: CanonDropRecord[];
+  player_canon: Record<string, PlayerCanonEntry>;
+  fact_check: FactCheckTrace | null;
+  classifier_history: Record<string, string[]>;
+  fired_beat_ids: string[];
+}
+
+// /scenario_meta payload ─────────────────────────────────────────────
+
+export interface QualityMeta {
+  description: string;
+  type: "int" | "float" | "string";
+  min: number | null;
+  max: number | null;
+  default: number | string | null;
+  surface_to_chat: boolean;
+  allowed_values: string[];
+}
+
+export interface BeatMeta {
+  id: string;
+  npc: string;
+  thread: string;
+  multi_turn: boolean;
+  ends_session: boolean;
+  pre_authored: boolean;
+  validate_facts: boolean;
+  summary: string;
+}
+
+export interface BeatGraphEdge {
+  from: string;
+  to: string;
+  kind: "structural" | "mutex";
+}
+
+export interface BeatGraphNode {
+  id: string;
+  thread: string;
+  npc: string;
+}
+
+export interface BeatGraph {
+  nodes: BeatGraphNode[];
+  edges: BeatGraphEdge[];
+}
+
+export interface ScenarioMeta {
+  qualities: Record<string, QualityMeta>;
+  beats: Record<string, BeatMeta>;
+  beat_graph: BeatGraph;
+}
+
+export async function getScenarioMeta(): Promise<ScenarioMeta> {
+  const r = await fetch(`${API}/scenario_meta`);
+  await ensureOk(r, "scenario_meta");
+  return r.json();
+}
+
+export async function postPlaytestNote(note: string): Promise<{
+  session_id: string;
+  path: string;
+  note_count: number;
+}> {
+  const r = await fetch(`${API}/playtest_note`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ note }),
+  });
+  await ensureOk(r, "playtest_note");
+  return r.json();
 }
 
 export type SseEvent =
