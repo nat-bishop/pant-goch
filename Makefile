@@ -38,7 +38,7 @@ download-model: $(MODEL)
 
 .PHONY: llama
 llama: $(MODEL)
-	$(LLAMA_BIN) -m $(MODEL) --host $(LLAMA_HOST) --port $(LLAMA_PORT) -c 8192 --jinja --reasoning on --reasoning-format deepseek -ngl 99
+	$(LLAMA_BIN) -m $(MODEL) --host $(LLAMA_HOST) --port $(LLAMA_PORT) -c 32768 --jinja --reasoning on --reasoning-format deepseek -ngl 99
 
 .PHONY: sidecar
 sidecar:
@@ -71,10 +71,12 @@ analyze-scenario:
 
 # LLM playtester. Probes /health on llama-server before booting; errors
 # clearly if llama isn't up. Installs the optional pydantic-evals dep on
-# first run via `uv sync --extra playtest`.
+# first run via `uv sync --extra playtest`. PYTHONIOENCODING=utf-8 keeps
+# pydantic-evals' rich-rendered evaluation summary from crashing on the
+# Windows cp1252 console when it prints `✓` / `✗` glyphs.
 .PHONY: playtest
 playtest:
-	cd npc_service && uv sync --extra playtest && uv run python -m scripts.playtest
+	cd npc_service && uv sync --extra playtest && PYTHONIOENCODING=utf-8 uv run python -m scripts.playtest
 
 .PHONY: typecheck
 typecheck:

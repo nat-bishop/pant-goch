@@ -57,6 +57,12 @@ Output requirements:
   - Reply to whatever the most recent email in the transcript said.
   - 2–6 sentences typical. If your persona is terse, prefer 1–2.
   - Do not narrate stage directions; produce the reply itself.
+  - If asked for a personal detail (name, role, employer, hometown, etc.)
+    and the PERSONA does not specify one, INVENT a realistic concrete
+    value and use it consistently. NEVER emit a bracketed placeholder
+    like `[Candidate Name]`, `<your name>`, `[YOUR ROLE HERE]`, etc.
+    Pick one plausible name once and stay with it for the rest of the
+    session.
 """
 
 
@@ -71,7 +77,7 @@ def _build_player_agent(model: OpenAIChatModel) -> Agent[PlayerDeps, str]:
         output_type=str,
         instructions=_PLAYER_SYSTEM,
         model_settings={
-            "max_tokens": 400,
+            "max_tokens": 2048,
             "temperature": 1.1,
             "top_p": 0.95,
             "extra_body": {"top_k": 64},

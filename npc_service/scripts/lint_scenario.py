@@ -683,7 +683,7 @@ def lint_scenario(
     scenario: Scenario,
     *,
     run_analyzer: bool = True,
-    analyzer_max_states: int = 5_000,
+    analyzer_max_states: int = 50_000,
 ) -> list[Finding]:
     findings: list[Finding] = [
         *check_scene_write_collision(scenario),
@@ -697,11 +697,11 @@ def lint_scenario(
     if run_analyzer:
         # The static analyzer is heavier (state-space exploration) and lives
         # in a sibling module so its imports stay out of the spec-only lint
-        # path. Default `analyzer_max_states=5_000` keeps `make lint-scenario`
-        # under 15 s on production-sized scenarios; deeper exploration
-        # (say, 50k) is available via `make analyze-scenario` standalone.
-        # Tests pass run_analyzer=False to keep individual lint-rule tests
-        # focused on spec analysis.
+        # path. Default `analyzer_max_states=50_000` matches the standalone
+        # `make analyze-scenario` cap so lint and analyze report identical
+        # reachability claims on production-sized scenarios. Tests pass
+        # run_analyzer=False to keep individual lint-rule tests focused on
+        # spec analysis.
         from analyze_scenario import (  # noqa: E402 — sibling-module import
             analyze_scenario as _analyze,
         )

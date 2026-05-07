@@ -22,6 +22,7 @@ if _PKG_SRC.is_dir() and str(_PKG_SRC) not in sys.path:
 
 from .evaluators import (
     ARIA_VOICE_RUBRIC,
+    AriaVoiceJudge,
     BeatCoverage,
     CanonHarvested,
     SessionCompleted,
@@ -63,7 +64,6 @@ async def _run_all(
 
     _require_evals()
     from pydantic_evals import Case, Dataset  # type: ignore[import-not-found]
-    from pydantic_evals.evaluators import LLMJudge  # type: ignore[import-not-found]
 
     cases: list[Case] = []
     for persona in personas:
@@ -82,7 +82,10 @@ async def _run_all(
             TerminalReached(),
             BeatCoverage(),
             CanonHarvested(),
-            LLMJudge(model=model, rubric=ARIA_VOICE_RUBRIC, include_input=False),
+            # Custom judge instead of bare LLMJudge — bare LLMJudge json-dumps
+            # the entire SessionRecord (full transcript + tick decisions +
+            # final state) into the prompt, which blew the context window.
+            AriaVoiceJudge(rubric=ARIA_VOICE_RUBRIC, model=model),
         ],
     )
 
@@ -91,7 +94,11 @@ async def _run_all(
             persona, player_agent=player_agent, max_sends=max_sends,
         )
 
-    report = await dataset.evaluate(_eval)
+    # max_concurrency=1 because run_session mutates module-global
+    # `engine_main.STATE` and starts each session with `reset_session()`.
+    # Two concurrent cases would clobber each other's state mid-flight; keep
+    # them sequential. The non-evals branch already loops sequentially.
+    report = await dataset.evaluate(_eval, max_concurrency=1)
     # Records are inside report; we still want a flat list for the JSON dump.
     records = [c.output for c in report.cases]  # type: ignore[attr-defined]
     return records, report
