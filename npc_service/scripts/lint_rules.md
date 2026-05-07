@@ -101,3 +101,69 @@ Does NOT catch:
 Full path coverage stays a manual exercise + the live-run check.
 
 **FALSE POSITIVES.** None known on the current scenario. Possible if an author intentionally writes `[BeatFired X, Not_(BeatFired X)]` to hard-disable a beat — but that pattern is itself an authoring smell (use a different exclusion).
+
+---
+
+# Static analyzer rules
+
+The static analyzer (`analyze_scenario.py`, sibling of this file) does bounded forward state-space exploration to determine which beats are reachable, what bounds each quality can take, and which effects/predicates are dead. Findings come through the same `Finding` channel as the spec lint above. The analyzer is heavier (10s–60s on production-sized scenarios), so the per-rule lint tests in `test_lint_scenario.py` skip it via `run_analyzer=False`; the analyzer has its own test module (`test_analyze_scenario.py`).
+
+The analyzer is **sound for unreachability**: when it says a beat is unreachable, it is — modulo state-space truncation, which downgrades the claim from `ERROR` to `WARN` and emits an `analysis_incomplete` finding alongside.
+
+## unreachable-beat
+
+**WHAT.** Across all states explored by bounded forward BFS from the boot state, this beat never fires. ERROR when exhaustive; WARN when the analysis hit `--max-states` (the unreachable claim is provisional in that case).
+
+**WHY.** Authoring leftovers — a beat referenced from no other beat's preconditions, or gated on a quality threshold no effect can reach, or carrying a contradicting precondition pair. Dead beats clutter the scenario and confuse readers.
+
+**SCOPE.** Sound (over-approximating Director and classifier non-determinism, both safe directions for this question). Truncation can produce false unreachable claims; the `analysis_incomplete` finding flags it.
+
+**FALSE POSITIVES.** Provisional WARNs under truncation are common on production-sized scenarios (the production scenario truncates at `max_states=20000` with ~3 beats not yet reached). Raise `--max-states` or accept the WARN if manual playtest confirms reachability.
+
+## unreachable-terminal
+
+**WHAT.** Same shape as `unreachable-beat`, but specialized for `ends_session=True` beats. Separated because terminals never being reachable is more severe than scenes — a terminal is an authoring contract (the player CAN end the game this way), not a side-path.
+
+**WHY.** A terminal that no path reaches is a broken promise to the author of the scenario design. Surfaces drift between predicate thresholds and effect magnitudes.
+
+**SCOPE / FALSE POSITIVES.** Same as `unreachable-beat`.
+
+## orphan-effect
+
+**WHAT.** A literal or classify effect targets a quality that no predicate reads (`QualityGte`, `QualityLt`, `QualityEquals`, `RecentClassifierValue`) AND that quality isn't `surface_to_chat=True`. The write is dead — modifies state nothing checks.
+
+**WHY.** Authoring drift — a quality used to gate something, the gate got removed, the writers stayed. Or a typo in the quality id.
+
+**SCOPE.** Sound. `surface_to_chat=True` qualities are explicitly exempted: those modify chat-agent rendering rather than branching, so a "no predicate reads" check would false-flag intended behavior.
+
+**FALSE POSITIVES.** None known once the `surface_to_chat` exemption is applied.
+
+## orphan-predicate
+
+**WHAT.** A predicate references a quality that no effect writes (literal or classify, scenario-level or per-beat). The predicate can never become true under any state path.
+
+**WHY.** Dual to `orphan-effect` — the writer was removed but the gate stayed. Equivalent to a precondition that's always false.
+
+**SCOPE.** Sound for quality predicates. Canon-key references are NOT flagged: the extractor's outputs are LLM-driven and not statically authorable, so we can't prove a key is never harvested.
+
+**FALSE POSITIVES.** None known on quality predicates.
+
+## quality-bound-mismatch
+
+**WHAT.** A predicate threshold (e.g., `QualityGte 8`) lies outside the proven (min, max) bound for that quality across all reachable states. Issued as ERROR only when the analysis is **not truncated** — under truncation, bounds are partial and the threshold may still be reachable past the cap.
+
+**WHY.** Calibration drift — predicate threshold and effect magnitudes diverged. Common when an author tunes one and forgets the other.
+
+**SCOPE.** Sound when not truncated (bounds are exact across the explored state space). Suppressed under truncation to avoid false positives where the bound just hadn't been pushed yet.
+
+**FALSE POSITIVES.** None when the analysis runs to exhaustion.
+
+## analysis-incomplete
+
+**WHAT.** Bounded forward BFS hit `--max-states` before reaching a fixed point. Reachability claims for the remaining unreachable beats are provisional; quality bound checks are suppressed entirely.
+
+**WHY.** The analyzer is sound but bounded. Production-sized scenarios with many classifier axes × beats can blow past 100k states. Rather than silently report incomplete analysis as exhaustive (which would risk false ERROR-level "unreachable" claims), the analyzer downgrades and surfaces the truncation explicitly.
+
+**SCOPE.** Always WARN. Authors can either raise `--max-states` (analyzer is RAM-bounded, not time-bounded — ~30 s per 20k states on the production scenario), or treat the WARN as expected and rely on playtest coverage for the rest.
+
+**FALSE POSITIVES.** N/A — this finding IS the disclosure.

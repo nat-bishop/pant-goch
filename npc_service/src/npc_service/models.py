@@ -1057,13 +1057,20 @@ class BeatEligibility(BaseModel):
     knows they need to fire the upstream first, and listing them every tick
     is noise.
 
+    Scenes whose `exit_when` is satisfied at selection time are reported as
+    `retired` and added to `fired_beat_ids` without firing — `_tick`
+    rewrites the report entry from `eligible` to `retired` after the
+    selection-time scan. Without this, such a scene would fire once just to
+    exit, surfacing a beat-flavored email the engine already knew was
+    unnecessary.
+
     `predicate_tree` and `predicate_trace` are populated only for blocked
     beats — the structured form of the same predicate that `blocked_by`
     renders as one line. Frontend renders them as an interactive tree.
     """
 
     beat_id: str
-    status: Literal["eligible", "blocked"]
+    status: Literal["eligible", "blocked", "retired"]
     blocked_by: str | None = None  # describe_predicate output for the first failing pred
     is_scene: bool = False
     predicate_tree: Predicate | None = None

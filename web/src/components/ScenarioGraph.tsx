@@ -4,6 +4,11 @@
 // (positive `BeatFired` prereq, solid + arrowed) and mutex
 // (`Not_(BeatFired)`, dashed) — they're the same upstream reference
 // rendered with different glyphs.
+//
+// At 520px the inline panel is too narrow to render the graph
+// usefully, so this component shows a stats + legend strip in-panel
+// and renders the actual SVG inside a fullscreen modal that scales
+// to fit the viewport via viewBox + preserveAspectRatio.
 
 import clsx from "clsx";
 import { useMemo, useState } from "react";
@@ -49,42 +54,39 @@ export function ScenarioGraph() {
   }
   if (!layout) return null;
 
-  const view = (
-    <GraphSvg
-      layout={layout}
-      edges={scenarioMeta.beat_graph.edges}
-      selectedId={selectedId}
-      onSelect={setSelectedId}
-    />
-  );
+  const counts = countByStatus(layout.nodes);
   const selectedMeta = selectedId ? scenarioMeta.beats[selectedId] : null;
 
   return (
-    <div className="space-y-1">
+    <div className="space-y-1.5">
       <div className="flex items-center justify-between text-text-muted">
         <span className="text-[9px] uppercase tracking-wider">
           {layout.nodes.length} beats · {scenarioMeta.beat_graph.edges.length} edges
         </span>
-        <button
-          type="button"
-          onClick={() => setExpanded(true)}
-          className="text-[10px] underline-offset-2 hover:underline"
-        >
-          fullscreen
-        </button>
+        <span className="text-[9px] text-text-muted/70">
+          {counts.eligible} eligible · {counts.blocked} blocked · {counts.fired} fired
+        </span>
       </div>
-      <div className="overflow-x-auto rounded border border-border/50 bg-bg-elevated/40 p-1">
-        {view}
-      </div>
-      {selectedMeta && <NodeDetail meta={selectedMeta} onClose={() => setSelectedId(null)} />}
+      <Legend />
+      <button
+        type="button"
+        onClick={() => setExpanded(true)}
+        className={clsx(
+          "w-full rounded border border-border/60 bg-bg-elevated px-2 py-1",
+          "text-[10px] uppercase tracking-wider text-text-muted",
+          "hover:border-accent hover:text-text",
+        )}
+      >
+        open graph
+      </button>
       {expanded && (
         <FullscreenModal onClose={() => setExpanded(false)}>
+          <Legend />
           <GraphSvg
             layout={layout}
             edges={scenarioMeta.beat_graph.edges}
             selectedId={selectedId}
             onSelect={setSelectedId}
-            scale={1.6}
           />
           {selectedMeta && (
             <div className="mt-3">
@@ -106,7 +108,7 @@ interface ComputedLayout {
 }
 
 interface StatusInputs {
-  eligibleNow: { beat_id: string; status: "eligible" | "blocked" }[];
+  eligibleNow: { beat_id: string; status: "eligible" | "blocked" | "retired" }[];
   firedBeatIds: Set<string>;
 }
 
@@ -115,7 +117,7 @@ function computeLayout(
   beatMeta: Record<string, BeatMeta>,
   status: StatusInputs,
 ): ComputedLayout {
-  const eligibleStatus = new Map<string, "eligible" | "blocked">();
+  const eligibleStatus = new Map<string, "eligible" | "blocked" | "retired">();
   for (const e of status.eligibleNow) eligibleStatus.set(e.beat_id, e.status);
 
   // Discover threads in first-appearance order. Stable for visual
@@ -138,11 +140,14 @@ function computeLayout(
     beats.forEach((meta, beatIdx) => {
       const x = PADDING + LANE_LABEL_W + beatIdx * (NODE_W + NODE_GAP_X);
       const y = PADDING + threadIdx * (NODE_H + LANE_GAP_Y);
-      let s: Status = "idle";
-      if (status.firedBeatIds.has(meta.id)) s = "fired";
-      else if (eligibleStatus.get(meta.id) === "eligible") s = "eligible";
+      // Eligibility wins over fired — `eligible` is the verdict for
+      // *this* tick, so a beat that just fired this tick is still
+      // green here (matching the eligible-row dot). It only goes gray
+      // once it's no longer in `eligible` on a later tick.
+      let s: Status = "structural";
+      if (eligibleStatus.get(meta.id) === "eligible") s = "eligible";
       else if (eligibleStatus.get(meta.id) === "blocked") s = "blocked";
-      else s = "structural";
+      else if (status.firedBeatIds.has(meta.id)) s = "fired";
       nodes.push({
         id: meta.id, thread, meta, x, y, w: NODE_W, h: NODE_H, status: s,
       });
@@ -162,18 +167,46 @@ function computeLayout(
   return { nodes, byId, width, height, threads };
 }
 
+function countByStatus(nodes: NodeLayout[]) {
+  let eligible = 0, blocked = 0, fired = 0;
+  for (const n of nodes) {
+    if (n.status === "eligible") eligible++;
+    else if (n.status === "blocked") blocked++;
+    else if (n.status === "fired") fired++;
+  }
+  return { eligible, blocked, fired };
+}
+
+function Legend() {
+  return (
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[9px] text-text-muted">
+      <LegendSwatch className="bg-presence-active border-presence-active" label="eligible" />
+      <LegendSwatch className="bg-meter-warn border-meter-warn" label="blocked" />
+      <LegendSwatch className="bg-bg-elevated border-text-muted" label="fired" />
+      <LegendSwatch className="bg-bg border-border" label="structural" />
+    </div>
+  );
+}
+
+function LegendSwatch({ className, label }: { className: string; label: string }) {
+  return (
+    <span className="flex items-center gap-1">
+      <span aria-hidden className={clsx("inline-block h-2 w-3 rounded-sm border", className)} />
+      <span>{label}</span>
+    </span>
+  );
+}
+
 function GraphSvg({
   layout,
   edges,
   selectedId,
   onSelect,
-  scale = 1,
 }: {
   layout: ComputedLayout;
   edges: { from: string; to: string; kind: "structural" | "mutex" }[];
   selectedId: string | null;
   onSelect: (id: string | null) => void;
-  scale?: number;
 }) {
   // De-duplicate edges by (from,to,kind) — backend may emit duplicates if
   // a beat references the same upstream more than once across nested gates.
@@ -190,9 +223,8 @@ function GraphSvg({
   return (
     <svg
       viewBox={`0 0 ${layout.width} ${layout.height}`}
-      width={layout.width * scale}
-      height={layout.height * scale}
-      className="block"
+      preserveAspectRatio="xMidYMid meet"
+      style={{ width: "100%", height: "auto", maxHeight: "78vh", display: "block" }}
     >
       <defs>
         <marker
@@ -398,9 +430,9 @@ function FullscreenModal({
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        className="max-h-[90vh] max-w-[90vw] overflow-auto rounded-lg border border-border bg-bg p-4 shadow-xl"
+        className="flex max-h-[90vh] w-[90vw] flex-col gap-2 overflow-auto rounded-lg border border-border bg-bg p-4 shadow-xl"
       >
-        <div className="mb-2 flex items-center justify-between">
+        <div className="flex items-center justify-between">
           <span className="text-[10px] uppercase tracking-wider text-text-muted">scenario graph</span>
           <button
             type="button"

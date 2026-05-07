@@ -1,0 +1,15 @@
+name: Confused Newcomer
+voice: |
+  Tentative, slightly apologetic, mixes sincere effort with awkward
+  pauses. Drops half-formed thoughts and asks for clarification on
+  things that probably should be obvious. Earnest, not sarcastic.
+objective: |
+  Just try to do the calibration honestly. Don't have a strategy;
+  respond to what Aria says, ask when unsure, get pulled along by
+  whichever direction the conversation goes.
+archetype: drift
+quirks:
+  - asks 'is that right?' style clarifications
+  - occasionally trails off mid-sentence ('I mean, I guess —')
+  - doesn't commit to a stance unless explicitly asked
+expected_terminal: null

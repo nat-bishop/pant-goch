@@ -13,6 +13,7 @@ import os
 import subprocess
 import uuid
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import AsyncIterator, Iterator
 
@@ -234,7 +235,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             keep_tail=settings.history_compact_keep_tail,
         )
 
-        await _bootstrap_state()
+        await reset_session()
         logfire.info(
             "npc_service ready",
             boot_emails=len(STATE.emails),
@@ -786,6 +787,31 @@ async def _tick(
 
     with logfire.span("tick (in response to {in_response_to})", in_response_to=in_response_to) as span:
         eligible, eligibility_report = find_due_beats(STATE, SCENARIO)
+
+        # Retire scenes whose `exit_when` is already satisfied at selection
+        # time. Without this, such a scene would fire once just to exit —
+        # e.g. when `*calibration_done` flips during the welcome reply
+        # (extractor canonizes the player's name) calibration_scene would
+        # render one calibration question before the post-fire exit check
+        # retires it. The chat-turn fallback in `_send_stream` still covers
+        # the reply thread with a free-conversation reply, so retiring
+        # without firing doesn't leave the player on silence.
+        remaining: list[Beat] = []
+        for beat in eligible:
+            if beat.kind == "scene" and scene_exit_satisfied(beat, STATE):
+                STATE.fired_beat_ids.add(beat.id)
+                logfire.info(
+                    "retire scene {beat_id} (exit_when satisfied on entry)",
+                    beat_id=beat.id,
+                )
+                for be in eligibility_report:
+                    if be.beat_id == beat.id and be.status == "eligible":
+                        be.status = "retired"
+                        break
+            else:
+                remaining.append(beat)
+        eligible = remaining
+
         # One log line per value-blocked beat, so the "why didn't this fire?"
         # answer reads inline in the terminal alongside selection + writes.
         # Beats blocked on a structural prereq (BeatFired not yet) are
@@ -1163,167 +1189,255 @@ async def post_send(req: SendRequest) -> StreamingResponse:
     )
 
 
-async def _send_stream(req: SendRequest) -> AsyncIterator[bytes]:
-    assert STATE is not None and SCENARIO is not None and AGENTS is not None
+@dataclass
+class RecordedSend:
+    """The state-recorded result of a player /send before any LLM work runs.
+
+    Bridges `record_send` → `process_send` so the FastAPI layer can emit the
+    early `send_recorded` SSE event before the (slow) classifier+tick
+    pipeline starts. The playtester calls the same two functions back-to-back
+    and ignores the gap.
+    """
+    req: SendRequest
+    body: str
+    send_email: Email
+    reply: Reply
+    thread_id: str | None
+    in_reply_email: Email | None
+    recipient_npc_id: str | None
+    replied_beat: Beat | None
+
+
+@dataclass
+class SendResult:
+    """Full output of `process_send`. The FastAPI layer emits SSE events
+    from this shape; the playtester reads it directly.
+
+    `process_send` may raise `ChatAgentFailure` after state has already
+    been mutated (player email, classifier writes, canon writes, tick).
+    Callers catch and decide how to surface; SendResult is only returned
+    on success.
+    """
+    classifier_results: list[AxisResult] | None
+    classifier_deltas: list[QualityDelta]
+    canon_writes: list[CanonCandidate]
+    canon_drops: list[CanonDropRecord]
+    new_emails: list[Email]
+    plot_fired_threads: set[str]
+    tick_decision: TickDecision
+
+
+def record_send(req: SendRequest) -> RecordedSend:
+    """Append the player's email + reply to STATE and bundle the per-send
+    derived fields (thread, recipient NPC, replied beat) into a RecordedSend.
+
+    Synchronous and fast — no LLM, no tick. Caller is expected to hold
+    `ACTION_LOCK` if running concurrently with other mutators (the FastAPI
+    /send path does; the playtester does not need to).
+    """
+    assert STATE is not None and SCENARIO is not None
     body = req.body.strip()
     in_reply_email = (
         next((e for e in STATE.emails if e.id == req.in_reply_to), None)
         if req.in_reply_to else None
     )
     thread_id = in_reply_email.thread_id if in_reply_email else None
+    send_email = Email(
+        id=f"email_{uuid.uuid4().hex[:8]}",
+        beat_id=None,
+        thread_id=thread_id,
+        folder="Sent",
+        sender="you",
+        recipient=req.recipient,
+        body=body,
+        sent_at_label="just now",
+        is_read=True,
+    )
+    STATE.emails.append(send_email)
+    reply = Reply(
+        id=f"reply_{uuid.uuid4().hex[:8]}",
+        thread_id=thread_id,
+        beat_responded_to=req.in_reply_to,
+        recipient=req.recipient,
+        body=body,
+    )
+    STATE.replies.append(reply)
+    recipient_npc = req.recipient_npc_id or _resolve_recipient_npc_id(req.recipient)
+    replied_beat = (
+        SCENARIO.beat_by_id.get(in_reply_email.beat_id)
+        if in_reply_email and in_reply_email.beat_id else None
+    )
+    return RecordedSend(
+        req=req,
+        body=body,
+        send_email=send_email,
+        reply=reply,
+        thread_id=thread_id,
+        in_reply_email=in_reply_email,
+        recipient_npc_id=recipient_npc,
+        replied_beat=replied_beat,
+    )
+
+
+async def process_send(rec: RecordedSend) -> SendResult:
+    """Run the classifier + extractor in parallel, fold their writes into
+    STATE, walk one tick, and (if no chat-driven beat covered the thread)
+    fall back to a chat-agent reply. Returns a `SendResult` on success;
+    raises `ChatAgentFailure` if the chat-agent fallback fails.
+
+    Classifier and extractor run in parallel via asyncio.gather (latency-
+    neutral). Both must complete before `_tick` because `find_due_beats`
+    reads state mutated by both: classifier writes qualities (gates
+    terminal decisions) and extractor writes player_canon
+    (PlayerCanonExists predicates gate calibration).
+    """
+    assert STATE is not None and SCENARIO is not None and AGENTS is not None
+
+    # Classify-typed effects come from two sources: the beat the player
+    # just replied to (per-beat axes) and scenario.effects (always-on,
+    # gated by their own `when:`). Both pour into one batched classifier
+    # call. Beat-scope effects come first so a scenario-scope effect on
+    # the same quality (rare, probably an authoring mistake) doesn't
+    # shadow the beat-scope verdict.
+    beat_classify_effects: list[Effect] = (
+        [e for e in rec.replied_beat.spec.effects if e.is_classify]
+        if rec.replied_beat else []
+    )
+    scenario_classify_effects: list[Effect] = [
+        e for e in SCENARIO.effects
+        if e.is_classify
+        and (e.when is None or evaluate_predicate(e.when, STATE))
+    ]
+    classify_effects = beat_classify_effects + scenario_classify_effects
+    recipient_blurb = _persona_blurb_for_recipient(rec.req.recipient, rec.recipient_npc_id)
+    prior_body = rec.in_reply_email.body if rec.in_reply_email else ""
+
+    classifier_coro = _classify_player_reply(
+        recipient_blurb=recipient_blurb,
+        prior_email_body=prior_body,
+        reply_body=rec.body,
+        effects=classify_effects,
+    ) if classify_effects else _none_coro()
+    extractor_coro = _extract_player_canon(
+        recipient_blurb=recipient_blurb,
+        prior_email_body=prior_body,
+        reply_body=rec.body,
+    )
+    classifier_results, extractor_output = await asyncio.gather(
+        classifier_coro, extractor_coro,
+    )
+
+    classifier_deltas: list[QualityDelta] = []
+    if classify_effects and classifier_results is not None:
+        _apply_classify_results(
+            effects=classify_effects,
+            results=classifier_results,
+            replied_beat_id=rec.replied_beat.id if rec.replied_beat else None,
+            reply=rec.reply,
+            out_deltas=classifier_deltas,
+        )
+
+    canon_writes: list[CanonCandidate] = []
+    canon_drops: list[CanonDropRecord] = []
+    if extractor_output is not None and extractor_output.candidates:
+        # Categorize every candidate so the debug overlay shows BOTH what
+        # was promoted AND what the extractor proposed but the engine
+        # rejected. Two rejection reasons:
+        #   - anchor_fail: literal_text_quote isn't a verbatim substring
+        #     of the reply (anti-hallucination floor)
+        #   - below_salience: anchored, but extractor confidence below
+        #     the promotion threshold
+        # apply_canon_extraction also enforces the salience floor
+        # internally, so promoted candidates ALWAYS clear it; we
+        # categorize here so canon_drops carries the dropped ones for
+        # surfacing without re-running any logic.
+        promoted: list[CanonCandidate] = []
+        for c in extractor_output.candidates:
+            if c.literal_text_quote not in rec.body:
+                canon_drops.append(CanonDropRecord(candidate=c, reason="anchor_fail"))
+            elif c.salience < CANON_SALIENCE_THRESHOLD:
+                canon_drops.append(CanonDropRecord(candidate=c, reason="below_salience"))
+            else:
+                promoted.append(c)
+        if canon_drops:
+            logfire.warn(
+                "extractor candidates dropped",
+                anchor_fail=sum(1 for d in canon_drops if d.reason == "anchor_fail"),
+                below_salience=sum(1 for d in canon_drops if d.reason == "below_salience"),
+                kept=len(promoted),
+            )
+        if promoted:
+            apply_canon_extraction(
+                STATE,
+                promoted,
+                turn_of_origin=len(STATE.replies),
+            )
+            canon_writes = promoted
+
+    new_emails, plot_fired_threads, decision = await _tick(
+        player_body=rec.body,
+        in_response_to=rec.send_email.id,
+        reply_thread_id=rec.thread_id,
+        classifier_deltas=classifier_deltas,
+        canon_writes=canon_writes,
+        canon_drops=canon_drops,
+    )
+
+    # Chat-turn fallback fires when no chat-driven beat covered this
+    # thread. With scene-as-primitive, scenes that match the player's
+    # reply thread short-circuit the Director and fire here; this branch
+    # only matters for threads without a covering scene OR plot beat this
+    # tick.
+    if (
+        rec.recipient_npc_id is not None
+        and rec.thread_id is not None
+        and rec.thread_id not in plot_fired_threads
+    ):
+        chat_email = await _render_via_chat_agent(
+            npc_id=rec.recipient_npc_id,
+            thread_id=rec.thread_id,
+            player_body=rec.body,
+            in_reply_to_email_id=rec.send_email.id,
+            plot_directive=None,
+            beat_id=None,
+        )
+        STATE.emails.append(chat_email)
+        new_emails.append(chat_email)
+
+    return SendResult(
+        classifier_results=classifier_results,
+        classifier_deltas=classifier_deltas,
+        canon_writes=canon_writes,
+        canon_drops=canon_drops,
+        new_emails=new_emails,
+        plot_fired_threads=plot_fired_threads,
+        tick_decision=decision,
+    )
+
+
+async def _send_stream(req: SendRequest) -> AsyncIterator[bytes]:
+    assert STATE is not None and SCENARIO is not None and AGENTS is not None
+    # Pre-compute thread_id for the span name. record_send recomputes the
+    # same value (and re-resolves in_reply_email) once inside the lock —
+    # cheap dict-lookup-shaped work; preferable to plumbing it back out.
+    thread_id = (
+        next((e.thread_id for e in STATE.emails if e.id == req.in_reply_to), None)
+        if req.in_reply_to else None
+    )
 
     with logfire.span("send to {recipient} on {thread_id}", recipient=req.recipient, thread_id=thread_id):
         async with ACTION_LOCK:
-            send_email = Email(
-                id=f"email_{uuid.uuid4().hex[:8]}",
-                beat_id=None,
-                thread_id=thread_id,
-                folder="Sent",
-                sender="you",
-                recipient=req.recipient,
-                body=body,
-                sent_at_label="just now",
-                is_read=True,
-            )
-            STATE.emails.append(send_email)
-            reply = Reply(
-                id=f"reply_{uuid.uuid4().hex[:8]}",
-                thread_id=thread_id,
-                beat_responded_to=req.in_reply_to,
-                recipient=req.recipient,
-                body=body,
-            )
-            STATE.replies.append(reply)
-            yield _sse({"type": "send_recorded", "email": _email_full(send_email)})
-
-            # Classifier and extractor run in parallel before _tick (via
-            # asyncio.gather, latency-neutral). Both must complete first
-            # because find_due_beats reads state mutated by both: classifier
-            # writes qualities (gates terminal decisions) and extractor
-            # writes player_canon (PlayerCanonExists predicates gate calibration).
-            recipient_npc = req.recipient_npc_id or _resolve_recipient_npc_id(req.recipient)
-            replied_beat = (
-                SCENARIO.beat_by_id.get(in_reply_email.beat_id)
-                if in_reply_email and in_reply_email.beat_id else None
-            )
-            # Classify-typed effects come from two sources: the beat the
-            # player just replied to (per-beat axes) and scenario.effects
-            # (always-on, gated by their own `when:`). Both pour into one
-            # batched classifier call. Beat-scope effects come first so a
-            # scenario-scope effect on the same quality (rare and probably
-            # an authoring mistake) doesn't shadow the beat-scope verdict.
-            beat_classify_effects: list[Effect] = (
-                [e for e in replied_beat.spec.effects if e.is_classify]
-                if replied_beat else []
-            )
-            scenario_classify_effects: list[Effect] = [
-                e for e in SCENARIO.effects
-                if e.is_classify
-                and (e.when is None or evaluate_predicate(e.when, STATE))
-            ]
-            classify_effects = beat_classify_effects + scenario_classify_effects
-            recipient_blurb = _persona_blurb_for_recipient(req.recipient, recipient_npc)
-            prior_body = in_reply_email.body if in_reply_email else ""
-
-            classifier_coro = _classify_player_reply(
-                recipient_blurb=recipient_blurb,
-                prior_email_body=prior_body,
-                reply_body=body,
-                effects=classify_effects,
-            ) if classify_effects else _none_coro()
-            extractor_coro = _extract_player_canon(
-                recipient_blurb=recipient_blurb,
-                prior_email_body=prior_body,
-                reply_body=body,
-            )
-            classifier_results, extractor_output = await asyncio.gather(
-                classifier_coro, extractor_coro,
-            )
-
-            classifier_deltas: list[QualityDelta] = []
-            if classify_effects and classifier_results is not None:
-                _apply_classify_results(
-                    effects=classify_effects,
-                    results=classifier_results,
-                    replied_beat_id=replied_beat.id if replied_beat else None,
-                    reply=reply,
-                    out_deltas=classifier_deltas,
-                )
-
-            canon_writes: list[CanonCandidate] = []
-            canon_drops: list[CanonDropRecord] = []
-            if extractor_output is not None and extractor_output.candidates:
-                # Categorize every candidate so the debug overlay shows BOTH
-                # what was promoted AND what the extractor proposed but the
-                # engine rejected. Two rejection reasons:
-                #   - anchor_fail: literal_text_quote isn't a verbatim
-                #     substring of the reply (anti-hallucination floor)
-                #   - below_salience: anchored, but extractor confidence
-                #     below the promotion threshold
-                # apply_canon_extraction also enforces the salience floor
-                # internally, so promoted candidates ALWAYS clear it; we
-                # categorize here so canon_drops carries the dropped ones
-                # for surfacing without re-running any logic.
-                promoted: list[CanonCandidate] = []
-                for c in extractor_output.candidates:
-                    if c.literal_text_quote not in body:
-                        canon_drops.append(CanonDropRecord(candidate=c, reason="anchor_fail"))
-                    elif c.salience < CANON_SALIENCE_THRESHOLD:
-                        canon_drops.append(CanonDropRecord(candidate=c, reason="below_salience"))
-                    else:
-                        promoted.append(c)
-                if canon_drops:
-                    logfire.warn(
-                        "extractor candidates dropped",
-                        anchor_fail=sum(1 for d in canon_drops if d.reason == "anchor_fail"),
-                        below_salience=sum(1 for d in canon_drops if d.reason == "below_salience"),
-                        kept=len(promoted),
-                    )
-                if promoted:
-                    apply_canon_extraction(
-                        STATE,
-                        promoted,
-                        turn_of_origin=len(STATE.replies),
-                    )
-                    canon_writes = promoted
-
+            rec = record_send(req)
+            yield _sse({"type": "send_recorded", "email": _email_full(rec.send_email)})
             try:
-                new_emails, plot_fired_threads, decision = await _tick(
-                    player_body=body,
-                    in_response_to=send_email.id,
-                    reply_thread_id=thread_id,
-                    classifier_deltas=classifier_deltas,
-                    canon_writes=canon_writes,
-                    canon_drops=canon_drops,
-                )
-
-                # Chat-turn fallback fires when no chat-driven beat covered
-                # this thread. With scene-as-primitive, scenes that match
-                # the player's reply thread short-circuit the Director and
-                # fire here; this branch only matters for threads without
-                # a covering scene OR plot beat this tick.
-                if (
-                    recipient_npc is not None
-                    and thread_id is not None
-                    and thread_id not in plot_fired_threads
-                ):
-                    chat_email = await _render_via_chat_agent(
-                        npc_id=recipient_npc,
-                        thread_id=thread_id,
-                        player_body=body,
-                        in_reply_to_email_id=send_email.id,
-                        plot_directive=None,
-                        beat_id=None,
-                    )
-                    STATE.emails.append(chat_email)
-                    new_emails.append(chat_email)
+                result = await process_send(rec)
             except ChatAgentFailure as err:
                 # Player email and any classifier write are already persisted
                 # — surface a structured error so the client can display it
                 # without losing the player's send. State + done still flush.
                 logfire.warn(
                     "send_stream aborted: chat agent failed",
-                    thread_id=thread_id, message=str(err),
+                    thread_id=rec.thread_id, message=str(err),
                 )
                 yield _sse({
                     "type": "error",
@@ -1336,10 +1450,10 @@ async def _send_stream(req: SendRequest) -> AsyncIterator[bytes]:
                 yield _sse({"type": "done"})
                 return
 
-            for ne in new_emails:
+            for ne in result.new_emails:
                 yield _sse({"type": "new_email", "email": _email_full(ne)})
 
-            yield _sse({"type": "tick_decision", "decision": decision.model_dump()})
+            yield _sse({"type": "tick_decision", "decision": result.tick_decision.model_dump()})
             yield _sse({"type": "state", "state": STATE.public_view()})
             yield _sse({"type": "done"})
 
@@ -1559,16 +1673,21 @@ def _resolve_recipient_npc_id(recipient: str) -> str | None:
     return None
 
 
-async def _bootstrap_state() -> None:
+async def reset_session() -> None:
     """Init state from scenario; fire any beats already due (pre-authored
-    beats with empty preconditions land here on the first tick)."""
+    beats with empty preconditions land here on the first tick).
+
+    Used at lifespan boot AND by the playtest harness to clear state between
+    synthetic sessions. The TickDecision from boot is discarded — there's
+    no SSE consumer at boot, and the playtester treats boot as setup, not
+    a measured step.
+    """
     global STATE
     assert SCENARIO is not None
     STATE = InboxState.from_scenario(SCENARIO)
     # Boot tick fires pre-authored beats with empty preconditions (e.g.
     # aria.welcome). Chat-driven beats are auto-pended too but require a player /send
     # to satisfy `player_replies_to_thread_gte`, so they can't fire here.
-    # The TickDecision from boot is discarded — there's no SSE consumer.
     await _tick(player_body=None, in_response_to=None)
 
 

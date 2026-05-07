@@ -118,7 +118,7 @@ export interface PredicateTrace {
 
 export interface BeatEligibility {
   beat_id: string;
-  status: "eligible" | "blocked";
+  status: "eligible" | "blocked" | "retired";
   blocked_by: string | null;
   is_scene: boolean;
   predicate_tree: Predicate | null;

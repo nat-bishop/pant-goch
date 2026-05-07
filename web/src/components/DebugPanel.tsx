@@ -47,13 +47,14 @@ export function DebugPanel() {
   }, [qualityHistory]);
 
   const eligibleCounts = useMemo(() => {
-    if (!lastTickDecision) return { eligible: 0, blocked: 0 };
-    let eligible = 0, blocked = 0;
+    if (!lastTickDecision) return { eligible: 0, blocked: 0, retired: 0 };
+    let eligible = 0, blocked = 0, retired = 0;
     for (const e of lastTickDecision.eligible) {
       if (e.status === "eligible") eligible++;
+      else if (e.status === "retired") retired++;
       else blocked++;
     }
-    return { eligible, blocked };
+    return { eligible, blocked, retired };
   }, [lastTickDecision]);
 
   return (
@@ -88,7 +89,9 @@ export function DebugPanel() {
             title="last tick"
             badge={
               lastTickDecision
-                ? `${eligibleCounts.eligible} eligible · ${eligibleCounts.blocked} blocked`
+                ? `${eligibleCounts.eligible} eligible · ${eligibleCounts.blocked} blocked${
+                    eligibleCounts.retired ? ` · ${eligibleCounts.retired} retired` : ""
+                  }`
                 : null
             }
           >
@@ -202,7 +205,13 @@ function LastTick() {
 function EligibleRow({ entry }: { entry: BeatEligibility }) {
   const [expanded, setExpanded] = useState(false);
   const isBlocked = entry.status === "blocked";
+  const isRetired = entry.status === "retired";
   const canExpand = isBlocked && entry.predicate_tree && entry.predicate_trace;
+  const dotClass = isBlocked
+    ? "bg-meter-warn"
+    : isRetired
+      ? "bg-text-muted/50"
+      : "bg-presence-active";
   return (
     <li>
       <button
@@ -212,18 +221,21 @@ function EligibleRow({ entry }: { entry: BeatEligibility }) {
         className={clsx(
           "flex w-full items-center gap-1 text-left",
           canExpand ? "cursor-pointer hover:text-text" : "cursor-default",
+          isRetired && "text-text-muted",
         )}
       >
         <span
           aria-hidden
-          className={clsx(
-            "inline-block h-1.5 w-1.5 shrink-0 rounded-full",
-            isBlocked ? "bg-meter-warn" : "bg-presence-active",
-          )}
+          className={clsx("inline-block h-1.5 w-1.5 shrink-0 rounded-full", dotClass)}
         />
         <BeatName beatId={entry.beat_id} />
         {entry.is_scene && (
           <span className="text-text-muted/70">[scene]</span>
+        )}
+        {isRetired && (
+          <DebugTooltip content="exit_when satisfied on entry — skipped without firing">
+            <span className="text-text-muted/70">[retired]</span>
+          </DebugTooltip>
         )}
         {canExpand && (
           <span className="ml-auto text-text-muted/70">{expanded ? "▾" : "▸"}</span>

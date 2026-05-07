@@ -274,6 +274,48 @@ def test_send_emits_tick_decision_event(client):
     assert types.index("state") < types.index("done")
 
 
+def test_scene_retired_when_exit_when_already_satisfied_on_entry(client):
+    """A scene whose `exit_when` is satisfied at selection time gets retired
+    without firing — `_tick` adds it to `fired_beat_ids`, marks the
+    eligibility report entry `retired`, and falls through to the chat-turn
+    fallback so the player still gets an in-character reply.
+
+    Regression: previously such a scene would fire once and exit on the
+    same tick (e.g. calibration_scene asking one calibration question
+    after the welcome reply already canonized the player's name)."""
+    # aria.loop's exit_when is `engagement>=4.0 OR replies>=8`. Bumping
+    # engagement above the threshold pre-emptively means the scene's
+    # exit_when is true the first time it would have fired.
+    main.STATE.qualities["engagement"] = 4.0
+
+    welcome = client.get("/inbox").json()["folders"]["Inbox"][0]
+    events = list(consume_sse(client.stream("POST", "/send", json={
+        "in_reply_to": welcome["id"],
+        "recipient": "Aria",
+        "body": "happy to be here",
+    })))
+
+    # aria.loop landed in fired_beat_ids — but never produced a new_email
+    # under that beat_id. The chat-turn fallback covered the thread with
+    # a chat-turn email (beat_id=None).
+    assert "aria.loop" in main.STATE.fired_beat_ids
+    new_email_events = [e for e in events if e["type"] == "new_email"]
+    assert all(
+        e["email"]["beat_id"] != "aria.loop" for e in new_email_events
+    ), "aria.loop should not have fired"
+    assert any(
+        e["email"]["beat_id"] is None for e in new_email_events
+    ), "chat-turn fallback should have fired"
+
+    # tick_decision reflects the retirement.
+    decision = next(e for e in events if e["type"] == "tick_decision")["decision"]
+    loop_entry = next(be for be in decision["eligible"] if be["beat_id"] == "aria.loop")
+    assert loop_entry["status"] == "retired"
+    assert decision["fired_beat_id"] is None
+    assert decision["chosen_beat_id"] is None
+    assert decision["selection"] == "none"
+
+
 def test_loop_scene_re_fires_across_sends(client):
     """Two /sends to Aria. The loop is kind=scene, so it re-fires every
     tick until exit_when promotes it. thread_messages accumulates:

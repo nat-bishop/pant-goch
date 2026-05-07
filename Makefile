@@ -61,6 +61,21 @@ test:
 lint-scenario:
 	cd npc_service && uv run python scripts/lint_scenario.py scenario.yaml
 
+# Static analyzer alone (without spec lint). Used for fine-grained CI runs
+# or when iterating on analyzer behavior. `make lint-scenario` already
+# includes the analyzer, so this is rarely the right target outside
+# analyzer development.
+.PHONY: analyze-scenario
+analyze-scenario:
+	cd npc_service && uv run python scripts/analyze_scenario.py scenario.yaml
+
+# LLM playtester. Probes /health on llama-server before booting; errors
+# clearly if llama isn't up. Installs the optional pydantic-evals dep on
+# first run via `uv sync --extra playtest`.
+.PHONY: playtest
+playtest:
+	cd npc_service && uv sync --extra playtest && uv run python -m scripts.playtest
+
 .PHONY: typecheck
 typecheck:
 	cd web && npm run typecheck

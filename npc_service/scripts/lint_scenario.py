@@ -679,8 +679,13 @@ def _collect_required_excluded(
 # ───────────────────────── driver ─────────────────────────
 
 
-def lint_scenario(scenario: Scenario) -> list[Finding]:
-    return [
+def lint_scenario(
+    scenario: Scenario,
+    *,
+    run_analyzer: bool = True,
+    analyzer_max_states: int = 5_000,
+) -> list[Finding]:
+    findings: list[Finding] = [
         *check_scene_write_collision(scenario),
         *check_terminal_overlap(scenario),
         *check_validate_facts_on_scene(scenario),
@@ -689,6 +694,24 @@ def lint_scenario(scenario: Scenario) -> list[Finding]:
         *check_classify_on_silent_npc(scenario),
         *check_reachability_contradiction(scenario),
     ]
+    if run_analyzer:
+        # The static analyzer is heavier (state-space exploration) and lives
+        # in a sibling module so its imports stay out of the spec-only lint
+        # path. Default `analyzer_max_states=5_000` keeps `make lint-scenario`
+        # under 15 s on production-sized scenarios; deeper exploration
+        # (say, 50k) is available via `make analyze-scenario` standalone.
+        # Tests pass run_analyzer=False to keep individual lint-rule tests
+        # focused on spec analysis.
+        from analyze_scenario import (  # noqa: E402 — sibling-module import
+            analyze_scenario as _analyze,
+        )
+        report = _analyze(scenario, max_states=analyzer_max_states)
+        for af in report.to_findings(scenario):
+            findings.append(Finding(
+                severity=af.severity, location=af.location,
+                message=af.message, anchor=af.anchor,
+            ))
+    return findings
 
 
 def main(argv: list[str] | None = None) -> int:

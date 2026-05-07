@@ -25,6 +25,12 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/npc_service"]
 
+[project.optional-dependencies]
+playtest = [
+    # pydantic-evals shares the pydantic-ai release cadence; pin the same major.
+    "pydantic-evals>=1.0,<2",
+]
+
 [dependency-groups]
 dev = [
     "pytest>=8,<9",
@@ -36,5 +42,6 @@ testpaths = ["tests"]
 asyncio_mode = "auto"
 markers = [
     "integration: tests that require a running llama-server (skipped by default; run with `uv run pytest -m integration`)",
+    "slow: tests that exercise the static analyzer against production-sized scenarios (skipped by default; run with `uv run pytest -m slow`)",
 ]
-addopts = "-m 'not integration'"
+addopts = "-m 'not integration and not slow'"

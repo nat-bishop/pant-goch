@@ -40,7 +40,10 @@ def _lint_yaml(yaml_text: str) -> list[lint_scenario.Finding]:
         path = Path(f.name)
     try:
         scenario = load_scenario(path)
-        return lint_scenario.lint_scenario(scenario)
+        # Spec-only checks; the static analyzer has its own test module
+        # (test_analyze_scenario.py) and runs ~30 s on production-sized
+        # scenarios — too slow for per-rule regression tests.
+        return lint_scenario.lint_scenario(scenario, run_analyzer=False)
     finally:
         path.unlink(missing_ok=True)
 
@@ -113,10 +116,15 @@ beats:
 def test_production_scenario_lints_clean():
     """The shipping `npc_service/scenario.yaml` must lint clean (no ERROR /
     WARN; INFO findings allowed). If this regresses, fix the scenario or
-    revisit the lint heuristic."""
+    revisit the lint heuristic.
+
+    Spec-only — the static analyzer's findings against production are
+    covered by `test_analyze_scenario.py::test_production_scenario_runs`
+    so this test stays fast.
+    """
     path = Path(__file__).resolve().parents[1] / "scenario.yaml"
     scenario = load_scenario(path)
-    findings = lint_scenario.lint_scenario(scenario)
+    findings = lint_scenario.lint_scenario(scenario, run_analyzer=False)
     bad = [f for f in findings if f.severity in ("ERROR", "WARN")]
     assert not bad, "production scenario triggered ERROR/WARN: " + "; ".join(
         f.format() for f in bad
@@ -127,7 +135,7 @@ def test_test_fixture_lints_clean():
     """tests/fixtures/test_scenario.yaml must also lint clean."""
     path = Path(__file__).resolve().parent / "fixtures" / "test_scenario.yaml"
     scenario = load_scenario(path)
-    findings = lint_scenario.lint_scenario(scenario)
+    findings = lint_scenario.lint_scenario(scenario, run_analyzer=False)
     bad = [f for f in findings if f.severity in ("ERROR", "WARN")]
     assert not bad, "test fixture triggered ERROR/WARN: " + "; ".join(
         f.format() for f in bad
