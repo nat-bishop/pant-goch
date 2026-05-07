@@ -95,7 +95,7 @@ Smoke-pass criteria: welcome typing-replay works, theme toggle is FOUC-free, plo
 - `npcs`: each with `display_name`, `email_address`, `relationship_to_owner`, `base_voice_register`, `base_voice_forbidden`, `will_say`, `will_not_say`, and `replies_enabled` (false → frontend hides composer; institutional one-way senders).
 - `threads`: each with optional `npc:` (system threads have `npc: null`). **Beat IDs must be prefixed with their thread ID** — the spine treats the prefix as the source of truth.
 - `beats`: each beat has `id`, `thread`, `npc`, `spec`, optional `preconditions`, optional `classify_reply_axes`, optional `multi_turn` / `ends_session`.
-  - `spec.pre_authored_prose` ships the body verbatim — no LLM call. Use only when exact phrasing matters (e.g. boot welcome).
+  - `spec.pre_authored_prose` ships the body verbatim — no LLM call. Use only when exact phrasing matters (e.g. boot welcome). Also the only render mode allowed on the boot tick (chat-driven beats hard-assert a `player_body`, which the boot tick lacks).
   - `spec.intent` + `must_include_facts` + `must_not` injected as per-run instructions on the chat agent. The agent's prose IS the email body.
   - `spec.writes` — SET-only writes onto state qualities. Authoring convention: `commitment.*` keys for fact-surfacing.
   - `spec.writes_by_axis` — per-arm writes keyed on the most recent classifier verdict for an axis. Collapses what would otherwise be N parallel followup beats.

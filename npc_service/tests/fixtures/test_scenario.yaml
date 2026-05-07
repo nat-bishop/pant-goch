@@ -123,16 +123,14 @@ beats:
         - "asks the player one specific, personal calibration question"
       must_not:
         - "do not name what happens to the player at end of pilot"
-    classify_reply_axes:
-      - quality: engagement
-        accumulate: true
-        question: |
-          Did the player substantively engage with Aria's calibration
-          prompt — sharing any specific personal detail, opinion, or
-          concrete response? Or did they refuse, deflect, change the
-          subject, or send a one-word non-answer?
-        allowed_values: ["engaged", "deflected", "unclear"]
-        map:
-          engaged: 1.0
-          deflected: -0.5
-          unclear: 0.5
+      effects:
+        - quality: engagement
+          op: add
+          classify:
+            question: |
+              Did the player substantively engage with Aria's calibration
+              prompt — sharing any specific personal detail, opinion, or
+              concrete response? Or did they refuse, deflect, change the
+              subject, or send a one-word non-answer?
+            allowed_values: [engaged, deflected, unclear]
+            map: { engaged: 1.0, deflected: -0.5, unclear: 0.5 }

@@ -2,13 +2,14 @@
 
 Two layers:
 
-- **Authoring** (loaded from `scenario.yaml`, immutable at runtime): QualityDef,
-  NPCDossier, Beat, Thread, Scenario.
+- **Authoring** (loaded from `scenario.yaml`, immutable at runtime): Quality,
+  NPCDossier, Beat, Thread, Scenario, Effect.
 - **Runtime state** (mutable, owned by the spine): Email, Reply, InboxState.
-  The LLM never writes any of this directly. There are exactly two code-owned
-  state-write sites for qualities: `apply_classification` (driven by the
-  classifier agent's per-axis output) and `apply_writes` (driven by a beat's
-  authored `spec.writes`). Both live in spine.py.
+  The LLM never writes any of this directly. Quality writes go through
+  the spine's effect appliers (`apply_literal_effects` for literal `value:`
+  effects fired at beat-fire time, `apply_classify_effect` for
+  classifier-driven writes at reply time), all driven by `Effect` entries
+  on `BeatSpec.effects` or `Scenario.effects`.
 
 Predicates are tagged-union Pydantic models, not strings. YAML authoring is
 slightly more verbose; in exchange, every predicate is type-checked at load
@@ -30,78 +31,36 @@ from pydantic_ai.messages import ModelMessage
 # ───────────────────────── classifier authoring ─────────────────────────
 
 
-class ClassifyReply(BaseModel):
-    """Beat-local LLM classifier authored on one axis of a beat's
-    `classify_reply_axes` list. When the player replies to that beat's email,
-    each axis is judged and the result is recorded.
+class ClassifyDirective(BaseModel):
+    """A classifier prompt block authored on an `Effect`. When the player
+    replies to a beat that owns this effect (or to any reply, when scoped at
+    `Scenario.effects`), the classifier judges the reply against this block
+    and the verdict feeds the parent effect's quality write.
 
-    Two modes:
-    - Quality-writing axis (`quality` set): the mapped score is written to
-      the named quality (replace or accumulate per `accumulate` flag).
-    - Verdict-only axis (`quality=None`, `axis_name` set): no quality write,
-      but the AxisResult still lands on `Reply.classifier_results` so
-      `RecentClassifierValue` predicates keyed on the same axis identifier
-      can read it. Used when the classifier verdict is consumed by a
-      preconditional gate, not a quality-driven one.
-
-    `axis_name` is the identifier `RecentClassifierValue` matches on. If
-    omitted, it defaults to `quality`. At least one of the two must be set.
-
-    Multiple axes per beat are batched into a single classifier call.
-    Within one beat, axis identifiers (axis_name or quality) must be unique.
+    For numeric qualities, `map` is required: the verdict string indexes into
+    `map` to produce the float written. For string qualities, `map` is
+    forbidden — the verdict string IS the value written.
     """
 
-    quality: str | None = None
-    axis_name: str | None = None
-    question: str
+    question: str = Field(min_length=1)
     allowed_values: list[str] = Field(min_length=2)
-    map: dict[str, float]
-    # When True, apply_classification adds the mapped score to the existing
-    # quality value (clamped) rather than overwriting it. Used for cumulative
-    # signals like aria.loop's engagement score, where every reply moves the
-    # quality by the mapped delta. Ignored when `quality is None` (verdict-
-    # only axes don't write at all).
-    accumulate: bool = False
-
-    @model_validator(mode="after")
-    def _map_keys_match_allowed(self) -> "ClassifyReply":
-        if set(self.map.keys()) != set(self.allowed_values):
-            raise ValueError(
-                f"classify_reply axis: map keys {sorted(self.map.keys())} "
-                f"must equal allowed_values {sorted(self.allowed_values)}"
-            )
-        return self
-
-    @model_validator(mode="after")
-    def _identifier_required(self) -> "ClassifyReply":
-        if self.quality is None and self.axis_name is None:
-            raise ValueError(
-                "classify_reply axis: at least one of `quality` or "
-                "`axis_name` must be set"
-            )
-        return self
-
-    @property
-    def identifier(self) -> str:
-        """The key used by AxisResult and RecentClassifierValue to refer to
-        this axis. Prefer `axis_name`; fall back to `quality` when omitted."""
-        return self.axis_name or self.quality  # type: ignore[return-value]
+    # Only set for numeric quality targets. Keys must equal `allowed_values`
+    # when set (validated at the parent Effect's load time, where we know
+    # the quality type).
+    map: dict[str, float] | None = None
 
 
 class AxisResult(BaseModel):
-    """One classifier axis's output. Stored on `Reply.classifier_results`
-    immediately after the classifier writes (or, for verdict-only axes,
-    after the value is accepted), so recent-window predicates can read
-    player history off `state.replies` directly rather than maintaining a
-    parallel ring buffer.
+    """One classifier verdict's output. Stored on `Reply.classifier_results`
+    immediately after the classifier writes, so recent-window predicates can
+    read player history off `state.replies` directly rather than maintaining
+    a parallel ring buffer.
 
-    `quality` is the axis identifier — populated from
-    `ClassifyReply.identifier` (axis_name or quality). The field name is
-    historical; it identifies an axis, which may or may not correspond to
-    a state quality.
+    `quality` names the target quality the verdict was for (every classify
+    effect targets a quality now — there are no verdict-only axes).
     """
 
-    quality: str  # axis identifier (axis_name or quality)
+    quality: str
     value: str
     rationale: str = ""
 
@@ -122,6 +81,16 @@ class QualityLt(BaseModel):
     kind: Literal["quality_lt"] = "quality_lt"
     quality: str
     value: float
+
+
+class QualityEquals(BaseModel):
+    """True iff the named quality is set and equals `value`. Works for both
+    numeric and string qualities — for string qualities, `value` is the
+    expected string verdict (e.g. `bargain_state == "refused"`)."""
+
+    kind: Literal["quality_equals"] = "quality_equals"
+    quality: str
+    value: str | int | float
 
 
 class PlayerRepliesToThreadGte(BaseModel):
@@ -221,6 +190,7 @@ Predicate = Annotated[
     Union[
         QualityGte,
         QualityLt,
+        QualityEquals,
         PlayerRepliesToThreadGte,
         BeatFired,
         RecentClassifierValue,
@@ -236,21 +206,118 @@ Not_.model_rebuild()
 Or_.model_rebuild()
 
 
+# ───────────────────────── effects ─────────────────────────
+
+
+class Effect(BaseModel):
+    """One state mutation triggered by a beat's lifecycle. Two value sources,
+    mutually exclusive — exactly one of `value` or `classify` must be set:
+
+    - **Literal effect** (`value` set): the literal is written to `quality`
+      when the beat fires. For scenario-scope effects this branch is unused
+      in practice; scenario-scope effects are typically `classify`-driven.
+    - **Classify effect** (`classify` set): the classifier judges the
+      player's reply per the directive; the verdict is mapped (numeric
+      qualities) or written verbatim (string qualities) to `quality`.
+
+    `op` controls how the value is combined with the existing quality:
+    `set` (default; replaces), `add` (accumulates), `max` (floor — write
+    only if greater), `min` (cap — write only if lesser).
+
+    `when` is an optional predicate gating the effect. For literal effects
+    it's evaluated at fire time; for classify effects it's evaluated at
+    reply time before applying the verdict.
+    """
+
+    quality: str = Field(min_length=1)
+    value: float | int | str | None = None
+    classify: ClassifyDirective | None = None
+    op: Literal["set", "add", "max", "min"] = "set"
+    when: Predicate | None = None
+
+    @model_validator(mode="after")
+    def _exactly_one_source(self) -> "Effect":
+        has_value = self.value is not None
+        has_classify = self.classify is not None
+        if has_value == has_classify:
+            raise ValueError(
+                "Effect on quality "
+                f"{self.quality!r}: must set exactly one of `value` or "
+                f"`classify` (got value={self.value!r}, classify="
+                f"{'<set>' if has_classify else 'None'})"
+            )
+        return self
+
+    @property
+    def is_classify(self) -> bool:
+        return self.classify is not None
+
+
 # ───────────────────────── authoring schemas ─────────────────────────
 
 
-class QualityDef(BaseModel):
-    """A continuous numeric state. Mutated by the classifier when a beat
-    authors `classify_reply` (see `apply_classification`). Predicates read
-    qualities through `quality_gte`/`quality_lt`, not as discrete values.
+class Quality(BaseModel):
+    """A scenario-level state variable. Mutated only via `apply_effects`
+    (driven by `Effect`s on beats or at scenario scope).
+
+    Two type families:
+    - Numeric (`int` / `float`): supports the full `op` range — set / add /
+      max / min — and `min` / `max` clamps. Classify-driven writes require
+      a `map` from verdict string to float.
+    - String: supports only `op: set` — there's no meaningful `add` for a
+      string. Classify-driven writes write the verdict string verbatim.
+
+    `surface_to_chat: true` flags this quality for the chat-agent's
+    commitments block — its current value is included on every render so
+    the LLM can read the "where the run currently stands" ledger. Replaces
+    the old `commitment.*` namespace convention.
     """
 
-    id: str = Field(min_length=1, pattern=r"^[a-z][a-z0-9_.]*$")
-    type: Literal["int", "float"] = "float"
+    id: str = Field(min_length=1, pattern=r"^[a-z][a-z0-9_]*$")
+    type: Literal["int", "float", "string"] = "float"
     min: float | None = None
     max: float | None = None
-    default: float | int | None = None
+    default: float | int | str | None = None
     description: str = ""
+    # When True, `commitments_snapshot` includes this quality (with current
+    # value) in the chat agent's per-render prompt block. Used for
+    # ledger-style state the LLM should know about (bargain_state,
+    # aria_acted_in_player_name). Default False — trajectory-shaping
+    # qualities like creator_affect stay internal.
+    surface_to_chat: bool = False
+    # Optional value-set restriction for string qualities. When non-empty,
+    # writes that produce a value outside this set are rejected at
+    # apply-time (logged + dropped). For string qualities the union of
+    # every `Effect.classify.allowed_values` writing this quality must be a
+    # subset of `allowed_values` — load-time validator catches typos.
+    allowed_values: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _type_constraints(self) -> "Quality":
+        if self.type == "string":
+            if self.min is not None or self.max is not None:
+                raise ValueError(
+                    f"quality {self.id}: min/max are numeric-only "
+                    f"(remove them on string-typed quality)"
+                )
+            if self.default is not None and not isinstance(self.default, str):
+                raise ValueError(
+                    f"quality {self.id}: string-typed quality default must "
+                    f"be a string (got {self.default!r})"
+                )
+        else:
+            if self.allowed_values:
+                raise ValueError(
+                    f"quality {self.id}: allowed_values is string-quality-only"
+                )
+            if self.default is not None and not isinstance(
+                self.default, (int, float)
+            ):
+                raise ValueError(
+                    f"quality {self.id}: numeric quality default must be a "
+                    f"number (got {self.default!r})"
+                )
+        return self
 
 
 class NPCDossier(BaseModel):
@@ -277,30 +344,6 @@ class NPCDossier(BaseModel):
     replies_enabled: bool = True
 
 
-class WritesByAxis(BaseModel):
-    """Conditional writes keyed on the most recent verdict of a classifier
-    axis. A beat declaring `writes_by_axis` looks up the last `window`
-    classified replies, finds the most recent `AxisResult` whose identifier
-    matches `axis`, and applies the matching `arms[<verdict>]` map of
-    quality writes (SET semantics, clamped to bounds).
-
-    Used for collapsed plot-router beats: one beat replaces what would
-    otherwise be N parallel followup beats, each writing a different
-    quality pin based on the player's prior verdict. The arm whose key
-    matches the verdict wins; non-matching verdicts and missing axis
-    results are no-ops (logged but non-fatal).
-
-    Validator (`Scenario._cross_references`) checks: `axis` resolves to a
-    declared axis identifier; every per-arm quality id is a known quality;
-    every arm key appears in some declared axis's `allowed_values` for the
-    same identifier (catches typos like `accpeted`).
-    """
-
-    axis: str
-    window: int = Field(ge=1, default=1)
-    arms: dict[str, dict[str, float]]
-
-
 class BeatSpec(BaseModel):
     """Inputs to the chat agent for a `plot` beat — author directive layered
     onto the conversation as per-run instructions.
@@ -309,6 +352,10 @@ class BeatSpec(BaseModel):
     the beat fires the prose verbatim (no LLM call). Use for moments where
     exact phrasing matters — typically the boot welcome. `intent` becomes
     optional in that case (it's only consumed by the chat agent).
+
+    `effects` is the unified state-mutation list. Each entry writes one
+    quality, with the value coming from a literal (`value`) or a classifier
+    verdict (`classify`). See `Effect` for shape.
     """
 
     intent: str = ""
@@ -322,23 +369,19 @@ class BeatSpec(BaseModel):
     # agent's own outputs do.
     pre_authored_prose: str | None = None
 
-    # Committed facts the beat fire stamps onto state with SET semantics
-    # (no accumulate). Quality bounds clamp via `_clamp_quality`. Authoring
-    # convention: keys begin with `commitment.` so the chat agent's
-    # `_commitments_block` instructions decorator surfaces them on every
-    # render. Multi-turn-collision contract: if a `writes` key on a
-    # `multi_turn` beat is also written by another beat, that other beat's
+    # State mutations triggered by this beat. Literal (`value`) effects fire
+    # when the beat fires; classify (`classify`) effects schedule a
+    # classifier batch on the next player reply. Multiple classify effects
+    # on the same beat are batched into one classifier LLM call. See
+    # Effect for the per-entry shape; see spine.apply_effects for ordering.
+    #
+    # Multi-turn-collision contract: if a literal effect's `quality` on a
+    # multi_turn beat is also written by another beat, that other beat's
     # mutex must take effect before its tick — otherwise the multi_turn
     # beat will re-fire on the next tick and clobber the later write back
-    # to its own value. (Concrete: multi_turn A writes x=2.0; B later
-    # writes x=3.0; on the next tick A re-fires unless A has
-    # `Not_(BeatFired B)` and clobbers B back to 2.0.)
-    writes: dict[str, float] = Field(default_factory=dict)
-    # Conditional writes keyed on a classifier verdict. See WritesByAxis.
-    # Applied by `apply_writes_by_axis` in spine.py AFTER the flat `writes`
-    # block, so per-arm values win on collision (lets `writes` carry a
-    # default that arms override).
-    writes_by_axis: WritesByAxis | None = None
+    # to its own value.
+    effects: list[Effect] = Field(default_factory=list)
+
     # When True, the chat agent's output_validator runs the fact-checker
     # agent against this beat's `must_include_facts` + `must_not` and
     # raises ModelRetry on any miss/violation. Default False — every
@@ -382,17 +425,14 @@ class Beat(BaseModel):
     semantics — see field comments below.
     """
 
+    # Beat ids are namespaced as `<thread>.<local>` — the spine relies on
+    # this convention (see `thread_id_from_beat_id`). The cross-reference
+    # validator enforces that the prefix matches the beat's `thread` field.
     id: str = Field(min_length=1, pattern=r"^[a-z][a-z0-9_.]*$")
     thread: str
     npc: str  # which dossier to use (sender + voice + relationship blurb)
     spec: BeatSpec
     preconditions: list[Predicate] = Field(default_factory=list)
-    # Beat-local classifier axes. Empty → no classifier runs for replies
-    # to this beat. Multiple axes are batched into a single classifier
-    # LLM call; each axis writes independently to its own quality. Within
-    # one beat, axis quality ids must be unique (and must not collide
-    # with any key in this beat's `spec.writes`).
-    classify_reply_axes: list[ClassifyReply] = Field(default_factory=list)
     # When True, the beat re-fires on every tick — never enters
     # `fired_beat_ids` based on its own state. Stop firing by adding mutex
     # preconditions (e.g. `Not_(BeatFired aria.complete_warm)`) so terminal
@@ -418,6 +458,12 @@ class Scenario(BaseModel):
 
     Lookup dicts (`beat_by_id`, `npc_by_id`, `quality_by_id`, `thread_by_id`)
     are built lazily and cached. Use them anywhere you'd otherwise scan a list.
+
+    `effects` is the scenario-scope effects list. Classify effects here run
+    on every player reply (gated by their own `when:` predicate). Used for
+    always-on trajectory scoring that doesn't belong to any single beat.
+    Empty by default — the production scenario currently has no
+    scenario-scope effects; see Phase 2 (lively-allen) for the planned hoist.
     """
 
     model_config = {"ignored_types": (cached_property,)}
@@ -443,10 +489,11 @@ class Scenario(BaseModel):
     # exactly this string when extracted.
     player_canon_name_key: str = "name"
 
-    qualities: list[QualityDef]
+    qualities: list[Quality]
     npcs: list[NPCDossier]
     threads: list[Thread]
     beats: list[Beat]
+    effects: list[Effect] = Field(default_factory=list)
 
     @cached_property
     def beat_by_id(self) -> dict[str, Beat]:
@@ -457,17 +504,22 @@ class Scenario(BaseModel):
         return {n.id: n for n in self.npcs}
 
     @cached_property
-    def quality_by_id(self) -> dict[str, QualityDef]:
+    def quality_by_id(self) -> dict[str, Quality]:
         return {q.id: q for q in self.qualities}
 
     @cached_property
-    def quality_defaults(self) -> dict[str, float]:
+    def quality_defaults(self) -> dict[str, float | str]:
         """Frozen at load — the chat-agent commitments snapshot reads this
-        on every render and would otherwise rebuild it per call."""
-        return {
-            q.id: float(q.default) if q.default is not None else 0.0
-            for q in self.qualities
-        }
+        on every render and would otherwise rebuild it per call. For
+        numeric qualities, an unset default becomes 0.0; for string
+        qualities, an unset default becomes the empty string."""
+        out: dict[str, float | str] = {}
+        for q in self.qualities:
+            if q.default is not None:
+                out[q.id] = q.default if q.type == "string" else float(q.default)
+            else:
+                out[q.id] = "" if q.type == "string" else 0.0
+        return out
 
     @cached_property
     def quality_descriptions(self) -> dict[str, str]:
@@ -477,9 +529,15 @@ class Scenario(BaseModel):
     def thread_by_id(self) -> dict[str, Thread]:
         return {t.id: t for t in self.threads}
 
+    @cached_property
+    def surface_to_chat_quality_ids(self) -> set[str]:
+        """The qualities the chat agent's commitments block surfaces. Frozen
+        at load so the per-render snapshot doesn't re-scan every quality."""
+        return {q.id for q in self.qualities if q.surface_to_chat}
+
     @field_validator("qualities")
     @classmethod
-    def _quality_ids_unique(cls, v: list[QualityDef]) -> list[QualityDef]:
+    def _quality_ids_unique(cls, v: list[Quality]) -> list[Quality]:
         ids = [q.id for q in v]
         if len(set(ids)) != len(ids):
             raise ValueError(f"duplicate quality ids in {ids}")
@@ -511,24 +569,24 @@ class Scenario(BaseModel):
 
     @model_validator(mode="after")
     def _cross_references(self) -> "Scenario":
-        quality_ids = {q.id for q in self.qualities}
+        quality_by_id = {q.id: q for q in self.qualities}
+        quality_ids = set(quality_by_id.keys())
         npc_ids = {n.id for n in self.npcs}
         thread_ids = {t.id for t in self.threads}
         beat_ids = {b.id for b in self.beats}
 
-        # Axis identifiers (axis_name or quality) declared anywhere in the
-        # scenario — used to validate RecentClassifierValue references that
-        # may target a verdict-only axis_name rather than a quality. Also
-        # used by `writes_by_axis` validation: each axis identifier maps to
-        # the union of `allowed_values` across every declaration of that
-        # identifier in the scenario, so arm keys can be checked for typos.
-        axis_identifiers: set[str] = set()
-        axis_allowed_values: dict[str, set[str]] = {}
-        for beat in self.beats:
-            for axis in beat.classify_reply_axes:
-                axis_identifiers.add(axis.identifier)
-                axis_allowed_values.setdefault(axis.identifier, set()).update(
-                    axis.allowed_values
+        # Walk every effect (beat-scope + scenario-scope) and validate its
+        # quality target + classify directive shape.
+        all_effect_sources: list[tuple[str, list[Effect]]] = [
+            (f"beat {beat.id}", beat.spec.effects) for beat in self.beats
+        ]
+        all_effect_sources.append(("scenario.effects", self.effects))
+
+        for where, effects in all_effect_sources:
+            for i, effect in enumerate(effects):
+                _validate_effect(
+                    effect, f"{where}.effects[{i}]",
+                    quality_by_id, thread_ids, beat_ids,
                 )
 
         for beat in self.beats:
@@ -547,70 +605,20 @@ class Scenario(BaseModel):
             for pred in beat.preconditions:
                 _check_predicate_refs(
                     pred, f"beat {beat.id}",
-                    quality_ids, thread_ids, beat_ids, axis_identifiers,
+                    quality_ids, thread_ids, beat_ids,
                 )
-            local_axis_identifiers: set[str] = set()
-            axis_quality_writes: set[str] = set()
-            for axis in beat.classify_reply_axes:
-                if axis.quality is not None and axis.quality not in quality_ids:
-                    raise ValueError(
-                        f"beat {beat.id}: classify_reply_axes quality "
-                        f"{axis.quality!r} is not a known quality"
-                    )
-                ident = axis.identifier
-                if ident in local_axis_identifiers:
-                    raise ValueError(
-                        f"beat {beat.id}: classify_reply_axes has two axes "
-                        f"with the same identifier {ident!r} (set distinct "
-                        f"`axis_name` values to disambiguate)"
-                    )
-                local_axis_identifiers.add(ident)
-                if axis.quality is not None:
-                    axis_quality_writes.add(axis.quality)
-            for write_q in beat.spec.writes:
-                if write_q not in quality_ids:
-                    raise ValueError(
-                        f"beat {beat.id}: spec.writes targets unknown "
-                        f"quality {write_q!r}"
-                    )
-                if write_q in axis_quality_writes:
-                    raise ValueError(
-                        f"beat {beat.id}: spec.writes key {write_q!r} "
-                        f"collides with a classify_reply_axes axis on "
-                        f"the same beat (the multi_turn re-fire would "
-                        f"clobber the classifier each tick)"
-                    )
-            wba = beat.spec.writes_by_axis
-            if wba is not None:
-                if wba.axis not in axis_identifiers:
-                    raise ValueError(
-                        f"beat {beat.id}: spec.writes_by_axis.axis "
-                        f"{wba.axis!r} is not a declared axis identifier"
-                    )
-                allowed = axis_allowed_values.get(wba.axis, set())
-                for arm_key, arm_writes in wba.arms.items():
-                    if allowed and arm_key not in allowed:
+            # Within one beat, a quality should not be the target of two
+            # classify effects (one classifier call answers each axis once,
+            # so two classify effects on the same quality is ambiguous).
+            seen_classify_qualities: set[str] = set()
+            for i, effect in enumerate(beat.spec.effects):
+                if effect.is_classify:
+                    if effect.quality in seen_classify_qualities:
                         raise ValueError(
-                            f"beat {beat.id}: spec.writes_by_axis arm "
-                            f"{arm_key!r} is not an allowed_value of axis "
-                            f"{wba.axis!r} (declared values: "
-                            f"{sorted(allowed)})"
+                            f"beat {beat.id}: two classify effects target the "
+                            f"same quality {effect.quality!r}"
                         )
-                    for arm_q in arm_writes:
-                        if arm_q not in quality_ids:
-                            raise ValueError(
-                                f"beat {beat.id}: spec.writes_by_axis "
-                                f"arm {arm_key!r} targets unknown quality "
-                                f"{arm_q!r}"
-                            )
-                        if arm_q in axis_quality_writes:
-                            raise ValueError(
-                                f"beat {beat.id}: spec.writes_by_axis "
-                                f"arm {arm_key!r} writes quality {arm_q!r} "
-                                f"that this beat also writes via "
-                                f"classify_reply_axes (would clobber the "
-                                f"classifier each tick)"
-                            )
+                    seen_classify_qualities.add(effect.quality)
 
         for thread in self.threads:
             if thread.npc is not None and thread.npc not in npc_ids:
@@ -619,38 +627,119 @@ class Scenario(BaseModel):
         return self
 
 
+def _validate_effect(
+    effect: Effect,
+    where: str,
+    quality_by_id: dict[str, Quality],
+    thread_ids: set[str],
+    beat_ids: set[str],
+) -> None:
+    """Validate a single effect's quality target, value/classify shape, and
+    `when:` predicate references. Raises ValueError on any inconsistency.
+    """
+    q = quality_by_id.get(effect.quality)
+    if q is None:
+        raise ValueError(
+            f"{where}: targets unknown quality {effect.quality!r}"
+        )
+
+    # Per-type value/op constraints.
+    if effect.is_classify:
+        directive = effect.classify  # type: ignore[union-attr]
+        if q.type == "string":
+            if directive.map is not None:
+                raise ValueError(
+                    f"{where}: classify.map is forbidden when target "
+                    f"quality {q.id!r} is type:string (the verdict string "
+                    f"IS the value)"
+                )
+            if q.allowed_values:
+                disallowed = [
+                    v for v in directive.allowed_values
+                    if v not in q.allowed_values
+                ]
+                if disallowed:
+                    raise ValueError(
+                        f"{where}: classify.allowed_values {disallowed} not "
+                        f"in quality {q.id!r}.allowed_values "
+                        f"{q.allowed_values}"
+                    )
+        else:
+            if directive.map is None:
+                raise ValueError(
+                    f"{where}: classify.map is required when target "
+                    f"quality {q.id!r} is type:{q.type} (numeric)"
+                )
+            if set(directive.map.keys()) != set(directive.allowed_values):
+                raise ValueError(
+                    f"{where}: classify.map keys "
+                    f"{sorted(directive.map.keys())} must equal "
+                    f"allowed_values {sorted(directive.allowed_values)}"
+                )
+    else:
+        # Literal effect — type-check the value against the target.
+        if q.type == "string":
+            if not isinstance(effect.value, str):
+                raise ValueError(
+                    f"{where}: literal value {effect.value!r} must be a "
+                    f"string for type:string quality {q.id!r}"
+                )
+            if q.allowed_values and effect.value not in q.allowed_values:
+                raise ValueError(
+                    f"{where}: literal value {effect.value!r} not in "
+                    f"quality {q.id!r}.allowed_values {q.allowed_values}"
+                )
+            if effect.op != "set":
+                raise ValueError(
+                    f"{where}: op={effect.op!r} is not supported on "
+                    f"string-typed quality {q.id!r} (only `set`)"
+                )
+        else:
+            if not isinstance(effect.value, (int, float)) or isinstance(
+                effect.value, bool
+            ):
+                raise ValueError(
+                    f"{where}: literal value {effect.value!r} must be a "
+                    f"number for type:{q.type} quality {q.id!r}"
+                )
+
+    if effect.when is not None:
+        _check_predicate_refs(
+            effect.when, where, set(quality_by_id.keys()),
+            thread_ids, beat_ids,
+        )
+
+
 def _check_predicate_refs(
     pred: Predicate,
     where: str,
     quality_ids: set[str],
     thread_ids: set[str],
     beat_ids: set[str],
-    axis_identifiers: set[str],
 ) -> None:
-    if isinstance(pred, (QualityGte, QualityLt)) and pred.quality not in quality_ids:
+    if isinstance(pred, (QualityGte, QualityLt, QualityEquals)) and pred.quality not in quality_ids:
         raise ValueError(f"{where}: predicate references unknown quality {pred.quality!r}")
     if isinstance(pred, PlayerRepliesToThreadGte) and pred.thread not in thread_ids:
         raise ValueError(f"{where}: PlayerRepliesToThreadGte references unknown thread {pred.thread!r}")
     if isinstance(pred, BeatFired) and pred.beat not in beat_ids:
         raise ValueError(f"{where}: BeatFired references unknown beat {pred.beat!r}")
     if isinstance(pred, RecentClassifierValue):
-        # RecentClassifierValue.quality is an axis identifier — it may name
-        # a state quality (when the axis writes one) OR a verdict-only
-        # axis_name (when the axis is gate-driven, no quality write).
-        if pred.quality not in quality_ids and pred.quality not in axis_identifiers:
+        # RecentClassifierValue.quality is the quality id whose verdicts the
+        # window walks. Every classify effect targets a quality (no more
+        # verdict-only axes), so this must be a known quality.
+        if pred.quality not in quality_ids:
             raise ValueError(
-                f"{where}: RecentClassifierValue references unknown axis "
-                f"identifier {pred.quality!r} (must be a quality id or a "
-                f"classify_reply_axes axis_name)"
+                f"{where}: RecentClassifierValue references unknown quality "
+                f"{pred.quality!r}"
             )
     if isinstance(pred, Not_):
         _check_predicate_refs(
-            pred.of, where, quality_ids, thread_ids, beat_ids, axis_identifiers,
+            pred.of, where, quality_ids, thread_ids, beat_ids,
         )
     if isinstance(pred, Or_):
         for sub in pred.of:
             _check_predicate_refs(
-                sub, where, quality_ids, thread_ids, beat_ids, axis_identifiers,
+                sub, where, quality_ids, thread_ids, beat_ids,
             )
     # PlayerCanonExists references no scenario-load set (canon names are
     # dynamic, populated by the extractor at runtime); nothing to validate.
@@ -690,11 +779,11 @@ class Email:
 class Reply:
     """One player send. Captured for trajectory analysis.
 
-    `classifier_results` holds the per-axis classifier output for this
-    reply, populated by `apply_classification` after each successful
-    write. Recent-window predicates walk `state.replies` in reverse and
-    read this field — single source of truth for "what did the classifier
-    say on reply N?"
+    `classifier_results` holds the per-quality classifier output for this
+    reply, populated by `apply_effects` (classify branch) after each
+    successful write. Recent-window predicates walk `state.replies` in
+    reverse and read this field — single source of truth for "what did the
+    classifier say on reply N?"
     """
 
     id: str
@@ -759,8 +848,12 @@ class PendingBeat:
 @dataclass
 class InboxState:
     """The mutable runtime state. The spine fully owns this; the LLM never
-    writes to it directly except through classifier outputs (when a beat
-    authors `classify_reply`) which target a single named quality.
+    writes to it directly except through classifier outputs (consumed by
+    `apply_effects`) which target a single named quality.
+
+    `qualities` holds the current value for each authored quality. The
+    type is `dict[str, float | str]` because string-typed qualities are
+    supported (their values are verdict strings).
 
     `thread_messages` holds the Pydantic-AI-native conversation per NPC
     thread. Anchored emails seed it as `ModelResponse(TextPart)` entries;
@@ -769,7 +862,7 @@ class InboxState:
     System threads (no NPC) don't get a history entry.
     """
 
-    qualities: dict[str, float] = field(default_factory=dict)
+    qualities: dict[str, float | str] = field(default_factory=dict)
     fired_beat_ids: set[str] = field(default_factory=set)
     pending_beats: list[PendingBeat] = field(default_factory=list)
     emails: list[Email] = field(default_factory=list)
@@ -786,12 +879,14 @@ class InboxState:
 
     @classmethod
     def from_scenario(cls, scenario: Scenario) -> "InboxState":
-        qualities: dict[str, float] = {}
+        qualities: dict[str, float | str] = {}
         for q in scenario.qualities:
-            if q.default is None:
-                qualities[q.id] = 0.0
-            elif isinstance(q.default, (int, float)):
-                qualities[q.id] = float(q.default)
+            if q.default is not None:
+                qualities[q.id] = (
+                    q.default if q.type == "string" else float(q.default)
+                )
+            else:
+                qualities[q.id] = "" if q.type == "string" else 0.0
         state = cls(qualities=qualities)
         # Auto-pend every beat; `find_due_beats` evaluates authored
         # preconditions each tick and only fires the eligible ones.
@@ -869,12 +964,13 @@ class BeatEligibility(BaseModel):
 class QualityDelta(BaseModel):
     """One quality mutation applied during a tick. `before` is None when the
     quality didn't have a prior value (first write). `source` names the
-    origin: `"classifier:<axis>"` or `"spec.writes:<beat_id>"`.
+    origin: `"classify:<quality>"` for classify-driven writes, or
+    `"effect:<beat_id>:<quality>"` for literal effects.
     """
 
     quality: str
-    before: float | None
-    after: float
+    before: float | str | None
+    after: float | str
     source: str
 
 
@@ -893,5 +989,3 @@ class TickDecision(BaseModel):
     quality_deltas: list[QualityDelta] = Field(default_factory=list)
     fired_beat_id: str | None = None
     multi_turn_turn: int | None = None  # nth fire of a multi-turn beat (1-indexed)
-
-

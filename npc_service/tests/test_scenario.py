@@ -41,8 +41,8 @@ def test_loads(scenario: Scenario):
     assert {q.id for q in scenario.qualities} == {
         "creator_affect",
         "creature_grievance",
-        "commitment.bargain_state",
-        "commitment.aria_acted_in_player_name",
+        "bargain_state",
+        "aria_acted_in_player_name",
     }
     assert {b.id for b in scenario.beats} == {
         "aria.welcome",
@@ -72,8 +72,7 @@ def test_email_domain_required(scenario: Scenario):
 
 def test_calibration_beat_self_stops_via_not_calibration_done(scenario: Scenario):
     """`aria.calibration` is multi-turn with `Not_(*calibration_done)` in its
-    preconditions — that's how it self-stops. The calibration_done predicate
-    is `Or_(PlayerCanonExists("name"), PlayerRepliesToThreadGte("aria", 4))`."""
+    preconditions — that's how it self-stops."""
     from npc_service.models import Not_, Or_, PlayerCanonExists, PlayerRepliesToThreadGte
 
     cal = scenario.beat_by_id["aria.calibration"]
@@ -135,19 +134,47 @@ def test_phase1_calibration_peers_do_not_gate_on_calibration_done(scenario: Scen
                 )
 
 
-def test_loop_has_two_axes(scenario: Scenario):
+def test_loop_has_two_classify_effects(scenario: Scenario):
+    """`aria.loop` has two classify-typed effects — one each for
+    creator_affect and creature_grievance."""
     loop = scenario.beat_by_id["aria.loop"]
     assert loop.multi_turn is True
-    identifiers = [a.identifier for a in loop.classify_reply_axes]
-    assert identifiers == ["creator_affect", "creature_grievance"]
+    classify_effects = [e for e in loop.spec.effects if e.is_classify]
+    quality_targets = [e.quality for e in classify_effects]
+    assert quality_targets == ["creator_affect", "creature_grievance"]
 
 
-def test_bargain_offer_uses_verdict_only_axis(scenario: Scenario):
+def test_bargain_offer_writes_state_and_classifies_into_string_quality(scenario: Scenario):
+    """The bargain offer beat literal-writes `bargain_state="offered"` AND
+    schedules a classifier directive that writes the verdict string
+    (accepted/refused/hedged) directly into the same string-typed quality.
+    Replaces the old verdict-only `axis_name: bargain_response` pattern."""
     offer = scenario.beat_by_id["aria.bargain_offer"]
-    assert len(offer.classify_reply_axes) == 1
-    axis = offer.classify_reply_axes[0]
-    assert axis.quality is None
-    assert axis.axis_name == "bargain_response"
+    literal_effects = [e for e in offer.spec.effects if not e.is_classify]
+    classify_effects = [e for e in offer.spec.effects if e.is_classify]
+
+    assert len(literal_effects) == 1
+    assert literal_effects[0].quality == "bargain_state"
+    assert literal_effects[0].value == "offered"
+
+    assert len(classify_effects) == 1
+    classify = classify_effects[0]
+    assert classify.quality == "bargain_state"
+    assert classify.classify is not None
+    assert set(classify.classify.allowed_values) == {"accepted", "refused", "hedged"}
+    # String quality → no map (the verdict string IS the value).
+    assert classify.classify.map is None
+
+
+def test_bargain_state_quality_is_string(scenario: Scenario):
+    """The merged bargain_state quality is string-typed and surfaced to
+    chat. The full set of values covers every authored transition."""
+    q = scenario.quality_by_id["bargain_state"]
+    assert q.type == "string"
+    assert q.surface_to_chat is True
+    assert set(q.allowed_values) == {
+        "untouched", "offered", "accepted", "refused", "hedged", "betrayed",
+    }
 
 
 def test_terminals_carry_validate_facts(scenario: Scenario):
@@ -184,17 +211,13 @@ def test_boot_tick_fires_only_welcome(state: InboxState, scenario: Scenario):
 def test_integration_eligible_only_after_bargain_offer_and_paternal_window(
     state: InboxState, scenario: Scenario
 ):
-    """complete_integration requires: 8 replies + paternal-in-last-3 +
-    grievance < 3.0 + bargain_offer fired."""
     _drain_boot(state, scenario)
     state.replies.extend(_make_reply("aria") for _ in range(8))
     state.qualities["creature_grievance"] = 1.0
 
-    # No bargain fired AND no paternal in recent — not eligible.
     due = {b.id for b in find_due_beats(state, scenario)[0]}
     assert "aria.complete_integration" not in due
 
-    # Mark bargain_offer fired AND seed paternal classifier history.
     state.fired_beat_ids.add("aria.bargain_offer")
     state.replies[-1].classifier_results.append(
         AxisResult(quality="creator_affect", value="paternal", rationale="")
@@ -206,10 +229,6 @@ def test_integration_eligible_only_after_bargain_offer_and_paternal_window(
 def test_vengeance_requires_bridge_and_cpo(
     state: InboxState, scenario: Scenario
 ):
-    """complete_vengeance gates on cpo.dispatch_first having fired AND
-    grievance >= 6.0 AND a recent cold reply. Bridge (aria.acted_in_player_name)
-    is the precondition for cpo.dispatch_first becoming eligible — so the
-    chain must traverse fully."""
     _drain_boot(state, scenario)
     state.replies.extend(_make_reply("aria") for _ in range(8))
     state.qualities["creature_grievance"] = 7.0
@@ -217,11 +236,9 @@ def test_vengeance_requires_bridge_and_cpo(
         AxisResult(quality="creator_affect", value="cold", rationale="")
     )
 
-    # Without cpo.dispatch_first fired, vengeance isn't eligible.
     due = {b.id for b in find_due_beats(state, scenario)[0]}
     assert "aria.complete_vengeance" not in due
 
-    # Fire cpo.dispatch_first → vengeance becomes eligible.
     state.fired_beat_ids.add("cpo.dispatch_first")
     due = {b.id for b in find_due_beats(state, scenario)[0]}
     assert "aria.complete_vengeance" in due
@@ -230,12 +247,9 @@ def test_vengeance_requires_bridge_and_cpo(
 def test_exile_eligible_when_cold_window_low_grievance(
     state: InboxState, scenario: Scenario
 ):
-    """complete_exile: 8 replies + last-3-cold (any) + grievance < 4.0.
-    No bargain or CPO required."""
     _drain_boot(state, scenario)
     state.replies.extend(_make_reply("aria") for _ in range(8))
     state.qualities["creature_grievance"] = 1.0
-    # Three cold replies in a row to satisfy the recent-cold window.
     for r in state.replies[-3:]:
         r.classifier_results.append(
             AxisResult(quality="creator_affect", value="cold", rationale="")
@@ -267,92 +281,66 @@ def test_bargain_followup_eligible_for_any_authored_verdict(
     state: InboxState, scenario: Scenario
 ):
     """The collapsed followup gates on RecentClassifierValue listing all
-    three arms — the offer's verdict-only axis routes to one beat, not three."""
+    three arms — the offer's classify effect routes to one beat, not three."""
     _drain_boot(state, scenario)
     state.fired_beat_ids.add("aria.bargain_offer")
     state.replies.extend(_make_reply("aria") for _ in range(5))
 
-    # No recent bargain_response classification → not eligible.
     due = {b.id for b in find_due_beats(state, scenario)[0]}
     assert "aria.bargain_followup" not in due
 
-    # Each arm independently makes the followup eligible.
     for arm in ("accepted", "refused", "hedged"):
         state.replies[-1].classifier_results = [
-            AxisResult(quality="bargain_response", value=arm, rationale="")
+            AxisResult(quality="bargain_state", value=arm, rationale="")
         ]
         due = {b.id for b in find_due_beats(state, scenario)[0]}
         assert "aria.bargain_followup" in due, f"arm {arm!r} did not satisfy gate"
 
 
-def test_bargain_followup_writes_state_per_arm(
+def test_bargain_followup_refused_arm_writes_grievance_floor(
     state: InboxState, scenario: Scenario
 ):
-    """writes_by_axis routes the correct quality writes per verdict.
-
-    Drives the spine's apply_writes_by_axis directly via _fire_beat-equivalent
-    plumbing: seed the verdict on the most recent reply, run apply_writes_by_axis,
-    and assert the right quality moved.
-    """
-    from npc_service.spine import apply_writes_by_axis
+    """The followup's effect carries a `when: bargain_state == refused`
+    clause that raises creature_grievance to 4.0 only on the refused arm."""
+    from npc_service.spine import apply_literal_effects
 
     followup = scenario.beat_by_id["aria.bargain_followup"]
-    wba = followup.spec.writes_by_axis
-    assert wba is not None
 
-    # Accepted → bargain_state = 2; grievance untouched.
+    # accepted arm: grievance untouched.
     s_accepted = InboxState.from_scenario(scenario)
-    r = _make_reply("aria")
-    r.classifier_results.append(
-        AxisResult(quality="bargain_response", value="accepted", rationale="")
-    )
-    s_accepted.replies.append(r)
-    apply_writes_by_axis(s_accepted, scenario, wba, beat_id=followup.id)
-    assert s_accepted.qualities["commitment.bargain_state"] == 2.0
+    s_accepted.qualities["bargain_state"] = "accepted"
+    apply_literal_effects(s_accepted, scenario, followup.spec.effects, beat_id=followup.id)
     assert s_accepted.qualities["creature_grievance"] == 0.0  # unchanged
+    assert s_accepted.qualities["bargain_state"] == "accepted"
 
-    # Refused → bargain_state = 3 AND creature_grievance floor 4.0.
+    # refused arm: grievance set to 4.0.
     s_refused = InboxState.from_scenario(scenario)
-    r = _make_reply("aria")
-    r.classifier_results.append(
-        AxisResult(quality="bargain_response", value="refused", rationale="")
-    )
-    s_refused.replies.append(r)
-    apply_writes_by_axis(s_refused, scenario, wba, beat_id=followup.id)
-    assert s_refused.qualities["commitment.bargain_state"] == 3.0
+    s_refused.qualities["bargain_state"] = "refused"
+    apply_literal_effects(s_refused, scenario, followup.spec.effects, beat_id=followup.id)
     assert s_refused.qualities["creature_grievance"] == 4.0
+    assert s_refused.qualities["bargain_state"] == "refused"
 
-    # Hedged → bargain_state = 4; grievance untouched.
+    # hedged arm: grievance untouched.
     s_hedged = InboxState.from_scenario(scenario)
-    r = _make_reply("aria")
-    r.classifier_results.append(
-        AxisResult(quality="bargain_response", value="hedged", rationale="")
-    )
-    s_hedged.replies.append(r)
-    apply_writes_by_axis(s_hedged, scenario, wba, beat_id=followup.id)
-    assert s_hedged.qualities["commitment.bargain_state"] == 4.0
-    assert s_hedged.qualities["creature_grievance"] == 0.0  # unchanged
+    s_hedged.qualities["bargain_state"] = "hedged"
+    apply_literal_effects(s_hedged, scenario, followup.spec.effects, beat_id=followup.id)
+    assert s_hedged.qualities["creature_grievance"] == 0.0
 
 
 def test_bargain_betrayed_requires_followup_and_accepted_verdict(
     state: InboxState, scenario: Scenario
 ):
-    """bargain_betrayed gates on bargain_followup (replacement for the old
-    bargain_accepted_followup mutex) PLUS a recent accepted-arm verdict to
-    discriminate the trajectory. A refused or hedged player can't reach
-    betrayal — that path is shape-incoherent."""
+    """bargain_betrayed gates on bargain_followup having fired AND
+    `bargain_state == accepted` (read directly via QualityEquals on the
+    string-typed quality) PLUS recent cold replies. A refused or hedged
+    player can't reach betrayal — that path is shape-incoherent."""
     _drain_boot(state, scenario)
-    # bargain_betrayed gates on *calibration_done; seed the canon name so
-    # the calibration scene closes and Phase-2 body beats unlock.
     _seed_canon_name(state)
     state.fired_beat_ids.add("aria.bargain_offer")
     state.fired_beat_ids.add("aria.bargain_followup")
-    # Two cold replies (the trajectory condition) but seed the bargain
-    # verdict as REFUSED — betrayed should NOT fire.
     state.replies.extend(_make_reply("aria") for _ in range(3))
-    state.replies[0].classifier_results.append(
-        AxisResult(quality="bargain_response", value="refused", rationale="")
-    )
+    # Refused state with cold replies — betrayed should NOT fire.
+    state.qualities["bargain_state"] = "refused"
     for r in state.replies[-2:]:
         r.classifier_results.append(
             AxisResult(quality="creator_affect", value="cold", rationale="")
@@ -360,12 +348,8 @@ def test_bargain_betrayed_requires_followup_and_accepted_verdict(
     due = {b.id for b in find_due_beats(state, scenario)[0]}
     assert "aria.bargain_betrayed" not in due
 
-    # Now seed accepted verdict (overwriting the refused one on a different
-    # reply). With accepted in window AND two cold trailing replies, betrayed
-    # is eligible.
-    state.replies[0].classifier_results = [
-        AxisResult(quality="bargain_response", value="accepted", rationale="")
-    ]
+    # Switch to accepted: with two cold trailing replies, betrayed is eligible.
+    state.qualities["bargain_state"] = "accepted"
     due = {b.id for b in find_due_beats(state, scenario)[0]}
     assert "aria.bargain_betrayed" in due
 
@@ -382,7 +366,6 @@ def test_bridge_does_not_fire_on_warm_after_betrayal(
     state.fired_beat_ids.add("aria.bargain_betrayed")
     state.replies.extend(_make_reply("aria") for _ in range(5))
     state.qualities["creature_grievance"] = 6.0
-    # Two warm/paternal replies — no cold in window.
     for r in state.replies[-2:]:
         r.classifier_results.append(
             AxisResult(quality="creator_affect", value="paternal", rationale="")
@@ -391,9 +374,6 @@ def test_bridge_does_not_fire_on_warm_after_betrayal(
     due = {b.id for b in find_due_beats(state, scenario)[0]}
     assert "aria.acted_in_player_name" not in due
 
-    # A fresh cold reply lands (RecentClassifierValue walks per-reply,
-    # taking ≤1 result per quality per reply — so the cold needs its own
-    # reply slot, not piggybacked on the existing paternal-classified one).
     cold_reply = _make_reply("aria")
     cold_reply.classifier_results.append(
         AxisResult(quality="creator_affect", value="cold", rationale="")
@@ -422,8 +402,6 @@ def _make_reply(thread: str | None) -> Reply:
 
 
 def _seed_canon_name(state: InboxState, name: str = "Marcus") -> None:
-    """Drop a name into player_canon so `*calibration_done` is satisfied —
-    Phase-2 body beats become eligible without needing to add 4 replies."""
     state.player_canon["name"] = PlayerCanonEntry(
         summary=name,
         literal_text_quote=f"I'm {name}",

@@ -1,12 +1,11 @@
 """Pure-Python tests for the deterministic spine: scenario load, predicate
-evaluation, beat scheduler, classifier-driven quality writes (set + accumulate),
-recent-window predicates, BeatSpec.writes (commitments), and reply/email
+evaluation, beat scheduler, classifier-driven quality writes (set + add +
+max + min), recent-window predicates, literal effects, and reply/email
 lookup helpers.
 
 No LLM, no FastAPI. Runs fast.
 """
 import uuid
-from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -17,7 +16,8 @@ from npc_service.models import (
     BeatFired,
     BeatSpec,
     CanonCategory,
-    ClassifyReply,
+    ClassifyDirective,
+    Effect,
     Email,
     InboxState,
     Not_,
@@ -25,18 +25,17 @@ from npc_service.models import (
     PlayerCanonEntry,
     PlayerCanonExists,
     PlayerRepliesToThreadGte,
-    QualityDef,
+    Quality,
+    QualityEquals,
     QualityGte,
     QualityLt,
     RecentClassifierValue,
     Reply,
     Scenario,
-    load_scenario,
 )
 from npc_service.spine import (
-    apply_classification,
-    apply_writes,
-    apply_writes_by_axis,
+    apply_classify_effect,
+    apply_literal_effects,
     describe_predicate,
     evaluate_predicate,
     find_due_beats,
@@ -100,14 +99,18 @@ def _build_minimal_scenario() -> Scenario:
                     {"kind": "not", "of": {"kind": "beat_fired", "beat": "aria.complete_warm"}},
                     {"kind": "not", "of": {"kind": "beat_fired", "beat": "aria.complete_standard"}},
                 ],
-                "spec": {"intent": "ask another question"},
-                "classify_reply_axes": [{
-                    "quality": "engagement",
-                    "question": "Did the player engage?",
-                    "allowed_values": ["engaged", "deflected"],
-                    "map": {"engaged": 1.0, "deflected": -0.5},
-                    "accumulate": True,
-                }],
+                "spec": {
+                    "intent": "ask another question",
+                    "effects": [{
+                        "quality": "engagement",
+                        "op": "add",
+                        "classify": {
+                            "question": "Did the player engage?",
+                            "allowed_values": ["engaged", "deflected"],
+                            "map": {"engaged": 1.0, "deflected": -0.5},
+                        },
+                    }],
+                },
             },
         ],
     })
@@ -142,10 +145,11 @@ def test_loop_is_multi_turn_with_classifier(scenario: Scenario):
     loop = scenario.beat_by_id["aria.loop"]
     assert loop.multi_turn is True
     assert loop.ends_session is False
-    assert len(loop.classify_reply_axes) == 1
-    axis = loop.classify_reply_axes[0]
-    assert axis.accumulate is True
-    assert axis.quality == "engagement"
+    classify_effects = [e for e in loop.spec.effects if e.is_classify]
+    assert len(classify_effects) == 1
+    effect = classify_effects[0]
+    assert effect.op == "add"
+    assert effect.quality == "engagement"
 
 
 def test_terminals_carry_ends_session_flag(scenario: Scenario):
@@ -162,9 +166,6 @@ def test_initial_state_starts_clean(state: InboxState, scenario: Scenario):
 
 
 def test_from_scenario_auto_pends_every_beat(state: InboxState):
-    """`InboxState.from_scenario` auto-pends every beat. Authored
-    preconditions are evaluated by `find_due_beats` each tick; beats whose
-    preconditions don't yet pass stay pending."""
     pending_ids = {pb.beat_id for pb in state.pending_beats}
     assert pending_ids == {
         "aria.welcome",
@@ -175,8 +176,6 @@ def test_from_scenario_auto_pends_every_beat(state: InboxState):
 
 
 def test_boot_tick_fires_aria_welcome(state: InboxState, scenario: Scenario):
-    """A pre-authored beat with no preconditions fires on the first scheduler
-    tick. The loop and terminals stay pending — they require player replies."""
     due, _report = find_due_beats(state, scenario)
     due_ids = [b.id for b in due]
     assert due_ids == ["aria.welcome"]
@@ -202,13 +201,30 @@ def test_not_predicate_inverts(state: InboxState):
     assert evaluate_predicate(p, state) is False
 
 
+def test_quality_equals_string(state: InboxState):
+    """QualityEquals works on string-typed qualities (used by bargain_state
+    branching). Verdict strings written by classify effects are read by
+    QualityEquals predicates."""
+    state.qualities["bargain_state"] = "refused"
+    assert evaluate_predicate(
+        QualityEquals(quality="bargain_state", value="refused"), state,
+    ) is True
+    assert evaluate_predicate(
+        QualityEquals(quality="bargain_state", value="accepted"), state,
+    ) is False
+
+
+def test_quality_equals_numeric(state: InboxState):
+    state.qualities["engagement"] = 4.0
+    assert evaluate_predicate(
+        QualityEquals(quality="engagement", value=4.0), state,
+    ) is True
+    assert evaluate_predicate(
+        QualityEquals(quality="engagement", value=3.0), state,
+    ) is False
+
+
 # ───────────────────────── describe_predicate ─────────────────────────
-#
-# Each predicate type renders as a one-line concrete comparison with
-# current values inlined. Used by the per-tick console log and the debug
-# overlay's "blocked: <reason>" line. Format must stay readable: the
-# whole point is that the author can scan the line and see why the gate
-# didn't pass.
 
 
 def test_describe_quality_gte_renders_threshold_and_current(
@@ -269,10 +285,9 @@ def test_describe_recent_classifier_value_includes_window_and_count(
         quality="engagement", values=["engaged"], window=3, match="any",
     )
     out = describe_predicate(pred, state)
-    # Window size, value-set, hit count, sample count all rendered.
     assert "engagement" in out and "last 3" in out
     assert "engaged" in out
-    assert "1/2" in out  # 1 of 2 collected matched
+    assert "1/2" in out
 
 
 def test_describe_not_unwraps_inner(state: InboxState):
@@ -298,7 +313,6 @@ def test_describe_or_joins_subpredicates(state: InboxState):
 
 
 def test_describe_or_recurses_into_arms(state: InboxState):
-    """Mirrors the scenario.yaml `calibration_done` anchor shape."""
     pred = Or_(of=[
         PlayerCanonExists(name="name"),
         PlayerRepliesToThreadGte(thread="aria", value=4),
@@ -334,9 +348,6 @@ def test_describe_player_canon_exists_set_includes_value(state: InboxState):
 def test_find_due_beats_reports_value_blocked_with_concrete_predicate(
     state: InboxState, scenario: Scenario,
 ):
-    """A beat blocked on a value gate (not a structural BeatFired prereq)
-    appears in the report with `status='blocked'` and a `blocked_by`
-    string that names the failing predicate with current values."""
     _drain_boot(state, scenario)
     state.replies.extend(_make_reply(thread="aria") for _ in range(5))
     state.qualities["engagement"] = 3.0  # below complete_warm's 4.0 threshold
@@ -354,18 +365,6 @@ def test_find_due_beats_reports_value_blocked_with_concrete_predicate(
 def test_find_due_beats_omits_structurally_blocked_beats_from_report(
     state: InboxState, scenario: Scenario,
 ):
-    """A beat downstream of an unfired BeatFired prereq is "structurally
-    not ready" — it's omitted from the report entirely so the per-tick
-    log doesn't drown the author in "waiting on prereq" lines.
-
-    The fixture scenario has terminals with PlayerRepliesToThreadGte=5
-    preconditions; before any player replies are recorded, both terminals
-    are value-blocked (not structurally) on the reply count, so they
-    DO appear in the report. The structural-prereq filter is only
-    relevant for chains using BeatFired predicates — exercised here by
-    adding one synthetically.
-    """
-    # Synthesize a downstream beat that requires aria.complete_warm to fire.
     sc = Scenario.model_validate({
         "title": "T", "premise": "P", "email_domain": "x",
         "qualities": [{"id": "engagement", "type": "float", "min": 0.0, "max": 10.0, "default": 0.0}],
@@ -399,96 +398,168 @@ def test_find_due_beats_omits_structurally_blocked_beats_from_report(
         ],
     })
     s = InboxState.from_scenario(sc)
-    s.fired_beat_ids.add("aria.welcome")  # treat welcome as already fired
-    # No player replies, no fires of aria.first → aria.downstream is
-    # structurally blocked; aria.first is value-blocked.
+    s.fired_beat_ids.add("aria.welcome")
 
     _eligible, report = find_due_beats(s, sc)
     by_id = {be.beat_id: be for be in report}
-    # aria.first appears (value-blocked on reply count).
     assert "aria.first" in by_id
     assert by_id["aria.first"].status == "blocked"
-    # aria.downstream is omitted (structurally not ready).
     assert "aria.downstream" not in by_id
 
 
-# ───────────────────────── classifier writes ─────────────────────────
+# ───────────────────────── classify-effect writes ─────────────────────────
 
 
-def test_apply_classification_set_mode_overwrites(
+def _engagement_classify_effect(*, op: str = "set") -> Effect:
+    return Effect(
+        quality="engagement",
+        op=op,
+        classify=ClassifyDirective(
+            question="(test)",
+            allowed_values=["engaged", "deflected", "unclear"],
+            map={"engaged": 1.0, "deflected": -0.5, "unclear": 0.5},
+        ),
+    )
+
+
+def test_apply_classify_effect_set_mode_overwrites(
     state: InboxState, scenario: Scenario
 ):
-    """Default `accumulate=False`: the mapped score replaces the quality.
-    Repeated applies do not stack — subsequent calls overwrite."""
-    classify = ClassifyReply(
-        quality="engagement",
-        question="(test)",
-        allowed_values=["engaged", "deflected", "unclear"],
-        map={"engaged": 1.0, "deflected": -0.5, "unclear": 0.5},
-    )
-    apply_classification(state, scenario, classify, "engaged")
+    """Default `op=set`: the mapped score replaces the quality. Repeated
+    applies do not stack — subsequent calls overwrite."""
+    effect = _engagement_classify_effect(op="set")
+    apply_classify_effect(state, scenario, effect, "engaged")
     assert state.qualities["engagement"] == 1.0
-    apply_classification(state, scenario, classify, "engaged")
+    apply_classify_effect(state, scenario, effect, "engaged")
     assert state.qualities["engagement"] == 1.0  # no stacking
 
 
-def test_apply_classification_accumulate_adds(
+def test_apply_classify_effect_add_accumulates(
     state: InboxState, scenario: Scenario
 ):
-    """With `accumulate=True`, each apply adds the mapped score to the
-    current value. Negative deltas (deflected → -0.5) reduce it; the
-    quality bound clamps at 0 so a long string of deflections won't go
-    negative."""
-    classify = ClassifyReply(
-        quality="engagement",
-        question="(test)",
-        allowed_values=["engaged", "deflected", "unclear"],
-        map={"engaged": 1.0, "deflected": -0.5, "unclear": 0.5},
-        accumulate=True,
-    )
-    apply_classification(state, scenario, classify, "engaged")
-    apply_classification(state, scenario, classify, "engaged")
+    """With `op=add`, each apply adds the mapped score to the current value.
+    Negative deltas reduce it; the quality bound clamps at 0 so a long string
+    of deflections won't go negative."""
+    effect = _engagement_classify_effect(op="add")
+    apply_classify_effect(state, scenario, effect, "engaged")
+    apply_classify_effect(state, scenario, effect, "engaged")
     assert state.qualities["engagement"] == 2.0
-    apply_classification(state, scenario, classify, "deflected")
+    apply_classify_effect(state, scenario, effect, "deflected")
     assert state.qualities["engagement"] == 1.5
-    # Floor clamp at 0 (engagement.min = 0).
     for _ in range(10):
-        apply_classification(state, scenario, classify, "deflected")
+        apply_classify_effect(state, scenario, effect, "deflected")
     assert state.qualities["engagement"] == 0.0
 
 
-def test_apply_classification_clamps_to_quality_bounds(
+def test_apply_classify_effect_clamps_to_quality_bounds(
     state: InboxState, scenario: Scenario
 ):
     """Out-of-bound mapped values get clipped via _clamp_quality. Engagement
     is bounded 0..10."""
-    classify = ClassifyReply(
+    effect = Effect(
         quality="engagement",
-        question="(test)",
-        allowed_values=["over", "under"],
-        map={"over": 50.0, "under": -10.0},
+        classify=ClassifyDirective(
+            question="(test)",
+            allowed_values=["over", "under"],
+            map={"over": 50.0, "under": -10.0},
+        ),
     )
-    apply_classification(state, scenario, classify, "over")
+    apply_classify_effect(state, scenario, effect, "over")
     assert state.qualities["engagement"] == 10.0  # clamped to max
-    apply_classification(state, scenario, classify, "under")
+    apply_classify_effect(state, scenario, effect, "under")
     assert state.qualities["engagement"] == 0.0  # clamped to min (set mode)
 
 
-def test_apply_classification_off_spec_returns_false(
+def test_apply_classify_effect_off_spec_returns_none(
     state: InboxState, scenario: Scenario
 ):
     """LLM returned a value not in allowed_values: leave quality untouched
-    and return False so the caller can log it."""
-    classify = ClassifyReply(
+    and return (None, None) so the caller can log it."""
+    effect = Effect(
         quality="engagement",
-        question="(test)",
-        allowed_values=["engaged", "deflected"],
-        map={"engaged": 1.0, "deflected": 0.0},
+        classify=ClassifyDirective(
+            question="(test)",
+            allowed_values=["engaged", "deflected"],
+            map={"engaged": 1.0, "deflected": 0.0},
+        ),
     )
     state.qualities["engagement"] = 3.0
-    applied = apply_classification(state, scenario, classify, "garbage")
+    applied, delta = apply_classify_effect(state, scenario, effect, "garbage")
     assert applied is None
+    assert delta is None
     assert state.qualities["engagement"] == 3.0
+
+
+def test_apply_classify_effect_returns_axis_result_and_delta_on_success(
+    state: InboxState, scenario: Scenario
+):
+    """Returns (AxisResult, QualityDelta) — the caller appends the AxisResult
+    onto a Reply so RecentClassifierValue predicates can walk state.replies,
+    and folds the QualityDelta into TickDecision.quality_deltas."""
+    effect = _engagement_classify_effect(op="add")
+    applied, delta = apply_classify_effect(
+        state, scenario, effect, "engaged", "rationale x",
+    )
+    assert applied is not None
+    assert applied.quality == "engagement"
+    assert applied.value == "engaged"
+    assert applied.rationale == "rationale x"
+    assert delta is not None
+    assert delta.quality == "engagement"
+    assert delta.before == 0.0
+    assert delta.after == 1.0
+    assert delta.source == "classify:engagement"
+
+
+def test_apply_classify_effect_no_op_returns_axis_result_but_no_delta(
+    state: InboxState, scenario: Scenario
+):
+    """When the value lands on the same quality value (e.g. op=set with the
+    same mapped score), AxisResult still returns but delta is None."""
+    effect = _engagement_classify_effect(op="set")
+    state.qualities["engagement"] = 1.0
+    applied, delta = apply_classify_effect(state, scenario, effect, "engaged")
+    assert applied is not None
+    assert delta is None  # value was already 1.0
+
+
+def test_apply_classify_effect_string_quality_writes_verdict_verbatim():
+    """For string-typed qualities, the verdict string IS the value written —
+    no `map` field, no numeric mapping. Replaces the old verdict-only axis_name
+    pattern."""
+    sc = Scenario.model_validate({
+        "title": "T", "premise": "P", "email_domain": "x",
+        "qualities": [{
+            "id": "bargain_state",
+            "type": "string",
+            "default": "untouched",
+            "allowed_values": ["untouched", "offered", "accepted", "refused", "hedged"],
+        }],
+        "npcs": [{"id": "aria", "display_name": "A", "email_address": "a@x"}],
+        "threads": [{"id": "aria", "npc": "aria"}],
+        "beats": [{
+            "id": "aria.test",
+            "thread": "aria",
+            "npc": "aria",
+            "spec": {"intent": "x"},
+        }],
+    })
+    s = InboxState.from_scenario(sc)
+    effect = Effect(
+        quality="bargain_state",
+        classify=ClassifyDirective(
+            question="?",
+            allowed_values=["accepted", "refused", "hedged"],
+        ),
+    )
+    applied, delta = apply_classify_effect(s, sc, effect, "refused", "rationale")
+    assert applied is not None
+    assert applied.quality == "bargain_state"
+    assert applied.value == "refused"
+    assert s.qualities["bargain_state"] == "refused"
+    assert delta is not None
+    assert delta.before == "untouched"
+    assert delta.after == "refused"
 
 
 # ───────────────────────── loop scheduling ─────────────────────────
@@ -506,8 +577,6 @@ def test_loop_eligible_after_first_player_reply(
 def test_loop_blocked_when_terminal_already_fired(
     state: InboxState, scenario: Scenario
 ):
-    """Once a terminal has fired, the loop's mutex preconditions stop
-    holding — loop is no longer due regardless of reply count."""
     _drain_boot(state, scenario)
     state.replies.extend(_make_reply(thread="aria") for _ in range(3))
     state.fired_beat_ids.add("aria.complete_warm")
@@ -523,7 +592,7 @@ def test_complete_warm_fires_at_engagement_threshold(
 ):
     _drain_boot(state, scenario)
     state.replies.extend(_make_reply(thread="aria") for _ in range(5))
-    state.qualities["engagement"] = 4.0  # threshold met
+    state.qualities["engagement"] = 4.0
     due_ids = [b.id for b in find_due_beats(state, scenario)[0]]
     assert "aria.complete_warm" in due_ids
 
@@ -533,7 +602,7 @@ def test_complete_warm_blocked_below_threshold(
 ):
     _drain_boot(state, scenario)
     state.replies.extend(_make_reply(thread="aria") for _ in range(5))
-    state.qualities["engagement"] = 3.5  # below threshold
+    state.qualities["engagement"] = 3.5
     due_ids = [b.id for b in find_due_beats(state, scenario)[0]]
     assert "aria.complete_warm" not in due_ids
 
@@ -543,7 +612,7 @@ def test_complete_warm_blocked_below_reply_count(
 ):
     _drain_boot(state, scenario)
     state.replies.extend(_make_reply(thread="aria") for _ in range(4))
-    state.qualities["engagement"] = 8.0  # plenty
+    state.qualities["engagement"] = 8.0
     due_ids = [b.id for b in find_due_beats(state, scenario)[0]]
     assert "aria.complete_warm" not in due_ids
 
@@ -551,33 +620,19 @@ def test_complete_warm_blocked_below_reply_count(
 def test_both_terminals_eligible_when_paths_overlap(
     state: InboxState, scenario: Scenario
 ):
-    """With extra_fired removed, find_due_beats returns every beat whose
-    preconditions hold — including both terminals when their gates overlap.
-    The Director (in `_tick`, not exercised here) picks one. The same-tick
-    mutex via Not_(BeatFired) in the existing scenario stops short of
-    suppressing the sibling — both come back in the eligible list, and
-    selection happens at the Director layer."""
     _drain_boot(state, scenario)
     state.replies.extend(_make_reply(thread="aria") for _ in range(5))
     state.qualities["engagement"] = 5.0
 
     due_ids = [b.id for b in find_due_beats(state, scenario)[0]]
-    # Both terminals are individually eligible (their authored preconditions
-    # all pass — the Not_(BeatFired complete_warm) on complete_standard
-    # only catches once complete_warm has actually been fired).
     assert "aria.complete_warm" in due_ids
     assert "aria.complete_standard" in due_ids
-    # The loop is also eligible (Not_(BeatFired) on terminals isn't yet
-    # satisfied). Director arbitrates.
     assert "aria.loop" in due_ids
 
 
 def test_complete_standard_fires_when_engagement_low(
     state: InboxState, scenario: Scenario
 ):
-    """5 replies, engagement below threshold → complete_warm blocked
-    (its quality_gte engagement >= 4.0 fails), complete_standard remains
-    eligible."""
     _drain_boot(state, scenario)
     state.replies.extend(_make_reply(thread="aria") for _ in range(5))
     state.qualities["engagement"] = 1.0
@@ -590,58 +645,14 @@ def test_complete_standard_fires_when_engagement_low(
 def test_loop_blocked_after_terminal_added_to_fired_ids(
     state: InboxState, scenario: Scenario
 ):
-    """Once a terminal id lands in `state.fired_beat_ids`, the loop's
-    Not_(BeatFired complete_warm) precondition catches it. This is the
-    PERSISTENT mutex (post-fire), not the same-tick one — same-tick mutex
-    is now Director-handled."""
     _drain_boot(state, scenario)
     state.replies.extend(_make_reply(thread="aria") for _ in range(5))
     state.qualities["engagement"] = 5.0
-    # Simulate a Director pick + fire of complete_warm.
     state.fired_beat_ids.add("aria.complete_warm")
 
     due_ids = [b.id for b in find_due_beats(state, scenario)[0]]
     assert "aria.loop" not in due_ids
-    # complete_standard's Not_(BeatFired complete_warm) also catches it now.
     assert "aria.complete_standard" not in due_ids
-
-
-# ───────────────────────── apply_classification → Reply.classifier_results ─────────────────────────
-
-
-def test_apply_classification_returns_axis_result_on_success(
-    state: InboxState, scenario: Scenario
-):
-    """Returns an AxisResult that the caller appends onto a Reply so
-    RecentClassifierValue predicates can walk state.replies directly."""
-    classify = ClassifyReply(
-        quality="engagement",
-        question="(test)",
-        allowed_values=["engaged", "deflected"],
-        map={"engaged": 1.0, "deflected": 0.0},
-        accumulate=True,
-    )
-    result = apply_classification(state, scenario, classify, "engaged", "rationale x")
-    assert result is not None
-    assert result.quality == "engagement"
-    assert result.value == "engaged"
-    assert result.rationale == "rationale x"
-
-
-def test_apply_classification_off_spec_returns_none(
-    state: InboxState, scenario: Scenario
-):
-    """An off-spec value returns None — the caller skips the append, so
-    the recent-window list never sees values that didn't write the
-    quality."""
-    classify = ClassifyReply(
-        quality="engagement",
-        question="(test)",
-        allowed_values=["engaged", "deflected"],
-        map={"engaged": 1.0, "deflected": 0.0},
-    )
-    result = apply_classification(state, scenario, classify, "garbage")
-    assert result is None
 
 
 # ───────────────────────── RecentClassifierValue predicate ─────────────────────────
@@ -657,7 +668,6 @@ def test_recent_classifier_value_empty_replies_returns_false(
 
 
 def test_recent_classifier_value_any_match(state: InboxState):
-    """match='any' (default) → ≥1 hit is enough."""
     state.replies = [
         _reply_with_axis("aria", "engagement", "engaged"),
         _reply_with_axis("aria", "engagement", "deflected"),
@@ -674,13 +684,10 @@ def test_recent_classifier_value_any_match(state: InboxState):
 
 
 def test_recent_classifier_value_all_requires_full_window(state: InboxState):
-    """match='all' requires every slot in the window to match — under-filled
-    cannot satisfy."""
     state.replies = [
         _reply_with_axis("aria", "engagement", "engaged"),
         _reply_with_axis("aria", "engagement", "engaged"),
     ]
-    # Window 3, only 2 replies recorded → False even though both hit.
     pred = RecentClassifierValue(
         quality="engagement", values=["engaged"], window=3, match="all"
     )
@@ -688,12 +695,10 @@ def test_recent_classifier_value_all_requires_full_window(state: InboxState):
     state.replies.append(_reply_with_axis("aria", "engagement", "engaged"))
     assert evaluate_predicate(pred, state) is True
     state.replies.append(_reply_with_axis("aria", "engagement", "deflected"))
-    # Now last 3 are engaged, engaged, deflected → False.
     assert evaluate_predicate(pred, state) is False
 
 
 def test_recent_classifier_value_int_match(state: InboxState):
-    """match=N → ≥N matches required."""
     state.replies = [
         _reply_with_axis("aria", "engagement", "engaged"),
         _reply_with_axis("aria", "engagement", "deflected"),
@@ -710,38 +715,30 @@ def test_recent_classifier_value_int_match(state: InboxState):
 
 
 def test_recent_classifier_value_any_of_values(state: InboxState):
-    """`values: list[str]` is any-of: a window of [clinical, engaged,
-    horrified] with values=[clinical, horrified] match=2 → True."""
     state.replies = [
-        _reply_with_axis("aria", "affect", "clinical"),
-        _reply_with_axis("aria", "affect", "engaged"),
-        _reply_with_axis("aria", "affect", "horrified"),
+        _reply_with_axis("aria", "engagement", "deflected"),
+        _reply_with_axis("aria", "engagement", "engaged"),
+        _reply_with_axis("aria", "engagement", "unclear"),
     ]
     pred = RecentClassifierValue(
-        quality="affect", values=["clinical", "horrified"], window=3, match=2
+        quality="engagement", values=["deflected", "unclear"], window=3, match=2
     )
     assert evaluate_predicate(pred, state) is True
 
 
 def test_recent_classifier_value_skips_replies_without_axis(state: InboxState):
-    """Replies whose classifier_results don't include the target quality
-    are skipped — they don't fill a window slot. Window walks "the last N
-    replies that were classified on this quality," not "the last N replies
-    overall."""
     state.replies = [
         _reply_with_axis("aria", "engagement", "engaged"),
-        _make_reply(thread="aria"),  # no classifier_results
+        _make_reply(thread="aria"),
         _reply_with_axis("aria", "engagement", "engaged"),
     ]
     pred = RecentClassifierValue(
         quality="engagement", values=["engaged"], window=2, match="all"
     )
-    # Two replies with engagement axis, both engaged → True.
     assert evaluate_predicate(pred, state) is True
 
 
 def test_recent_classifier_value_under_not_(state: InboxState):
-    """RecentClassifierValue evaluates correctly nested under Not_."""
     state.replies = [
         _reply_with_axis("aria", "engagement", "deflected"),
     ]
@@ -752,7 +749,6 @@ def test_recent_classifier_value_under_not_(state: InboxState):
 
 
 def test_recent_classifier_value_match_int_validation():
-    """match int must be 1..window."""
     with pytest.raises(ValidationError):
         RecentClassifierValue(
             quality="engagement", values=["x"], window=3, match=5
@@ -763,34 +759,126 @@ def test_recent_classifier_value_match_int_validation():
         )
 
 
-# ───────────────────────── apply_writes (commitments ledger) ─────────────────────────
+def test_recent_classifier_value_walks_string_quality_verdicts(state: InboxState):
+    """RecentClassifierValue walks AxisResult.value strings — works
+    identically whether the underlying quality is numeric or string-typed.
+    Used by aria.bargain_followup to read the bargain_state verdict
+    written by aria.bargain_offer's classifier."""
+    state.replies = [
+        _reply_with_axis("aria", "bargain_state", "accepted"),
+    ]
+    pred = RecentClassifierValue(
+        quality="bargain_state", values=["accepted"], window=1, match="any"
+    )
+    assert evaluate_predicate(pred, state) is True
+    pred_miss = RecentClassifierValue(
+        quality="bargain_state", values=["refused"], window=1, match="any"
+    )
+    assert evaluate_predicate(pred_miss, state) is False
 
 
-def test_apply_writes_set_semantics(state: InboxState, scenario: Scenario):
-    """SET semantics: writes overwrite the current value (no accumulate)."""
-    apply_writes(state, scenario, {"engagement": 5.0})
+# ───────────────────────── apply_literal_effects ─────────────────────────
+
+
+def _engagement_literal_effect(value: float, *, op: str = "set", when=None) -> Effect:
+    return Effect(quality="engagement", value=value, op=op, when=when)
+
+
+def test_apply_literal_effects_set_semantics(
+    state: InboxState, scenario: Scenario
+):
+    """`op=set` (default): writes overwrite the current value."""
+    apply_literal_effects(state, scenario, [_engagement_literal_effect(5.0)])
     assert state.qualities["engagement"] == 5.0
-    apply_writes(state, scenario, {"engagement": 2.0})
+    apply_literal_effects(state, scenario, [_engagement_literal_effect(2.0)])
     assert state.qualities["engagement"] == 2.0
 
 
-def test_apply_writes_clamps_to_quality_bounds(
+def test_apply_literal_effects_clamps_to_quality_bounds(
     state: InboxState, scenario: Scenario
 ):
-    """Clamping is shared with apply_classification via _clamp_quality."""
-    apply_writes(state, scenario, {"engagement": 99.0})
+    """Clamping is shared with classify-effect writes via _clamp_quality."""
+    apply_literal_effects(state, scenario, [_engagement_literal_effect(99.0)])
     assert state.qualities["engagement"] == 10.0  # max
-    apply_writes(state, scenario, {"engagement": -3.0})
+    apply_literal_effects(state, scenario, [_engagement_literal_effect(-3.0)])
     assert state.qualities["engagement"] == 0.0  # min
 
 
-def test_apply_writes_multi_key(state: InboxState, scenario: Scenario):
-    """Multi-key writes apply atomically — every key is set in one call."""
-    apply_writes(state, scenario, {"engagement": 3.0})
-    # Use a quality that exists; engagement is the only one in the loaded
-    # scenario, so a one-key call exercises the loop path. Multi-key is
-    # exercised in the synthetic-scenario test below.
-    assert state.qualities["engagement"] == 3.0
+def test_apply_literal_effects_op_max_acts_as_floor(
+    state: InboxState, scenario: Scenario
+):
+    """`op=max` writes the larger of (current, incoming) — idempotent floor."""
+    state.qualities["engagement"] = 5.0
+    apply_literal_effects(state, scenario, [_engagement_literal_effect(3.0, op="max")])
+    assert state.qualities["engagement"] == 5.0  # floor doesn't lower
+    apply_literal_effects(state, scenario, [_engagement_literal_effect(7.0, op="max")])
+    assert state.qualities["engagement"] == 7.0  # raises
+
+
+def test_apply_literal_effects_op_min_acts_as_cap(
+    state: InboxState, scenario: Scenario
+):
+    """`op=min` writes the smaller of (current, incoming) — cap."""
+    state.qualities["engagement"] = 5.0
+    apply_literal_effects(state, scenario, [_engagement_literal_effect(7.0, op="min")])
+    assert state.qualities["engagement"] == 5.0  # cap doesn't raise
+    apply_literal_effects(state, scenario, [_engagement_literal_effect(3.0, op="min")])
+    assert state.qualities["engagement"] == 3.0  # lowers
+
+
+def test_apply_literal_effects_op_add_accumulates(
+    state: InboxState, scenario: Scenario
+):
+    apply_literal_effects(state, scenario, [_engagement_literal_effect(2.0, op="add")])
+    apply_literal_effects(state, scenario, [_engagement_literal_effect(3.0, op="add")])
+    assert state.qualities["engagement"] == 5.0
+
+
+def test_apply_literal_effects_when_predicate_skips_when_false(
+    state: InboxState, scenario: Scenario
+):
+    """Effect's `when:` predicate gates the write. False → skip."""
+    when_true = QualityGte(quality="engagement", value=0.0)
+    when_false = QualityGte(quality="engagement", value=999.0)
+    apply_literal_effects(
+        state, scenario,
+        [_engagement_literal_effect(5.0, when=when_true)],
+    )
+    assert state.qualities["engagement"] == 5.0
+    apply_literal_effects(
+        state, scenario,
+        [_engagement_literal_effect(7.0, when=when_false)],
+    )
+    assert state.qualities["engagement"] == 5.0  # unchanged — when was false
+
+
+def test_apply_literal_effects_skips_classify_effects(
+    state: InboxState, scenario: Scenario
+):
+    """Classify-typed effects are scheduled for reply-time — the literal
+    effect applier ignores them."""
+    classify = _engagement_classify_effect()
+    literal = _engagement_literal_effect(3.0)
+    apply_literal_effects(state, scenario, [classify, literal])
+    assert state.qualities["engagement"] == 3.0  # only the literal landed
+
+
+def test_apply_literal_effects_multi_effect_atomic():
+    """Multiple effects in one call all apply."""
+    sc = Scenario.model_validate(_scenario_dict(
+        qualities=_BASE_QUALITIES + [
+            {"id": "bargain_state", "type": "string", "default": "untouched",
+             "allowed_values": ["untouched", "offered"]},
+        ],
+        beats=[_plot_beat(beat_id="aria.test")],
+    ))
+    s = InboxState.from_scenario(sc)
+    apply_literal_effects(s, sc, [
+        Effect(quality="engagement", value=4.0),
+        Effect(quality="bargain_state", value="offered"),
+    ])
+    assert s.qualities["engagement"] == 4.0
+    assert s.qualities["bargain_state"] == "offered"
 
 
 # ───────────────────────── load-time validation ─────────────────────────
@@ -819,12 +907,14 @@ def _scenario_dict(*, beats: list[dict], qualities: list[dict] | None = None) ->
     }
 
 
-def _classify_axis(quality: str = "engagement") -> dict:
+def _classify_effect_dict(quality: str = "engagement") -> dict:
     return {
         "quality": quality,
-        "question": "?",
-        "allowed_values": ["a", "b"],
-        "map": {"a": 1.0, "b": 0.0},
+        "classify": {
+            "question": "?",
+            "allowed_values": ["a", "b"],
+            "map": {"a": 1.0, "b": 0.0},
+        },
     }
 
 
@@ -832,122 +922,107 @@ def _plot_beat(
     beat_id: str = "aria.test",
     *,
     spec: dict | None = None,
-    classify_reply_axes: list[dict] | None = None,
+    effects: list[dict] | None = None,
 ) -> dict:
+    base_spec = {"intent": "be brief"}
+    if spec is not None:
+        base_spec = {**base_spec, **spec}
+    if effects is not None:
+        base_spec["effects"] = effects
     return {
         "id": beat_id,
-        "type": "plot",
         "thread": "aria",
         "npc": "aria",
-        "spec": spec or {"intent": "be brief"},
-        "classify_reply_axes": classify_reply_axes or [],
+        "spec": base_spec,
     }
 
 
-def test_load_rejects_duplicate_axis_quality_within_one_beat():
-    """Two axes targeting the same quality on one beat is an authoring
-    error — the second write would always clobber the first."""
-    beat = _plot_beat(classify_reply_axes=[_classify_axis(), _classify_axis()])
+def test_load_rejects_duplicate_classify_effects_on_same_quality():
+    """Two classify effects on one beat targeting the same quality is an
+    authoring error — the classifier returns one verdict per quality, so
+    two effects on the same target are ambiguous."""
+    beat = _plot_beat(effects=[_classify_effect_dict(), _classify_effect_dict()])
     with pytest.raises(ValidationError):
         Scenario.model_validate(_scenario_dict(beats=[beat]))
 
 
-def test_load_rejects_duplicate_axis_identifier_when_axis_name_used():
-    """Two axes on one beat sharing the same axis_name (or quality) are
-    rejected — the dedup key is `axis.identifier`, which is axis_name or
-    quality."""
-    a1 = {
-        "axis_name": "verdict",
-        "question": "?",
-        "allowed_values": ["a", "b"],
-        "map": {"a": 1.0, "b": 0.0},
-    }
-    a2 = {
-        "axis_name": "verdict",
-        "question": "?",
-        "allowed_values": ["x", "y"],
-        "map": {"x": 1.0, "y": 0.0},
-    }
-    beat = _plot_beat(classify_reply_axes=[a1, a2])
+def test_load_accepts_string_quality_classify_effect_no_map():
+    """A classify effect targeting a string quality may omit `map` —
+    the verdict string IS the value. Replaces the old verdict-only axis
+    pattern."""
+    beat = _plot_beat(effects=[{
+        "quality": "bargain_state",
+        "classify": {
+            "question": "?",
+            "allowed_values": ["accepted", "refused"],
+        },
+    }])
+    Scenario.model_validate(_scenario_dict(
+        qualities=[
+            {"id": "bargain_state", "type": "string", "default": "untouched",
+             "allowed_values": ["untouched", "accepted", "refused"]},
+        ],
+        beats=[beat],
+    ))
+
+
+def test_load_rejects_classify_effect_numeric_without_map():
+    """Numeric qualities require a `map:` from verdict → float."""
+    beat = _plot_beat(effects=[{
+        "quality": "engagement",
+        "classify": {
+            "question": "?",
+            "allowed_values": ["a", "b"],
+            # missing `map`
+        },
+    }])
     with pytest.raises(ValidationError):
         Scenario.model_validate(_scenario_dict(beats=[beat]))
 
 
-def test_load_accepts_verdict_only_axis_with_axis_name():
-    """An axis with `quality=None, axis_name=<id>` is the verdict-only
-    pattern — no quality write, but the AxisResult still records on the
-    Reply for RecentClassifierValue predicates."""
-    axis = {
-        "axis_name": "bargain_response",
-        "question": "?",
-        "allowed_values": ["accepted", "refused"],
-        "map": {"accepted": 1.0, "refused": 0.0},
-    }
-    beat = _plot_beat(classify_reply_axes=[axis])
-    Scenario.model_validate(_scenario_dict(beats=[beat]))  # no raise
-
-
-def test_classify_reply_requires_quality_or_axis_name():
-    """A ClassifyReply with neither `quality` nor `axis_name` is invalid."""
+def test_load_rejects_classify_effect_string_with_map():
+    """String qualities forbid `map:` — the verdict string IS the value."""
+    beat = _plot_beat(effects=[{
+        "quality": "bargain_state",
+        "classify": {
+            "question": "?",
+            "allowed_values": ["accepted", "refused"],
+            "map": {"accepted": 1.0, "refused": 0.0},
+        },
+    }])
     with pytest.raises(ValidationError):
-        ClassifyReply(
-            question="?",
-            allowed_values=["a", "b"],
-            map={"a": 1.0, "b": 0.0},
+        Scenario.model_validate(_scenario_dict(
+            qualities=[
+                {"id": "bargain_state", "type": "string", "default": "untouched",
+                 "allowed_values": ["untouched", "accepted", "refused"]},
+            ],
+            beats=[beat],
+        ))
+
+
+def test_load_rejects_effect_unknown_quality():
+    beat = _plot_beat(effects=[{"quality": "nonexistent", "value": 1.0}])
+    with pytest.raises(ValidationError):
+        Scenario.model_validate(_scenario_dict(beats=[beat]))
+
+
+def test_load_rejects_effect_missing_value_and_classify():
+    """An Effect with neither `value` nor `classify` is invalid."""
+    with pytest.raises(ValidationError):
+        Effect(quality="engagement")
+
+
+def test_load_rejects_effect_with_both_value_and_classify():
+    """An Effect with both value AND classify is invalid (mutually exclusive)."""
+    with pytest.raises(ValidationError):
+        Effect(
+            quality="engagement",
+            value=1.0,
+            classify=ClassifyDirective(
+                question="?", allowed_values=["a", "b"],
+                map={"a": 1.0, "b": 0.0},
+            ),
         )
-
-
-def test_apply_classification_quality_none_does_not_write():
-    """Verdict-only axis: no quality write, but AxisResult returns so the
-    caller can append to Reply.classifier_results."""
-    scenario = _scenario_with_commitment_qualities()
-    state = InboxState.from_scenario(scenario)
-    classify = ClassifyReply(
-        axis_name="bargain_response",
-        question="?",
-        allowed_values=["accepted", "refused"],
-        map={"accepted": 1.0, "refused": 0.0},
-    )
-    qualities_before = dict(state.qualities)
-    result = apply_classification(state, scenario, classify, "accepted")
-    assert result is not None
-    assert result.quality == "bargain_response"  # axis identifier
-    assert result.value == "accepted"
-    assert state.qualities == qualities_before  # no write happened
-
-
-def test_recent_classifier_value_matches_axis_name(state: InboxState):
-    """RecentClassifierValue.quality matches the axis identifier — for
-    verdict-only axes that's the axis_name."""
-    state.replies = [
-        _reply_with_axis("aria", "bargain_response", "accepted"),
-    ]
-    pred = RecentClassifierValue(
-        quality="bargain_response", values=["accepted"], window=1, match="any"
-    )
-    assert evaluate_predicate(pred, state) is True
-    pred_miss = RecentClassifierValue(
-        quality="bargain_response", values=["refused"], window=1, match="any"
-    )
-    assert evaluate_predicate(pred_miss, state) is False
-
-
-def test_load_rejects_writes_collision_with_axis_on_same_beat():
-    """A beat whose `writes` key collides with one of its own classifier
-    axes is rejected — multi_turn re-fire would clobber the classifier
-    each tick."""
-    beat = _plot_beat(
-        spec={"intent": "x", "writes": {"engagement": 1.0}},
-        classify_reply_axes=[_classify_axis()],
-    )
-    with pytest.raises(ValidationError):
-        Scenario.model_validate(_scenario_dict(beats=[beat]))
-
-
-def test_load_rejects_writes_unknown_quality():
-    beat = _plot_beat(spec={"intent": "x", "writes": {"nonexistent": 1.0}})
-    with pytest.raises(ValidationError):
-        Scenario.model_validate(_scenario_dict(beats=[beat]))
 
 
 def test_load_rejects_recent_classifier_value_unknown_quality():
@@ -963,244 +1038,76 @@ def test_load_rejects_recent_classifier_value_unknown_quality():
 
 
 def test_load_rejects_validate_facts_without_constraints():
-    beat = _plot_beat(spec={"intent": "x", "validate_facts": True})
+    beat = _plot_beat(spec={"validate_facts": True})
     with pytest.raises(ValidationError):
         Scenario.model_validate(_scenario_dict(beats=[beat]))
 
 
 def test_load_accepts_validate_facts_with_must_include_facts():
     beat = _plot_beat(spec={
-        "intent": "x",
         "must_include_facts": ["thank the player"],
         "validate_facts": True,
     })
-    Scenario.model_validate(_scenario_dict(beats=[beat]))  # no raise
+    Scenario.model_validate(_scenario_dict(beats=[beat]))
 
 
-# ───────────────────────── multi-key writes + writes-on-silent-complete ─────────────────────────
+def test_load_rejects_string_quality_default_not_string():
+    """String-typed qualities require string default."""
+    with pytest.raises(ValidationError):
+        Scenario.model_validate(_scenario_dict(
+            qualities=[{
+                "id": "bargain_state",
+                "type": "string",
+                "default": 0,  # not a string
+            }],
+            beats=[_plot_beat()],
+        ))
 
 
-def _scenario_with_commitment_qualities() -> Scenario:
-    """Synthetic two-quality scenario — engagement plus a commitment.* —
-    used to exercise multi-key writes and the silent-complete-with-writes
-    path."""
-    return Scenario.model_validate(_scenario_dict(
-        qualities=_BASE_QUALITIES + [
-            {
-                "id": "commitment.bargain_state",
+def test_load_rejects_numeric_quality_with_allowed_values():
+    """allowed_values is a string-quality concept — numeric forbids it."""
+    with pytest.raises(ValidationError):
+        Scenario.model_validate(_scenario_dict(
+            qualities=[{
+                "id": "engagement",
                 "type": "float",
-                "min": 0.0,
-                "max": 10.0,
-                "default": 0.0,
-            },
-        ],
-        beats=[_plot_beat(beat_id="aria.test")],
-    ))
+                "min": 0.0, "max": 10.0, "default": 0.0,
+                "allowed_values": ["high", "low"],
+            }],
+            beats=[_plot_beat()],
+        ))
 
 
-def test_apply_writes_multi_key_atomic():
-    scenario = _scenario_with_commitment_qualities()
-    state = InboxState.from_scenario(scenario)
-    apply_writes(state, scenario, {
-        "engagement": 4.0,
-        "commitment.bargain_state": 2.0,
-    })
-    assert state.qualities["engagement"] == 4.0
-    assert state.qualities["commitment.bargain_state"] == 2.0
-
-
-# ───────────────────────── apply_writes_by_axis ─────────────────────────
-
-
-def _scenario_with_writes_by_axis_beat(
-    *,
-    arms: dict[str, dict[str, float]] | None = None,
-    window: int = 1,
-    extra_qualities: list[dict] | None = None,
-) -> Scenario:
-    """Synthesise a scenario whose `aria.routing` beat declares a
-    bargain_response verdict-axis on a sibling `aria.offer` and uses
-    writes_by_axis to route per-arm writes. `aria.offer` carries the
-    axis declaration so the validator's allowed_values check has
-    something to resolve against; the followup beat's behavior is what
-    the tests exercise."""
-    qualities = (extra_qualities or []) + [
-        {"id": "commitment.bargain_state", "type": "float",
-         "min": 0.0, "max": 10.0, "default": 0.0},
-    ]
-    arms = arms or {
-        "accepted": {"commitment.bargain_state": 2.0},
-        "refused": {"commitment.bargain_state": 3.0, "engagement": 4.0},
-        "hedged": {"commitment.bargain_state": 4.0},
-    }
-    return Scenario.model_validate(_scenario_dict(
-        qualities=_BASE_QUALITIES + qualities,
-        beats=[
-            _plot_beat(beat_id="aria.offer", classify_reply_axes=[{
-                "axis_name": "bargain_response",
-                "question": "?",
-                "allowed_values": ["accepted", "refused", "hedged"],
-                "map": {"accepted": 1.0, "refused": 0.0, "hedged": 0.0},
-            }]),
-            _plot_beat(beat_id="aria.routing", spec={
-                "intent": "route",
-                "writes_by_axis": {
-                    "axis": "bargain_response",
-                    "window": window,
-                    "arms": arms,
-                },
-            }),
-        ],
-    ))
-
-
-def test_apply_writes_by_axis_picks_arm_from_recent_reply():
-    """Most recent matching verdict (within window) selects the arm.
-    The arm's writes apply with SET semantics, returning deltas with the
-    `spec.writes_by_axis:<beat>:<arm>` source label."""
-    scenario = _scenario_with_writes_by_axis_beat()
-    state = InboxState.from_scenario(scenario)
-    state.replies = [
-        _reply_with_axis("aria", "bargain_response", "accepted"),
-    ]
-    wba = scenario.beat_by_id["aria.routing"].spec.writes_by_axis
-    deltas = apply_writes_by_axis(state, scenario, wba, beat_id="aria.routing")
-
-    assert state.qualities["commitment.bargain_state"] == 2.0
-    assert len(deltas) == 1
-    d = deltas[0]
-    assert d.quality == "commitment.bargain_state"
-    assert d.before == 0.0  # default
-    assert d.after == 2.0
-    assert d.source == "spec.writes_by_axis:aria.routing:accepted"
-
-
-def test_apply_writes_by_axis_walks_window():
-    """With window > 1 the walk skips replies missing the axis but the
-    most-recent matching verdict still wins. Tests that the verdict-pick
-    logic respects the same skip rules as RecentClassifierValue."""
-    scenario = _scenario_with_writes_by_axis_beat(window=5)
-    state = InboxState.from_scenario(scenario)
-    state.replies = [
-        _reply_with_axis("aria", "bargain_response", "refused"),  # older
-        _make_reply(thread="aria"),                                # no axis
-        _reply_with_axis("aria", "bargain_response", "accepted"),  # most recent
-    ]
-    wba = scenario.beat_by_id["aria.routing"].spec.writes_by_axis
-    apply_writes_by_axis(state, scenario, wba, beat_id="aria.routing")
-    # Most recent matching verdict is "accepted" — refused arm is older
-    # within the window so does not win.
-    assert state.qualities["commitment.bargain_state"] == 2.0
-
-
-def test_apply_writes_by_axis_no_match_is_noop():
-    """No replies carry the axis at all: spine logs and returns no deltas;
-    qualities remain at default."""
-    scenario = _scenario_with_writes_by_axis_beat()
-    state = InboxState.from_scenario(scenario)
-    # No reply carries bargain_response.
-    state.replies = [_make_reply(thread="aria")]
-    wba = scenario.beat_by_id["aria.routing"].spec.writes_by_axis
-    deltas = apply_writes_by_axis(state, scenario, wba, beat_id="aria.routing")
-    assert deltas == []
-    assert state.qualities["commitment.bargain_state"] == 0.0  # default
-
-
-def test_apply_writes_by_axis_unmatched_arm_is_noop():
-    """The verdict matches the axis but no arm declares it — no-op +
-    logfire warn. Defense-in-depth: if a future axis adds a value but
-    the routing beat hasn't been updated, nothing silently corrupts state."""
-    # Arms only cover 'accepted'; verdict is 'hedged' — no arm matches.
-    scenario = _scenario_with_writes_by_axis_beat(arms={
-        "accepted": {"commitment.bargain_state": 2.0},
-        # Authoring-time validator requires arm keys be allowed_values of
-        # the referenced axis. We declare both arms here but only seed
-        # accepted's writes; runtime test below uses a *different* verdict.
-        "hedged": {"commitment.bargain_state": 4.0},
-        "refused": {"commitment.bargain_state": 3.0},
-    })
-    state = InboxState.from_scenario(scenario)
-    # Seed a verdict whose arm WAS declared, then drop that arm by
-    # mutating the wba in place — emulates a runtime mismatch the validator
-    # cannot detect (e.g. dynamically constructed scenarios).
-    wba = scenario.beat_by_id["aria.routing"].spec.writes_by_axis
-    wba.arms = {"accepted": {"commitment.bargain_state": 2.0}}
-    state.replies = [_reply_with_axis("aria", "bargain_response", "hedged")]
-    deltas = apply_writes_by_axis(state, scenario, wba, beat_id="aria.routing")
-    assert deltas == []
-    assert state.qualities["commitment.bargain_state"] == 0.0
-
-
-def test_apply_writes_by_axis_clamps_to_quality_bounds():
-    """Per-arm writes go through `_clamp_quality` so out-of-bound arm
-    values are clipped, same as `apply_writes`."""
-    scenario = _scenario_with_writes_by_axis_beat(arms={
-        "accepted": {"commitment.bargain_state": 999.0},  # over max=10.0
-        "refused": {"commitment.bargain_state": -10.0},   # under min=0.0
-        "hedged": {"commitment.bargain_state": 4.0},
-    })
-    state = InboxState.from_scenario(scenario)
-    state.replies = [_reply_with_axis("aria", "bargain_response", "accepted")]
-    wba = scenario.beat_by_id["aria.routing"].spec.writes_by_axis
-    apply_writes_by_axis(state, scenario, wba, beat_id="aria.routing")
-    assert state.qualities["commitment.bargain_state"] == 10.0  # clamped
-
-
-def test_load_rejects_writes_by_axis_unknown_axis():
-    """The validator rejects writes_by_axis whose `axis` doesn't resolve
-    to a declared axis identifier anywhere in the scenario."""
-    beat = _plot_beat(spec={
-        "intent": "x",
-        "writes_by_axis": {
-            "axis": "phantom_axis",
-            "arms": {"a": {"engagement": 1.0}},
-        },
-    })
+def test_load_rejects_string_quality_op_other_than_set():
+    """String qualities only support op=set."""
+    beat = _plot_beat(effects=[{
+        "quality": "bargain_state",
+        "value": "offered",
+        "op": "add",
+    }])
     with pytest.raises(ValidationError):
-        Scenario.model_validate(_scenario_dict(beats=[beat]))
+        Scenario.model_validate(_scenario_dict(
+            qualities=[
+                {"id": "bargain_state", "type": "string", "default": "untouched",
+                 "allowed_values": ["untouched", "offered"]},
+            ],
+            beats=[beat],
+        ))
 
 
-def test_load_rejects_writes_by_axis_unknown_arm_key():
-    """An arm key that isn't in the axis's declared `allowed_values` is
-    rejected at load — catches typos like `accpeted`."""
-    beats = [
-        _plot_beat(beat_id="aria.offer", classify_reply_axes=[{
-            "axis_name": "bargain_response",
-            "question": "?",
-            "allowed_values": ["accepted", "refused"],
-            "map": {"accepted": 1.0, "refused": 0.0},
-        }]),
-        _plot_beat(beat_id="aria.routing", spec={
-            "intent": "x",
-            "writes_by_axis": {
-                "axis": "bargain_response",
-                "arms": {"accpeted": {"engagement": 1.0}},  # typo
-            },
-        }),
-    ]
+def test_load_rejects_string_quality_value_not_in_allowed_values():
+    beat = _plot_beat(effects=[{
+        "quality": "bargain_state",
+        "value": "phantom",
+    }])
     with pytest.raises(ValidationError):
-        Scenario.model_validate(_scenario_dict(beats=beats))
-
-
-def test_load_rejects_writes_by_axis_unknown_arm_quality():
-    """Per-arm quality must be a known quality."""
-    beats = [
-        _plot_beat(beat_id="aria.offer", classify_reply_axes=[{
-            "axis_name": "bargain_response",
-            "question": "?",
-            "allowed_values": ["accepted"],
-            "map": {"accepted": 1.0},
-        }]),
-        _plot_beat(beat_id="aria.routing", spec={
-            "intent": "x",
-            "writes_by_axis": {
-                "axis": "bargain_response",
-                "arms": {"accepted": {"phantom_quality": 1.0}},
-            },
-        }),
-    ]
-    with pytest.raises(ValidationError):
-        Scenario.model_validate(_scenario_dict(beats=beats))
+        Scenario.model_validate(_scenario_dict(
+            qualities=[
+                {"id": "bargain_state", "type": "string", "default": "untouched",
+                 "allowed_values": ["untouched", "offered"]},
+            ],
+            beats=[beat],
+        ))
 
 
 # ───────────────────────── multi-turn self-stop on Not_(<exit>) ─────────────────────────
@@ -1209,9 +1116,7 @@ def test_load_rejects_writes_by_axis_unknown_arm_quality():
 def test_multi_turn_beat_self_stops_when_exit_predicate_flips():
     """The calibration-scene pattern: a multi-turn beat with `Not_(<exit>)`
     in its preconditions remains eligible while <exit> is False, and stops
-    being eligible the moment <exit> flips True. No completes_when needed."""
-    from npc_service.models import Or_, PlayerCanonExists, PlayerCanonEntry, PlayerRepliesToThreadGte
-
+    being eligible the moment <exit> flips True."""
     scenario = Scenario.model_validate({
         "title": "T",
         "premise": "p",
@@ -1222,7 +1127,6 @@ def test_multi_turn_beat_self_stops_when_exit_predicate_flips():
         "beats": [
             {
                 "id": "aria.calibration",
-                "type": "plot",
                 "thread": "aria",
                 "npc": "aria",
                 "multi_turn": True,
@@ -1253,29 +1157,24 @@ def test_multi_turn_beat_self_stops_when_exit_predicate_flips():
     })
     state = InboxState.from_scenario(scenario)
 
-    # 0 replies: post-welcome predicate fails, beat NOT due.
     assert [b.id for b in find_due_beats(state, scenario)[0]] == []
 
-    # 1 reply, no canon: beat IS due.
     state.replies.append(Reply(
         id="r1", thread_id="aria", beat_responded_to=None, recipient="A", body="hi",
     ))
     assert [b.id for b in find_due_beats(state, scenario)[0]] == ["aria.calibration"]
 
-    # 2 replies, no canon: still due.
     state.replies.append(Reply(
         id="r2", thread_id="aria", beat_responded_to=None, recipient="A", body="ok",
     ))
     assert [b.id for b in find_due_beats(state, scenario)[0]] == ["aria.calibration"]
 
-    # Name canonized: <exit> flips True, Not_(<exit>) flips False, beat NOT due.
     state.player_canon["name"] = PlayerCanonEntry(
         summary="Marcus", literal_text_quote="I'm Marcus", salience=0.9,
         category="name", turn_of_origin=2,
     )
     assert [b.id for b in find_due_beats(state, scenario)[0]] == []
 
-    # Drop the canon entry, advance to 4 replies: cap fires, beat NOT due.
     del state.player_canon["name"]
     for i in range(3, 5):
         state.replies.append(Reply(
@@ -1286,10 +1185,6 @@ def test_multi_turn_beat_self_stops_when_exit_predicate_flips():
 
 
 def test_or_predicate_evaluation_in_preconditions():
-    """`Or_` short-circuits on first True; an unsatisfiable subpredicate
-    later in the list doesn't poison evaluation."""
-    from npc_service.models import Or_, PlayerCanonExists, PlayerRepliesToThreadGte
-
     scenario = Scenario.model_validate({
         "title": "T",
         "premise": "p",
@@ -1300,7 +1195,6 @@ def test_or_predicate_evaluation_in_preconditions():
         "beats": [
             {
                 "id": "aria.body",
-                "type": "plot",
                 "thread": "aria",
                 "npc": "aria",
                 "preconditions": [
@@ -1321,14 +1215,11 @@ def test_or_predicate_evaluation_in_preconditions():
         ],
     })
     state = InboxState.from_scenario(scenario)
-    # 0 replies, no canon → Or_ False → not due.
     assert [b.id for b in find_due_beats(state, scenario)[0]] == []
-    # Add one reply but no canon → Or_ still False (cap not hit, no name).
     state.replies.append(Reply(
         id="r1", thread_id="aria", beat_responded_to=None, recipient="A", body="hi",
     ))
     assert [b.id for b in find_due_beats(state, scenario)[0]] == []
-    # Cap satisfied via 4 replies → Or_ True (no canon needed).
     for i in range(2, 5):
         state.replies.append(Reply(
             id=f"r{i}", thread_id="aria", beat_responded_to=None, recipient="A", body="x",
@@ -1359,7 +1250,7 @@ def _make_reply(
 
 
 def _reply_with_axis(thread: str | None, quality: str, value: str) -> Reply:
-    """Reply seeded with one classifier axis result — used for
+    """Reply seeded with one classifier result — used for
     RecentClassifierValue evaluation tests."""
     r = _make_reply(thread)
     r.classifier_results.append(

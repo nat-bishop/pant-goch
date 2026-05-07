@@ -53,7 +53,7 @@ from .models import (
     BeatEligibility,
     BeatSpec,
     CanonCategory,
-    ClassifyReply,
+    Effect,
     Email,
     InboxState,
     OpenRequest,
@@ -66,11 +66,10 @@ from .models import (
 )
 from .spine import (
     apply_canon_extraction,
-    apply_classification,
-    apply_writes,
-    apply_writes_by_axis,
+    apply_classify_effect,
+    apply_literal_effects,
+    evaluate_predicate,
     find_due_beats,
-    quality_delta_for_classifier,
 )
 
 
@@ -257,7 +256,7 @@ async def _fire_beat(
 
     Returns `(email, write_deltas, multi_turn_turn)`:
       - `email`: the rendered email, or None on silent-complete.
-      - `write_deltas`: any quality changes from `spec.writes` (empty if
+      - `write_deltas`: any quality changes from literal effects (empty if
         the beat has none, or if writes were no-ops).
       - `multi_turn_turn`: 1-indexed fire count for multi-turn beats
         (computed after the email is appended), None for fire-once beats.
@@ -276,20 +275,14 @@ async def _fire_beat(
     if beat.id in STATE.fired_beat_ids:
         return None, [], None
 
-    # Writes apply BEFORE rendering so multi-turn re-fires record the new
-    # value even if rendering fails. `apply_writes` logs each before→after
-    # change and returns the resulting deltas (no-op writes are filtered).
-    write_deltas: list[QualityDelta] = []
-    if beat.spec.writes:
-        write_deltas = apply_writes(
-            STATE, SCENARIO, beat.spec.writes, beat_id=beat.id,
-        )
-    if beat.spec.writes_by_axis is not None:
-        # Per-arm writes apply AFTER flat writes; on a key collision the arm
-        # value wins (lets `writes` carry a default the arm can override).
-        write_deltas = write_deltas + apply_writes_by_axis(
-            STATE, SCENARIO, beat.spec.writes_by_axis, beat_id=beat.id,
-        )
+    # Literal effects apply BEFORE rendering so multi-turn re-fires record
+    # the new value even if rendering fails. `apply_literal_effects` logs
+    # each before→after change and returns the resulting deltas (no-op
+    # writes are filtered). Classify-driven effects on this beat schedule
+    # the classifier on the next player reply — they don't fire here.
+    write_deltas: list[QualityDelta] = apply_literal_effects(
+        STATE, SCENARIO, beat.spec.effects, beat_id=beat.id,
+    )
 
     # No span wrapper here: pre-authored fires are sub-millisecond (a memcpy
     # plus a log line) and the chat-agent path is 1:1 with
@@ -400,6 +393,7 @@ async def _render_email(
             STATE.qualities,
             SCENARIO.quality_defaults,
             SCENARIO.quality_descriptions,
+            SCENARIO.surface_to_chat_quality_ids,
         ),
         player_canon=player_canon_snapshot(
             STATE.player_canon,
@@ -521,14 +515,16 @@ def _build_epilogue_digest() -> str:
     via @instructions; this digest is the run-tailored payload.
     """
     assert STATE is not None and SCENARIO is not None
-    # Commitments: filter to commitment.* qualities ≠ default; format with prefix stripped.
+    # Commitments: filter to surface_to_chat qualities ≠ default.
     commits_dict = commitments_snapshot(
         STATE.qualities,
         SCENARIO.quality_defaults,
         SCENARIO.quality_descriptions,
+        SCENARIO.surface_to_chat_quality_ids,
     )
     commit_lines = [
-        f"  {k.split('.', 1)[1]} = {v:g}" for k, (v, _desc) in commits_dict.items()
+        f"  {k} = {v!r}" if isinstance(v, str) else f"  {k} = {v:g}"
+        for k, (v, _desc) in commits_dict.items()
     ] or ["  (no commitments yet)"]
 
     history = build_recent_classifier_history(STATE.replies, axes=None, per_axis=5)
@@ -679,7 +675,7 @@ async def _tick(
     `classifier_deltas` carries any quality writes that already happened
     upstream (the player-reply classifier in `_send_stream` runs before
     `_tick` so terminals can read post-classifier qualities). They're
-    folded into the same `quality_deltas` list as `spec.writes` from the
+    folded into the same `quality_deltas` list as literal effects from the
     fired beat — the overlay's "what changed this tick" panel is the
     union of both sources.
     """
@@ -894,7 +890,22 @@ async def _send_stream(req: SendRequest) -> AsyncIterator[bytes]:
                 SCENARIO.beat_by_id.get(in_reply_email.beat_id)
                 if in_reply_email and in_reply_email.beat_id else None
             )
-            axes = list(replied_beat.classify_reply_axes) if replied_beat else []
+            # Classify-typed effects come from two sources: the beat the
+            # player just replied to (per-beat axes) and scenario.effects
+            # (always-on, gated by their own `when:`). Both pour into one
+            # batched classifier call. Beat-scope effects come first so a
+            # scenario-scope effect on the same quality (rare and probably
+            # an authoring mistake) doesn't shadow the beat-scope verdict.
+            beat_classify_effects: list[Effect] = (
+                [e for e in replied_beat.spec.effects if e.is_classify]
+                if replied_beat else []
+            )
+            scenario_classify_effects: list[Effect] = [
+                e for e in SCENARIO.effects
+                if e.is_classify
+                and (e.when is None or evaluate_predicate(e.when, STATE))
+            ]
+            classify_effects = beat_classify_effects + scenario_classify_effects
             recipient_blurb = _persona_blurb_for_recipient(req.recipient, recipient_npc)
             prior_body = in_reply_email.body if in_reply_email else ""
 
@@ -902,8 +913,8 @@ async def _send_stream(req: SendRequest) -> AsyncIterator[bytes]:
                 recipient_blurb=recipient_blurb,
                 prior_email_body=prior_body,
                 reply_body=body,
-                axes=axes,
-            ) if axes else _none_coro()
+                effects=classify_effects,
+            ) if classify_effects else _none_coro()
             extractor_coro = _extract_player_canon(
                 recipient_blurb=recipient_blurb,
                 prior_email_body=prior_body,
@@ -914,9 +925,12 @@ async def _send_stream(req: SendRequest) -> AsyncIterator[bytes]:
             )
 
             classifier_deltas: list[QualityDelta] = []
-            if axes and classifier_results is not None:
-                _apply_axis_results(
-                    axes=axes, results=classifier_results, replied_beat_id=replied_beat.id, reply=reply,
+            if classify_effects and classifier_results is not None:
+                _apply_classify_results(
+                    effects=classify_effects,
+                    results=classifier_results,
+                    replied_beat_id=replied_beat.id if replied_beat else None,
+                    reply=reply,
                     out_deltas=classifier_deltas,
                 )
 
@@ -1002,7 +1016,7 @@ async def _send_stream(req: SendRequest) -> AsyncIterator[bytes]:
 async def _none_coro():
     """Awaitable yielding None — paired with `_extract_player_canon` in
     `asyncio.gather` so we can run the extractor solo on beats that
-    authored no `classify_reply_axes`."""
+    authored no classify-typed effects."""
     return None
 
 
@@ -1096,26 +1110,26 @@ async def _classify_player_reply(
     recipient_blurb: str,
     prior_email_body: str,
     reply_body: str,
-    axes: list[ClassifyReply],
+    effects: list[Effect],
 ) -> list[AxisResult] | None:
-    """Run the classifier against the player's reply across all authored
-    axes in a single batched call. Returns None on failure so the caller
-    skips every axis's quality write.
+    """Run the classifier against the player's reply across all classify-typed
+    effects in a single batched call. Returns None on failure so the caller
+    skips every quality write.
 
     Wrapped in an llm-tagged span so the auto-instrumented Pydantic AI run
-    has a business-context parent — and so `reply_preview` and the per-axis
-    qualities ride on the span row in the trace tree, no drilling.
+    has a business-context parent — and so `reply_preview` and the per-quality
+    targets ride on the span row in the trace tree, no drilling.
     """
     assert AGENTS is not None
     with LLM_LOGFIRE.span(
         "classify reply for {qualities}",
-        qualities=[a.identifier for a in axes],
+        qualities=[e.quality for e in effects],
         reply_preview=reply_body[:200],
     ) as span:
         try:
             result = await AGENTS.classifier_agent.run(
                 build_classifier_user_prompt(
-                    recipient_blurb, prior_email_body, reply_body, axes,
+                    recipient_blurb, prior_email_body, reply_body, effects,
                 )
             )
         except Exception:
@@ -1128,74 +1142,68 @@ async def _classify_player_reply(
         return results
 
 
-def _apply_axis_results(
+def _apply_classify_results(
     *,
-    axes: list[ClassifyReply],
+    effects: list[Effect],
     results: list[AxisResult],
-    replied_beat_id: str,
+    replied_beat_id: str | None,
     reply: Reply,
     out_deltas: list[QualityDelta],
 ) -> None:
-    """Apply each authored axis in YAML order against the classifier's
-    returned results. Defense-in-depth, single pass over `results` to
-    categorize, then a pass over `axes` to apply:
+    """Apply each classify effect in order against the classifier's
+    returned results. Defense-in-depth: single pass over `results` to
+    categorize, then a pass over `effects` to apply:
 
-    - Unknown axis (quality not authored on the beat) → logfire-warn, drop.
-    - Duplicate axis (LLM returned multiple results for the same quality)
+    - Unknown quality (not targeted by any effect in scope) → logfire-warn, drop.
+    - Duplicate (LLM returned multiple results for the same quality)
       → keep the first, logfire-warn the rest.
-    - Missing axis (LLM omitted an authored quality) → logfire-warn, skip.
-    - Off-spec value (not in `allowed_values`) → `apply_classification`
+    - Missing (LLM omitted an authored quality) → logfire-warn, skip.
+    - Off-spec value (not in `allowed_values`) → `apply_classify_effect`
       returns None, logfire-warn, no append onto Reply.
 
-    Appends a `QualityDelta` to `out_deltas` for each quality-writing axis
-    whose value actually changed; `_tick` folds those into the
+    Appends a `QualityDelta` to `out_deltas` for each effect whose value
+    actually changed; `_tick` folds those into the
     `TickDecision.quality_deltas` so the debug overlay shows "what
     changed this tick" in one place.
     """
     assert STATE is not None and SCENARIO is not None
-    authored_identifiers = {a.identifier for a in axes}
-    by_identifier: dict[str, AxisResult] = {}
+    target_qualities = {e.quality for e in effects}
+    by_quality: dict[str, AxisResult] = {}
     for r in results:
-        if r.quality not in authored_identifiers:
+        if r.quality not in target_qualities:
             logfire.warn(
-                "classifier returned unauthored axis; dropped",
-                beat_id=replied_beat_id, identifier=r.quality, value=r.value,
+                "classifier returned unauthored quality; dropped",
+                beat_id=replied_beat_id, quality=r.quality, value=r.value,
             )
             continue
-        if r.quality in by_identifier:
+        if r.quality in by_quality:
             logfire.warn(
-                "classifier returned duplicate axis result; first kept",
-                beat_id=replied_beat_id, identifier=r.quality,
+                "classifier returned duplicate quality result; first kept",
+                beat_id=replied_beat_id, quality=r.quality,
             )
             continue
-        by_identifier[r.quality] = r
+        by_quality[r.quality] = r
 
-    for axis in axes:
-        r = by_identifier.get(axis.identifier)
+    for effect in effects:
+        r = by_quality.get(effect.quality)
         if r is None:
             logfire.warn(
-                "classifier missing axis result; quality unchanged",
-                beat_id=replied_beat_id, identifier=axis.identifier,
+                "classifier missing quality result; quality unchanged",
+                beat_id=replied_beat_id, quality=effect.quality,
             )
             continue
-        before = (
-            STATE.qualities.get(axis.quality)
-            if axis.quality is not None else None
+        applied, delta = apply_classify_effect(
+            STATE, SCENARIO, effect, r.value, r.rationale,
         )
-        applied = apply_classification(STATE, SCENARIO, axis, r.value, r.rationale)
         if applied is None:
+            assert effect.classify is not None
             logfire.warn(
                 "classifier returned off-spec value; quality unchanged",
-                beat_id=replied_beat_id, identifier=axis.identifier,
-                value=r.value, allowed=axis.allowed_values,
+                beat_id=replied_beat_id, quality=effect.quality,
+                value=r.value, allowed=effect.classify.allowed_values,
             )
             continue
         reply.classifier_results.append(applied)
-        after = (
-            STATE.qualities.get(axis.quality)
-            if axis.quality is not None else None
-        )
-        delta = quality_delta_for_classifier(axis, before, after)
         if delta is not None:
             out_deltas.append(delta)
 

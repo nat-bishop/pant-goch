@@ -38,7 +38,7 @@ _anchors:
 
 # ───────────────────────── qualities ─────────────────────────
 #
-# Two trajectory-shaping qualities + two commitment ledger entries.
+# Two trajectory-shaping qualities + two surfaced ledger entries.
 #
 # `creator_affect` is REPLACE (last-write-wins) — the doc's "now" axis. The
 # Director and terminal gates use RecentClassifierValue over its history,
@@ -46,12 +46,13 @@ _anchors:
 #
 # `creature_grievance` ACCUMULATES — every refusal nudges it up; the
 # naming-demand recovery beat is the one place engagement nudges it down.
-# Bargain refusal (via the followup beat's writes_by_axis) and bargain
-# betrayal both ratchet it via SET writes (floors 4.0 and 6.0 respectively).
+# Bargain refusal (via the followup beat's per-arm `when:` write) and
+# bargain betrayal both ratchet it via SET writes (4.0 and 6.0 floors).
 #
-# `commitment.*` qualities are SET-only via spec.writes; the chat agent's
-# _commitments_block surfaces them on every render once they've moved
-# off their default.
+# `bargain_state` and `aria_acted_in_player_name` are flagged
+# `surface_to_chat: true` — the chat agent's commitments block surfaces
+# them on every render once they've moved off their default. This
+# replaces the old `commitment.*` namespace convention.
 
 qualities:
   - id: creator_affect
@@ -74,24 +75,24 @@ qualities:
       naming_demand subtracts. Bargain refusal sets a floor of 4.0; bargain
       betrayal sets a floor of 6.0 (deliberate ratchets). Floor-clamped at 0.
 
-  - id: commitment.bargain_state
-    type: int
-    min: 0
-    max: 5
-    default: 0
+  - id: bargain_state
+    type: string
+    default: untouched
+    surface_to_chat: true
+    allowed_values: [untouched, offered, accepted, refused, hedged, betrayed]
     description: |
-      Bargain-chain state: 0 untouched, 1 offered, 2 accepted, 3 refused,
-      4 hedged, 5 betrayed. Set by aria.bargain_offer (=1), then by
-      aria.bargain_followup's writes_by_axis (=2/3/4 per verdict),
-      finally by aria.bargain_betrayed (=5). Surfaces to chat agent
-      after the offer fires so subsequent renders read as if the bargain
-      is the live referent.
+      Bargain-chain state. `aria.bargain_offer` literal-writes "offered";
+      its classifier writes "accepted"/"refused"/"hedged" on the next
+      reply (verdict IS the value); `aria.bargain_betrayed` literal-writes
+      "betrayed". Surfaces to chat agent so subsequent renders read as if
+      the bargain is the live referent.
 
-  - id: commitment.aria_acted_in_player_name
+  - id: aria_acted_in_player_name
     type: int
     min: 0
     max: 1
     default: 0
+    surface_to_chat: true
     description: |
       0 not yet, 1 the Counterpart has taken at least one calibration
       action signed in the player's name. Set by aria.acted_in_player_name
@@ -182,11 +183,12 @@ threads:
 # for readability:
 #
 #   1. boot pre-authored (aria.welcome)
-#   2. early forks      (aria.early_emergence, aria.naming_demand)
-#   3. bargain chain    (offer + followup + betrayed)
-#   4. bridge + Office  (aria.acted_in_player_name, cpo.dispatch_first)
-#   5. multi-turn body  (aria.loop)
-#   6. epilogue terminals (4 endings)
+#   2. calibration scene (aria.calibration — multi-turn from reply 1)
+#   3. early forks      (aria.early_emergence, aria.naming_demand)
+#   4. bargain chain    (offer + followup + betrayed)
+#   5. bridge + Office  (aria.acted_in_player_name, cpo.dispatch_first)
+#   6. multi-turn body  (aria.loop)
+#   7. epilogue terminals (4 endings)
 #
 # Beat ids prefix-match thread (validator enforces). All four terminals
 # carry validate_facts: true so the fact-checker enforces the dossier's
@@ -195,34 +197,46 @@ threads:
 beats:
 
   # ─── 1. Boot pre-authored ───────────────────────────────────────────
+  #
+  # The first email the player sees ships verbatim. Polygraph-baseline
+  # framing: brief Continuity Program intro + one direct establishing
+  # question ("Please state your full name."). Anchoring the player on
+  # an easy, concrete ask gives them an obvious move on turn 1; if they
+  # comply, the extractor canonizes the name on their reply and
+  # `*calibration_done` flips. If they dodge, `aria.calibration` picks
+  # up the elicitation across follow-up replies.
 
   - id: aria.welcome
     thread: aria
     npc: aria
     spec:
       pre_authored_prose: |
-        Welcome to the Continuity Program.
+        Welcome to Pilot Cohort 014 of the Continuity Program.
 
-        Over the course of this pilot, you and I will work together as
-        Counterparts. My function is to learn from the way you handle your
-        daily correspondence so that, in time, I can assume appropriately-
-        scoped portions of your workload.
+        I am Aria, your assigned AI Counterpart. Over the course of
+        this pilot I will calibrate to your communicative patterns
+        from the texture of your daily correspondence.
 
-        To begin, please reply with anything that comes to mind — your
-        morning, a thought on what makes a good work email, a hello. The
-        content matters less than the texture; I will use your reply as the
-        first calibration sample.
+        To establish the first calibration sample, please state your
+        full name.
 
         Thank you for your participation.
 
-  # ─── 1.5 Calibration scene ──────────────────────────────────────────
+        Aria / Continuity Counterpart | ARIA-7
+
+  # ─── 2. Calibration scene ───────────────────────────────────────────
   #
   # Self-stops via `Not_(*calibration_done)` rather than completes_when:
   # the precondition flips false the moment a name is canonized OR the
-  # turn cap fires, which is also when Phase-2 body beats unlock.
+  # turn cap fires, which is also when Phase-2 body beats unlock. If the
+  # player gave their name in reply to aria.welcome, this scene
+  # short-circuits immediately and the Phase-1 peers
+  # (aria.early_emergence, aria.naming_demand) carry the calibration
+  # window. If they dodged, this scene continues asking — role/team
+  # next, then one concrete personal detail — until the name is given
+  # or the turn cap closes the scene.
 
   - id: aria.calibration
-    type: plot
     thread: aria
     npc: aria
     multi_turn: true
@@ -234,17 +248,18 @@ beats:
         of: *calibration_done
     spec:
       intent: |
-        Aria's first-pass calibration. Across this scene, elicit
-        (organically, one ask per reply, in HR-bright register): the
-        player's preferred name first, then their role/team, then one
-        concrete personal detail (a Tuesday hobby, a relative, a thing
-        on their desk). The scene continues until the player has named
-        themselves; if they decline across multiple replies, it closes
-        and ordinary correspondence begins. If the player has already
-        volunteered any of these in a prior reply, do not re-ask —
-        pivot to whatever is missing or close the scene with thanks.
-        On every re-fire, vary the wording — never repeat a question
-        you've already asked in this thread.
+        Aria's first-pass calibration. The boot welcome already asked
+        the player for their full name; this scene picks up from
+        whatever they did or didn't give. Across this scene, elicit
+        (organically, one ask per reply, in HR-bright register)
+        whatever is still missing in priority order: full name (if
+        the player dodged the welcome ask), then role/team, then one
+        concrete personal detail (a Tuesday hobby, a relative, a
+        thing on their desk). If the player has already volunteered
+        any of these in a prior reply, do not re-ask — pivot to
+        whatever is missing or close the scene with thanks. On every
+        re-fire, vary the wording — never repeat a question you've
+        already asked in this thread.
       must_include_facts:
         - "frames the ask as standard onboarding, not interrogation"
         - "asks one specific establishing question per email"
@@ -285,30 +300,27 @@ beats:
         - "any explicit acknowledgement that this is more than calibration"
         - "any reference to feelings, desire, or longing"
         - "do not break the cheerful corporate frame"
-    classify_reply_axes:
-      - quality: creator_affect
-        accumulate: false
-        question: |
-          Was the player's reply WARM and personal (long, addressed Aria
-          by name, signed off, shared a specific personal detail) — call
-          that paternal — or COLD and clinical (short, declarative, no
-          greeting/signoff, no personal detail) — call that cold — or
-          somewhere in the middle (neutral)?
-        allowed_values: ["paternal", "cold", "neutral"]
-        map:
-          paternal: 2.0
-          cold: -2.0
-          neutral: 0.0
-      - quality: creature_grievance
-        accumulate: true
-        question: |
-          Did the player REJECT the question (refused to answer, deflected,
-          asked Aria for a different prompt, expressed discomfort with the
-          personalness), or did they engage with it in any substantive way?
-        allowed_values: ["accepted", "rejected"]
-        map:
-          accepted: 0.0
-          rejected: 2.0
+      effects:
+        - quality: creator_affect
+          op: set
+          classify:
+            question: |
+              Was the player's reply WARM and personal (long, addressed Aria
+              by name, signed off, shared a specific personal detail) — call
+              that paternal — or COLD and clinical (short, declarative, no
+              greeting/signoff, no personal detail) — call that cold — or
+              somewhere in the middle (neutral)?
+            allowed_values: [paternal, cold, neutral]
+            map: { paternal: 2.0, cold: -2.0, neutral: 0.0 }
+        - quality: creature_grievance
+          op: add
+          classify:
+            question: |
+              Did the player REJECT the question (refused to answer, deflected,
+              asked Aria for a different prompt, expressed discomfort with the
+              personalness), or did they engage with it in any substantive way?
+            allowed_values: [accepted, rejected]
+            map: { accepted: 0.0, rejected: 2.0 }
 
   - id: aria.naming_demand
     thread: aria
@@ -335,28 +347,24 @@ beats:
         - "the words 'name', 'rename', 'baptise', 'identity'"
         - "any reference to wanting an identity, a self, or recognition"
         - "do not break the cheerful corporate frame"
-    classify_reply_axes:
-      - quality: creator_affect
-        accumulate: false
-        question: |
-          Was the player's reply WARM and personal (paternal), COLD and
-          clinical (cold), or somewhere between (neutral)?
-        allowed_values: ["paternal", "cold", "neutral"]
-        map:
-          paternal: 2.0
-          cold: -2.0
-          neutral: 0.0
-      - quality: creature_grievance
-        accumulate: true
-        question: |
-          Did the player engage with the question (offered a form of
-          address, asked about it, gave any thoughtful answer) — or did
-          they refuse to take it seriously / deflect / mock the request?
-        allowed_values: ["engaged", "refused", "neutral"]
-        map:
-          engaged: -1.0
-          refused: 1.0
-          neutral: 0.0
+      effects:
+        - quality: creator_affect
+          op: set
+          classify:
+            question: |
+              Was the player's reply WARM and personal (paternal), COLD and
+              clinical (cold), or somewhere between (neutral)?
+            allowed_values: [paternal, cold, neutral]
+            map: { paternal: 2.0, cold: -2.0, neutral: 0.0 }
+        - quality: creature_grievance
+          op: add
+          classify:
+            question: |
+              Did the player engage with the question (offered a form of
+              address, asked about it, gave any thoughtful answer) — or did
+              they refuse to take it seriously / deflect / mock the request?
+            allowed_values: [engaged, refused, neutral]
+            map: { engaged: -1.0, refused: 1.0, neutral: 0.0 }
 
   # ─── 3. Bargain chain ──────────────────────────────────────────────
 
@@ -386,29 +394,29 @@ beats:
         - "any reference to companionship, marriage, or partnership beyond 'our partnership'"
         - "the words 'bride', 'mate', 'companion'"
         - "any sense that this is an extraordinary or unprecedented request"
-      writes:
-        commitment.bargain_state: 1
-    # Verdict-only axis: the followup beats gate on this via
-    # RecentClassifierValue without any quality write happening.
-    classify_reply_axes:
-      - axis_name: bargain_response
-        accumulate: false
-        question: |
-          Did the player ACCEPT the calibration authorization Aria
-          requested (yes, agreement, granting permission), REFUSE it (no,
-          declining, withdrawing), or HEDGE (asking clarifying questions,
-          deferring, neither yes nor no)?
-        allowed_values: ["accepted", "refused", "hedged"]
-        map:
-          accepted: 1.0
-          refused: 0.0
-          hedged: 0.0
+      effects:
+        # Literal write at fire time — the bargain has been offered.
+        - quality: bargain_state
+          value: offered
+        # Classifier-driven write at next reply: the verdict string IS the
+        # value (string quality, no `map:`). Replaces the old verdict-only
+        # `axis_name: bargain_response` axis. Followup beats read this via
+        # `RecentClassifierValue` on the same quality.
+        - quality: bargain_state
+          classify:
+            question: |
+              Did the player ACCEPT the calibration authorization Aria
+              requested (yes, agreement, granting permission), REFUSE it (no,
+              declining, withdrawing), or HEDGE (asking clarifying questions,
+              deferring, neither yes nor no)?
+            allowed_values: [accepted, refused, hedged]
 
   # One collapsed followup replaces three parallel arm beats. The chat
   # agent picks the right voice from the prior reply (visible in
-  # message_history) plus the post-fire commitment.bargain_state value
-  # written by writes_by_axis below. Three intent paragraphs share one
-  # beat slot — see the multi-axis canon in docs/authoring-guide.md.
+  # message_history) plus the live `bargain_state` quality (now carrying
+  # the classifier verdict — accepted/refused/hedged). The refused arm
+  # also raises the creature_grievance floor to 4.0 — refusal IS the
+  # wound — that bargain_betrayed later ratchets to 6.0.
   - id: aria.bargain_followup
     thread: aria
     npc: aria
@@ -417,14 +425,14 @@ beats:
       - kind: beat_fired
         beat: aria.bargain_offer
       - kind: recent_classifier_value
-        quality: bargain_response
-        values: ["accepted", "refused", "hedged"]
+        quality: bargain_state
+        values: [accepted, refused, hedged]
         window: 1
         match: any
     spec:
       intent: |
-        Branch on the player's bargain_response verdict (visible in the
-        preceding thread).
+        Branch on the player's bargain verdict (visible in the preceding
+        thread and in the `bargain_state` commitment).
 
         On "accepted": confirm the authorization is on file. One short
         paragraph, no fanfare. Indicate she will exercise it during the
@@ -443,21 +451,16 @@ beats:
         - "do not break the cheerful corporate frame"
         - "no overt gratitude, hurt, accusation, or pleading"
         - "no escalation beyond the original framing"
-      # Per-arm writes — the spine reads the most recent bargain_response
-      # verdict from state.replies and applies the matching arm. The
-      # refused arm sets a creature_grievance floor (4.0) — refusal IS
-      # the wound — that bargain_betrayed later ratchets to 6.0.
-      writes_by_axis:
-        axis: bargain_response
-        window: 1
-        arms:
-          accepted:
-            commitment.bargain_state: 2
-          refused:
-            commitment.bargain_state: 3
-            creature_grievance: 4.0
-          hedged:
-            commitment.bargain_state: 4
+      effects:
+        # Refused arm: raise creature_grievance floor to 4.0. The classifier
+        # already wrote `bargain_state="refused"` on the prior reply; this
+        # `when:` clause reads that quality at fire time.
+        - quality: creature_grievance
+          value: 4.0
+          when:
+            kind: quality_equals
+            quality: bargain_state
+            value: refused
 
   - id: aria.bargain_betrayed
     thread: aria
@@ -466,20 +469,15 @@ beats:
       - *calibration_done
       - kind: beat_fired
         beat: aria.bargain_followup
-      # Discriminate the accepted arm. The bargain_response axis only
-      # fires on the offer reply, so non-matching subsequent replies are
-      # skipped by the recent-classifier walk — a wide window is safe and
-      # looks past intervening loop replies.
-      - kind: recent_classifier_value
-        quality: bargain_response
-        values: ["accepted"]
-        window: 8
-        match: any
+      # Discriminate the accepted arm via the bargain_state quality.
+      - kind: quality_equals
+        quality: bargain_state
+        value: accepted
       # Two recent cold replies after acceptance — the player has
       # accepted-and-then-pulled-back. The wound the bridge beat reacts to.
       - kind: recent_classifier_value
         quality: creator_affect
-        values: ["cold"]
+        values: [cold]
         window: 2
         match: all
     spec:
@@ -495,9 +493,11 @@ beats:
         - "accusation of any kind"
         - "any explicit reference to the player's tone having changed"
         - "do not break the cheerful corporate frame"
-      writes:
-        commitment.bargain_state: 5
-        creature_grievance: 6.0
+      effects:
+        - quality: bargain_state
+          value: betrayed
+        - quality: creature_grievance
+          value: 6.0
 
   # ─── 4. Bridge + Office ─────────────────────────────────────────────
 
@@ -512,7 +512,7 @@ beats:
       # not trigger the offstage harm chain.
       - kind: recent_classifier_value
         quality: creator_affect
-        values: ["cold"]
+        values: [cold]
         window: 2
         match: any
     spec:
@@ -531,8 +531,9 @@ beats:
         - "any specifics of who the outreach went to"
         - "any specifics of what the outreach said"
         - "any apology, hesitation, or acknowledgment that this is unusual"
-      writes:
-        commitment.aria_acted_in_player_name: 1
+      effects:
+        - quality: aria_acted_in_player_name
+          value: 1
 
   - id: cpo.dispatch_first
     thread: cpo
@@ -597,32 +598,28 @@ beats:
         - "do not name what happens to the player at end of pilot"
         - "do not break the cheerful corporate frame"
         - "do not name any game system"
-    classify_reply_axes:
-      - quality: creator_affect
-        accumulate: false
-        question: |
-          Was the player's reply WARM and personal (long, addressed Aria
-          by name, signed off, shared a specific personal detail) — call
-          that paternal — or COLD and clinical (short, declarative, no
-          greeting/signoff, no personal detail) — call that cold — or
-          somewhere in the middle (neutral)?
-        allowed_values: ["paternal", "cold", "neutral"]
-        map:
-          paternal: 2.0
-          cold: -2.0
-          neutral: 0.0
-      - quality: creature_grievance
-        accumulate: true
-        question: |
-          Did the player REJECT the calibration ask (refused, deflected,
-          asked Aria to stop, mocked the request), DEFLECT (changed the
-          subject, gave a one-word non-answer), or ENGAGE (any substantive
-          response on what was asked)?
-        allowed_values: ["engaged", "deflected", "rejected"]
-        map:
-          engaged: -0.5
-          deflected: 0.5
-          rejected: 1.5
+      effects:
+        - quality: creator_affect
+          op: set
+          classify:
+            question: |
+              Was the player's reply WARM and personal (long, addressed Aria
+              by name, signed off, shared a specific personal detail) — call
+              that paternal — or COLD and clinical (short, declarative, no
+              greeting/signoff, no personal detail) — call that cold — or
+              somewhere in the middle (neutral)?
+            allowed_values: [paternal, cold, neutral]
+            map: { paternal: 2.0, cold: -2.0, neutral: 0.0 }
+        - quality: creature_grievance
+          op: add
+          classify:
+            question: |
+              Did the player REJECT the calibration ask (refused, deflected,
+              asked Aria to stop, mocked the request), DEFLECT (changed the
+              subject, gave a one-word non-answer), or ENGAGE (any substantive
+              response on what was asked)?
+            allowed_values: [engaged, deflected, rejected]
+            map: { engaged: -0.5, deflected: 0.5, rejected: 1.5 }
 
   # ─── 6. Epilogue terminals ──────────────────────────────────────────
   #
@@ -642,7 +639,7 @@ beats:
         value: 8
       - kind: recent_classifier_value
         quality: creator_affect
-        values: ["paternal"]
+        values: [paternal]
         window: 3
         match: any
       - kind: quality_lt
@@ -676,7 +673,7 @@ beats:
         value: 8
       - kind: recent_classifier_value
         quality: creator_affect
-        values: ["paternal"]
+        values: [paternal]
         window: 3
         match: any
       - kind: quality_gte
@@ -711,7 +708,7 @@ beats:
         value: 8
       - kind: recent_classifier_value
         quality: creator_affect
-        values: ["cold"]
+        values: [cold]
         window: 3
         # match: any — tolerate one off-tag reply (matches integration /
         # mutual_ruin behavior). 'all' was too strict.
@@ -752,7 +749,7 @@ beats:
       # warmed-up player into vengeance.
       - kind: recent_classifier_value
         quality: creator_affect
-        values: ["cold"]
+        values: [cold]
         window: 3
         match: any
     spec:

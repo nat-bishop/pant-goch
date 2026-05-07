@@ -13,13 +13,14 @@ must_include_facts / must_not lists and
 raises ModelRetry on any miss. Default-off keeps loop beats free of
 validator latency.
 
-CLASSIFIER_AGENT is one-shot, ToolOutput. It returns a list of per-axis
-results (one entry per beat-authored axis in `classify_reply_axes`), each
-with a `quality`, `value`, `rationale`. The allowed-values list per axis
-is enforced via the user prompt (not the schema) since values vary per
-axis. The caller validates post-hoc per axis and skips the quality write
-if a returned value is off-spec. Single batched call regardless of axis
-count keeps per-send cost flat.
+CLASSIFIER_AGENT is one-shot, ToolOutput. It returns a list of per-quality
+results (one entry per classify-typed `Effect` in scope on the player's
+reply — the beat the player just replied to plus any scenario-scope
+effects), each with a `quality`, `value`, `rationale`. The allowed-values
+list per quality is enforced via the user prompt (not the schema) since
+values vary per quality. The caller validates post-hoc per effect and
+skips the quality write if a returned value is off-spec. Single batched
+call regardless of effect count keeps per-send cost flat.
 
 EXTRACTOR_AGENT runs in parallel with the classifier on every player /send
 (via `asyncio.gather`, so it's latency-neutral). It harvests open-ended
@@ -69,13 +70,11 @@ from .models import (
     AxisResult,
     BeatSpec,
     CanonCategory,
-    ClassifyReply,
+    Effect,
     NPCDossier,
     PlayerCanonEntry,
 )
 
-
-COMMITMENT_PREFIX = "commitment."
 
 # Top-K cap on the player_canon snapshot the chat agent sees per render.
 # The full ledger remains in state.player_canon for predicates and the
@@ -105,12 +104,11 @@ class ChatDeps:
     in which case the directive is layered into the prompt as authored
     intent / must-include / must-not.
 
-    `commitments` is a snapshot of qualities matching the `commitment.*`
-    convention captured at render-call time, mapping the full quality id
-    to (current value, description). The decorator `_commitments_block`
-    surfaces them with the `commitment.` prefix stripped. Snapshotting
-    in deps keeps deps immutable for the duration of one agent run, which
-    matches the `plot_directive` pattern.
+    `commitments` is a snapshot of qualities flagged `surface_to_chat: true`
+    captured at render-call time, mapping the quality id to (current value,
+    description). The decorator `_commitments_block` surfaces them on every
+    render. Snapshotting in deps keeps deps immutable for the duration of
+    one agent run, which matches the `plot_directive` pattern.
 
     `epilogue_digest`, when set, switches the chat agent into closing-email
     mode: the `_epilogue_framing_block` instructions decorator emits the
@@ -121,7 +119,7 @@ class ChatDeps:
 
     npc: NPCDossier
     plot_directive: BeatSpec | None
-    commitments: dict[str, tuple[float, str]] = field(default_factory=dict)
+    commitments: dict[str, tuple[float | str, str]] = field(default_factory=dict)
     # Per-render top-K slice of state.player_canon (most relevant entries
     # by recency × salience). The decorator `_player_canon_block` surfaces
     # them as a prompt section so the chat agent can quote the player's
@@ -659,21 +657,25 @@ def build_classifier_user_prompt(
     recipient_blurb: str,
     prior_email_body: str,
     reply_body: str,
-    axes: list[ClassifyReply],
+    effects: list[Effect],
 ) -> str:
-    """Build the classifier's user prompt for one or more axes.
+    """Build the classifier's user prompt for one or more classify-typed
+    effects. All effects in `effects` must have `effect.is_classify` true.
 
-    `recipient_blurb` and `prior_email_body` are shared across all axes by
-    construction — there is no per-axis context selection in Stage 1. If a
-    future axis needs to score against, say, the original welcome rather
-    than the most recent prior, that's a follow-up.
+    `recipient_blurb` and `prior_email_body` are shared across all effects
+    by construction — there is no per-effect context selection in Stage 1.
+    If a future effect needs to score against, say, the original welcome
+    rather than the most recent prior, that's a follow-up.
     """
     axis_blocks: list[str] = []
-    for i, axis in enumerate(axes, start=1):
-        values = ", ".join(f'"{v}"' for v in axis.allowed_values)
+    for i, effect in enumerate(effects, start=1):
+        directive = effect.classify
+        if directive is None:
+            continue
+        values = ", ".join(f'"{v}"' for v in directive.allowed_values)
         axis_blocks.append(
-            f"AXIS {i} — quality: {axis.identifier}\n"
-            f"  Question: {axis.question.strip()}\n"
+            f"AXIS {i} — quality: {effect.quality}\n"
+            f"  Question: {directive.question.strip()}\n"
             f"  Allowed values: {values}"
         )
     axes_text = "\n\n".join(axis_blocks)
@@ -746,21 +748,24 @@ def _format_fact_retry_message(fc: FactCheckResult) -> str:
     return "\n\n".join(parts)
 
 
-def format_commitments(commitments: dict[str, tuple[float, str]]) -> list[str]:
-    """Filter the commitments snapshot down to qualities whose current
-    value differs from their default (or 0.0 if default is None) and
-    format each as a single line with the `commitment.` prefix stripped.
+def format_commitments(
+    commitments: dict[str, tuple[float | str, str]]
+) -> list[str]:
+    """Format the commitments snapshot — one line per surfaced quality
+    whose current value differs from its default. Caller is responsible
+    for the snapshot's filter (qualities flagged `surface_to_chat`); this
+    just renders.
 
     A commitment that has never been set is noise the chat agent has to
     ignore on every render — empty list is the right state until the
     bargain (or whatever else the scenario authors) actually commits.
     """
     lines: list[str] = []
-    for full_id, (value, description) in commitments.items():
-        if not full_id.startswith(COMMITMENT_PREFIX):
-            continue
-        short = full_id[len(COMMITMENT_PREFIX):]
-        line = f"{short} = {value}"
+    for quality_id, (value, description) in commitments.items():
+        if isinstance(value, str):
+            line = f"{quality_id} = {value!r}"
+        else:
+            line = f"{quality_id} = {value}"
         if description.strip():
             line += f"  # {description.strip()}"
         lines.append(line)
@@ -768,23 +773,27 @@ def format_commitments(commitments: dict[str, tuple[float, str]]) -> list[str]:
 
 
 def commitments_snapshot(
-    qualities: dict[str, float],
-    defaults: dict[str, float],
+    qualities: dict[str, float | str],
+    defaults: dict[str, float | str],
     descriptions: dict[str, str],
-) -> dict[str, tuple[float, str]]:
-    """Build the per-render commitments snapshot for ChatDeps. Filters to
-    `commitment.*` ids whose current value differs from the authored
-    default (or 0.0 if no default). Caller derives `defaults` and
-    `descriptions` from `Scenario.qualities`.
+    surfaced_ids: set[str],
+) -> dict[str, tuple[float | str, str]]:
+    """Build the per-render commitments snapshot for ChatDeps.
+
+    Includes only qualities whose id is in `surfaced_ids` (i.e. authored
+    `surface_to_chat: true`) AND whose current value differs from its
+    default. Caller derives `defaults`, `descriptions`, and `surfaced_ids`
+    from `Scenario.quality_defaults`, `quality_descriptions`, and
+    `surface_to_chat_quality_ids` respectively.
     """
-    out: dict[str, tuple[float, str]] = {}
-    for full_id, value in qualities.items():
-        if not full_id.startswith(COMMITMENT_PREFIX):
+    out: dict[str, tuple[float | str, str]] = {}
+    for quality_id, value in qualities.items():
+        if quality_id not in surfaced_ids:
             continue
-        default = defaults.get(full_id, 0.0)
+        default = defaults.get(quality_id, 0.0 if isinstance(value, (int, float)) else "")
         if value == default:
             continue
-        out[full_id] = (value, descriptions.get(full_id, ""))
+        out[quality_id] = (value, descriptions.get(quality_id, ""))
     return out
 
 
@@ -843,19 +852,22 @@ def player_canon_snapshot(
 
 def build_director_user_prompt(
     *,
-    qualities: dict[str, float],
+    qualities: dict[str, float | str],
     recent_classifier_history: dict[str, list[str]],
     recent_fire_history: list[str],
     eligible: list[dict],
 ) -> str:
     """Build the per-tick prompt for the Director.
 
-    `recent_classifier_history` is `{axis_id: [most-recent-first values]}`.
+    `recent_classifier_history` is `{quality: [most-recent-first values]}`.
     `recent_fire_history` is a list of beat ids in fire order, most recent last.
     `eligible` is `[{"id": str, "intent_summary": str}]` plus we always offer
     "none" as an implicit option (declared in the system prompt).
     """
-    qualities_text = ", ".join(f"{k}={v:g}" for k, v in sorted(qualities.items())) or "(none)"
+    qualities_text = ", ".join(
+        f"{k}={v!r}" if isinstance(v, str) else f"{k}={v:g}"
+        for k, v in sorted(qualities.items())
+    ) or "(none)"
     history_lines: list[str] = []
     for axis, values in recent_classifier_history.items():
         if not values:

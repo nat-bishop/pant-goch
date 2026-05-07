@@ -484,7 +484,7 @@ def test_classifier_handles_duplicate_axis_returned_by_model(client):
 
 
 def test_classifier_handles_off_spec_value(client):
-    """Model returns a value outside allowed_values. apply_classification
+    """Model returns a value outside allowed_values. apply_classify_effect
     returns None; no append onto Reply.classifier_results, quality unchanged."""
     welcome = client.get("/inbox").json()["folders"]["Inbox"][0]
     list(consume_sse(client.stream("POST", "/send", json={

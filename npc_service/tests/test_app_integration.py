@@ -105,21 +105,23 @@ def test_live_first_send_fires_loop(live_client):
     ids=["substantive→engaged", "dismissive→deflected"],
 )
 async def test_live_classifier_picks_correct_value(live_classifier, reply_body, expected):
-    from npc_service.models import ClassifyReply
+    from npc_service.models import ClassifyDirective, Effect
 
-    axes = [
-        ClassifyReply(
+    effects = [
+        Effect(
             quality="engagement",
-            question="Is the player engaging substantively or deflecting?",
-            allowed_values=["engaged", "deflected"],
-            map={"engaged": 1.0, "deflected": -1.0},
+            classify=ClassifyDirective(
+                question="Is the player engaging substantively or deflecting?",
+                allowed_values=["engaged", "deflected"],
+                map={"engaged": 1.0, "deflected": -1.0},
+            ),
         )
     ]
     prompt = build_classifier_user_prompt(
         recipient_blurb="Aria — continuity counterpart",
         prior_email_body="Could you tell me how you typically structure a Tuesday?",
         reply_body=reply_body,
-        axes=axes,
+        effects=effects,
     )
 
     result = await live_classifier.run(prompt)

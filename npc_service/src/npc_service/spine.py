@@ -6,11 +6,13 @@ Two rules this module enforces:
 
 1. The chat-rendering LLM never touches state. The chat agent returns prose
    only; the spine is the only thing that mutates `InboxState`.
-2. Quality writes have exactly two code-owned entry points, both in this
-   module: `apply_classification` (driven by the classifier agent's per-axis
-   output, with optional `accumulate`) and `apply_writes` (driven by a beat's
-   authored `spec.writes`, SET-only for committed facts). Both share
-   `_clamp_quality`. No other code path mutates `state.qualities`.
+2. Quality writes have ONE code-owned entry point: `apply_effects`. Effects
+   come in two flavours (literal `value:` and classifier-driven `classify:`)
+   and may be scoped to a beat (`BeatSpec.effects`) or to the scenario
+   (`Scenario.effects`). All five surfaces from the pre-refactor era —
+   `classify_reply_axes`, `spec.writes`, `spec.writes_by_axis`, the
+   verdict-only `axis_name` special case, and the `commitment.*` prefix
+   convention — are gone, folded into the unified Effect grammar.
 
 Observability is allowed (and explicitly used here): the spine emits
 logfire info/warn lines so per-tick decisions are visible in the dev
@@ -33,7 +35,7 @@ from .models import (
     Beat,
     BeatEligibility,
     BeatFired,
-    ClassifyReply,
+    Effect,
     InboxState,
     Not_,
     Or_,
@@ -43,11 +45,11 @@ from .models import (
     PlayerRepliesToThreadGte,
     Predicate,
     QualityDelta,
+    QualityEquals,
     QualityGte,
     QualityLt,
     RecentClassifierValue,
     Scenario,
-    WritesByAxis,
 )
 
 
@@ -64,10 +66,13 @@ def evaluate_predicate(pred: Predicate, state: InboxState) -> bool:
     """
     if isinstance(pred, QualityGte):
         v = state.qualities.get(pred.quality)
-        return v is not None and v >= pred.value
+        return isinstance(v, (int, float)) and v >= pred.value
     if isinstance(pred, QualityLt):
         v = state.qualities.get(pred.quality)
-        return v is not None and v < pred.value
+        return isinstance(v, (int, float)) and v < pred.value
+    if isinstance(pred, QualityEquals):
+        v = state.qualities.get(pred.quality)
+        return v is not None and v == pred.value
     if isinstance(pred, PlayerRepliesToThreadGte):
         n = sum(1 for r in state.replies if r.thread_id == pred.thread)
         return n >= pred.value
@@ -88,13 +93,9 @@ def _evaluate_recent_classifier_value(
     pred: RecentClassifierValue, state: InboxState
 ) -> bool:
     """Walk replies in reverse, collecting up to `pred.window` axis results
-    whose identifier matches `pred.quality`. Replies without a matching axis
-    are skipped (they don't fill a window slot). Resolve `pred.match` against
-    the count of collected results whose value ∈ pred.values.
-
-    Note: `pred.quality` is matched against `AxisResult.quality`, which is
-    the axis identifier (axis_name or quality) — so verdict-only axes show
-    up here under their `axis_name`.
+    whose quality matches `pred.quality`. Replies without a matching axis
+    are skipped (they don't fill a window slot). Resolve `pred.match`
+    against the count of collected results whose value ∈ pred.values.
     """
     collected: list[str] = []
     for reply in reversed(state.replies):
@@ -127,6 +128,11 @@ def describe_predicate(pred: Predicate, state: InboxState) -> str:
         return f"{pred.quality}>={pred.value:g} got {_fmt_quality(state.qualities.get(pred.quality))}"
     if isinstance(pred, QualityLt):
         return f"{pred.quality}<{pred.value:g} got {_fmt_quality(state.qualities.get(pred.quality))}"
+    if isinstance(pred, QualityEquals):
+        return (
+            f"{pred.quality}=={pred.value!r} got "
+            f"{_fmt_quality(state.qualities.get(pred.quality))}"
+        )
     if isinstance(pred, PlayerRepliesToThreadGte):
         n = sum(1 for r in state.replies if r.thread_id == pred.thread)
         return f"replies({pred.thread})>={pred.value} got {n}"
@@ -161,11 +167,15 @@ def describe_predicate(pred: Predicate, state: InboxState) -> str:
     raise TypeError(f"unhandled predicate: {type(pred).__name__}")
 
 
-def _fmt_quality(value: float | None) -> str:
-    return "(unset)" if value is None else f"{value:g}"
+def _fmt_quality(value: float | str | None) -> str:
+    if value is None:
+        return "(unset)"
+    if isinstance(value, str):
+        return repr(value)
+    return f"{value:g}"
 
 
-# ───────────────────────── quality mutation ─────────────────────────
+# ───────────────────────── effect application ─────────────────────────
 
 
 def _clamp_quality(value: float, quality_id: str, scenario: Scenario) -> float:
@@ -179,150 +189,153 @@ def _clamp_quality(value: float, quality_id: str, scenario: Scenario) -> float:
     return value
 
 
-def apply_classification(
-    state: InboxState,
+def _combine_op(
+    before: float | str | None,
+    incoming: float | str,
+    op: str,
+    quality_id: str,
     scenario: Scenario,
-    classify_reply: ClassifyReply,
-    value: str,
-    rationale: str = "",
-) -> AxisResult | None:
-    """Apply a classifier axis output.
+) -> float | str:
+    """Apply an op to combine `before` (current quality value or None for
+    unset) with `incoming` (the new value being written). String qualities
+    only support `op: set`; numeric qualities support set/add/max/min.
 
-    Returns the resulting `AxisResult` on success, or None if `value`
-    isn't in the authored map. The caller is responsible for appending
-    the returned `AxisResult` onto an active `Reply.classifier_results`
-    if it wants `RecentClassifierValue` predicates to see this write.
-
-    Two modes:
-    - When `classify_reply.quality` is set: the mapped score writes to that
-      quality (replace by default; add when `accumulate=True`). Both paths
-      share `_clamp_quality`.
-    - When `classify_reply.quality is None`: this is a verdict-only axis.
-      No quality write happens; the AxisResult still returns so the caller
-      can append it onto Reply.classifier_results for RecentClassifierValue.
-
-    Quality writes log a structured before→after→delta line. Use
-    `quality_delta_for_classifier` to materialise a `QualityDelta` for
-    callers that thread the write into a tick-level decision payload.
+    Numeric writes are clamped via `_clamp_quality` after the op. String
+    writes pass through unchanged (no bounds for strings).
     """
-    score = classify_reply.map.get(value)
-    if score is None:
-        return None
-    if classify_reply.quality is not None:
-        before = state.qualities.get(classify_reply.quality)
-        cur = before if before is not None else 0.0
-        if classify_reply.accumulate:
-            new = cur + score
-        else:
-            new = score
-        clamped = _clamp_quality(new, classify_reply.quality, scenario)
-        state.qualities[classify_reply.quality] = clamped
-        if before != clamped:
-            delta = clamped - cur
-            sign = "+" if delta >= 0 else ""
-            logfire.info(
-                "quality {q}: {before} -> {after} ({sign}{delta:g}) via classifier:{axis}",
-                q=classify_reply.quality,
-                before=_fmt_quality(before),
-                after=f"{clamped:g}",
-                sign=sign,
-                delta=delta,
-                axis=classify_reply.identifier,
-            )
-    return AxisResult(
-        quality=classify_reply.identifier, value=value, rationale=rationale
-    )
+    if isinstance(incoming, str):
+        # String quality — only `set` is meaningful (op validation upstream
+        # guarantees this, but be defensive).
+        return incoming
+    cur = before if isinstance(before, (int, float)) else 0.0
+    if op == "set":
+        new = float(incoming)
+    elif op == "add":
+        new = cur + float(incoming)
+    elif op == "max":
+        new = max(cur, float(incoming))
+    elif op == "min":
+        new = min(cur, float(incoming))
+    else:
+        raise ValueError(f"unknown op {op!r} for quality {quality_id!r}")
+    return _clamp_quality(new, quality_id, scenario)
 
 
-def quality_delta_for_classifier(
-    classify_reply: ClassifyReply,
-    before: float | None,
-    after: float | None,
-) -> QualityDelta | None:
-    """Build a `QualityDelta` for an applied classifier write. Returns None
-    for verdict-only axes (no quality written) or no-op writes (value
-    unchanged after clamp). Caller threads the delta into `TickDecision`."""
-    if classify_reply.quality is None or after is None:
-        return None
-    if before == after:
-        return None
-    return QualityDelta(
-        quality=classify_reply.quality,
-        before=before,
-        after=after,
-        source=f"classifier:{classify_reply.identifier}",
-    )
-
-
-def apply_writes_by_axis(
+def _apply_one_write(
     state: InboxState,
     scenario: Scenario,
-    wba: WritesByAxis,
+    quality_id: str,
+    incoming: float | str,
+    op: str,
+    *,
+    source_label: str,
+) -> QualityDelta | None:
+    """Apply a single value-write. Returns the resulting QualityDelta if
+    the value changed, or None for no-ops. Logs every effective write.
+    """
+    before = state.qualities.get(quality_id)
+    new = _combine_op(before, incoming, op, quality_id, scenario)
+    if before == new:
+        return None
+    state.qualities[quality_id] = new
+    logfire.info(
+        "quality {q}: {before} -> {after} via {source}",
+        q=quality_id,
+        before=_fmt_quality(before),
+        after=_fmt_quality(new),
+        source=source_label,
+    )
+    return QualityDelta(
+        quality=quality_id, before=before, after=new, source=source_label,
+    )
+
+
+def apply_literal_effects(
+    state: InboxState,
+    scenario: Scenario,
+    effects: list[Effect],
     *,
     beat_id: str | None = None,
 ) -> list[QualityDelta]:
-    """Apply a beat's `spec.writes_by_axis` block.
+    """Apply every literal-value effect in `effects` (those with
+    `effect.value` set). Classify-driven effects are skipped — they fire at
+    reply time via `apply_classify_effect`.
 
-    Walks `state.replies` in reverse looking for the most recent
-    `AxisResult` whose identifier matches `wba.axis`. Replies without a
-    matching axis are skipped (same shape as
-    `_evaluate_recent_classifier_value`); the search stops after `wba.window`
-    matching results have been collected. The most-recent matching verdict
-    indexes into `wba.arms`; if that arm is declared, its writes are applied
-    with SET semantics (clamped). Missing axis result or unmatched arm →
-    no-op + a logfire.warn.
-
-    Returns the list of `QualityDelta`s for any quality whose value
-    actually changed (no-op writes are dropped). Source labels read
-    `spec.writes_by_axis:<beat_id>:<arm>` for an auditable trail.
+    Each effect's `when:` predicate (if set) is evaluated against current
+    state; the write is skipped when `when` is false. Source labels read
+    `effect:<beat_id>:<quality>` for an auditable trail.
     """
-    collected: list[str] = []
-    for reply in reversed(state.replies):
-        for axis in reply.classifier_results:
-            if axis.quality == wba.axis:
-                collected.append(axis.value)
-                break
-        if len(collected) >= wba.window:
-            break
-
-    if not collected:
-        logfire.warn(
-            "writes_by_axis no recent classifier value for axis {axis}",
-            axis=wba.axis, beat_id=beat_id,
-        )
-        return []
-
-    verdict = collected[0]  # most recent within window
-    arm_writes = wba.arms.get(verdict)
-    if arm_writes is None:
-        logfire.warn(
-            "writes_by_axis verdict {verdict!r} has no matching arm",
-            verdict=verdict, axis=wba.axis, beat_id=beat_id,
-            available_arms=sorted(wba.arms.keys()),
-        )
-        return []
-
     deltas: list[QualityDelta] = []
-    source_label = (
-        f"spec.writes_by_axis:{beat_id}:{verdict}" if beat_id
-        else f"spec.writes_by_axis:{verdict}"
-    )
-    for quality_id, value in arm_writes.items():
-        before = state.qualities.get(quality_id)
-        new = _clamp_quality(value, quality_id, scenario)
-        state.qualities[quality_id] = new
-        if before != new:
-            logfire.info(
-                "quality {q}: {before} -> {after} via {source}",
-                q=quality_id,
-                before=_fmt_quality(before),
-                after=f"{new:g}",
-                source=source_label,
-            )
-            deltas.append(QualityDelta(
-                quality=quality_id, before=before, after=new, source=source_label,
-            ))
+    for effect in effects:
+        if effect.is_classify:
+            continue
+        if effect.when is not None and not evaluate_predicate(effect.when, state):
+            continue
+        source_label = (
+            f"effect:{beat_id}:{effect.quality}"
+            if beat_id else f"effect:{effect.quality}"
+        )
+        delta = _apply_one_write(
+            state, scenario, effect.quality, effect.value, effect.op,  # type: ignore[arg-type]
+            source_label=source_label,
+        )
+        if delta is not None:
+            deltas.append(delta)
     return deltas
+
+
+def apply_classify_effect(
+    state: InboxState,
+    scenario: Scenario,
+    effect: Effect,
+    verdict: str,
+    rationale: str = "",
+) -> tuple[AxisResult | None, QualityDelta | None]:
+    """Apply one classifier verdict to its target quality.
+
+    For numeric qualities, the verdict indexes into `effect.classify.map`
+    to produce a float; the caller's `op` (set/add/max/min) combines it
+    with the current value. For string qualities, the verdict string is
+    the value (only `op: set` is valid; validated at load time).
+
+    Returns `(axis_result, quality_delta)`:
+    - `axis_result`: AxisResult on success (caller appends to
+      `Reply.classifier_results`), or None when the verdict isn't a
+      valid value for this directive.
+    - `quality_delta`: the resulting QualityDelta if the value actually
+      changed, or None for no-ops (verdict skipped, value unchanged,
+      `when:` predicate false).
+    """
+    if not effect.is_classify:
+        raise ValueError(f"apply_classify_effect requires a classify effect; got {effect}")
+    directive = effect.classify  # type: ignore[union-attr]
+    if verdict not in directive.allowed_values:
+        return None, None
+    if effect.when is not None and not evaluate_predicate(effect.when, state):
+        # Predicate failed at apply time — return the AxisResult so the
+        # ledger still records the verdict (predicates downstream may
+        # still want to read it), but don't write the quality.
+        return AxisResult(quality=effect.quality, value=verdict, rationale=rationale), None
+
+    q = scenario.quality_by_id.get(effect.quality)
+    if q is None:
+        return None, None
+
+    if q.type == "string":
+        incoming: float | str = verdict
+    else:
+        if directive.map is None:
+            return None, None
+        incoming = directive.map[verdict]
+
+    delta = _apply_one_write(
+        state, scenario, effect.quality, incoming, effect.op,
+        source_label=f"classify:{effect.quality}",
+    )
+    axis_result = AxisResult(
+        quality=effect.quality, value=verdict, rationale=rationale,
+    )
+    return axis_result, delta
 
 
 # ───────────────────────── player canon mutation ─────────────────────────
@@ -358,45 +371,6 @@ def apply_canon_extraction(
         )
         promoted.append(c.key)
     return promoted
-
-
-def apply_writes(
-    state: InboxState,
-    scenario: Scenario,
-    writes: dict[str, float],
-    *,
-    beat_id: str | None = None,
-) -> list[QualityDelta]:
-    """Apply a beat's authored `spec.writes` to state with SET semantics
-    (no accumulate). Quality bounds clamp via `_clamp_quality`. Called
-    once per fire from `_fire_beat` after the fired-id guard and before
-    the silent-complete check, so the fact of completion is recorded
-    even on the no-render path. Multi-turn beats re-apply on every fire
-    — see the BeatSpec.writes field comment for the collision contract.
-
-    Returns the list of `QualityDelta`s for any quality whose value
-    actually changed (no-op writes are dropped). `beat_id`, when
-    provided, is included in the log line and the `source` of each
-    returned delta.
-    """
-    deltas: list[QualityDelta] = []
-    source_label = f"spec.writes:{beat_id}" if beat_id else "spec.writes"
-    for quality_id, value in writes.items():
-        before = state.qualities.get(quality_id)
-        new = _clamp_quality(value, quality_id, scenario)
-        state.qualities[quality_id] = new
-        if before != new:
-            logfire.info(
-                "quality {q}: {before} -> {after} via {source}",
-                q=quality_id,
-                before=_fmt_quality(before),
-                after=f"{new:g}",
-                source=source_label,
-            )
-            deltas.append(QualityDelta(
-                quality=quality_id, before=before, after=new, source=source_label,
-            ))
-    return deltas
 
 
 # ───────────────────────── beat scheduler ─────────────────────────
