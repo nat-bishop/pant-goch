@@ -454,11 +454,10 @@ def find_due_beats(
     surfaces and the debug overlay displays.
 
     Beats stay in `pending_beats` until they're added to `fired_beat_ids`.
-    Fire-once beats land in `fired_beat_ids` immediately after rendering, so
-    they're pruned on the next tick. `multi_turn` beats never enter
-    `fired_beat_ids` via their own state — they re-appear in the due list
-    each tick until a sibling beat's mutex (e.g. `Not_(BeatFired terminal)`)
-    catches them.
+    One-shot beats land in `fired_beat_ids` immediately after rendering, so
+    they're pruned on the next tick. Scene beats (`kind="scene"`) enter
+    `fired_beat_ids` only on the firing tick that satisfies every entry of
+    `spec.exit_when`; until then they re-appear in the due list each tick.
     """
     eligible: list[Beat] = []
     report: list[BeatEligibility] = []
@@ -474,11 +473,11 @@ def find_due_beats(
             (p for p in beat.preconditions if not evaluate_predicate(p, state)),
             None,
         )
-        is_multi = beat.multi_turn
+        is_scene = beat.kind == "scene"
         if first_failed is None:
             eligible.append(beat)
             report.append(BeatEligibility(
-                beat_id=beat.id, status="eligible", multi_turn=is_multi,
+                beat_id=beat.id, status="eligible", is_scene=is_scene,
             ))
         elif _has_unsatisfied_structural_prereq(beat.preconditions, state):
             # Downstream of unfired work — omit from report (noise).
@@ -494,13 +493,13 @@ def find_due_beats(
             report.append(BeatEligibility(
                 beat_id=beat.id, status="blocked",
                 blocked_by=describe_predicate(first_failed, state),
-                multi_turn=is_multi,
+                is_scene=is_scene,
                 predicate_tree=first_failed,
                 predicate_trace=trace,
             ))
 
-    # Prune completed beats from pending; keep multi-turn beats around so
-    # they re-fire on subsequent ticks until a mutex catches them.
+    # Prune completed beats from pending; keep scene beats around so
+    # they re-fire on subsequent ticks until exit_when catches them.
     still_pending: list[PendingBeat] = []
     for pb in state.pending_beats:
         if pb.beat_id in state.fired_beat_ids:
@@ -511,6 +510,23 @@ def find_due_beats(
         still_pending.append(pb)
     state.pending_beats = still_pending
     return eligible, report
+
+
+def scene_exit_satisfied(beat: Beat, state: InboxState) -> bool:
+    """Return True iff every predicate in `beat.spec.exit_when` evaluates to
+    true against the current state. Returns False for one-shot beats — the
+    caller should only invoke this on `kind="scene"` beats, but defensive
+    return is cheaper than adding a precondition.
+
+    List-AND semantics, matching `preconditions`. Empty `exit_when` is
+    forbidden by the load-time validator on scene beats, so an empty list
+    only appears on one-shots (where this returns False trivially).
+    """
+    if beat.kind != "scene":
+        return False
+    if not beat.spec.exit_when:
+        return False
+    return all(evaluate_predicate(p, state) for p in beat.spec.exit_when)
 
 
 def _has_unsatisfied_structural_prereq(

@@ -104,10 +104,11 @@ class PlayerRepliesToThreadGte(BaseModel):
 class BeatFired(BaseModel):
     """True iff the named beat has completed (lives in `state.fired_beat_ids`).
 
-    Fire-once beats land in `fired_beat_ids` immediately after rendering.
-    Multi-turn beats (`Beat.multi_turn=True`) never enter `fired_beat_ids`
-    via their own state — author a sibling beat that gates on `BeatFired` of
-    the loop's eventual successor under `Not_` if you need mutex.
+    One-shot beats (`Beat.kind == "one_shot"`) land in `fired_beat_ids`
+    immediately after rendering. Scene beats (`Beat.kind == "scene"`)
+    enter `fired_beat_ids` only when their `spec.exit_when` predicates
+    all pass on a fire — until then they re-appear in the eligible list
+    each tick.
 
     Use under `Not_` to express mutual exclusion between two beats whose
     other preconditions overlap.
@@ -356,6 +357,10 @@ class BeatSpec(BaseModel):
     `effects` is the unified state-mutation list. Each entry writes one
     quality, with the value coming from a literal (`value`) or a classifier
     verdict (`classify`). See `Effect` for shape.
+
+    `exit_when`, `voice_register_override`, and `escalation_notes` only
+    apply on scene beats (`Beat.kind == "scene"`); the parent `Beat`
+    validator policies their combinations.
     """
 
     intent: str = ""
@@ -375,19 +380,39 @@ class BeatSpec(BaseModel):
     # on the same beat are batched into one classifier LLM call. See
     # Effect for the per-entry shape; see spine.apply_effects for ordering.
     #
-    # Multi-turn-collision contract: if a literal effect's `quality` on a
-    # multi_turn beat is also written by another beat, that other beat's
-    # mutex must take effect before its tick — otherwise the multi_turn
-    # beat will re-fire on the next tick and clobber the later write back
-    # to its own value.
+    # Scene-collision contract: if a literal effect's `quality` on a scene
+    # beat is also written by another beat, that other beat's mutex (or
+    # the scene's `exit_when`) must take effect before its tick —
+    # otherwise the scene will re-fire on the next tick and clobber the
+    # later write back to its own value.
     effects: list[Effect] = Field(default_factory=list)
+
+    # Scene exit predicates (list-AND). Required when `Beat.kind ==
+    # "scene"`, forbidden when `kind == "one_shot"`. Evaluated in
+    # `_fire_beat` after each scene fire; when every predicate passes the
+    # beat enters `fired_beat_ids` so downstream `BeatFired` predicates
+    # become true. Until then the scene stays pending and may continue
+    # firing each tick.
+    exit_when: list[Predicate] = Field(default_factory=list)
+
+    # Scene voice override. When set on a scene beat, the chat agent's
+    # `_dossier_block` substitutes this string in for the dossier's
+    # `base_voice_register` line during the beat's renders. The forbidden
+    # / will-say / will-not-say lists from the dossier still apply.
+    voice_register_override: str | None = None
+
+    # Per-scene cross-turn escalation directive. Surfaced via
+    # `_plot_directive_block` under an "ESCALATION (across turns)" section
+    # so the chat agent can modulate within a scene without an author
+    # branching the intent string per turn count.
+    escalation_notes: str | None = None
 
     # When True, the chat agent's output_validator runs the fact-checker
     # agent against this beat's `must_include_facts` + `must_not` and
     # raises ModelRetry on any miss/violation. Default False — every
     # un-flagged beat skips the validator entirely (zero per-render LLM
     # cost). Authors flag this on critical beats (terminals, pivotal
-    # forks); leave it off on chatty multi-turn loops or pre-authored beats.
+    # forks); leave it off on chatty scenes or pre-authored beats.
     validate_facts: bool = False
 
     @model_validator(mode="after")
@@ -421,8 +446,17 @@ class Beat(BaseModel):
     - otherwise → runs the chat agent with `spec` injected as per-run
       instructions. The agent's reply IS the plot moment.
 
-    `multi_turn` and `ends_session` are independent flags that change firing
-    semantics — see field comments below.
+    `kind` controls multi-fire semantics:
+    - `one_shot` — fires exactly once. Enters `fired_beat_ids`
+      immediately after rendering. The default for transitions, bridges,
+      terminals, and the boot welcome.
+    - `scene` — fires across multiple ticks until `spec.exit_when` is
+      satisfied. Enters `fired_beat_ids` only on the firing tick that
+      satisfies every entry of `exit_when`. Replaces the old `multi_turn`
+      flag.
+
+    `ends_session=True` requires `kind="one_shot"` (terminals are always
+    one-shots).
     """
 
     # Beat ids are namespaced as `<thread>.<local>` — the spine relies on
@@ -433,15 +467,43 @@ class Beat(BaseModel):
     npc: str  # which dossier to use (sender + voice + relationship blurb)
     spec: BeatSpec
     preconditions: list[Predicate] = Field(default_factory=list)
-    # When True, the beat re-fires on every tick — never enters
-    # `fired_beat_ids` based on its own state. Stop firing by adding mutex
-    # preconditions (e.g. `Not_(BeatFired aria.complete_warm)`) so terminal
-    # beats can take over.
-    multi_turn: bool = False
+    # Per-beat fire-mode discriminator. Required, no default — authors
+    # must explicitly choose `one_shot` or `scene` (no silent default
+    # so a missing field never silently makes a one_shot scene-y or
+    # vice versa).
+    kind: Literal["scene", "one_shot"]
     # When True, `state.ended` flips to True immediately after this beat's
     # email is emitted, with `state.end_reason = beat.id`. Subsequent /open
     # and /send return HTTP 409.
     ends_session: bool = False
+
+    @model_validator(mode="after")
+    def _validate_kind_combinations(self) -> "Beat":
+        if self.kind == "scene":
+            if not self.spec.exit_when:
+                raise ValueError(
+                    f"Beat {self.id!r}: kind='scene' requires "
+                    "spec.exit_when to be non-empty (the scene must have "
+                    "a defined exit condition)."
+                )
+            if self.spec.pre_authored_prose is not None:
+                raise ValueError(
+                    f"Beat {self.id!r}: kind='scene' is incompatible with "
+                    "spec.pre_authored_prose (scenes are played out by the "
+                    "chat agent across turns)."
+                )
+            if self.ends_session:
+                raise ValueError(
+                    f"Beat {self.id!r}: ends_session=True requires "
+                    "kind='one_shot' (terminals are always one-shots)."
+                )
+        else:  # one_shot
+            if self.spec.exit_when:
+                raise ValueError(
+                    f"Beat {self.id!r}: kind='one_shot' forbids "
+                    "spec.exit_when (one-shots fire exactly once)."
+                )
+        return self
 
 
 class Thread(BaseModel):
@@ -1003,7 +1065,7 @@ class BeatEligibility(BaseModel):
     beat_id: str
     status: Literal["eligible", "blocked"]
     blocked_by: str | None = None  # describe_predicate output for the first failing pred
-    multi_turn: bool = False
+    is_scene: bool = False
     predicate_tree: Predicate | None = None
     predicate_trace: PredicateTrace | None = None
 
@@ -1071,12 +1133,12 @@ class TickDecision(BaseModel):
 
     in_response_to: str | None
     eligible: list[BeatEligibility]  # eligible + value-blocked beats only
-    selection: Literal["none", "sole", "director"]
+    selection: Literal["none", "sole", "director", "continue"]
     chosen_beat_id: str | None
     chosen_rationale: str | None = None  # only when selection == "director"
     quality_deltas: list[QualityDelta] = Field(default_factory=list)
     fired_beat_id: str | None = None
-    multi_turn_turn: int | None = None  # nth fire of a multi-turn beat (1-indexed)
+    scene_turn: int | None = None  # nth fire of a scene beat (1-indexed)
     # Canon writes from the extractor on this tick. `canon_writes` are the
     # promoted candidates (anchored + above salience threshold).
     # `canon_drops` are the candidates the extractor proposed but the

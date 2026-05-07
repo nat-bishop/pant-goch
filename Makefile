@@ -15,6 +15,7 @@ help:
 	@echo "  make sidecar         Run Python sidecar, no llama   (terminal 2)"
 	@echo "  make web             Run Vite dev server            (terminal 3)"
 	@echo "  make test            Run pytest"
+	@echo "  make lint-scenario   Lint npc_service/scenario.yaml"
 	@echo "  make typecheck       Run TS typecheck on web/"
 	@echo "  make clean           Remove __pycache__ and logs/*.log"
 	@echo "  make kill-zombies    Force-kill stragglers on :8000/:8080/:5173-5176 (recovery)"
@@ -50,6 +51,15 @@ web:
 .PHONY: test
 test:
 	cd npc_service && uv run pytest
+
+# Scenario linter. Runs against `npc_service/scenario.yaml` by default.
+# Loads the scenario via the Pydantic models (so `_cross_references`
+# parse errors surface first), then applies seven author-facing checks
+# the model doesn't catch on its own. See `npc_service/scripts/lint_rules.md`
+# for what each check does and why.
+.PHONY: lint-scenario
+lint-scenario:
+	cd npc_service && uv run python scripts/lint_scenario.py scenario.yaml
 
 .PHONY: typecheck
 typecheck:

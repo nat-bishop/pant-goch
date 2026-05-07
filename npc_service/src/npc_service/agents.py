@@ -248,7 +248,7 @@ Pick exactly one of these as `chosen_beat_id`:
 - "none" — skip the tick (no beat fires; the player will see no NPC reply this turn). Use sparingly, only when no listed beat is a fit for the current state.
 
 Heuristics:
-- Prefer beats that ADVANCE the arc over beats that REPEAT recent activity. If you fired a multi-turn loop on the previous tick and a fire-once plot beat is now eligible, prefer the plot beat.
+- Prefer beats that ADVANCE the arc over beats that REPEAT recent activity. If a one-shot transition (e.g. a bargain offer, a recognition prompt) is eligible alongside a still-running [SCENE], prefer the one-shot when the digest shows the scene's question has already been answered. Prefer the [SCENE] when the digest shows the run is still inside the scene's question.
 - Read the state digest. A "creature_grievance high" with a "creator_affect cold" recent-window is asking for the cold/high-grievance branch — pick a beat that fits, not the warm one.
 - Do not pick a terminal (one that ends the session) unless the digest clearly signals the run is settled into one of the four endings.
 - If two beats look equally good, prefer the one that has not fired anything similar recently.
@@ -346,7 +346,9 @@ def _attach_chat_deps_instructions(
 
     @agent.instructions
     def _dossier_block(ctx: RunContext[ChatDeps]) -> str:
-        return _format_dossier(ctx.deps.npc)
+        spec = ctx.deps.plot_directive
+        override = spec.voice_register_override if spec is not None else None
+        return _format_dossier(ctx.deps.npc, voice_register_override=override)
 
     @agent.instructions
     def _plot_directive_block(ctx: RunContext[ChatDeps]) -> str:
@@ -358,12 +360,18 @@ def _attach_chat_deps_instructions(
         )
         must_include = "\n".join(f"  - {f}" for f in spec.must_include_facts) or "  (none specified)"
         must_not = "\n".join(f"  - {f}" for f in spec.must_not) or "  (none specified)"
-        return (
+        block = (
             f"PLOT DIRECTIVE ({directive_label}):\n"
             f"Intent: {spec.intent.strip()}\n"
             f"Must include:\n{must_include}\n"
             f"Must not:\n{must_not}"
         )
+        if spec.escalation_notes is not None and spec.escalation_notes.strip():
+            block += (
+                "\nESCALATION (across turns):\n"
+                f"{spec.escalation_notes.strip()}"
+            )
+        return block
 
     @agent.instructions
     def _commitments_block(ctx: RunContext[ChatDeps]) -> str:
@@ -379,7 +387,22 @@ def _attach_chat_deps_instructions(
         if not lines:
             return ""
         body = "\n".join(f"  {line}" for line in lines)
-        return f"PLAYER CANON (specifics the player has introduced — quote the literal_text where natural):\n{body}"
+        # Directive header — earlier wording was permissive ("quote where
+        # natural") and the chat agent rarely cited canon as a result. The
+        # premise of this scenario ("your Counterpart learns from the
+        # texture of your daily correspondence") underdelivers if canon
+        # is harvested but never read back. The header is now directive
+        # AND bounded so the agent reaches for one specific when the
+        # moment fits, never inventories.
+        return (
+            "PLAYER CANON (specifics the player has introduced — the "
+            "player should feel heard when the moment fits, so reference "
+            "one of these by name or in your own words when it lands "
+            "naturally; never list them, never cite more than one per "
+            "email, and never cite when the directive's must_not "
+            "forbids it):\n"
+            f"{body}"
+        )
 
     @agent.instructions
     def _epilogue_framing_block(ctx: RunContext[ChatDeps]) -> str:
@@ -639,11 +662,24 @@ def make_history_compactor(
 # ───────────────────────── prompt formatting helpers ─────────────────────────
 
 
-def _format_dossier(npc: NPCDossier) -> str:
+def _format_dossier(
+    npc: NPCDossier, *, voice_register_override: str | None = None,
+) -> str:
+    """Render the dossier prompt block. When `voice_register_override` is
+    set, it replaces the dossier's `base_voice_register` line — used by
+    scene beats whose `spec.voice_register_override` shifts the voice for
+    the duration of the scene without rewriting the dossier. Forbidden /
+    will-say / will-not-say lines from the dossier still apply.
+    """
+    voice = (
+        voice_register_override.strip()
+        if voice_register_override and voice_register_override.strip()
+        else npc.base_voice_register
+    )
     return (
         f"DOSSIER for {npc.display_name} ({npc.id}):\n"
         f"Relationship: {npc.relationship_to_owner}\n"
-        f"Base voice: {npc.base_voice_register}\n"
+        f"Base voice: {voice}\n"
         f"Forbidden:\n{_bullets(npc.base_voice_forbidden)}\n"
         f"Will say:\n{_bullets(npc.will_say)}\n"
         f"Will not say:\n{_bullets(npc.will_not_say)}"

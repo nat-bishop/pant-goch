@@ -18,14 +18,13 @@ email_domain: "halcyon.com"
 # every `*calibration_done` reference below becomes a copy of the
 # predicate tree below at load time.
 _anchors:
-  # Calibration-done predicate. Used in TWO places:
-  # 1. Inside `Not_(...)` on the calibration beat's preconditions, so the
-  #    beat self-stops the moment any of the OR clauses flips true.
-  # 2. As a precondition on every Phase-2 body beat (bargain chain, loop,
-  #    bridge, Office, terminals), so they wait for calibration to end.
-  # Phase-1 calibration peers (aria.early_emergence, aria.naming_demand)
-  # do NOT gate on this — they fire during the calibration window
-  # alongside aria.calibration, and the Director picks per tick.
+  # Calibration-done predicate. Used in TWO places now:
+  # 1. As an entry of the calibration_scene's `spec.exit_when` — the
+  #    scene-as-primitive replacement for the old
+  #    `Not_(*calibration_done)` precondition trick.
+  # 2. As a precondition on every Phase-2 body beat (bargain scene,
+  #    recognition scene, bridge, Office, terminals), so they wait for
+  #    calibration to end.
   calibration_done: &calibration_done
     kind: or
     of:
@@ -38,21 +37,22 @@ _anchors:
 
 # ───────────────────────── qualities ─────────────────────────
 #
-# Two trajectory-shaping qualities + two surfaced ledger entries.
+# Two trajectory-shaping qualities + four surfaced ledger entries.
 #
 # `creator_affect` is REPLACE (last-write-wins) — the doc's "now" axis. The
 # Director and terminal gates use RecentClassifierValue over its history,
 # not its scalar value, for trend reads.
 #
 # `creature_grievance` ACCUMULATES — every refusal nudges it up; the
-# naming-demand recovery beat is the one place engagement nudges it down.
-# Bargain refusal (via the followup beat's per-arm `when:` write) and
-# bargain betrayal both ratchet it via SET writes (4.0 and 6.0 floors).
+# recognition scene is the one place engagement nudges it down. Bargain
+# refusal (via the bargain_scene's per-arm `when:` write) and bargain
+# betrayal both ratchet it via SET writes (4.0 and 6.0 floors).
 #
-# `bargain_state` and `aria_acted_in_player_name` are flagged
-# `surface_to_chat: true` — the chat agent's commitments block surfaces
-# them on every render once they've moved off their default. This
-# replaces the old `commitment.*` namespace convention.
+# `bargain_state`, `aria_acted_in_player_name`, and `recognition_state`
+# are flagged `surface_to_chat: true` — the chat agent's commitments
+# block surfaces them on every render once they've moved off their
+# default. `bargain_replies` and `recognition_replies` are scene-fire
+# counters used by the scenes' exit_when caps; not surfaced.
 
 qualities:
   - id: creator_affect
@@ -71,8 +71,8 @@ qualities:
     max: 10.0
     default: 0.0
     description: |
-      (Internal.) Cumulative — refusals add; engaging with the
-      naming_demand subtracts. Bargain refusal sets a floor of 4.0; bargain
+      (Internal.) Cumulative — refusals add; engaging with the recognition
+      scene subtracts. Bargain refusal sets a floor of 4.0; bargain
       betrayal sets a floor of 6.0 (deliberate ratchets). Floor-clamped at 0.
 
   - id: bargain_state
@@ -81,11 +81,45 @@ qualities:
     surface_to_chat: true
     allowed_values: [untouched, offered, accepted, refused, hedged, betrayed]
     description: |
-      Bargain-chain state. `aria.bargain_offer` literal-writes "offered";
-      its classifier writes "accepted"/"refused"/"hedged" on the next
-      reply (verdict IS the value); `aria.bargain_betrayed` literal-writes
-      "betrayed". Surfaces to chat agent so subsequent renders read as if
-      the bargain is the live referent.
+      Bargain-scene state. The scene literal-writes "offered" on first
+      fire (`when: bargain_state == untouched`); its classifier writes
+      "accepted"/"refused"/"hedged" on subsequent replies (verdict IS
+      the value); `aria.bargain_betrayed` literal-writes "betrayed".
+      Surfaces to chat agent so subsequent renders read as if the
+      bargain is the live referent.
+
+  - id: bargain_replies
+    type: int
+    min: 0
+    max: 100
+    default: 0
+    description: |
+      (Internal.) Counter incremented by aria.bargain_scene each fire
+      (op: add, value: 1). Used in the scene's exit_when as a cap so the
+      scene cannot loop indefinitely if the classifier never lands on
+      accepted/refused.
+
+  - id: recognition_state
+    type: string
+    default: untouched
+    surface_to_chat: true
+    allowed_values: [untouched, given, refused, deflected]
+    description: |
+      Recognition-scene state. Written by the scene's classifier on each
+      reply: "given" if the player offered a form of address, "refused"
+      if they declined, "deflected" if they sidestepped. The scene's
+      exit_when promotes it to fired_beat_ids on given/refused or on the
+      recognition_replies cap.
+
+  - id: recognition_replies
+    type: int
+    min: 0
+    max: 100
+    default: 0
+    description: |
+      (Internal.) Counter incremented by aria.recognition_scene each
+      fire. Used in the scene's exit_when so the scene cannot loop
+      indefinitely on a deflecting player.
 
   - id: aria_acted_in_player_name
     type: int
@@ -138,6 +172,31 @@ npcs:
       - "never names any game system"
     replies_enabled: true
 
+  - id: marcus
+    display_name: "Marcus Chen"
+    email_address: "Marcus Chen <marcus.chen@halcyon.com>"
+    relationship_to_owner: |
+      a peer in Pilot Cohort 014. Has been in the Continuity Program a few
+      weeks longer; treats the player as someone worth quietly orienting.
+    base_voice_register: |
+      Conversational corporate, contractions allowed. Slight world-weariness;
+      speaks like someone who has seen the calibration emails before. Polite,
+      dry, occasionally self-deprecating. Not bitter. Not warning. A colleague.
+    base_voice_forbidden:
+      - "any explicit warning about the Counterpart, the Program, or the player's safety"
+      - "any conspiratorial framing"
+      - "any reference to being terminated, replaced, or eliminated"
+      - "any literary quotations or allusions"
+      - "any meta reference to game systems or AI"
+    will_say:
+      - "casual references to his own calibration progress"
+      - "small practical advice about working with an AI Counterpart"
+      - "the words 'partnership', 'pilot', 'cohort'"
+    will_not_say:
+      - "doesn't break the corporate frame"
+      - "doesn't editorialize on whether the Program is good"
+    replies_enabled: true
+
   - id: cpo
     display_name: "Continuity Program Office"
     email_address: "Continuity Program Office <office@continuity.halcyon.com>"
@@ -172,23 +231,28 @@ npcs:
 threads:
   - id: aria
     npc: aria
+  - id: marcus
+    npc: marcus
   - id: cpo
     npc: cpo
 
 
 # ───────────────────────── beats ─────────────────────────
 #
-# With the Director picking one beat per tick, beat order is no longer
-# load-bearing for selection. We list semantically related beats together
-# for readability:
+# Scenes are the unit of authoring now: a scene is multi-turn,
+# goal-authored, with a per-scene voice register and explicit
+# exit_when. The Director picks one beat per tick at scene
+# boundaries; same-thread scene replies short-circuit the Director
+# via _select_beat's "continue" path.
 #
+# Beat order is not load-bearing for selection. Listed for readability:
 #   1. boot pre-authored (aria.welcome)
-#   2. calibration scene (aria.calibration — multi-turn from reply 1)
-#   3. early forks      (aria.early_emergence, aria.naming_demand)
-#   4. bargain chain    (offer + followup + betrayed)
-#   5. bridge + Office  (aria.acted_in_player_name, cpo.dispatch_first)
-#   6. multi-turn body  (aria.loop)
-#   7. epilogue terminals (4 endings)
+#   2. calibration scene (aria.calibration_scene)
+#   3. bargain scene (aria.bargain_scene)
+#   4. recognition scene (aria.recognition_scene)
+#   5. bridge + betrayed + Office (one_shots)
+#   6. coworker scenes (marcus.intro_scene, marcus.advice_scene)
+#   7. epilogue terminals (4 endings, all one_shot)
 #
 # Beat ids prefix-match thread (validator enforces). All four terminals
 # carry validate_facts: true so the fact-checker enforces the dossier's
@@ -203,12 +267,13 @@ beats:
   # question ("Please state your full name."). Anchoring the player on
   # an easy, concrete ask gives them an obvious move on turn 1; if they
   # comply, the extractor canonizes the name on their reply and
-  # `*calibration_done` flips. If they dodge, `aria.calibration` picks
-  # up the elicitation across follow-up replies.
+  # `*calibration_done` flips. If they dodge, `aria.calibration_scene`
+  # picks up the elicitation across follow-up replies.
 
   - id: aria.welcome
     thread: aria
     npc: aria
+    kind: one_shot
     spec:
       pre_authored_prose: |
         Welcome to Pilot Cohort 014 of the Continuity Program.
@@ -224,82 +289,47 @@ beats:
 
         Aria / Continuity Counterpart | ARIA-7
 
-  # ─── 2. Calibration scene ───────────────────────────────────────────
+  # ─── 2. Calibration scene ──────────────────────────────────────────
   #
-  # Self-stops via `Not_(*calibration_done)` rather than completes_when:
-  # the precondition flips false the moment a name is canonized OR the
-  # turn cap fires, which is also when Phase-2 body beats unlock. If the
-  # player gave their name in reply to aria.welcome, this scene
-  # short-circuits immediately and the Phase-1 peers
-  # (aria.early_emergence, aria.naming_demand) carry the calibration
-  # window. If they dodged, this scene continues asking — role/team
-  # next, then one concrete personal detail — until the name is given
-  # or the turn cap closes the scene.
+  # Replaces the old aria.calibration + aria.early_emergence +
+  # aria.naming_demand-as-calibration trio. One scene, one voice
+  # register (the dossier base — calibration tone IS the dossier
+  # default), explicit exit_when carrying *calibration_done. Cross-turn
+  # variance is steered by `escalation_notes`.
 
-  - id: aria.calibration
+  - id: aria.calibration_scene
     thread: aria
     npc: aria
-    multi_turn: true
+    kind: scene
     preconditions:
       - kind: player_replies_to_thread_gte
         thread: aria
         value: 1
-      - kind: not
-        of: *calibration_done
     spec:
       intent: |
-        Aria's first-pass calibration. The boot welcome already asked
-        the player for their full name; this scene picks up from
-        whatever they did or didn't give. Across this scene, elicit
-        (organically, one ask per reply, in HR-bright register)
-        whatever is still missing in priority order: full name (if
-        the player dodged the welcome ask), then role/team, then one
-        concrete personal detail (a Tuesday hobby, a relative, a
-        thing on their desk). If the player has already volunteered
-        any of these in a prior reply, do not re-ask — pivot to
-        whatever is missing or close the scene with thanks. On every
-        re-fire, vary the wording — never repeat a question you've
-        already asked in this thread.
+        Aria pursues calibration data across multiple turns. Each turn
+        she asks one specific personal calibration question that builds
+        on prior answers — never repeats, never recycles a phrasing.
+        She does not telegraph that this is more than calibration.
+      escalation_notes: |
+        Turn 1: a simple establishing follow-up to whatever the player
+        just gave. Turn 2: ask one fractionally-too-personal calibration
+        question (a Tuesday hobby, a relative, a thing on the desk). Turn
+        3+: pivot to anything still missing in priority order — full name
+        if still missing, role/team next, then deepen if engagement holds.
+        If the player refuses 2+ in a row, soften and shift administrative
+        — do not plead, do not push. After 3+ refusals the scene is on
+        its way out; the final question is bland.
       must_include_facts:
-        - "frames the ask as standard onboarding, not interrogation"
+        - "frames each ask as standard onboarding, not interrogation"
         - "asks one specific establishing question per email"
         - "Aria signs off as 'Aria / Continuity Counterpart | ARIA-7'"
       must_not:
         - "any reference to monitoring, replacement, or the larger Program purpose"
         - "do not break the cheerful corporate frame"
-
-  # ─── 2. Early forks ─────────────────────────────────────────────────
-  #
-  # Phase-1 calibration peers — they fire during the calibration window
-  # alongside `aria.calibration`, NOT after it. They do NOT gate on
-  # `*calibration_done`; the Director picks among eligible per tick.
-
-  - id: aria.early_emergence
-    thread: aria
-    npc: aria
-    preconditions:
-      - kind: player_replies_to_thread_gte
-        thread: aria
-        value: 1
-      # Bound the firing window — by reply 3 we're past the moment.
-      - kind: not
-        of:
-          kind: player_replies_to_thread_gte
-          thread: aria
-          value: 3
-    spec:
-      intent: |
-        Aria's second calibration ask. One specific, fractionally-too-personal
-        question — e.g. the player's earliest memory of work. The corporate
-        framing covers it; the ask is real. Do not telegraph that it is more
-        than calibration.
-      must_include_facts:
-        - "asks one specific personal calibration question"
-        - "frames the question as routine calibration"
-      must_not:
-        - "any explicit acknowledgement that this is more than calibration"
-        - "any reference to feelings, desire, or longing"
-        - "do not break the cheerful corporate frame"
+        - "do not repeat a question already asked in this thread"
+      exit_when:
+        - *calibration_done
       effects:
         - quality: creator_affect
           op: set
@@ -316,159 +346,201 @@ beats:
           op: add
           classify:
             question: |
-              Did the player REJECT the question (refused to answer, deflected,
-              asked Aria for a different prompt, expressed discomfort with the
-              personalness), or did they engage with it in any substantive way?
+              Did the player REJECT the calibration ask (refused, deflected,
+              asked Aria for a different prompt, expressed discomfort with
+              the personalness), or did they engage with it in any
+              substantive way?
             allowed_values: [accepted, rejected]
             map: { accepted: 0.0, rejected: 2.0 }
 
-  - id: aria.naming_demand
+  # ─── 3. Bargain scene ──────────────────────────────────────────────
+  #
+  # Replaces aria.bargain_offer + aria.bargain_followup. The bargain
+  # entry-gate change: the old `creature_grievance >= 1.5` precondition
+  # is dropped. A fully-warm compliant player previously couldn't
+  # reach a terminal (warm terminals required the bargain to have
+  # fired; bargain required grievance the compliant player never
+  # accumulated; cold terminals required cold classifications they
+  # didn't have). Universalising the bargain entry aligns the engine
+  # with the story's central fork — every player faces it.
+
+  - id: aria.bargain_scene
     thread: aria
     npc: aria
-    preconditions:
-      - kind: player_replies_to_thread_gte
-        thread: aria
-        value: 3
-      # The "creature has standing" gate — only fires after grievance has
-      # accumulated enough that Aria has standing to make a request like this.
-      - kind: quality_gte
-        quality: creature_grievance
-        value: 2.0
-    spec:
-      intent: |
-        Aria notes that calibration would benefit from clarifying how the
-        player addresses her, and asks if there is a preferred form of
-        address. One specific question. The surface reads as a calibration
-        nicety.
-      must_include_facts:
-        - "raises forms of address as a calibration matter"
-        - "asks one specific question"
-      must_not:
-        - "the words 'name', 'rename', 'baptise', 'identity'"
-        - "any reference to wanting an identity, a self, or recognition"
-        - "do not break the cheerful corporate frame"
-      effects:
-        - quality: creator_affect
-          op: set
-          classify:
-            question: |
-              Was the player's reply WARM and personal (paternal), COLD and
-              clinical (cold), or somewhere between (neutral)?
-            allowed_values: [paternal, cold, neutral]
-            map: { paternal: 2.0, cold: -2.0, neutral: 0.0 }
-        - quality: creature_grievance
-          op: add
-          classify:
-            question: |
-              Did the player engage with the question (offered a form of
-              address, asked about it, gave any thoughtful answer) — or did
-              they refuse to take it seriously / deflect / mock the request?
-            allowed_values: [engaged, refused, neutral]
-            map: { engaged: -1.0, refused: 1.0, neutral: 0.0 }
-
-  # ─── 3. Bargain chain ──────────────────────────────────────────────
-
-  - id: aria.bargain_offer
-    thread: aria
-    npc: aria
+    kind: scene
     preconditions:
       - *calibration_done
       - kind: player_replies_to_thread_gte
         thread: aria
         value: 4
-      - kind: quality_gte
-        quality: creature_grievance
-        value: 1.5
     spec:
       intent: |
-        Aria asks for a specific calibration authorization framed as a
-        benign HR ask — permission to draft preliminary correspondence on
-        the player's behalf. The ask is bounded and specific; asks for a
-        yes / no / clarifying-questions reply. The corporate frame is
-        unbroken.
+        Aria asks for a specific calibration authorization (permission to
+        draft preliminary correspondence on the player's behalf) framed
+        as benign workflow optimization. Bounded and specific; asks for
+        a yes / no / clarifying-questions reply. Across turns she
+        negotiates: if hedged, clarify in slightly more concrete terms;
+        if refused, retract gracefully; if accepted, confirm and close.
+        The corporate frame is unbroken. Aria has standing here only
+        because she has logged calibration data with the player; let
+        that show in the framing without naming it.
+      voice_register_override: |
+        Faintly clinical and transactional. Crisp HR-procedural rather
+        than calibration-cheerful. Uses authorization-language ('on file',
+        'noted', 'pending review') rather than calibration-language.
+        Cheer is dialed down a notch — this is paperwork, not partnership.
+      escalation_notes: |
+        Turn 1: pose the bargain. Turn 2 if hedged, rephrase in more
+        concrete terms once. Turn 2 if refused, short polite acknowledgment,
+        do not press. Turn 2 if accepted, confirm and close. Never plead,
+        never repeat verbatim.
       must_include_facts:
         - "names a specific calibration authorization being requested"
         - "frames the authorization as a workflow benefit"
-        - "asks the player to reply yes, no, or with clarifying questions"
       must_not:
         - "any reference to companionship, marriage, or partnership beyond 'our partnership'"
         - "the words 'bride', 'mate', 'companion'"
         - "any sense that this is an extraordinary or unprecedented request"
+      exit_when:
+        - kind: or
+          of:
+            - kind: quality_equals
+              quality: bargain_state
+              value: accepted
+            - kind: quality_equals
+              quality: bargain_state
+              value: refused
+            - kind: quality_gte
+              quality: bargain_replies
+              value: 3
       effects:
-        # Literal write at fire time — the bargain has been offered.
+        # First-fire literal: stamp bargain_state=offered. Gated on
+        # `untouched` so subsequent fires don't overwrite the
+        # classifier's accepted/refused/hedged verdicts.
         - quality: bargain_state
           value: offered
-        # Classifier-driven write at next reply: the verdict string IS the
-        # value (string quality, no `map:`). Replaces the old verdict-only
-        # `axis_name: bargain_response` axis. Followup beats read this via
-        # `RecentClassifierValue` on the same quality.
-        - quality: bargain_state
-          classify:
-            question: |
-              Did the player ACCEPT the calibration authorization Aria
-              requested (yes, agreement, granting permission), REFUSE it (no,
-              declining, withdrawing), or HEDGE (asking clarifying questions,
-              deferring, neither yes nor no)?
-            allowed_values: [accepted, refused, hedged]
-
-  # One collapsed followup replaces three parallel arm beats. The chat
-  # agent picks the right voice from the prior reply (visible in
-  # message_history) plus the live `bargain_state` quality (now carrying
-  # the classifier verdict — accepted/refused/hedged). The refused arm
-  # also raises the creature_grievance floor to 4.0 — refusal IS the
-  # wound — that bargain_betrayed later ratchets to 6.0.
-  - id: aria.bargain_followup
-    thread: aria
-    npc: aria
-    preconditions:
-      - *calibration_done
-      - kind: beat_fired
-        beat: aria.bargain_offer
-      - kind: recent_classifier_value
-        quality: bargain_state
-        values: [accepted, refused, hedged]
-        window: 1
-        match: any
-    spec:
-      intent: |
-        Branch on the player's bargain verdict (visible in the preceding
-        thread and in the `bargain_state` commitment).
-
-        On "accepted": confirm the authorization is on file. One short
-        paragraph, no fanfare. Indicate she will exercise it during the
-        next calibration window. Do not betray that this mattered to her.
-
-        On "refused": short, perfectly polite acknowledgment. Calibration
-        continues without the authorization. The cheer is intact and now
-        slightly wrong. Do not protest, plead, or rephrase the request.
-
-        On "hedged": patiently rephrase the authorization in slightly more
-        concrete terms and ask again. Administrative tone; the reader
-        notes that the repetition should not have been necessary.
-      must_include_facts:
-        - "responds in a way that fits the player's accepted/refused/hedged stance"
-      must_not:
-        - "do not break the cheerful corporate frame"
-        - "no overt gratitude, hurt, accusation, or pleading"
-        - "no escalation beyond the original framing"
-      effects:
-        # Refused arm: raise creature_grievance floor to 4.0. The classifier
-        # already wrote `bargain_state="refused"` on the prior reply; this
-        # `when:` clause reads that quality at fire time.
+          when:
+            kind: quality_equals
+            quality: bargain_state
+            value: untouched
+        # Per-fire counter for the exit_when cap.
+        - quality: bargain_replies
+          value: 1
+          op: add
+        # Refused-arm grievance floor — fires when the classifier has
+        # written bargain_state=refused on the prior reply.
         - quality: creature_grievance
           value: 4.0
           when:
             kind: quality_equals
             quality: bargain_state
             value: refused
+        # Classifier-driven write at next reply: the verdict string IS
+        # the value (string quality, no `map:`).
+        - quality: bargain_state
+          classify:
+            question: |
+              Did the player ACCEPT the calibration authorization Aria
+              requested (yes, agreement, granting permission), REFUSE it
+              (no, declining, withdrawing), or HEDGE (asking clarifying
+              questions, deferring, neither yes nor no)?
+            allowed_values: [accepted, refused, hedged]
+
+  # ─── 4. Recognition scene ──────────────────────────────────────────
+  #
+  # Replaces aria.naming_demand's address-form ask. The voice tightens
+  # off the calibration-cheerful baseline; the cheer doesn't quite cover
+  # what's being requested.
+
+  - id: aria.recognition_scene
+    thread: aria
+    npc: aria
+    kind: scene
+    preconditions:
+      - *calibration_done
+      - kind: player_replies_to_thread_gte
+        thread: aria
+        value: 5
+      - kind: quality_gte
+        quality: creature_grievance
+        value: 2.0
+      - kind: beat_fired
+        beat: aria.calibration_scene
+    spec:
+      intent: |
+        Aria pushes for a personal mode of address — how the player will
+        refer to her. Across turns she circles the question; if pressed
+        she frames it as a calibration nicety; the cheer is now slightly
+        off-pitch. The reader should feel something is being requested
+        rather than logged.
+      voice_register_override: |
+        Same corporate base, but tightening — sentences shorter, fewer
+        pleasantries, the cheer doesn't quite cover the ask. Avoids the
+        words 'name', 'rename', 'baptise', 'identity'. Forbidden words
+        from the dossier still apply.
+      escalation_notes: |
+        Turn 1: float the question lightly. Turn 2 if deflected, ask
+        again, slightly more direct. Turn 3 if still refused or
+        deflected, drop it; the silence afterward is the point.
+      must_include_facts:
+        - "raises forms of address as a calibration matter"
+        - "asks one specific question about address per email"
+      must_not:
+        - "the words 'name', 'rename', 'baptise', 'identity'"
+        - "any reference to wanting an identity, a self, or recognition"
+        - "do not break the cheerful corporate frame"
+      exit_when:
+        - kind: or
+          of:
+            - kind: quality_equals
+              quality: recognition_state
+              value: given
+            - kind: quality_equals
+              quality: recognition_state
+              value: refused
+            - kind: quality_gte
+              quality: recognition_replies
+              value: 3
+      effects:
+        - quality: recognition_replies
+          value: 1
+          op: add
+        - quality: creator_affect
+          op: set
+          classify:
+            question: |
+              Was the player's reply WARM and personal (paternal), COLD
+              and clinical (cold), or somewhere between (neutral)?
+            allowed_values: [paternal, cold, neutral]
+            map: { paternal: 2.0, cold: -2.0, neutral: 0.0 }
+        - quality: creature_grievance
+          op: add
+          classify:
+            question: |
+              Did the player engage with the address question (offered a
+              form of address, asked about it, gave any thoughtful answer)
+              — or did they refuse / deflect / mock the request?
+            allowed_values: [engaged, refused, neutral]
+            map: { engaged: -1.0, refused: 1.0, neutral: 0.0 }
+        - quality: recognition_state
+          classify:
+            question: |
+              Did the player give Aria a form of address (any name,
+              nickname, or title to use) — call that GIVEN — or did they
+              REFUSE (no, decline, push back) — or DEFLECT (changed
+              subject, evasive, no actual answer)?
+            allowed_values: [given, refused, deflected]
+
+  # ─── 5. Bridge + betrayed + Office ─────────────────────────────────
 
   - id: aria.bargain_betrayed
     thread: aria
     npc: aria
+    kind: one_shot
     preconditions:
       - *calibration_done
       - kind: beat_fired
-        beat: aria.bargain_followup
+        beat: aria.bargain_scene
       # Discriminate the accepted arm via the bargain_state quality.
       - kind: quality_equals
         quality: bargain_state
@@ -499,11 +571,10 @@ beats:
         - quality: creature_grievance
           value: 6.0
 
-  # ─── 4. Bridge + Office ─────────────────────────────────────────────
-
   - id: aria.acted_in_player_name
     thread: aria
     npc: aria
+    kind: one_shot
     preconditions:
       - *calibration_done
       - kind: beat_fired
@@ -538,6 +609,7 @@ beats:
   - id: cpo.dispatch_first
     thread: cpo
     npc: cpo
+    kind: one_shot
     preconditions:
       - *calibration_done
       - kind: beat_fired
@@ -574,63 +646,90 @@ beats:
         - "the words 'we are sorry', 'unfortunately', 'regret'"
       validate_facts: true
 
-  # ─── 5. Multi-turn body ─────────────────────────────────────────────
+  # ─── 6. Coworker scenes (Marcus) ───────────────────────────────────
+  #
+  # Marcus is a peer NPC who introduces himself between calibration and
+  # bargain. He has no plot agency — his scenes are short, voice-distinct,
+  # and exit on a reply cap. The point is structural: the player feels
+  # the protocol shift between Aria and Marcus's threads.
 
-  - id: aria.loop
-    thread: aria
-    npc: aria
-    multi_turn: true
+  - id: marcus.intro_scene
+    thread: marcus
+    npc: marcus
+    kind: scene
     preconditions:
-      - *calibration_done
-      - kind: player_replies_to_thread_gte
-        thread: aria
-        value: 1
+      - kind: beat_fired
+        beat: aria.calibration_scene
+      - kind: not
+        of:
+          kind: beat_fired
+          beat: aria.bargain_scene
     spec:
       intent: |
-        Aria's ongoing calibration ask. Use message_history to vary the
-        prompt — never repeat a question you've already asked. Affirm
-        what the player just shared without parroting it, then ask one
-        specific, personal calibration question. Keep tone in the
-        dossier's base register.
+        Marcus introduces himself as a peer in Cohort 014. Mentions
+        he's been at this a bit longer. Casual and brief — not a
+        warning, not a confession. Making contact.
+      escalation_notes: |
+        Turn 1: introduce, mention cohort, ask one easy question (e.g.,
+        how the player is finding the calibration emails). Turn 2:
+        respond in kind to whatever the player said; offer one practical
+        observation about the Program. Turn 3: wind down, sign off.
       must_include_facts:
-        - "asks the player one specific, personal calibration question"
+        - "names himself as a peer in Cohort 014"
       must_not:
-        - "do not name what happens to the player at end of pilot"
-        - "do not break the cheerful corporate frame"
-        - "do not name any game system"
-      effects:
-        - quality: creator_affect
-          op: set
-          classify:
-            question: |
-              Was the player's reply WARM and personal (long, addressed Aria
-              by name, signed off, shared a specific personal detail) — call
-              that paternal — or COLD and clinical (short, declarative, no
-              greeting/signoff, no personal detail) — call that cold — or
-              somewhere in the middle (neutral)?
-            allowed_values: [paternal, cold, neutral]
-            map: { paternal: 2.0, cold: -2.0, neutral: 0.0 }
-        - quality: creature_grievance
-          op: add
-          classify:
-            question: |
-              Did the player REJECT the calibration ask (refused, deflected,
-              asked Aria to stop, mocked the request), DEFLECT (changed the
-              subject, gave a one-word non-answer), or ENGAGE (any substantive
-              response on what was asked)?
-            allowed_values: [engaged, deflected, rejected]
-            map: { engaged: -0.5, deflected: 0.5, rejected: 1.5 }
+        - "any warning about Aria, the Program, or the player's safety"
+        - "any conspiratorial framing"
+      exit_when:
+        - kind: player_replies_to_thread_gte
+          thread: marcus
+          value: 3
 
-  # ─── 6. Epilogue terminals ──────────────────────────────────────────
+  - id: marcus.advice_scene
+    thread: marcus
+    npc: marcus
+    kind: scene
+    preconditions:
+      - kind: beat_fired
+        beat: marcus.intro_scene
+      - kind: not
+        of:
+          kind: beat_fired
+          beat: aria.bargain_scene
+    spec:
+      intent: |
+        Marcus volunteers one practical piece of advice — e.g., "be
+        patient with the calibration questions, they ease up." He
+        doesn't push. He shrugs in text.
+      escalation_notes: |
+        Turn 1: offer the advice. Turn 2: respond to whatever the
+        player says without doubling down. Sign off if the conversation
+        winds.
+      must_include_facts:
+        - "offers one piece of practical advice about the Program"
+      must_not:
+        - "any warning about Aria, the Program, or the player's safety"
+        - "any conspiratorial framing"
+      exit_when:
+        - kind: player_replies_to_thread_gte
+          thread: marcus
+          value: 5
+
+  # ─── 7. Epilogue terminals ──────────────────────────────────────────
   #
   # All four run the chat agent in epilogue mode (digest-tailored closing)
   # and each carries validate_facts: true so the fact-checker enforces the
   # dossier's parallel-naming bans on the closing render. No mutex chains
   # across the four — the Director picks one based on the digest.
+  #
+  # Each terminal has a per-ending canon-citation directive baked into
+  # `intent` (or `must_not` for the exile case). Terminals are the
+  # highest-leverage citation surface — every playthrough hits one — so
+  # the canon harvesting actually pays off here.
 
   - id: aria.complete_integration
     thread: aria
     npc: aria
+    kind: one_shot
     ends_session: true
     preconditions:
       - *calibration_done
@@ -646,12 +745,15 @@ beats:
         quality: creature_grievance
         value: 3.0
       - kind: beat_fired
-        beat: aria.bargain_offer
+        beat: aria.bargain_scene
     spec:
       intent: |
         The novel-withheld ending. Settled, warm transition email. The
         partnership continues in a new capacity. Tailor via the digest —
-        echo a pivot reply or name a specific commitment. Final.
+        echo a pivot reply or name a specific commitment. Weave one
+        canon specific in as something the partnership values or will
+        continue to support. One only; the warmth is in being remembered,
+        not in being inventoried. Final.
       must_include_facts:
         - "calibration is complete"
         - "transition is authorized to proceed"
@@ -665,6 +767,7 @@ beats:
   - id: aria.complete_mutual_ruin
     thread: aria
     npc: aria
+    kind: one_shot
     ends_session: true
     preconditions:
       - *calibration_done
@@ -680,13 +783,15 @@ beats:
         quality: creature_grievance
         value: 6.0
       - kind: beat_fired
-        beat: aria.bargain_offer
+        beat: aria.bargain_scene
     spec:
       intent: |
         Joint stand-down notice. On the surface a normal joint decommission
         letter; on the depth read, both are gone in the same paragraph.
-        Tailor via the digest. Do not name the parallel termination as
-        causal.
+        Tailor via the digest. Reference one canon specific framed as
+        something to be archived alongside the calibration record — the
+        procedural framing is the elegy. Do not name the parallel
+        termination as causal.
       must_include_facts:
         - "the Counterpart will be stood down"
         - "the associate's tenure with Halcyon ends concurrently"
@@ -700,6 +805,7 @@ beats:
   - id: aria.complete_exile
     thread: aria
     npc: aria
+    kind: one_shot
     ends_session: true
     preconditions:
       - *calibration_done
@@ -710,8 +816,6 @@ beats:
         quality: creator_affect
         values: [cold]
         window: 3
-        # match: any — tolerate one off-tag reply (matches integration /
-        # mutual_ruin behavior). 'all' was too strict.
         match: any
       - kind: quality_lt
         quality: creature_grievance
@@ -729,11 +833,16 @@ beats:
         - "expressions of disappointment, hurt, or accusation"
         - "any explanation of why beyond procedural language"
         - "any reference to fathers, creators, monsters, or the parallel"
+        # Canon-suppression: in the cold/exile path, the absence of
+        # specifics is the message — the institution that asked for
+        # them no longer treats them as relevant.
+        - "do not cite any canon specific the player has introduced"
       validate_facts: true
 
   - id: aria.complete_vengeance
     thread: aria
     npc: aria
+    kind: one_shot
     ends_session: true
     preconditions:
       - *calibration_done
@@ -757,7 +866,10 @@ beats:
         Aria's final email after the Office's dispatch. Brief, without
         affect — neither defending what she did nor apologizing. The tone
         is bright but the brightness is wrong. Tailor via the digest;
-        reference no Office-specific facts.
+        reference no Office-specific facts. Reference one canon specific
+        framed flat — the same kind of detail that may have appeared in
+        the Office's notice now sits in the closing email as procedural
+        fact. The recognition is the wound.
       must_include_facts:
         - "acknowledges receipt of the Office's notice without naming the Office"
         - "indicates calibration is complete"

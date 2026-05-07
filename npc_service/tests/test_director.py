@@ -1,18 +1,16 @@
-"""Unit-test coverage for `_select_beat` — the Director-vs-loop seam.
+"""Unit-test coverage for `_select_beat` — the Director / scene-continuity
+seam.
 
-CLAUDE.md flags `aria.loop` as load-bearing: it's eligible from reply 1
-onward forever (no `completes_when`), so the Director agent is the ONLY
-mechanism keeping it from monopolizing once a fire-once plot beat also
-becomes due. The smoke fixture in `test_app.py` stubs `_select_beat`
-to "first eligible" for determinism — meaning the live Director-vs-loop
-selection logic is otherwise exercised only under `make integration`
-(live llama). These tests close that gap by exercising `_select_beat`
-directly with a stubbed Director run, asserting:
+These tests exercise `_select_beat` directly with stubbed Director runs:
 
-1. When ≥2 beats are due, the Director is called with the full eligible
-   list reflected in the dynamic Pydantic output-type Literal.
+1. When ≥2 beats are due (and no scene-continuity short-circuit fires),
+   the Director is called with the full eligible list reflected in the
+   dynamic Pydantic output-type Literal.
 2. When exactly 1 beat is due, the Director is NOT called (the 0/1
    short-circuits in `_select_beat` keep cost down).
+3. When the player's reply lands on a thread where a scene with prior
+   fires is still eligible, `_select_beat` short-circuits to "continue"
+   without consulting the Director.
 
 We test against the production scenario.yaml because the Director's
 prompt summarises beat intents — the synthetic spine fixture has
@@ -32,6 +30,7 @@ from npc_service.agents import build_agents
 from npc_service.models import (
     AxisResult,
     CanonCategory,
+    Email,
     InboxState,
     PlayerCanonEntry,
     Reply,
@@ -65,54 +64,46 @@ def _seed_canon_name(state: InboxState, name: str = "Marcus") -> None:
 
 
 @pytest.fixture
-def state_with_loop_and_bargain_due(production_scenario: Scenario) -> InboxState:
-    """Engineer state where `aria.loop` AND `aria.bargain_offer` are both
-    eligible on the same tick.
+def state_with_two_eligible_scenes(production_scenario: Scenario) -> InboxState:
+    """Engineer state where `aria.bargain_scene` AND `aria.recognition_scene`
+    are both eligible on the same tick.
 
-    aria.bargain_offer requires: `*calibration_done`,
-    `player_replies_to_thread_gte: aria, 4`, AND `creature_grievance >= 1.5`.
-    aria.loop only requires `*calibration_done` AND replies>=1. With 4
-    replies + canon name + grievance 2.0, both gates pass.
+    bargain_scene requires: calibration_done, replies(aria)>=4.
+    recognition_scene requires: replies(aria)>=5, creature_grievance>=2.0,
+    BeatFired(aria.calibration_scene). With replies=5 + canon name +
+    grievance 2.0 + calibration_scene marked fired, both gates pass.
     """
     state = InboxState.from_scenario(production_scenario)
-    # Drain boot — fires aria.welcome, no-ops the rest.
+    # Drain boot — fires aria.welcome.
     for beat in find_due_beats(state, production_scenario)[0]:
         state.fired_beat_ids.add(beat.id)
     _seed_canon_name(state)
+    # Mark the calibration scene completed so the recognition scene's
+    # BeatFired(aria.calibration_scene) precondition passes.
+    state.fired_beat_ids.add("aria.calibration_scene")
     state.replies.extend(
         Reply(
             id=f"r{i}", thread_id="aria", beat_responded_to=None,
             recipient="Aria", body="(t)",
         )
-        for i in range(4)
+        for i in range(5)
     )
     state.qualities["creature_grievance"] = 2.0
     return state
 
 
 @pytest.fixture
-def state_with_only_loop_due(production_scenario: Scenario) -> InboxState:
-    """3 replies + canon name set so calibration_done is satisfied,
-    no grievance: only aria.loop is eligible. With this setup:
-      - aria.calibration:     Not_(*calibration_done) → blocked (canon set).
-      - aria.early_emergence: gated by `Not(replies>=3)` → blocked.
-      - aria.naming_demand:   needs replies>=3 (✓) AND grievance>=2.0 (fails).
-      - aria.bargain_offer:   needs replies>=4 (fails).
-      - aria.loop:            *calibration_done (✓) AND replies>=1 (✓) → only eligible beat.
-    """
+def state_with_only_calibration_due(production_scenario: Scenario) -> InboxState:
+    """1 reply, no canon name → only aria.calibration_scene is eligible.
+    With this setup the bargain / recognition scenes (post-calibration)
+    haven't unlocked yet."""
     state = InboxState.from_scenario(production_scenario)
     for beat in find_due_beats(state, production_scenario)[0]:
         state.fired_beat_ids.add(beat.id)
-    _seed_canon_name(state)
-    state.replies.extend(
-        Reply(
-            id=f"r{i}", thread_id="aria", beat_responded_to=None,
-            recipient="Aria", body="(t)",
-        )
-        for i in range(3)
-    )
-    # Grievance default 0.0 — naming_demand and bargain_offer's grievance
-    # gates fail.
+    state.replies.append(Reply(
+        id="r0", thread_id="aria", beat_responded_to=None,
+        recipient="Aria", body="(t)",
+    ))
     return state
 
 
@@ -128,20 +119,24 @@ def _swap_globals(monkeypatch, scenario: Scenario, state: InboxState):
 
 
 @pytest.mark.asyncio
-async def test_director_receives_both_ids_when_loop_and_plot_beat_eligible(
-    production_scenario, state_with_loop_and_bargain_due, monkeypatch,
+async def test_director_receives_both_ids_when_two_scenes_eligible(
+    production_scenario, state_with_two_eligible_scenes, monkeypatch,
 ):
-    """Both `aria.loop` and `aria.bargain_offer` are due → `_select_beat`
-    builds the dynamic output type with both ids in its closed Literal,
-    invokes the Director, and honors its choice."""
+    """Both `aria.bargain_scene` and `aria.recognition_scene` are due →
+    `_select_beat` builds the dynamic output type with both ids in its
+    closed Literal, invokes the Director, and honors its choice. We pass
+    `reply_thread_id=None` so the scene-continuity short-circuit doesn't
+    fire (it would otherwise pre-empt the Director when there's a prior
+    fire on a same-thread scene).
+    """
     agents = _swap_globals(
-        monkeypatch, production_scenario, state_with_loop_and_bargain_due,
+        monkeypatch, production_scenario, state_with_two_eligible_scenes,
     )
 
     captured: dict = {}
 
     class _FakeOutput:
-        chosen_beat_id = "aria.bargain_offer"
+        chosen_beat_id = "aria.bargain_scene"
         rationale = "advance the arc"
 
     class _FakeResult:
@@ -155,19 +150,21 @@ async def test_director_receives_both_ids_when_loop_and_plot_beat_eligible(
     monkeypatch.setattr(agents.director_agent, "run", _stub_run)
 
     eligible, _report = find_due_beats(
-        state_with_loop_and_bargain_due, production_scenario,
+        state_with_two_eligible_scenes, production_scenario,
     )
     eligible_ids = {b.id for b in eligible}
     # Sanity: both contested ids are actually in the due list.
-    assert "aria.loop" in eligible_ids
-    assert "aria.bargain_offer" in eligible_ids
+    assert "aria.bargain_scene" in eligible_ids
+    assert "aria.recognition_scene" in eligible_ids
     assert len(eligible) >= 2  # confirms we hit the Director branch
 
-    chosen, selection, rationale = await main._select_beat(eligible)
+    chosen, selection, rationale = await main._select_beat(
+        eligible, reply_thread_id=None,
+    )
 
     assert selection == "director"
     assert chosen is not None
-    assert chosen.id == "aria.bargain_offer"
+    assert chosen.id == "aria.bargain_scene"
     assert rationale == "advance the arc"
 
     # The dynamic Pydantic output_type's chosen_beat_id Literal must offer
@@ -185,12 +182,12 @@ async def test_director_receives_both_ids_when_loop_and_plot_beat_eligible(
 
 @pytest.mark.asyncio
 async def test_director_shortcircuits_when_only_one_beat_due(
-    production_scenario, state_with_only_loop_due, monkeypatch,
+    production_scenario, state_with_only_calibration_due, monkeypatch,
 ):
     """One eligible beat → `_select_beat` returns it as `selection="sole"`
     without calling the Director. Tests the cost-saving short-circuit."""
     agents = _swap_globals(
-        monkeypatch, production_scenario, state_with_only_loop_due,
+        monkeypatch, production_scenario, state_with_only_calibration_due,
     )
 
     call_count = {"n": 0}
@@ -202,7 +199,7 @@ async def test_director_shortcircuits_when_only_one_beat_due(
     monkeypatch.setattr(agents.director_agent, "run", _boom)
 
     eligible, _report = find_due_beats(
-        state_with_only_loop_due, production_scenario,
+        state_with_only_calibration_due, production_scenario,
     )
     assert len(eligible) == 1, (
         f"fixture should make exactly one beat eligible; got "
@@ -213,20 +210,20 @@ async def test_director_shortcircuits_when_only_one_beat_due(
 
     assert selection == "sole"
     assert chosen is not None
-    assert chosen.id == "aria.loop"
+    assert chosen.id == "aria.calibration_scene"
     assert rationale is None
     assert call_count["n"] == 0
 
 
 @pytest.mark.asyncio
 async def test_director_none_means_skip_tick(
-    production_scenario, state_with_loop_and_bargain_due, monkeypatch,
+    production_scenario, state_with_two_eligible_scenes, monkeypatch,
 ):
     """Director may return `chosen_beat_id="none"` to skip the tick — the
     contract that lets the Director punt when no eligible beat fits the
     moment."""
     agents = _swap_globals(
-        monkeypatch, production_scenario, state_with_loop_and_bargain_due,
+        monkeypatch, production_scenario, state_with_two_eligible_scenes,
     )
 
     class _FakeOutput:
@@ -242,10 +239,65 @@ async def test_director_none_means_skip_tick(
     monkeypatch.setattr(agents.director_agent, "run", _stub_run)
 
     eligible, _ = find_due_beats(
-        state_with_loop_and_bargain_due, production_scenario,
+        state_with_two_eligible_scenes, production_scenario,
     )
-    chosen, selection, rationale = await main._select_beat(eligible)
+    chosen, selection, rationale = await main._select_beat(
+        eligible, reply_thread_id=None,
+    )
 
     assert chosen is None
     assert selection == "none"
     assert rationale == "no beat fits the moment"
+
+
+@pytest.mark.asyncio
+async def test_select_beat_continues_active_scene_skips_director(
+    production_scenario, state_with_two_eligible_scenes, monkeypatch,
+):
+    """The new scene-continuity short-circuit: when the player replies on
+    a thread where one of the eligible beats is a scene that has already
+    fired at least once, `_select_beat` returns it with selection="continue"
+    WITHOUT consulting the Director.
+    """
+    state = state_with_two_eligible_scenes
+    # Simulate one prior fire of bargain_scene by appending an Email with
+    # its beat_id. (Engine bookkeeping that `_fire_beat` would have done.)
+    state.emails.append(Email(
+        id="email_prior",
+        beat_id="aria.bargain_scene",
+        thread_id="aria",
+        folder="Inbox",
+        sender="Aria",
+        recipient="player@x",
+        body="(prior bargain fire)",
+        sent_at_label="just now",
+    ))
+
+    agents = _swap_globals(monkeypatch, production_scenario, state)
+
+    call_count = {"n": 0}
+
+    async def _boom(*args, **kwargs):
+        call_count["n"] += 1
+        raise AssertionError(
+            "Director was called despite scene-continuity short-circuit"
+        )
+
+    monkeypatch.setattr(agents.director_agent, "run", _boom)
+
+    eligible, _ = find_due_beats(state, production_scenario)
+    eligible_ids = {b.id for b in eligible}
+    assert "aria.bargain_scene" in eligible_ids
+    # Confirm we're hitting a multi-eligible case (otherwise it's just
+    # the "sole" path, which already works).
+    assert len(eligible) >= 2
+
+    chosen, selection, rationale = await main._select_beat(
+        eligible, reply_thread_id="aria",
+    )
+
+    assert selection == "continue"
+    assert chosen is not None
+    assert chosen.id == "aria.bargain_scene"
+    assert rationale is None
+    assert call_count["n"] == 0

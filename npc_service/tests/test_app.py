@@ -1,7 +1,7 @@
 """FastAPI smoke tests with Pydantic AI's TestModel — no llama-server, no
 real LLM. Verifies wiring: lifespan boots, the welcome anchored beat lands,
 /open is read-only, /send rejects empty bodies and runs the classifier on
-beats that author classify_reply, the multi-turn loop re-fires across sends,
+beats that author classify_reply, the scene loop re-fires across sends,
 engagement accumulates, and ends_session terminals flip state.ended.
 """
 import json
@@ -55,10 +55,12 @@ def client(monkeypatch):
     monkeypatch.setenv("LAUNCH_LLAMA", "false")
     monkeypatch.setattr(main, "EXTERNAL_LLAMA_PROBE_TIMEOUT_SECONDS", 0.1)
 
-    async def _first_eligible(due):
+    async def _first_eligible(due, *, reply_thread_id=None):
         # Mirrors the production `_select_beat` 3-tuple return shape:
         # (chosen, selection-method, rationale). Selection is "sole" since
-        # we deterministically pick the first due — bypasses the Director.
+        # we deterministically pick the first due — bypasses the Director
+        # AND the scene-continuity short-circuit (we want first-eligible
+        # for fixture determinism regardless of thread state).
         if not due:
             return None, "none", None
         return due[0], "sole", None
@@ -224,7 +226,7 @@ def test_first_send_fires_loop(client):
         if e["email"]["beat_id"] == "aria.loop"
     ]
     assert len(loop_emails) == 1
-    # Multi-turn beat: never enters fired_beat_ids on its own.
+    # Scene beat: doesn't enter fired_beat_ids until exit_when satisfied.
     assert "aria.loop" not in main.STATE.fired_beat_ids
     # Welcome has no classify_reply → no quality moved.
     assert main.STATE.qualities["engagement"] == 0.0
@@ -236,7 +238,7 @@ def test_send_emits_tick_decision_event(client):
     after `new_email` and before `state` + `done`. Frontend's debug panel
     consumes it; backend always emits regardless of client. Shape mirrors
     the `TickDecision` Pydantic model — eligibility report, selection
-    method, fired beat id, multi-turn turn count."""
+    method, fired beat id, scene turn count."""
     welcome = client.get("/inbox").json()["folders"]["Inbox"][0]
     events = list(consume_sse(client.stream("POST", "/send", json={
         "in_reply_to": welcome["id"],
@@ -254,11 +256,11 @@ def test_send_emits_tick_decision_event(client):
     ):
         assert field in decision
 
-    # First send fired aria.loop (multi-turn, turn 1) under the test
+    # First send fired aria.loop (scene, turn 1) under the test
     # harness's first-eligible Director stub.
     assert decision["fired_beat_id"] == "aria.loop"
     assert decision["chosen_beat_id"] == "aria.loop"
-    assert decision["multi_turn_turn"] == 1
+    assert decision["scene_turn"] == 1
     assert decision["selection"] == "sole"
 
     # Eligibility report includes aria.loop as eligible.
@@ -272,10 +274,11 @@ def test_send_emits_tick_decision_event(client):
     assert types.index("state") < types.index("done")
 
 
-def test_loop_re_fires_across_sends(client):
-    """Two /sends to Aria. The loop is multi_turn=True, so it re-fires every
-    tick. thread_messages accumulates: welcome (ModelResponse) + two
-    (ModelRequest, ModelResponse) pairs = 5 entries."""
+def test_loop_scene_re_fires_across_sends(client):
+    """Two /sends to Aria. The loop is kind=scene, so it re-fires every
+    tick until exit_when promotes it. thread_messages accumulates:
+    welcome (ModelResponse) + two (ModelRequest, ModelResponse) pairs =
+    5 entries."""
     welcome = client.get("/inbox").json()["folders"]["Inbox"][0]
     list(consume_sse(client.stream("POST", "/send", json={
         "in_reply_to": welcome["id"], "recipient": "Aria", "body": "hello there",
@@ -689,8 +692,8 @@ def test_send_emits_canon_and_classifier_history_on_decision(client):
     assert decision["canon_writes"] == []
     assert decision["canon_drops"] == []
     # Boot-tick fires aria.welcome (pre-authored); first /send fires
-    # aria.loop. Both should now be in the snapshot — welcome enters
-    # fired_beat_ids, loop is multi-turn so it does NOT.
+    # aria.loop. The welcome enters fired_beat_ids; the loop (kind=scene)
+    # does NOT until its exit_when is satisfied.
     assert "aria.welcome" in decision["fired_beat_ids"]
 
 

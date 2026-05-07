@@ -2,7 +2,7 @@ title: "Test Scenario"
 premise: |
   Synthesised scenario used by test_app.py and test_history_compaction.py.
   Same shape as the old Continuity Program pilot — engagement quality,
-  pre-authored welcome, multi-turn loop with one classifier axis, two
+  pre-authored welcome, a calibration scene with one classifier axis, two
   mutex-chained terminals. Decoupled from the production scenario so
   app-wiring tests stay focused on engine plumbing rather than story
   content.
@@ -49,6 +49,7 @@ beats:
   - id: aria.welcome
     thread: aria
     npc: aria
+    kind: one_shot
     spec:
       pre_authored_prose: |
         Welcome to the Continuity Program.
@@ -60,6 +61,7 @@ beats:
   - id: aria.complete_warm
     thread: aria
     npc: aria
+    kind: one_shot
     ends_session: true
     preconditions:
       - kind: quality_gte
@@ -81,6 +83,7 @@ beats:
   - id: aria.complete_standard
     thread: aria
     npc: aria
+    kind: one_shot
     ends_session: true
     preconditions:
       - kind: player_replies_to_thread_gte
@@ -102,7 +105,7 @@ beats:
   - id: aria.loop
     thread: aria
     npc: aria
-    multi_turn: true
+    kind: scene
     preconditions:
       - kind: player_replies_to_thread_gte
         thread: aria
@@ -123,6 +126,19 @@ beats:
         - "asks the player one specific, personal calibration question"
       must_not:
         - "do not name what happens to the player at end of pilot"
+      # The scene's exit condition: engagement reaches the warm threshold
+      # (its successor terminal will then take over) OR the player replies
+      # past the cap. The terminal mutexes still gate the loop's *firing*;
+      # exit_when is what eventually puts it in fired_beat_ids.
+      exit_when:
+        - kind: or
+          of:
+            - kind: quality_gte
+              quality: engagement
+              value: 4.0
+            - kind: player_replies_to_thread_gte
+              thread: aria
+              value: 8
       effects:
         - quality: engagement
           op: add

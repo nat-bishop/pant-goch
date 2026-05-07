@@ -81,6 +81,7 @@ from .spine import (
     apply_literal_effects,
     evaluate_predicate,
     find_due_beats,
+    scene_exit_satisfied,
 )
 
 
@@ -278,12 +279,12 @@ async def _fire_beat(
 ) -> tuple[Email | None, list[QualityDelta], int | None, FactCheckTrace | None]:
     """Fire a beat and produce its email plus tick-decision side info.
 
-    Returns `(email, write_deltas, multi_turn_turn, fact_check)`:
+    Returns `(email, write_deltas, scene_turn, fact_check)`:
       - `email`: the rendered email, or None on silent-complete.
       - `write_deltas`: any quality changes from literal effects (empty if
         the beat has none, or if writes were no-ops).
-      - `multi_turn_turn`: 1-indexed fire count for multi-turn beats
-        (computed after the email is appended), None for fire-once beats.
+      - `scene_turn`: 1-indexed fire count for scene beats (computed
+        after the email is appended), None for one-shots.
       - `fact_check`: per-attempt validator trace; None unless the beat
         had `validate_facts: true` AND wasn't pre-authored.
 
@@ -296,12 +297,18 @@ async def _fire_beat(
       additionally inject the per-run epilogue digest into ChatDeps.
       Caller must pass player_body for chat-driven beats — they're
       triggered by /send ticks where a body always exists.
+
+    Scene-vs-one_shot post-fire bookkeeping:
+    - one_shot → enters `fired_beat_ids` immediately (fire-once contract).
+    - scene → enters `fired_beat_ids` only when `scene_exit_satisfied`
+      passes after this fire's literal effects + email append. Otherwise
+      it stays pending and may continue firing on subsequent ticks.
     """
     assert STATE is not None and SCENARIO is not None and AGENTS is not None
     if beat.id in STATE.fired_beat_ids:
         return None, [], None, None
 
-    # Literal effects apply BEFORE rendering so multi-turn re-fires record
+    # Literal effects apply BEFORE rendering so scene re-fires record
     # the new value even if rendering fails. `apply_literal_effects` logs
     # each before→after change and returns the resulting deltas (no-op
     # writes are filtered). Classify-driven effects on this beat schedule
@@ -316,7 +323,7 @@ async def _fire_beat(
     # Adding a `fire_beat` layer here only deepened the trace tree without
     # filtering value. `beat_id` is threaded onto `render_chat` via `beat=`,
     # so the chat-driven fire is still searchable by beat id.
-    is_multi = beat.multi_turn
+    is_scene = beat.kind == "scene"
     email: Email | None
     fact_check: FactCheckTrace | None = None
     if beat.spec.pre_authored_prose is not None:
@@ -340,13 +347,10 @@ async def _fire_beat(
         assert player_body is not None, (
             "chat-driven beats require a player body — they trigger only on /send ticks"
         )
-        if is_multi:
-            # 1-indexed turn count: prior fires + this one. Counted before
-            # the new email is appended so the log reads "turn 1" on the
-            # first fire (when no prior loop emails exist).
-            prior_fires = sum(1 for e in STATE.emails if e.beat_id == beat.id)
+        prior_fires = _count_beat_email_fires(beat.id) if is_scene else 0
+        if is_scene:
             logfire.info(
-                "continue multi-turn beat {beat_id} (turn {turn})",
+                "continue scene {beat_id} (turn {turn})",
                 beat_id=beat.id, turn=prior_fires + 1,
             )
         else:
@@ -375,20 +379,24 @@ async def _fire_beat(
             # an attempts=[] payload that's semantically misleading.
             fact_check = FactCheckTrace(attempts=fact_check_log) if fact_check_log else None
 
-    multi_turn_turn: int | None = None
     STATE.emails.append(email)
     if beat.ends_session:
         STATE.ended = True
         STATE.end_reason = beat.id
-    if is_multi:
-        multi_turn_turn = sum(1 for e in STATE.emails if e.beat_id == beat.id)
+    scene_turn: int | None = prior_fires + 1 if is_scene else None
 
-    # multi_turn beats never enter fired_beat_ids; they stop firing
-    # only when preconditions stop holding (typical pattern: mutex via
-    # Not_(BeatFired …) against terminals that supersede them).
-    if not is_multi:
+    # one_shot: enters fired_beat_ids immediately. scene: enters
+    # fired_beat_ids only when its exit_when predicates all pass after
+    # this fire — otherwise it stays pending for next tick.
+    if not is_scene:
         STATE.fired_beat_ids.add(beat.id)
-    return email, write_deltas, multi_turn_turn, fact_check
+    elif scene_exit_satisfied(beat, STATE):
+        STATE.fired_beat_ids.add(beat.id)
+        logfire.info(
+            "scene completed {beat_id} on turn {turn}",
+            beat_id=beat.id, turn=scene_turn,
+        )
+    return email, write_deltas, scene_turn, fact_check
 
 
 def _seed_thread_history(thread_id: str, body: str) -> None:
@@ -598,6 +606,17 @@ def _build_epilogue_digest() -> str:
     )
 
 
+def _count_beat_email_fires(beat_id: str) -> int:
+    """How many times this beat has rendered an email so far. Used by
+    `_fire_beat` for the scene_turn count and by `_select_beat`'s
+    scene-continuity short-circuit (any prior fire → continue). Walks
+    `STATE.emails` directly because scenes don't enter `fired_beat_ids`
+    until exit_when fires, so the set lookup is incomplete for in-flight
+    scenes."""
+    assert STATE is not None
+    return sum(1 for e in STATE.emails if e.beat_id == beat_id)
+
+
 def _fired_beat_ids_in_order(*, last: int | None = None) -> list[str]:
     """Fired-beat ids in emit order — read off Email.beat_id where set,
     since state.fired_beat_ids is a set with no order guarantee. `last`
@@ -615,22 +634,51 @@ def _fired_beat_ids_in_order(*, last: int | None = None) -> list[str]:
 
 async def _select_beat(
     due: list[Beat],
+    *,
+    reply_thread_id: str | None = None,
 ) -> tuple[Beat | None, str, str | None]:
     """Pick one beat from the due list and report (beat, method, rationale).
 
     Method is one of:
       - "none"     — no beats due, or Director chose "none"
       - "sole"     — exactly one beat due, auto-selected without an LLM call
-      - "director" — ≥2 due, the Director made the call (rationale carries
+      - "continue" — the player replied on a thread where a scene beat with
+                     a prior fire is still eligible. The same scene
+                     continues, no Director call. Saves one LLM round-trip
+                     per scene-continuation tick AND prevents the Director
+                     from interrupting a scene mid-flow.
+      - "director" — ≥2 due (and no scene-continuity short-circuit fired),
+                     the Director made the call (rationale carries
                      its one-sentence justification)
 
-    The rationale is None for "none" and "sole" cases. The tuple shape is
-    consumed by `_tick` to populate the per-tick `TickDecision` payload.
+    The rationale is None for "none", "sole", and "continue" cases. The
+    tuple shape is consumed by `_tick` to populate the per-tick
+    `TickDecision` payload.
     """
     assert STATE is not None and AGENTS is not None
     if not due:
         logfire.info("no beats eligible this tick")
         return None, "none", None
+
+    # Scene continuity: if the player replied on a thread where a scene
+    # is already in motion, keep firing it without consulting the
+    # Director. "In motion" = same-thread + kind=scene + at least one
+    # prior fire. Multiple matching scenes on one thread (rare —
+    # usually an authoring smell) fall through to the normal selector.
+    if reply_thread_id is not None:
+        scene_matches = [
+            b for b in due
+            if b.kind == "scene"
+            and b.thread == reply_thread_id
+            and _count_beat_email_fires(b.id) > 0
+        ]
+        if len(scene_matches) == 1:
+            logfire.info(
+                "scene-continuity: continuing {beat_id} on {thread}",
+                beat_id=scene_matches[0].id, thread=reply_thread_id,
+            )
+            return scene_matches[0], "continue", None
+
     if len(due) == 1:
         logfire.info(
             "single beat eligible — auto-selected {beat_id}",
@@ -701,7 +749,7 @@ def _intent_summary_for(beat: Beat) -> str:
     first_line = beat.spec.intent.strip().splitlines()[0] if beat.spec.intent.strip() else "(no intent)"
     if len(first_line) > 200:
         first_line = first_line[:197] + "..."
-    suffix = " [TERMINAL]" if beat.ends_session else (" [multi-turn]" if beat.multi_turn else "")
+    suffix = " [TERMINAL]" if beat.ends_session else (" [SCENE]" if beat.kind == "scene" else "")
     return f"{first_line}{suffix}"
 
 
@@ -709,6 +757,7 @@ async def _tick(
     *,
     player_body: str | None = None,
     in_response_to: str | None = None,
+    reply_thread_id: str | None = None,
     classifier_deltas: list[QualityDelta] | None = None,
     canon_writes: list[CanonCandidate] | None = None,
     canon_drops: list[CanonDropRecord] | None = None,
@@ -748,10 +797,12 @@ async def _tick(
                     beat_id=be.beat_id, reason=be.blocked_by,
                 )
 
-        chosen, selection, rationale = await _select_beat(eligible)
+        chosen, selection, rationale = await _select_beat(
+            eligible, reply_thread_id=reply_thread_id,
+        )
         chosen_beat_id = chosen.id if chosen is not None else None
         fired_beat_id: str | None = None
-        multi_turn_turn: int | None = None
+        scene_turn: int | None = None
         fact_check: FactCheckTrace | None = None
         if chosen is not None:
             e, write_deltas, turn, trace = await _fire_beat(
@@ -763,7 +814,7 @@ async def _tick(
             if e is not None:
                 new_emails.append(e)
                 fired_beat_id = chosen.id
-                multi_turn_turn = turn
+                scene_turn = turn
                 fact_check = trace
                 # Only chat-driven (non-pre-authored) fires count as covering
                 # the thread for the chat-turn fallback purposes.
@@ -778,7 +829,7 @@ async def _tick(
             chosen_rationale=rationale,
             quality_deltas=quality_deltas,
             fired_beat_id=fired_beat_id,
-            multi_turn_turn=multi_turn_turn,
+            scene_turn=scene_turn,
             canon_writes=list(canon_writes or []),
             canon_drops=list(canon_drops or []),
             player_canon={
@@ -1003,7 +1054,7 @@ def _beat_meta(beat: Beat) -> dict:
         "id": beat.id,
         "npc": beat.npc,
         "thread": beat.thread,
-        "multi_turn": beat.multi_turn,
+        "is_scene": beat.kind == "scene",
         "ends_session": beat.ends_session,
         "pre_authored": beat.spec.pre_authored_prose is not None,
         "validate_facts": beat.spec.validate_facts,
@@ -1240,15 +1291,17 @@ async def _send_stream(req: SendRequest) -> AsyncIterator[bytes]:
                 new_emails, plot_fired_threads, decision = await _tick(
                     player_body=body,
                     in_response_to=send_email.id,
+                    reply_thread_id=thread_id,
                     classifier_deltas=classifier_deltas,
                     canon_writes=canon_writes,
                     canon_drops=canon_drops,
                 )
 
                 # Chat-turn fallback fires when no chat-driven beat covered
-                # this thread. In the steady state aria.loop is multi-turn
-                # and fires on every tick after the welcome reply, so this
-                # branch only matters for threads without a covering loop beat.
+                # this thread. With scene-as-primitive, scenes that match
+                # the player's reply thread short-circuit the Director and
+                # fire here; this branch only matters for threads without
+                # a covering scene OR plot beat this tick.
                 if (
                     recipient_npc is not None
                     and thread_id is not None

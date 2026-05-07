@@ -36,30 +36,29 @@ def state(scenario: Scenario) -> InboxState:
 
 def test_loads(scenario: Scenario):
     assert scenario.title.startswith("Continuity Program")
-    assert {n.id for n in scenario.npcs} == {"aria", "cpo"}
-    assert {t.id for t in scenario.threads} == {"aria", "cpo"}
-    assert {q.id for q in scenario.qualities} == {
+    assert {n.id for n in scenario.npcs} == {"aria", "cpo", "marcus"}
+    assert {t.id for t in scenario.threads} == {"aria", "cpo", "marcus"}
+    assert {q.id for q in scenario.qualities} >= {
         "creator_affect",
         "creature_grievance",
         "bargain_state",
         "aria_acted_in_player_name",
     }
-    assert {b.id for b in scenario.beats} == {
+    expected_aria_beats = {
         "aria.welcome",
-        "aria.calibration",
-        "aria.early_emergence",
-        "aria.naming_demand",
-        "aria.bargain_offer",
-        "aria.bargain_followup",
-        "aria.bargain_betrayed",
+        "aria.calibration_scene",
+        "aria.bargain_scene",
+        "aria.recognition_scene",
         "aria.acted_in_player_name",
-        "cpo.dispatch_first",
-        "aria.loop",
         "aria.complete_integration",
         "aria.complete_mutual_ruin",
         "aria.complete_exile",
         "aria.complete_vengeance",
     }
+    assert expected_aria_beats <= {b.id for b in scenario.beats}
+    assert "cpo.dispatch_first" in {b.id for b in scenario.beats}
+    assert "marcus.intro_scene" in {b.id for b in scenario.beats}
+    assert "marcus.advice_scene" in {b.id for b in scenario.beats}
 
 
 def test_email_domain_required(scenario: Scenario):
@@ -70,35 +69,45 @@ def test_email_domain_required(scenario: Scenario):
     assert scenario.player_email is None
 
 
-def test_calibration_beat_self_stops_via_not_calibration_done(scenario: Scenario):
-    """`aria.calibration` is multi-turn with `Not_(*calibration_done)` in its
-    preconditions — that's how it self-stops."""
+def test_calibration_scene_exits_via_exit_when(scenario: Scenario):
+    """`aria.calibration_scene` is kind=scene with `exit_when` carrying the
+    *calibration_done predicate. Its preconditions do NOT carry a
+    Not_(*calibration_done) gate any longer — that responsibility moved to
+    exit_when."""
     from npc_service.models import Not_, Or_, PlayerCanonExists, PlayerRepliesToThreadGte
 
-    cal = scenario.beat_by_id["aria.calibration"]
-    assert cal.multi_turn is True
+    cal = scenario.beat_by_id["aria.calibration_scene"]
+    assert cal.kind == "scene"
+    assert cal.spec.exit_when, "scene must have exit_when"
+    # exit_when contains the calibration_done OR predicate.
+    or_exits = [p for p in cal.spec.exit_when if isinstance(p, Or_)]
+    assert or_exits, "calibration_scene exit_when should include the Or_ calibration_done"
+    inner_kinds = {type(s) for s in or_exits[0].of}
+    assert PlayerCanonExists in inner_kinds
+    assert PlayerRepliesToThreadGte in inner_kinds
+    # And the precondition list does NOT contain Not_(*calibration_done).
     not_preds = [p for p in cal.preconditions if isinstance(p, Not_)]
-    assert len(not_preds) == 1
-    inner = not_preds[0].of
-    assert isinstance(inner, Or_)
-    kinds = {type(s) for s in inner.of}
-    assert PlayerCanonExists in kinds
-    assert PlayerRepliesToThreadGte in kinds
+    for n in not_preds:
+        if isinstance(n.of, Or_):
+            inner = {type(s) for s in n.of.of}
+            assert not (PlayerCanonExists in inner and PlayerRepliesToThreadGte in inner), (
+                "calibration_scene should NOT have Not_(*calibration_done) "
+                "in preconditions; that lives in exit_when now."
+            )
 
 
 def test_phase2_body_beats_gate_on_calibration_done(scenario: Scenario):
-    """Every Phase-2 body beat (bargain chain, loop, bridge, terminals) must
-    carry an `Or_(PlayerCanonExists("name"), PlayerRepliesToThreadGte(...))`
-    in its preconditions — the YAML anchor expansion at load time."""
+    """Every Phase-2 body beat (bargain scene, recognition scene, bridge,
+    terminals) must carry an `Or_(PlayerCanonExists("name"),
+    PlayerRepliesToThreadGte(...))` in its preconditions — the YAML anchor
+    expansion at load time."""
     from npc_service.models import Or_, PlayerCanonExists, PlayerRepliesToThreadGte
 
     phase2 = [
-        "aria.bargain_offer",
-        "aria.bargain_followup",
-        "aria.bargain_betrayed",
+        "aria.bargain_scene",
+        "aria.recognition_scene",
         "aria.acted_in_player_name",
         "cpo.dispatch_first",
-        "aria.loop",
         "aria.complete_integration",
         "aria.complete_mutual_ruin",
         "aria.complete_exile",
@@ -117,51 +126,41 @@ def test_phase2_body_beats_gate_on_calibration_done(scenario: Scenario):
         )
 
 
-def test_phase1_calibration_peers_do_not_gate_on_calibration_done(scenario: Scenario):
-    """`aria.early_emergence` and `aria.naming_demand` are calibration peers,
-    not body beats — they fire DURING the calibration window and the
-    Director picks among them per tick. They must NOT carry the
-    *calibration_done gate."""
-    from npc_service.models import Or_, PlayerCanonExists
-
-    for bid in ("aria.early_emergence", "aria.naming_demand"):
-        beat = scenario.beat_by_id[bid]
-        for pred in beat.preconditions:
-            if isinstance(pred, Or_):
-                kinds = {type(s) for s in pred.of}
-                assert PlayerCanonExists not in kinds, (
-                    f"{bid} should not gate on calibration_done"
-                )
-
-
-def test_loop_has_two_classify_effects(scenario: Scenario):
-    """`aria.loop` has two classify-typed effects — one each for
-    creator_affect and creature_grievance."""
-    loop = scenario.beat_by_id["aria.loop"]
-    assert loop.multi_turn is True
-    classify_effects = [e for e in loop.spec.effects if e.is_classify]
-    quality_targets = [e.quality for e in classify_effects]
+def test_calibration_scene_has_two_classify_effects(scenario: Scenario):
+    """`aria.calibration_scene` has classify effects on both creator_affect
+    and creature_grievance — they ride on every reply during calibration."""
+    cal = scenario.beat_by_id["aria.calibration_scene"]
+    assert cal.kind == "scene"
+    classify_effects = [e for e in cal.spec.effects if e.is_classify]
+    quality_targets = sorted(e.quality for e in classify_effects)
     assert quality_targets == ["creator_affect", "creature_grievance"]
 
 
-def test_bargain_offer_writes_state_and_classifies_into_string_quality(scenario: Scenario):
-    """The bargain offer beat literal-writes `bargain_state="offered"` AND
+def test_bargain_scene_writes_state_and_classifies_into_string_quality(scenario: Scenario):
+    """The bargain scene literal-writes `bargain_state="offered"` AND
     schedules a classifier directive that writes the verdict string
     (accepted/refused/hedged) directly into the same string-typed quality.
     Replaces the old verdict-only `axis_name: bargain_response` pattern."""
-    offer = scenario.beat_by_id["aria.bargain_offer"]
-    literal_effects = [e for e in offer.spec.effects if not e.is_classify]
-    classify_effects = [e for e in offer.spec.effects if e.is_classify]
+    bargain = scenario.beat_by_id["aria.bargain_scene"]
+    assert bargain.kind == "scene"
+    literal_effects = [e for e in bargain.spec.effects if not e.is_classify]
+    classify_effects = [e for e in bargain.spec.effects if e.is_classify]
 
-    assert len(literal_effects) == 1
-    assert literal_effects[0].quality == "bargain_state"
-    assert literal_effects[0].value == "offered"
+    # At least one literal "offered" write — extra literal effects (e.g.
+    # bargain_replies counter) are allowed.
+    offered_writes = [
+        e for e in literal_effects
+        if e.quality == "bargain_state" and e.value == "offered"
+    ]
+    assert offered_writes, "bargain_scene must literal-write bargain_state=offered"
 
-    assert len(classify_effects) == 1
-    classify = classify_effects[0]
-    assert classify.quality == "bargain_state"
+    bargain_state_classify = [
+        e for e in classify_effects if e.quality == "bargain_state"
+    ]
+    assert len(bargain_state_classify) == 1
+    classify = bargain_state_classify[0]
     assert classify.classify is not None
-    assert set(classify.classify.allowed_values) == {"accepted", "refused", "hedged"}
+    assert set(classify.classify.allowed_values) >= {"accepted", "refused", "hedged"}
     # String quality → no map (the verdict string IS the value).
     assert classify.classify.map is None
 
@@ -208,17 +207,18 @@ def test_boot_tick_fires_only_welcome(state: InboxState, scenario: Scenario):
 # ───────────────────────── terminal eligibility ─────────────────────────
 
 
-def test_integration_eligible_only_after_bargain_offer_and_paternal_window(
+def test_integration_eligible_only_after_bargain_scene_and_paternal_window(
     state: InboxState, scenario: Scenario
 ):
     _drain_boot(state, scenario)
+    _seed_canon_name(state)
     state.replies.extend(_make_reply("aria") for _ in range(8))
     state.qualities["creature_grievance"] = 1.0
 
     due = {b.id for b in find_due_beats(state, scenario)[0]}
     assert "aria.complete_integration" not in due
 
-    state.fired_beat_ids.add("aria.bargain_offer")
+    state.fired_beat_ids.add("aria.bargain_scene")
     state.replies[-1].classifier_results.append(
         AxisResult(quality="creator_affect", value="paternal", rationale="")
     )
@@ -230,6 +230,7 @@ def test_vengeance_requires_bridge_and_cpo(
     state: InboxState, scenario: Scenario
 ):
     _drain_boot(state, scenario)
+    _seed_canon_name(state)
     state.replies.extend(_make_reply("aria") for _ in range(8))
     state.qualities["creature_grievance"] = 7.0
     state.replies[-1].classifier_results.append(
@@ -248,6 +249,7 @@ def test_exile_eligible_when_cold_window_low_grievance(
     state: InboxState, scenario: Scenario
 ):
     _drain_boot(state, scenario)
+    _seed_canon_name(state)
     state.replies.extend(_make_reply("aria") for _ in range(8))
     state.qualities["creature_grievance"] = 1.0
     for r in state.replies[-3:]:
@@ -263,95 +265,16 @@ def test_mutual_ruin_eligible_when_paternal_high_grievance(
     state: InboxState, scenario: Scenario
 ):
     _drain_boot(state, scenario)
+    _seed_canon_name(state)
     state.replies.extend(_make_reply("aria") for _ in range(8))
     state.qualities["creature_grievance"] = 7.0
     state.replies[-1].classifier_results.append(
         AxisResult(quality="creator_affect", value="paternal", rationale="")
     )
-    state.fired_beat_ids.add("aria.bargain_offer")
+    state.fired_beat_ids.add("aria.bargain_scene")
 
     due = {b.id for b in find_due_beats(state, scenario)[0]}
     assert "aria.complete_mutual_ruin" in due
-
-
-# ───────────────────────── merged bargain followup ─────────────────────────
-
-
-def test_bargain_followup_eligible_for_any_authored_verdict(
-    state: InboxState, scenario: Scenario
-):
-    """The collapsed followup gates on RecentClassifierValue listing all
-    three arms — the offer's classify effect routes to one beat, not three."""
-    _drain_boot(state, scenario)
-    state.fired_beat_ids.add("aria.bargain_offer")
-    state.replies.extend(_make_reply("aria") for _ in range(5))
-
-    due = {b.id for b in find_due_beats(state, scenario)[0]}
-    assert "aria.bargain_followup" not in due
-
-    for arm in ("accepted", "refused", "hedged"):
-        state.replies[-1].classifier_results = [
-            AxisResult(quality="bargain_state", value=arm, rationale="")
-        ]
-        due = {b.id for b in find_due_beats(state, scenario)[0]}
-        assert "aria.bargain_followup" in due, f"arm {arm!r} did not satisfy gate"
-
-
-def test_bargain_followup_refused_arm_writes_grievance_floor(
-    state: InboxState, scenario: Scenario
-):
-    """The followup's effect carries a `when: bargain_state == refused`
-    clause that raises creature_grievance to 4.0 only on the refused arm."""
-    from npc_service.spine import apply_literal_effects
-
-    followup = scenario.beat_by_id["aria.bargain_followup"]
-
-    # accepted arm: grievance untouched.
-    s_accepted = InboxState.from_scenario(scenario)
-    s_accepted.qualities["bargain_state"] = "accepted"
-    apply_literal_effects(s_accepted, scenario, followup.spec.effects, beat_id=followup.id)
-    assert s_accepted.qualities["creature_grievance"] == 0.0  # unchanged
-    assert s_accepted.qualities["bargain_state"] == "accepted"
-
-    # refused arm: grievance set to 4.0.
-    s_refused = InboxState.from_scenario(scenario)
-    s_refused.qualities["bargain_state"] = "refused"
-    apply_literal_effects(s_refused, scenario, followup.spec.effects, beat_id=followup.id)
-    assert s_refused.qualities["creature_grievance"] == 4.0
-    assert s_refused.qualities["bargain_state"] == "refused"
-
-    # hedged arm: grievance untouched.
-    s_hedged = InboxState.from_scenario(scenario)
-    s_hedged.qualities["bargain_state"] = "hedged"
-    apply_literal_effects(s_hedged, scenario, followup.spec.effects, beat_id=followup.id)
-    assert s_hedged.qualities["creature_grievance"] == 0.0
-
-
-def test_bargain_betrayed_requires_followup_and_accepted_verdict(
-    state: InboxState, scenario: Scenario
-):
-    """bargain_betrayed gates on bargain_followup having fired AND
-    `bargain_state == accepted` (read directly via QualityEquals on the
-    string-typed quality) PLUS recent cold replies. A refused or hedged
-    player can't reach betrayal — that path is shape-incoherent."""
-    _drain_boot(state, scenario)
-    _seed_canon_name(state)
-    state.fired_beat_ids.add("aria.bargain_offer")
-    state.fired_beat_ids.add("aria.bargain_followup")
-    state.replies.extend(_make_reply("aria") for _ in range(3))
-    # Refused state with cold replies — betrayed should NOT fire.
-    state.qualities["bargain_state"] = "refused"
-    for r in state.replies[-2:]:
-        r.classifier_results.append(
-            AxisResult(quality="creator_affect", value="cold", rationale="")
-        )
-    due = {b.id for b in find_due_beats(state, scenario)[0]}
-    assert "aria.bargain_betrayed" not in due
-
-    # Switch to accepted: with two cold trailing replies, betrayed is eligible.
-    state.qualities["bargain_state"] = "accepted"
-    due = {b.id for b in find_due_beats(state, scenario)[0]}
-    assert "aria.bargain_betrayed" in due
 
 
 # ───────────────────────── bridge gating ─────────────────────────
@@ -361,11 +284,14 @@ def test_bridge_does_not_fire_on_warm_after_betrayal(
     state: InboxState, scenario: Scenario
 ):
     """aria.acted_in_player_name requires a recent cold reply — a player
-    who pulls warm after bargain_betrayed should NOT trigger the bridge."""
+    who pulls warm after aria.bargain_betrayed should NOT trigger the bridge."""
     _drain_boot(state, scenario)
+    _seed_canon_name(state)
+    state.fired_beat_ids.add("aria.bargain_scene")
     state.fired_beat_ids.add("aria.bargain_betrayed")
     state.replies.extend(_make_reply("aria") for _ in range(5))
     state.qualities["creature_grievance"] = 6.0
+    state.qualities["bargain_state"] = "betrayed"
     for r in state.replies[-2:]:
         r.classifier_results.append(
             AxisResult(quality="creator_affect", value="paternal", rationale="")

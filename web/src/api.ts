@@ -120,7 +120,7 @@ export interface BeatEligibility {
   beat_id: string;
   status: "eligible" | "blocked";
   blocked_by: string | null;
-  multi_turn: boolean;
+  is_scene: boolean;
   predicate_tree: Predicate | null;
   predicate_trace: PredicateTrace | null;
 }
@@ -166,12 +166,12 @@ export interface PlayerCanonEntry {
 export interface TickDecision {
   in_response_to: string | null;
   eligible: BeatEligibility[];
-  selection: "none" | "sole" | "director";
+  selection: "none" | "sole" | "director" | "continue";
   chosen_beat_id: string | null;
   chosen_rationale: string | null;
   quality_deltas: QualityDelta[];
   fired_beat_id: string | null;
-  multi_turn_turn: number | null;
+  scene_turn: number | null;
   canon_writes: CanonCandidate[];
   canon_drops: CanonDropRecord[];
   player_canon: Record<string, PlayerCanonEntry>;
@@ -196,7 +196,7 @@ export interface BeatMeta {
   id: string;
   npc: string;
   thread: string;
-  multi_turn: boolean;
+  is_scene: boolean;
   ends_session: boolean;
   pre_authored: boolean;
   validate_facts: boolean;

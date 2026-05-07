@@ -46,7 +46,7 @@ from npc_service.spine import (
 def _build_minimal_scenario() -> Scenario:
     """A tiny synthesized scenario that exercises every engine path the spine
     tests need: one accumulating quality (`engagement`), one anchored welcome,
-    a multi-turn loop, and two mutex-chained terminals (warm + standard).
+    a calibration scene, and two mutex-chained terminals (warm + standard).
 
     Decoupled from the production scenario.yaml so spine tests stay focused
     on engine mechanics rather than on whichever scenario happens to ship."""
@@ -66,12 +66,14 @@ def _build_minimal_scenario() -> Scenario:
                 "id": "aria.welcome",
                 "thread": "aria",
                 "npc": "aria",
+                "kind": "one_shot",
                 "spec": {"pre_authored_prose": "Welcome."},
             },
             {
                 "id": "aria.complete_warm",
                 "thread": "aria",
                 "npc": "aria",
+                "kind": "one_shot",
                 "ends_session": True,
                 "preconditions": [
                     {"kind": "player_replies_to_thread_gte", "thread": "aria", "value": 5},
@@ -83,6 +85,7 @@ def _build_minimal_scenario() -> Scenario:
                 "id": "aria.complete_standard",
                 "thread": "aria",
                 "npc": "aria",
+                "kind": "one_shot",
                 "ends_session": True,
                 "preconditions": [
                     {"kind": "player_replies_to_thread_gte", "thread": "aria", "value": 5},
@@ -94,7 +97,7 @@ def _build_minimal_scenario() -> Scenario:
                 "id": "aria.loop",
                 "thread": "aria",
                 "npc": "aria",
-                "multi_turn": True,
+                "kind": "scene",
                 "preconditions": [
                     {"kind": "player_replies_to_thread_gte", "thread": "aria", "value": 1},
                     {"kind": "not", "of": {"kind": "beat_fired", "beat": "aria.complete_warm"}},
@@ -102,6 +105,16 @@ def _build_minimal_scenario() -> Scenario:
                 ],
                 "spec": {
                     "intent": "ask another question",
+                    # exit_when is required on scene beats. Use the same
+                    # cap the warm terminal would hit (engagement floor)
+                    # OR a reply ceiling so the scene can self-complete
+                    # in the absence of mutex catching it.
+                    "exit_when": [
+                        {"kind": "or", "of": [
+                            {"kind": "quality_gte", "quality": "engagement", "value": 4.0},
+                            {"kind": "player_replies_to_thread_gte", "thread": "aria", "value": 8},
+                        ]},
+                    ],
                     "effects": [{
                         "quality": "engagement",
                         "op": "add",
@@ -142,9 +155,10 @@ def test_scenario_loads_and_is_internally_consistent(scenario: Scenario):
     }
 
 
-def test_loop_is_multi_turn_with_classifier(scenario: Scenario):
+def test_loop_is_scene_with_classifier(scenario: Scenario):
     loop = scenario.beat_by_id["aria.loop"]
-    assert loop.multi_turn is True
+    assert loop.kind == "scene"
+    assert loop.spec.exit_when, "scene beat must have non-empty exit_when"
     assert loop.ends_session is False
     classify_effects = [e for e in loop.spec.effects if e.is_classify]
     assert len(classify_effects) == 1
@@ -376,12 +390,14 @@ def test_find_due_beats_omits_structurally_blocked_beats_from_report(
                 "id": "aria.welcome",
                 "thread": "aria",
                 "npc": "aria",
+                "kind": "one_shot",
                 "spec": {"pre_authored_prose": "Welcome."},
             },
             {
                 "id": "aria.first",
                 "thread": "aria",
                 "npc": "aria",
+                "kind": "one_shot",
                 "spec": {"intent": "x"},
                 "preconditions": [
                     {"kind": "player_replies_to_thread_gte", "thread": "aria", "value": 1},
@@ -391,6 +407,7 @@ def test_find_due_beats_omits_structurally_blocked_beats_from_report(
                 "id": "aria.downstream",
                 "thread": "aria",
                 "npc": "aria",
+                "kind": "one_shot",
                 "spec": {"intent": "y"},
                 "preconditions": [
                     {"kind": "beat_fired", "beat": "aria.first"},
@@ -542,6 +559,7 @@ def test_apply_classify_effect_string_quality_writes_verdict_verbatim():
             "id": "aria.test",
             "thread": "aria",
             "npc": "aria",
+            "kind": "one_shot",
             "spec": {"intent": "x"},
         }],
     })
@@ -873,6 +891,7 @@ def test_apply_literal_effects_multi_effect_atomic():
         ],
         beats=[_plot_beat(beat_id="aria.test")],
     ))
+    # `_plot_beat` defaults to kind=one_shot.
     s = InboxState.from_scenario(sc)
     apply_literal_effects(s, sc, [
         Effect(quality="engagement", value=4.0),
@@ -924,6 +943,7 @@ def _plot_beat(
     *,
     spec: dict | None = None,
     effects: list[dict] | None = None,
+    kind: str = "one_shot",
 ) -> dict:
     base_spec = {"intent": "be brief"}
     if spec is not None:
@@ -934,6 +954,7 @@ def _plot_beat(
         "id": beat_id,
         "thread": "aria",
         "npc": "aria",
+        "kind": kind,
         "spec": base_spec,
     }
 
@@ -1111,13 +1132,18 @@ def test_load_rejects_string_quality_value_not_in_allowed_values():
         ))
 
 
-# ───────────────────────── multi-turn self-stop on Not_(<exit>) ─────────────────────────
+# ───────────────────────── scene exit_when ─────────────────────────
 
 
-def test_multi_turn_beat_self_stops_when_exit_predicate_flips():
-    """The calibration-scene pattern: a multi-turn beat with `Not_(<exit>)`
-    in its preconditions remains eligible while <exit> is False, and stops
-    being eligible the moment <exit> flips True."""
+def test_scene_beat_remains_eligible_until_exit_when_satisfied():
+    """The calibration-scene pattern under the new primitive: a scene's
+    preconditions stay simple (replies>=1) and the exit condition lives on
+    `spec.exit_when`. The beat is eligible from reply 1 onward; it does NOT
+    enter `fired_beat_ids` via its own preconditions. Verifying eligibility
+    + the helper that decides "should this scene be promoted to fired now?"
+    """
+    from npc_service.spine import scene_exit_satisfied
+
     scenario = Scenario.model_validate({
         "title": "T",
         "premise": "p",
@@ -1130,16 +1156,18 @@ def test_multi_turn_beat_self_stops_when_exit_predicate_flips():
                 "id": "aria.calibration",
                 "thread": "aria",
                 "npc": "aria",
-                "multi_turn": True,
+                "kind": "scene",
                 "preconditions": [
                     {
                         "kind": "player_replies_to_thread_gte",
                         "thread": "aria",
                         "value": 1,
                     },
-                    {
-                        "kind": "not",
-                        "of": {
+                ],
+                "spec": {
+                    "intent": "elicit name",
+                    "exit_when": [
+                        {
                             "kind": "or",
                             "of": [
                                 {"kind": "player_canon_exists", "name": "name"},
@@ -1150,39 +1178,114 @@ def test_multi_turn_beat_self_stops_when_exit_predicate_flips():
                                 },
                             ],
                         },
-                    },
-                ],
-                "spec": {"intent": "elicit name"},
+                    ],
+                },
             },
         ],
     })
     state = InboxState.from_scenario(scenario)
+    cal = scenario.beat_by_id["aria.calibration"]
 
     assert [b.id for b in find_due_beats(state, scenario)[0]] == []
+    assert scene_exit_satisfied(cal, state) is False
 
     state.replies.append(Reply(
         id="r1", thread_id="aria", beat_responded_to=None, recipient="A", body="hi",
     ))
     assert [b.id for b in find_due_beats(state, scenario)[0]] == ["aria.calibration"]
+    assert scene_exit_satisfied(cal, state) is False  # still inside the scene
 
     state.replies.append(Reply(
         id="r2", thread_id="aria", beat_responded_to=None, recipient="A", body="ok",
     ))
+    # Still eligible — until exit_when fires, the scene returns to the
+    # due list every tick.
     assert [b.id for b in find_due_beats(state, scenario)[0]] == ["aria.calibration"]
+    assert scene_exit_satisfied(cal, state) is False
 
     state.player_canon["name"] = PlayerCanonEntry(
         summary="Marcus", literal_text_quote="I'm Marcus", salience=0.9,
         category="name", turn_of_origin=2,
     )
+    # exit_when is now satisfied — the helper says yes; the scheduler will
+    # promote the beat to fired_beat_ids on the firing tick.
+    assert scene_exit_satisfied(cal, state) is True
+    # find_due_beats does not consult exit_when itself — the eligibility
+    # gate is `preconditions`. The scene only stops appearing in the due
+    # list once `fired_beat_ids` actually contains it (which `_fire_beat`
+    # does on the tick that satisfies exit_when).
+    state.fired_beat_ids.add("aria.calibration")
     assert [b.id for b in find_due_beats(state, scenario)[0]] == []
 
-    del state.player_canon["name"]
-    for i in range(3, 5):
-        state.replies.append(Reply(
-            id=f"r{i}", thread_id="aria", beat_responded_to=None, recipient="A",
-            body=f"reply {i}",
-        ))
-    assert [b.id for b in find_due_beats(state, scenario)[0]] == []
+
+def test_scene_kind_validators():
+    """Cross-validations: kind=scene needs exit_when; kind=scene rejects
+    pre_authored_prose; kind=scene with ends_session=True is rejected;
+    kind=one_shot rejects exit_when."""
+    base = {
+        "title": "T", "premise": "p", "email_domain": "x",
+        "qualities": [],
+        "npcs": [{"id": "aria", "display_name": "A", "email_address": "a@x"}],
+        "threads": [{"id": "aria", "npc": "aria"}],
+    }
+    # kind=scene with empty exit_when → reject.
+    with pytest.raises(ValidationError):
+        Scenario.model_validate({
+            **base,
+            "beats": [{
+                "id": "aria.s", "thread": "aria", "npc": "aria",
+                "kind": "scene",
+                "spec": {"intent": "x"},
+            }],
+        })
+    # kind=one_shot with non-empty exit_when → reject.
+    with pytest.raises(ValidationError):
+        Scenario.model_validate({
+            **base,
+            "beats": [{
+                "id": "aria.s", "thread": "aria", "npc": "aria",
+                "kind": "one_shot",
+                "spec": {
+                    "intent": "x",
+                    "exit_when": [
+                        {"kind": "player_replies_to_thread_gte",
+                         "thread": "aria", "value": 1},
+                    ],
+                },
+            }],
+        })
+    # kind=scene with pre_authored_prose → reject.
+    with pytest.raises(ValidationError):
+        Scenario.model_validate({
+            **base,
+            "beats": [{
+                "id": "aria.s", "thread": "aria", "npc": "aria",
+                "kind": "scene",
+                "spec": {
+                    "pre_authored_prose": "hi",
+                    "exit_when": [
+                        {"kind": "player_replies_to_thread_gte",
+                         "thread": "aria", "value": 1},
+                    ],
+                },
+            }],
+        })
+    # kind=scene with ends_session=True → reject.
+    with pytest.raises(ValidationError):
+        Scenario.model_validate({
+            **base,
+            "beats": [{
+                "id": "aria.s", "thread": "aria", "npc": "aria",
+                "kind": "scene", "ends_session": True,
+                "spec": {
+                    "intent": "x",
+                    "exit_when": [
+                        {"kind": "player_replies_to_thread_gte",
+                         "thread": "aria", "value": 1},
+                    ],
+                },
+            }],
+        })
 
 
 def test_or_predicate_evaluation_in_preconditions():
@@ -1198,6 +1301,7 @@ def test_or_predicate_evaluation_in_preconditions():
                 "id": "aria.body",
                 "thread": "aria",
                 "npc": "aria",
+                "kind": "one_shot",
                 "preconditions": [
                     {
                         "kind": "or",

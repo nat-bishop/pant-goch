@@ -282,7 +282,7 @@ function NodeRect({
         {localLabel.length > 14 ? localLabel.slice(0, 13) + "…" : localLabel}
       </text>
       {/* small flag glyphs in the corner */}
-      {node.meta.multi_turn && (
+      {node.meta.is_scene && (
         <text
           x={node.x + 3}
           y={node.y + 7}
@@ -362,7 +362,7 @@ function NodeDetail({ meta, onClose }: { meta: BeatMeta; onClose: () => void }) 
         <div>npc: <span className="text-text">{meta.npc}</span></div>
         <div>thread: <span className="text-text">{meta.thread}</span></div>
         <div className="flex flex-wrap gap-1">
-          {meta.multi_turn && <Pill>multi-turn</Pill>}
+          {meta.is_scene && <Pill>scene</Pill>}
           {meta.ends_session && <Pill tone="hot">terminal</Pill>}
           {meta.pre_authored && <Pill>pre-authored</Pill>}
           {meta.validate_facts && <Pill>fact-checked</Pill>}

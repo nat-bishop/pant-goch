@@ -52,9 +52,10 @@ def live_classifier(live_llama):
 
 
 @pytest.mark.integration
-def test_live_first_send_fires_loop(live_client):
-    """Reply to the welcome email with a real /send. The loop beat must fire,
-    Aria's body must be non-empty and free of forbidden header tokens."""
+def test_live_first_send_fires_calibration_scene(live_client):
+    """Reply to the welcome email with a real /send. The calibration scene
+    must fire, Aria's body must be non-empty and free of forbidden header
+    tokens."""
     welcome = live_client.get("/inbox").json()["folders"]["Inbox"][0]
     events = list(consume_sse(live_client.stream("POST", "/send", json={
         "in_reply_to": welcome["id"],
@@ -68,18 +69,20 @@ def test_live_first_send_fires_loop(live_client):
     # Player send recorded.
     assert events[0]["type"] == "send_recorded"
 
-    # Aria's loop reply landed.
+    # Aria's calibration-scene reply landed.
     new_emails = [e for e in events if e["type"] == "new_email"]
-    loop_emails = [
+    scene_emails = [
         e["email"] for e in new_emails
-        if e["email"]["beat_id"] == "aria.loop"
+        if e["email"]["beat_id"] == "aria.calibration_scene"
     ]
-    assert len(loop_emails) == 1, f"expected exactly one loop email, got events: {events}"
+    assert len(scene_emails) == 1, (
+        f"expected exactly one calibration_scene email, got events: {events}"
+    )
 
-    body = loop_emails[0]["body"]
-    assert body.strip(), "loop email body is empty"
+    body = scene_emails[0]["body"]
+    assert body.strip(), "calibration_scene email body is empty"
     for forbidden in ("Subject:", "From:", "To:", "Date:", "```"):
-        assert forbidden not in body, f"loop body leaked {forbidden!r}: {body!r}"
+        assert forbidden not in body, f"scene body leaked {forbidden!r}: {body!r}"
 
     # Stream terminated cleanly.
     assert events[-1]["type"] == "done"

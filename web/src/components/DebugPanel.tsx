@@ -178,8 +178,8 @@ function LastTick() {
           <>
             {" → "}
             <BeatName beatId={decision.fired_beat_id} />
-            {decision.multi_turn_turn != null && (
-              <span className="text-text-muted"> (turn {decision.multi_turn_turn})</span>
+            {decision.scene_turn != null && (
+              <span className="text-text-muted"> (turn {decision.scene_turn})</span>
             )}
           </>
         )}
@@ -222,8 +222,8 @@ function EligibleRow({ entry }: { entry: BeatEligibility }) {
           )}
         />
         <BeatName beatId={entry.beat_id} />
-        {entry.multi_turn && (
-          <span className="text-text-muted/70">[multi]</span>
+        {entry.is_scene && (
+          <span className="text-text-muted/70">[scene]</span>
         )}
         {canExpand && (
           <span className="ml-auto text-text-muted/70">{expanded ? "▾" : "▸"}</span>
@@ -436,7 +436,7 @@ function BeatName({ beatId }: { beatId: string }) {
           <div className="text-text-muted">npc: <span className="text-text">{meta.npc}</span></div>
           <div className="text-text-muted">thread: <span className="text-text">{meta.thread}</span></div>
           <div className="flex flex-wrap gap-1 text-text-muted">
-            {meta.multi_turn && <span>multi-turn</span>}
+            {meta.is_scene && <span>scene</span>}
             {meta.ends_session && <span className="text-meter-hot">terminal</span>}
             {meta.pre_authored && <span>pre-authored</span>}
             {meta.validate_facts && <span>fact-checked</span>}
