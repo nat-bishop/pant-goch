@@ -125,6 +125,18 @@ export interface BeatEligibility {
   predicate_trace: PredicateTrace | null;
 }
 
+// Per-beat predicate evaluation against post-tick state. Differs from
+// BeatEligibility: covers EVERY scenario beat (including already-fired
+// one_shots and structurally-blocked terminals), with parallel trace lists
+// instead of just the first failing predicate. Drives the Beats inspector.
+export interface BeatEvaluation {
+  beat_id: string;
+  status: "fired" | "eligible" | "blocked";
+  is_scene: boolean;
+  entry_traces: PredicateTrace[];  // parallel to beat.preconditions
+  exit_traces: PredicateTrace[];   // parallel to beat.spec.exit_when; empty for one_shot
+}
+
 export interface QualityDelta {
   quality: string;
   before: number | string | null;
@@ -178,6 +190,7 @@ export interface TickDecision {
   fact_check: FactCheckTrace | null;
   classifier_history: Record<string, string[]>;
   fired_beat_ids: string[];
+  beats_evaluation: BeatEvaluation[];
 }
 
 // /scenario_meta payload ─────────────────────────────────────────────
@@ -229,6 +242,45 @@ export interface ScenarioMeta {
 export async function getScenarioMeta(): Promise<ScenarioMeta> {
   const r = await fetch(`${API}/scenario_meta`);
   await ensureOk(r, "scenario_meta");
+  return r.json();
+}
+
+// /debug/scenario payload — DEV-only Beats inspector. Pairs with
+// TickDecision.beats_evaluation: this carries the structural shape, the
+// evaluation carries the verdicts. Frontend zips them per beat.
+
+export type EffectClassifyDirective = {
+  question: string;
+  allowed_values: string[];
+  map: Record<string, number> | null;
+};
+
+export interface DebugBeatEffect {
+  quality: string;
+  value: number | string | null;
+  classify: EffectClassifyDirective | null;
+  op: "set" | "add" | "max" | "min";
+  when: Predicate | null;
+}
+
+export interface DebugBeat {
+  id: string;
+  kind: "scene" | "one_shot";
+  npc: string;
+  thread: string;
+  ends_session: boolean;
+  preconditions: Predicate[];
+  exit_when: Predicate[];
+  effects: DebugBeatEffect[];
+}
+
+export interface DebugScenario {
+  beats: Record<string, DebugBeat>;
+}
+
+export async function getDebugScenario(): Promise<DebugScenario> {
+  const r = await fetch(`${API}/debug/scenario`);
+  await ensureOk(r, "debug_scenario");
   return r.json();
 }
 

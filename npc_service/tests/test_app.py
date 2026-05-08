@@ -713,6 +713,66 @@ def test_scenario_meta_returns_qualities_beats_and_graph(client):
     assert ("aria.complete_warm", "aria.complete_standard") in mutex_pairs
 
 
+def test_debug_scenario_returns_predicate_ast(client):
+    """The DEV-only Beats inspector fetches /debug/scenario once at boot.
+    Pairs with TickDecision.beats_evaluation: this endpoint ships the
+    structural shape (entry_when AST, exit_when, effects); evaluation
+    ships the verdicts. Frontend zips them per beat to render trees.
+    """
+    payload = client.get("/debug/scenario").json()
+    assert "beats" in payload
+    beats = payload["beats"]
+    # Every scenario beat present.
+    expected = {"aria.welcome", "aria.complete_warm", "aria.complete_standard", "aria.loop"}
+    assert set(beats.keys()) == expected
+
+    # Welcome is a pre-authored one_shot with no preconditions.
+    welcome = beats["aria.welcome"]
+    assert welcome["kind"] == "one_shot"
+    assert welcome["preconditions"] == []
+    assert welcome["exit_when"] == []
+
+    # The scene beat has both preconditions and exit_when AST.
+    loop = beats["aria.loop"]
+    assert loop["kind"] == "scene"
+    assert len(loop["preconditions"]) > 0
+    assert len(loop["exit_when"]) > 0
+    # Predicates serialize via discriminated union; `kind` field carries
+    # the discriminator. First precondition is player_replies_to_thread_gte.
+    assert loop["preconditions"][0]["kind"] == "player_replies_to_thread_gte"
+
+
+def test_send_emits_beats_evaluation(client):
+    """tick_decision.beats_evaluation covers EVERY scenario beat, not just
+    eligible+blocked. Structurally-blocked beats (like complete_standard
+    when complete_warm hasn't fired but the BeatFired-not condition still
+    permits eligibility) appear with full traces. Drives the Beats
+    inspector — author can select any beat and see entry_when atom-by-atom.
+    """
+    welcome = client.get("/inbox").json()["folders"]["Inbox"][0]
+    events = list(consume_sse(client.stream("POST", "/send", json={
+        "in_reply_to": welcome["id"], "recipient": "Aria", "body": "hi",
+    })))
+    decision = next(e for e in events if e["type"] == "tick_decision")["decision"]
+    assert "beats_evaluation" in decision
+    evals = decision["beats_evaluation"]
+    eval_ids = {e["beat_id"] for e in evals}
+    expected = {"aria.welcome", "aria.complete_warm", "aria.complete_standard", "aria.loop"}
+    assert eval_ids == expected
+
+    by_id = {e["beat_id"]: e for e in evals}
+    # aria.welcome fired at boot, status flips to "fired".
+    assert by_id["aria.welcome"]["status"] == "fired"
+    # complete_warm and complete_standard remain blocked — replies < 5.
+    assert by_id["aria.complete_warm"]["status"] == "blocked"
+    # aria.loop is a scene; carries exit_traces parallel to its exit_when.
+    loop_eval = by_id["aria.loop"]
+    assert loop_eval["is_scene"] is True
+    assert len(loop_eval["exit_traces"]) > 0
+    # entry_traces parallel to preconditions (3 preconds on aria.loop).
+    assert len(loop_eval["entry_traces"]) == 3
+
+
 def test_send_emits_canon_and_classifier_history_on_decision(client):
     """A successful /send's tick_decision payload includes the new
     structured fields the debug overlay reads — canon snapshot, fired

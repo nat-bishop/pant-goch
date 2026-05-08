@@ -80,6 +80,7 @@ from .spine import (
     apply_canon_extraction,
     apply_classify_effect,
     apply_literal_effects,
+    evaluate_all_beats,
     evaluate_predicate,
     find_due_beats,
     scene_exit_satisfied,
@@ -162,6 +163,7 @@ SESSION_ID: str | None = None
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     global SCENARIO, STATE, AGENTS, SETTINGS, LLAMA_PROC, SESSION_ID
+    global _DEBUG_SCENARIO_CACHE
 
     settings = Settings()
     SETTINGS = settings
@@ -171,6 +173,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     scenario_path = settings.scenario_path or Path(__file__).resolve().parents[2] / "scenario.yaml"
     logfire.info("loading scenario from {path}", path=str(scenario_path))
     SCENARIO = load_scenario(scenario_path)
+    # Invalidate the /debug/scenario cache so a different scenario loaded
+    # in tests (or after a restart with a swapped YAML) doesn't serve stale
+    # AST from the previous boot.
+    _DEBUG_SCENARIO_CACHE = None
 
     cfg = resolve_config(settings)
     # Wrap the supervised period in one span so start, healthy, requests, and
@@ -1008,6 +1014,10 @@ async def _tick(
             # recovery see the up-to-date fired set without per-tick
             # accumulation logic on the frontend.
             fired_beat_ids=sorted(STATE.fired_beat_ids),
+            # Full per-beat predicate trace against post-tick state. Drives
+            # the debug Beats inspector. Cost is O(beats × atoms); ~12
+            # beats in production scenario, trivial.
+            beats_evaluation=evaluate_all_beats(STATE, SCENARIO),
         )
         # Span attributes give Logfire UI users a queryable overview without
         # parsing message strings. The full decision lands as `decision`;
@@ -1191,6 +1201,53 @@ async def get_scenario_meta() -> dict:
         "beats": beats_payload,
         "beat_graph": _build_beat_graph(SCENARIO),
     }
+
+
+_DEBUG_SCENARIO_CACHE: dict | None = None
+
+
+@app.get("/debug/scenario")
+async def get_debug_scenario() -> dict:
+    """Per-beat predicate AST + authored effects, for the DEV debug Beats
+    inspector. Pairs with `TickDecision.beats_evaluation` (which carries
+    the per-tick pass/fail trace per atom) — this endpoint ships the
+    structural shape, the trace ships the verdicts.
+
+    Returned once at boot; static for the session (scenario YAML doesn't
+    hot-reload). Per-beat shape:
+
+      {
+        id, kind, npc, thread, ends_session,
+        preconditions: list[Predicate],   # the entry_when AST
+        exit_when:     list[Predicate],   # scenes only; empty for one_shots
+        effects:       list[Effect],      # authored mutations
+      }
+
+    Cached after first request — SCENARIO is a process-level singleton, so
+    serializing the same Pydantic models on every page reload is wasted
+    work. Always-on (not DEV-gated server-side); production frontend
+    doesn't hit it.
+    """
+    global _DEBUG_SCENARIO_CACHE
+    if SCENARIO is None:
+        raise HTTPException(503, "scenario not loaded")
+    if _DEBUG_SCENARIO_CACHE is None:
+        _DEBUG_SCENARIO_CACHE = {
+            "beats": {
+                b.id: {
+                    "id": b.id,
+                    "kind": b.kind,
+                    "npc": b.npc,
+                    "thread": b.thread,
+                    "ends_session": b.ends_session,
+                    "preconditions": [p.model_dump() for p in b.preconditions],
+                    "exit_when": [p.model_dump() for p in b.spec.exit_when],
+                    "effects": [e.model_dump() for e in b.spec.effects],
+                }
+                for b in SCENARIO.beats
+            }
+        }
+    return _DEBUG_SCENARIO_CACHE
 
 
 def _beat_meta(beat: Beat) -> dict:

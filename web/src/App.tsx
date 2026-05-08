@@ -3,7 +3,7 @@ import { Email, NpcInfo } from "./api";
 import { AppHeader } from "./components/AppHeader";
 import { ChatHeader } from "./components/ChatHeader";
 import { ChatSidebar } from "./components/ChatSidebar";
-import { DebugPanel } from "./components/DebugPanel";
+import { DebugDock } from "./debug/DebugDock";
 import { MessageComposer } from "./components/MessageComposer";
 import { MessageList } from "./components/MessageList";
 import { useTheme } from "./hooks/useTheme";
@@ -42,11 +42,11 @@ export default function App() {
             <NpcChat npc={selectedNpc} emails={emails} />
           </main>
         </div>
+        {/* DEV-only right-side dock. Vite's import.meta.env.DEV is a static
+            literal in production builds, so the entire DebugDock module
+            tree-shakes out of the prod bundle. */}
+        {import.meta.env.DEV && <DebugDock />}
       </div>
-      {/* DEV-only overlay surfacing per-tick decisions. Vite's
-          import.meta.env.DEV is a static literal in production builds, so
-          the entire DebugPanel module tree-shakes out of the prod bundle. */}
-      {import.meta.env.DEV && <DebugPanel />}
     </div>
   );
 }

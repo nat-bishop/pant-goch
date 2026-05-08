@@ -4,13 +4,14 @@
 
 import { create } from "zustand";
 import {
+  DebugScenario,
   Email,
   GameState,
   NpcInfo,
-  QualityDelta,
   ScenarioMeta,
   ScenarioResponse,
   TickDecision,
+  getDebugScenario,
   getInbox,
   getScenario,
   getScenarioMeta,
@@ -23,11 +24,37 @@ import { sleep, typingDelayMs } from "./util/pacing";
 // Thread id; backend is authoritative. Was a `"aria"` literal pre-multi-NPC.
 export type ChatId = string;
 
-// Debug overlay keeps a rolling history of quality changes across ticks
-// so the author can scan "what moved engagement up over the last few
-// turns" without trawling the terminal log. Cap is small — the panel is
-// scannable, not an audit log.
-const QUALITY_HISTORY_CAP = 50;
+// Cap on how many TickDecisions the debug dock keeps in memory. Lost on page
+// reload — matches SPEC §1 "no persistence across server restarts" non-goal
+// and the existing pattern of session-only debug state.
+const TICK_HISTORY_CAP = 100;
+
+export type DebugTab = "pacing" | "ticks" | "canon" | "beats";
+export type BeatsView = "list" | "graph";
+
+export interface DebugSelection {
+  tab: DebugTab;
+  quality: string | null;  // pacing drilldown
+  beat: string | null;     // beats inspector
+  beatsView: BeatsView;    // beats tab sub-toggle
+}
+
+const LS_KEY_TAB = "debug.tab";
+const LS_KEY_BEATS_VIEW = "debug.beatsView";
+
+function loadSelection(): DebugSelection {
+  let tab: DebugTab = "pacing";
+  let beatsView: BeatsView = "list";
+  try {
+    const t = localStorage.getItem(LS_KEY_TAB);
+    if (t === "pacing" || t === "ticks" || t === "canon" || t === "beats") tab = t;
+    const v = localStorage.getItem(LS_KEY_BEATS_VIEW);
+    if (v === "list" || v === "graph") beatsView = v;
+  } catch {
+    // localStorage may throw in private-browsing; defaults are fine.
+  }
+  return { tab, beatsView, quality: null, beat: null };
+}
 
 interface Store {
   bootStarted: boolean;
@@ -42,14 +69,13 @@ interface Store {
   theme: Theme;
 
   // Debug overlay (DEV-only consumer; backend always emits the source data).
-  // The panel reads canon / classifier / fired-beat snapshots directly
-  // off `lastTickDecision`; only `qualityHistory` is accumulated locally
-  // (capped) since the decision payload only carries the per-tick deltas.
+  // `tickHistory` is the full session's tick log capped at TICK_HISTORY_CAP,
+  // newest first; consumers read tickHistory[0] for the latest snapshot.
   scenarioMeta: ScenarioMeta | null;
-  lastTickDecision: TickDecision | null;
-  qualityHistory: QualityDelta[];
+  debugScenario: DebugScenario | null;
+  tickHistory: TickDecision[];
+  debugSelection: DebugSelection;
   playtestNoteCount: number;
-  debugCollapsed: boolean;
 
   boot(): Promise<void>;
   refreshInbox(): Promise<void>;
@@ -58,7 +84,7 @@ interface Store {
   setPendingTypingFor(threadId: string | null): void;
   setTheme(theme: Theme): void;
   recordTickDecision(decision: TickDecision): void;
-  setDebugCollapsed(collapsed: boolean): void;
+  setDebugSelection(patch: Partial<DebugSelection>): void;
   bumpPlaytestNoteCount(): void;
 }
 
@@ -74,10 +100,10 @@ export const useStore = create<Store>()((set, get) => ({
   firstOpenForChat: new Set(),
   theme: detectInitialTheme(),
   scenarioMeta: null,
-  lastTickDecision: null,
-  qualityHistory: [],
+  debugScenario: null,
+  tickHistory: [],
+  debugSelection: loadSelection(),
   playtestNoteCount: 0,
-  debugCollapsed: false,
 
   async boot() {
     // React StrictMode double-mounts in dev; without this guard, boot() runs
@@ -86,13 +112,13 @@ export const useStore = create<Store>()((set, get) => ({
     if (get().bootStarted) return;
     set({ bootStarted: true });
     try {
-      // scenario_meta runs in parallel with the other boot fetches — it's
-      // a small payload and there's no dependency. DEV-only consumer
-      // (debug panel); production code never reads `scenarioMeta`.
-      const [scenario, inbox, scenarioMeta] = await Promise.all([
+      // scenario_meta + debug/scenario run in parallel with the other boot
+      // fetches. Both DEV-only — production code never reads them.
+      const [scenario, inbox, scenarioMeta, debugScenario] = await Promise.all([
         getScenario(),
         getInbox(),
         import.meta.env.DEV ? getScenarioMeta() : Promise.resolve(null),
+        import.meta.env.DEV ? getDebugScenario() : Promise.resolve(null),
       ]);
       const sc = scenario as ScenarioResponse;
       set({
@@ -100,6 +126,7 @@ export const useStore = create<Store>()((set, get) => ({
         npcs: sc.npcs,
         state: inbox.state,
         scenarioMeta,
+        debugScenario,
         bootError: null,
       });
       const initialChat = sc.npcs[0]?.thread_id ?? null;
@@ -177,15 +204,28 @@ export const useStore = create<Store>()((set, get) => ({
   },
 
   recordTickDecision(decision) {
-    const merged = [...get().qualityHistory, ...decision.quality_deltas];
-    set({
-      lastTickDecision: decision,
-      qualityHistory: merged.slice(-QUALITY_HISTORY_CAP),
-    });
+    const next = [decision, ...get().tickHistory].slice(0, TICK_HISTORY_CAP);
+    set({ tickHistory: next });
   },
 
-  setDebugCollapsed(collapsed) {
-    set({ debugCollapsed: collapsed });
+  setDebugSelection(patch) {
+    const prev = get().debugSelection;
+    const next = { ...prev, ...patch };
+    set({ debugSelection: next });
+    try {
+      // Skip persistence when the patch didn't actually change the value —
+      // tab clicks repeat the current tab as users orient themselves and
+      // each call would otherwise issue a localStorage write.
+      if (patch.tab !== undefined && patch.tab !== prev.tab) {
+        localStorage.setItem(LS_KEY_TAB, next.tab);
+      }
+      if (patch.beatsView !== undefined && patch.beatsView !== prev.beatsView) {
+        localStorage.setItem(LS_KEY_BEATS_VIEW, next.beatsView);
+      }
+    } catch {
+      // localStorage may throw in private-browsing; the in-memory selection
+      // still updates so the dock keeps working without persistence.
+    }
   },
 
   bumpPlaytestNoteCount() {

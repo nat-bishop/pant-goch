@@ -1,19 +1,18 @@
-// Scenario-graph view for the debug panel. Beats are laid out in
-// horizontal lanes by thread, in authoring order (which is the rough
-// intended fire order). Edges come in two flavours: structural
-// (positive `BeatFired` prereq, solid + arrowed) and mutex
-// (`Not_(BeatFired)`, dashed) — they're the same upstream reference
-// rendered with different glyphs.
+// Scenario-graph view (embedded into the Beats tab's `graph` mode).
+// Beats are laid out in horizontal lanes by thread, in authoring order.
+// Edges come in two flavours: structural (positive `BeatFired` prereq,
+// solid + arrowed) and mutex (`Not_(BeatFired)`, dashed) — the same
+// upstream reference rendered with different glyphs.
 //
-// At 520px the inline panel is too narrow to render the graph
-// usefully, so this component shows a stats + legend strip in-panel
-// and renders the actual SVG inside a fullscreen modal that scales
-// to fit the viewport via viewBox + preserveAspectRatio.
+// Trimmed-down version of the previous fullscreen-modal component:
+// renders inline since the dock now reserves its own viewport column.
+// Selection state still local — the Beats tab uses `selection.beat`
+// for the predicate-tree drilldown; the graph's selection is purely
+// visual highlighting.
 
 import clsx from "clsx";
-import { useMemo, useState } from "react";
-import type { BeatGraph, BeatMeta } from "../api";
-import { useStore } from "../store";
+import { useMemo } from "react";
+import type { BeatGraph, BeatMeta, ScenarioMeta, TickDecision } from "../../api";
 
 type Status = "fired" | "eligible" | "blocked" | "structural" | "idle";
 
@@ -28,37 +27,35 @@ interface NodeLayout {
   status: Status;
 }
 
-const NODE_W = 110;
+const NODE_W = 92;
 const NODE_H = 22;
-const NODE_GAP_X = 14;
+const NODE_GAP_X = 12;
 const LANE_GAP_Y = 14;
-const LANE_LABEL_W = 64;
-const PADDING = 12;
+const LANE_LABEL_W = 56;
+const PADDING = 10;
 
-export function ScenarioGraph() {
-  const scenarioMeta = useStore((s) => s.scenarioMeta);
-  const lastTick = useStore((s) => s.lastTickDecision);
-  const [expanded, setExpanded] = useState(false);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+interface ScenarioGraphProps {
+  scenarioMeta: ScenarioMeta;
+  latestTick: TickDecision | null;
+  selectedBeatId: string | null;
+  onSelectBeat: (id: string | null) => void;
+}
 
-  const layout = useMemo(() => {
-    if (!scenarioMeta) return null;
-    return computeLayout(scenarioMeta.beat_graph, scenarioMeta.beats, {
-      eligibleNow: lastTick?.eligible ?? [],
-      firedBeatIds: new Set(lastTick?.fired_beat_ids ?? []),
-    });
-  }, [scenarioMeta, lastTick]);
-
-  if (!scenarioMeta) {
-    return <div className="text-text-muted/70 italic">scenario_meta not loaded</div>;
-  }
-  if (!layout) return null;
+export function ScenarioGraph({
+  scenarioMeta, latestTick, selectedBeatId, onSelectBeat,
+}: ScenarioGraphProps) {
+  const layout = useMemo(
+    () => computeLayout(scenarioMeta.beat_graph, scenarioMeta.beats, {
+      eligibleNow: latestTick?.eligible ?? [],
+      firedBeatIds: new Set(latestTick?.fired_beat_ids ?? []),
+    }),
+    [scenarioMeta, latestTick],
+  );
 
   const counts = countByStatus(layout.nodes);
-  const selectedMeta = selectedId ? scenarioMeta.beats[selectedId] : null;
 
   return (
-    <div className="space-y-1.5">
+    <div className="space-y-2">
       <div className="flex items-center justify-between text-text-muted">
         <span className="text-[9px] uppercase tracking-wider">
           {layout.nodes.length} beats · {scenarioMeta.beat_graph.edges.length} edges
@@ -68,33 +65,12 @@ export function ScenarioGraph() {
         </span>
       </div>
       <Legend />
-      <button
-        type="button"
-        onClick={() => setExpanded(true)}
-        className={clsx(
-          "w-full rounded border border-border/60 bg-bg-elevated px-2 py-1",
-          "text-[10px] uppercase tracking-wider text-text-muted",
-          "hover:border-accent hover:text-text",
-        )}
-      >
-        open graph
-      </button>
-      {expanded && (
-        <FullscreenModal onClose={() => setExpanded(false)}>
-          <Legend />
-          <GraphSvg
-            layout={layout}
-            edges={scenarioMeta.beat_graph.edges}
-            selectedId={selectedId}
-            onSelect={setSelectedId}
-          />
-          {selectedMeta && (
-            <div className="mt-3">
-              <NodeDetail meta={selectedMeta} onClose={() => setSelectedId(null)} />
-            </div>
-          )}
-        </FullscreenModal>
-      )}
+      <GraphSvg
+        layout={layout}
+        edges={scenarioMeta.beat_graph.edges}
+        selectedId={selectedBeatId}
+        onSelect={onSelectBeat}
+      />
     </div>
   );
 }
@@ -120,8 +96,6 @@ function computeLayout(
   const eligibleStatus = new Map<string, "eligible" | "blocked" | "retired" | "deferred">();
   for (const e of status.eligibleNow) eligibleStatus.set(e.beat_id, e.status);
 
-  // Discover threads in first-appearance order. Stable for visual
-  // consistency: re-renders won't shuffle lanes around.
   const threads: string[] = [];
   const beatsByThread = new Map<string, BeatMeta[]>();
   for (const node of graph.nodes) {
@@ -140,10 +114,6 @@ function computeLayout(
     beats.forEach((meta, beatIdx) => {
       const x = PADDING + LANE_LABEL_W + beatIdx * (NODE_W + NODE_GAP_X);
       const y = PADDING + threadIdx * (NODE_H + LANE_GAP_Y);
-      // Eligibility wins over fired — `eligible` is the verdict for
-      // *this* tick, so a beat that just fired this tick is still
-      // green here (matching the eligible-row dot). It only goes gray
-      // once it's no longer in `eligible` on a later tick.
       let s: Status = "structural";
       if (eligibleStatus.get(meta.id) === "eligible") s = "eligible";
       else if (eligibleStatus.get(meta.id) === "blocked") s = "blocked";
@@ -198,18 +168,13 @@ function LegendSwatch({ className, label }: { className: string; label: string }
 }
 
 function GraphSvg({
-  layout,
-  edges,
-  selectedId,
-  onSelect,
+  layout, edges, selectedId, onSelect,
 }: {
   layout: ComputedLayout;
   edges: { from: string; to: string; kind: "structural" | "mutex" }[];
   selectedId: string | null;
   onSelect: (id: string | null) => void;
 }) {
-  // De-duplicate edges by (from,to,kind) — backend may emit duplicates if
-  // a beat references the same upstream more than once across nested gates.
   const uniqEdges = useMemo(() => {
     const seen = new Set<string>();
     return edges.filter((e) => {
@@ -224,22 +189,13 @@ function GraphSvg({
     <svg
       viewBox={`0 0 ${layout.width} ${layout.height}`}
       preserveAspectRatio="xMidYMid meet"
-      style={{ width: "100%", height: "auto", maxHeight: "78vh", display: "block" }}
+      style={{ width: "100%", height: "auto", maxHeight: "60vh", display: "block" }}
     >
       <defs>
-        <marker
-          id="arrow"
-          markerWidth="6"
-          markerHeight="6"
-          refX="5"
-          refY="3"
-          orient="auto"
-          markerUnits="strokeWidth"
-        >
+        <marker id="arrow-dock" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto" markerUnits="strokeWidth">
           <path d="M0,0 L0,6 L5,3 z" fill="currentColor" />
         </marker>
       </defs>
-      {/* lane labels */}
       {layout.threads.map((thread, i) => {
         const y = PADDING + i * (NODE_H + LANE_GAP_Y) + NODE_H / 2;
         return (
@@ -254,7 +210,6 @@ function GraphSvg({
           </text>
         );
       })}
-      {/* edges first, so nodes paint on top */}
       {uniqEdges.map((edge, i) => {
         const a = layout.byId[edge.from];
         const b = layout.byId[edge.to];
@@ -269,9 +224,13 @@ function GraphSvg({
           />
         );
       })}
-      {/* nodes */}
       {layout.nodes.map((n) => (
-        <NodeRect key={n.id} node={n} selected={selectedId === n.id} onSelect={onSelect} />
+        <NodeRect
+          key={n.id}
+          node={n}
+          selected={selectedId === n.id}
+          onSelect={onSelect}
+        />
       ))}
     </svg>
   );
@@ -282,8 +241,6 @@ function NodeRect({
 }: { node: NodeLayout; selected: boolean; onSelect: (id: string | null) => void }) {
   const fill = nodeFill(node.status);
   const stroke = nodeStroke(node.status, selected);
-  // Strip thread prefix for label compactness — the lane already
-  // identifies the thread, repeating it on every node is noise.
   const localLabel = node.id.includes(".") ? node.id.split(".").slice(1).join(".") : node.id;
   return (
     <g
@@ -311,22 +268,13 @@ function NodeRect({
         textAnchor="middle"
         className="pointer-events-none fill-text font-mono text-[8px]"
       >
-        {localLabel.length > 14 ? localLabel.slice(0, 13) + "…" : localLabel}
+        {localLabel.length > 12 ? localLabel.slice(0, 11) + "…" : localLabel}
       </text>
-      {/* small flag glyphs in the corner */}
       {node.meta.is_scene && (
-        <text
-          x={node.x + 3}
-          y={node.y + 7}
-          className="pointer-events-none fill-text-muted font-mono text-[6px]"
-        >∞</text>
+        <text x={node.x + 3} y={node.y + 7} className="pointer-events-none fill-text-muted font-mono text-[6px]">∞</text>
       )}
       {node.meta.ends_session && (
-        <text
-          x={node.x + node.w - 7}
-          y={node.y + 7}
-          className="pointer-events-none fill-meter-hot font-mono text-[6px]"
-        >⊣</text>
+        <text x={node.x + node.w - 7} y={node.y + 7} className="pointer-events-none fill-meter-hot font-mono text-[6px]">⊣</text>
       )}
     </g>
   );
@@ -335,12 +283,10 @@ function NodeRect({
 function EdgePath({
   a, b, kind, highlighted,
 }: { a: NodeLayout; b: NodeLayout; kind: "structural" | "mutex"; highlighted: boolean }) {
-  // Source = right edge of A; target = left edge of B (with arrow head)
   const x1 = a.x + a.w;
   const y1 = a.y + a.h / 2;
   const x2 = b.x;
   const y2 = b.y + b.h / 2;
-  // Cubic curve so cross-lane edges don't slice through nodes.
   const dx = Math.max(20, (x2 - x1) / 2);
   const d = `M ${x1},${y1} C ${x1 + dx},${y1} ${x2 - dx},${y2} ${x2},${y2}`;
   const color = kind === "mutex" ? "var(--meter-warn)" : "var(--text-muted)";
@@ -352,7 +298,7 @@ function EdgePath({
       strokeWidth={highlighted ? 1.5 : 0.75}
       strokeDasharray={kind === "mutex" ? "3 2" : undefined}
       style={{ color }}
-      markerEnd={kind === "structural" ? "url(#arrow)" : undefined}
+      markerEnd={kind === "structural" ? "url(#arrow-dock)" : undefined}
       opacity={highlighted ? 1 : 0.55}
     />
   );
@@ -376,73 +322,4 @@ function nodeStroke(status: Status, selected: boolean): string {
     case "blocked": return "var(--meter-warn)";
     default: return "var(--border)";
   }
-}
-
-function NodeDetail({ meta, onClose }: { meta: BeatMeta; onClose: () => void }) {
-  return (
-    <div className="rounded border border-border/50 bg-bg-elevated/60 p-2 text-[10px]">
-      <div className="flex items-center justify-between">
-        <span className="font-mono text-text">{meta.id}</span>
-        <button
-          type="button"
-          onClick={onClose}
-          className="text-text-muted hover:text-text"
-          aria-label="close"
-        >×</button>
-      </div>
-      <div className="mt-1 space-y-0.5 text-text-muted">
-        <div>npc: <span className="text-text">{meta.npc}</span></div>
-        <div>thread: <span className="text-text">{meta.thread}</span></div>
-        <div className="flex flex-wrap gap-1">
-          {meta.is_scene && <Pill>scene</Pill>}
-          {meta.ends_session && <Pill tone="hot">terminal</Pill>}
-          {meta.pre_authored && <Pill>pre-authored</Pill>}
-          {meta.validate_facts && <Pill>fact-checked</Pill>}
-        </div>
-        {meta.summary && <div className="mt-1 text-text">{meta.summary}</div>}
-      </div>
-    </div>
-  );
-}
-
-function Pill({ children, tone = "neutral" }: { children: React.ReactNode; tone?: "neutral" | "hot" }) {
-  return (
-    <span
-      className={clsx(
-        "rounded px-1.5 py-0.5 text-[9px] uppercase tracking-wider",
-        tone === "hot"
-          ? "bg-meter-hot/20 text-meter-hot"
-          : "bg-bg/60 text-text-muted",
-      )}
-    >
-      {children}
-    </span>
-  );
-}
-
-function FullscreenModal({
-  children, onClose,
-}: { children: React.ReactNode; onClose: () => void }) {
-  return (
-    <div
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40"
-      onClick={onClose}
-    >
-      <div
-        onClick={(e) => e.stopPropagation()}
-        className="flex max-h-[90vh] w-[90vw] flex-col gap-2 overflow-auto rounded-lg border border-border bg-bg p-4 shadow-xl"
-      >
-        <div className="flex items-center justify-between">
-          <span className="text-[10px] uppercase tracking-wider text-text-muted">scenario graph</span>
-          <button
-            type="button"
-            onClick={onClose}
-            className="text-text-muted hover:text-text"
-            aria-label="close"
-          >×</button>
-        </div>
-        {children}
-      </div>
-    </div>
-  );
 }

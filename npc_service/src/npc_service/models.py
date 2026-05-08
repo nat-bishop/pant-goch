@@ -1108,6 +1108,33 @@ class QualityDelta(BaseModel):
     source: str
 
 
+class BeatEvaluation(BaseModel):
+    """Per-beat predicate evaluation against current state, populated for
+    EVERY beat in the scenario by `evaluate_all_beats`. Differs from
+    `BeatEligibility` (per-tick scheduling) — this carries the full
+    entry_when + exit_when traces so the debug Beats inspector can render
+    every atom's pass/fail for any beat the author selects, including
+    already-fired one_shots and structurally-gated terminals.
+
+    Status reflects the beat's standing at end-of-tick:
+      - `fired`    — beat.id ∈ state.fired_beat_ids (one_shot done, or
+                     scene whose exit_when finally satisfied)
+      - `eligible` — every precondition passes, beat not yet fired
+      - `blocked`  — at least one precondition fails
+
+    `entry_traces` is parallel to `beat.preconditions` (one trace per
+    precondition; AND-of-all is satisfied iff every entry is `passed`).
+    `exit_traces` is parallel to `beat.spec.exit_when` and is empty for
+    one_shot beats.
+    """
+
+    beat_id: str
+    status: Literal["fired", "eligible", "blocked"]
+    is_scene: bool
+    entry_traces: list[PredicateTrace] = Field(default_factory=list)
+    exit_traces: list[PredicateTrace] = Field(default_factory=list)
+
+
 class CanonDropRecord(BaseModel):
     """One extractor candidate that did NOT get promoted to player_canon,
     paired with the reason. Surfaced in the debug overlay so authors can
@@ -1188,6 +1215,12 @@ class TickDecision(BaseModel):
     # graph color nodes without the frontend having to accumulate firings
     # itself (and lets it recover correctly after a page reload).
     fired_beat_ids: list[str] = Field(default_factory=list)
+    # Per-beat predicate evaluation against post-tick state, covering EVERY
+    # beat in the scenario (not just the eligible+value-blocked subset in
+    # `eligible`). Drives the debug Beats inspector — lets the author
+    # select any beat (including already-fired one_shots and
+    # structurally-gated terminals) and see entry_when/exit_when atom-by-atom.
+    beats_evaluation: list[BeatEvaluation] = Field(default_factory=list)
 
 
 # `PredicateTrace` self-references via `children`; rebuild so Pydantic resolves

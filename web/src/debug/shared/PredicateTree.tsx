@@ -4,7 +4,7 @@
 // crashes loudly in DEV if they ever drift rather than degrading.
 
 import clsx from "clsx";
-import type { Predicate, PredicateTrace } from "../api";
+import type { Predicate, PredicateTrace } from "../../api";
 
 interface PredicateTreeProps {
   predicate: Predicate;

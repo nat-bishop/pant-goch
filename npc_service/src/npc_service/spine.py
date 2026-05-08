@@ -28,12 +28,15 @@ Authoring order is not load-bearing for selection.
 """
 from __future__ import annotations
 
+from typing import Literal
+
 import logfire
 
 from .models import (
     AxisResult,
     Beat,
     BeatEligibility,
+    BeatEvaluation,
     BeatFired,
     Effect,
     InboxState,
@@ -510,6 +513,49 @@ def find_due_beats(
         still_pending.append(pb)
     state.pending_beats = still_pending
     return eligible, report
+
+
+def evaluate_all_beats(state: InboxState, scenario: Scenario) -> list[BeatEvaluation]:
+    """Trace every beat's preconditions + exit_when against current state.
+
+    Differs from `find_due_beats` in three ways:
+      1. No pruning — every beat in `scenario.beats` produces an entry
+         (already-fired one_shots, structurally-blocked downstream beats,
+         retired scenes).
+      2. Returns a parallel trace per precondition (and per exit_when entry
+         on scenes), not just the first failing one. The Beats inspector
+         renders the full AND-list with each atom colored by its own
+         pass/fail.
+      3. No `pending_beats` requirement — operates on the static
+         `scenario.beats` set, so it works even after a beat has been
+         pruned from `pending_beats` post-fire.
+
+    Reuses `evaluate_predicate_with_trace` for every atom — single source
+    of truth for predicate semantics.
+    """
+    out: list[BeatEvaluation] = []
+    for beat in scenario.beats:
+        is_fired = beat.id in state.fired_beat_ids
+        entry_traces = [
+            evaluate_predicate_with_trace(p, state)[1] for p in beat.preconditions
+        ]
+        exit_traces = [
+            evaluate_predicate_with_trace(p, state)[1] for p in beat.spec.exit_when
+        ]
+        if is_fired:
+            status: Literal["fired", "eligible", "blocked"] = "fired"
+        elif all(t.passed for t in entry_traces):
+            status = "eligible"
+        else:
+            status = "blocked"
+        out.append(BeatEvaluation(
+            beat_id=beat.id,
+            status=status,
+            is_scene=beat.kind == "scene",
+            entry_traces=entry_traces,
+            exit_traces=exit_traces,
+        ))
+    return out
 
 
 def scene_exit_satisfied(beat: Beat, state: InboxState) -> bool:
