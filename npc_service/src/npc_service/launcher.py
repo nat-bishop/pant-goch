@@ -140,6 +140,8 @@ class LlamaConfig:
     ctx: int
     extra_args: list[str]
     ngl: int
+    n_parallel: int
+    kv_unified: bool
 
 
 def _exe_dir() -> Path:
@@ -185,6 +187,8 @@ def resolve_config(settings: Settings | None = None) -> LlamaConfig:
         ctx=s.llama_ctx,
         extra_args=s.llama_extra_args.split() if s.llama_extra_args else [],
         ngl=s.llama_ngl,
+        n_parallel=s.llama_n_parallel,
+        kv_unified=s.llama_kv_unified,
     )
 
 
@@ -202,7 +206,10 @@ def _build_command(cfg: LlamaConfig) -> list[str]:
         "--reasoning", "on",  # Per Gemma 4 best practices; reasoning-format keeps it out of body
         "--reasoning-format", "deepseek",  # Pulls thinking into `reasoning_content` (separate field)
         "-ngl", str(cfg.ngl),
+        "-np", str(cfg.n_parallel),
     ]
+    if cfg.kv_unified:
+        cmd.append("--kv-unified")
     cmd += cfg.extra_args
     return cmd
 
