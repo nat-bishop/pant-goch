@@ -11,12 +11,19 @@ See **`README.md`** for stack, run/test commands, scenario authoring, project la
 - `npc_service/src/npc_service/main.py` — FastAPI endpoints, SSE streaming, beat dispatch (Director picks one beat per tick).
 - `npc_service/src/npc_service/models.py` — Pydantic schemas (authoring + runtime + DTOs).
 - `npc_service/scenario.yaml` — content layer. The engine is content-agnostic.
+- `npc_service/scripts/asp_encoder.py` + `analyze_scenario.py` — static reachability analyzer. Encodes the scenario as Answer-Set Programming, runs clingo in brave-mode (computes the union of all stable models in one pass, ~75× over per-model enumeration). Sub-second on production. See "Static analysis" below.
 - `npc_service/tests/fixtures/test_scenario.yaml` — minimal Continuity-Program-shaped scenario used by `test_app.py` so app-wiring tests stay decoupled from production story content.
 - `web/src/store.ts`, `web/src/hooks/useStreamSend.ts`, `web/src/App.tsx` — bulk of the frontend.
 
+## Static analysis (encoder mirrors spine)
+
+- `make lint-scenario` — fast, spec-only rules (cross-references, effect validation, authoring constraints). Findings link to `npc_service/scripts/lint_rules.md`.
+- `make analyze-scenario` — clingo-backed reachability. Reports unreachable beats, orphan effects (writes nothing reads), orphan predicates (reads nothing writes), bound mismatches (predicate threshold outside proven quality range), and `analysis-incomplete` if the solver hits its time limit. Writes a JSON sidecar to `npc_service/_analysis/scenario.json`. Run both before committing scenario YAML.
+- `npc_service/tests/test_encoder_engine_consistency.py` is the **drift detector**: hand-authored scenarios drive the engine across multiple picker policies and assert `engine_fired ⊆ encoder_reached`. The encoder may over-approximate; it must never under-approximate. **When spine semantics change (predicate evaluation, effect application), the encoder must change in lockstep or this suite fails** — that's the load-bearing safety net.
+
 ## Authoring vocabulary
 
-The schema is in `npc_service/src/npc_service/models.py`; existing patterns live in `npc_service/scenario.yaml`. Run `make lint-scenario` before committing scenario YAML changes — its findings link into `npc_service/scripts/lint_rules.md` for the rule's rationale.
+The schema is in `npc_service/src/npc_service/models.py`; existing patterns live in `npc_service/scenario.yaml`. Run `make lint-scenario` (fast spec rules) and `make analyze-scenario` (reachability) before committing scenario YAML changes — both link findings into `npc_service/scripts/lint_rules.md` for the rule's rationale.
 
 ## Invariants worth knowing
 
@@ -28,6 +35,7 @@ The schema is in `npc_service/src/npc_service/models.py`; existing patterns live
 - **Terminal beats run the chat agent in epilogue mode.** `_fire_beat` routes `ends_session=True` chat-driven beats through `_render_via_epilogue_agent`, which calls the same chat agent with `ChatDeps.epilogue_digest` populated. The agent's `_epilogue_framing_block` and `_epilogue_digest_block` instructions decorators only emit content when the digest is set, so closing emails get a different framing (commitments + classifier history + fired-beat order + recent player replies) without a second agent definition.
 - **Player canon is extractor-only, REPLACE on collision, anti-hallucination guarded.** `state.player_canon` is written *only* by `apply_canon_extraction` (driven by `extractor_agent` output). Each candidate carries a `literal_text_quote` that MUST be a verbatim substring of the player's reply — `_send_stream` drops any candidate whose quote isn't anchored before promoting. Salience threshold (default 0.5) filters speculation; later mentions of the same key replace earlier (so "actually call me Robert" canonically replaces "Bob"). Predicates read canon via `PlayerCanonExists`; the chat agent reads a top-K snapshot via `_player_canon_block` (ranked by `(decay ** turns_since_origin) × salience`); the epilogue digest gets the full ledger.
 - **`TickDecision` is the per-tick audit trail.** `_tick` builds one `TickDecision` per scheduler invocation containing eligibility report, selection method (none/sole/director), Director rationale (when ≥2 eligible), all quality deltas this tick (literal effects + classify writes), and what fired. It's used three ways: span attributes on the tick logfire span (queryable in the Logfire UI), per-tick console log, and the `tick_decision` SSE event consumed by the DEV-only `DebugPanel`. The boot tick discards its decision (no SSE consumer).
+- **Adding a `Predicate` variant takes 5 coordinated edits** — see the contract block above the `Predicate` union in `models.py`. Variants inherit `_PredicateLeaf` (evaluated against state directly) or `_PredicateComposite` (must implement `children()` yielding sub-predicates). The `iter_predicate_leaves(pred)` helper in `models.py` is the single composite-traversal point — most analysis-side walkers (orphan detection, profile, canon-key collection in `analyze_scenario.py`) consume it and auto-handle new variants. The 5 mandatory updates: (1) define the class + add to the union (models.py), (2) extend `evaluate_predicate` and `describe_predicate` (spine.py — both end with `assert_never`), (3) extend `PredicateRegistry.register` and `_emit_predicate_holds_rules` (asp_encoder.py), (4) add a drift test (test_encoder_engine_consistency.py).
 
 ## Running tests
 
