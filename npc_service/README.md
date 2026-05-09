@@ -1,10 +1,6 @@
 # npc_service
 
-FastAPI sidecar that drives the field-asset agents for the spy-handler
-game. One Pydantic AI `Agent` per asset persona, plus one shared
-dialogue-options agent. Manages the `llama-server` (llama.cpp)
-lifecycle. Streams agent text deltas + state + timeline events over
-SSE.
+FastAPI sidecar for Inbox. Owns the deterministic spine (`spine.py`), runs six Pydantic AI agents (`agents.py`) on a single managed `llama-server` (Gemma 4 E4B Q8_0), and streams the reply path to the React frontend over SSE. See the top-level `README.md` for the game design + project layout, and `CLAUDE.md` for engine invariants.
 
 ## Quick start (dev)
 
@@ -12,29 +8,17 @@ SSE.
 cd npc_service
 uv sync
 
-# Option A — let the sidecar manage llama-server
+# Option A — sidecar manages llama-server itself (default)
 uv run python -m npc_service
 
-# Option B — run llama-server yourself in another terminal
-LAUNCH_LLAMA=false uv run python -m npc_service
+# Option B — run llama-server in another terminal, sidecar attaches
+LAUNCH_LLAMA=false uv run python -m npc_service     # in this terminal
+uv run python -m npc_service.run_llama              # in a sibling terminal
 ```
 
-Option B is easier for iteration: leave llama-server running, restart
-only the sidecar. Reference command for llama-server (matches what
-the sidecar spawns):
+Option B is the iterate-fast path: leave llama running, restart only the sidecar. `run_llama.py` shares `launcher.build_command` with the lifespan path so the argv can't drift between Makefile-launched and sidecar-launched llama.
 
-```bash
-llama-server \
-  -m ../models/gemma-4-E4B-it-Q8_0.gguf \
-  --host 127.0.0.1 --port 8080 \
-  -c 32768 --jinja --reasoning on --reasoning-format deepseek -ngl 99
-```
-
-`--jinja` is required for Gemma's chat template. `--reasoning on
---reasoning-format deepseek` keeps Gemma 4 E-models in thinking-mode
-(they're trained for it) but routes the thoughts into a separate
-`reasoning_content` field on the response instead of bleeding into
-the body. The bundled `launcher.py` sets all three automatically.
+The flags `--jinja --reasoning on --reasoning-format deepseek -ngl 99 -np 128 --kv-unified` on llama-server are non-negotiable on Gemma 4 E-models. Without `--jinja` the chat template doesn't load. Without the reasoning settings you get a 19K-token monologue inside the body. `-np 128 --kv-unified` lets the server serve the engine's six concurrent agent calls without per-slot KV blowing VRAM. The bundled launcher sets all of them.
 
 ## Verify
 
@@ -48,165 +32,82 @@ curl -s -X POST http://localhost:8080/v1/chat/completions \
 curl -s http://127.0.0.1:8000/health
 curl -s http://127.0.0.1:8000/scenario | jq .
 curl -s http://127.0.0.1:8000/state | jq .
-curl -s 'http://127.0.0.1:8000/options?agent_id=magpie' | jq .
+curl -s http://127.0.0.1:8000/inbox | jq .
 
-# action with live SSE (-N disables curl buffering — important)
-curl -N -X POST http://127.0.0.1:8000/action \
+# Send a player reply (SSE; -N disables curl buffering)
+curl -N -X POST http://127.0.0.1:8000/send \
   -H "Content-Type: application/json" \
-  -d '{"agent_id":"magpie","line":"Status?"}'
+  -d '{"thread_id":"aria.continuity","reply_to_email_id":"<some-id>","body":"Hi."}'
 ```
-
-Expected `/action` output: a sequence of
-`data: {"type":"text","agent_id":"magpie","text":"..."}` events
-arriving smoothly, then `data: {"type":"state",...}`, zero or more
-`data: {"type":"timeline",...}` events if a threshold was crossed,
-then `data: {"type":"done"}`.
 
 ## Endpoints
 
 | Method | Path | Notes |
 |---|---|---|
-| GET | `/health` | liveness probe (used by Godot to gate boot) |
-| GET | `/scenario` | scenario data minus `known_facts`, `seed_exchanges`, `deflection_style`, `world_state` |
-| GET | `/state` | live public game state (per-agent last-contact, action budget, ended flag) |
-| POST | `/action` | SSE — text deltas (per-channel), state event, timeline events, done. Body: `{agent_id, line}` |
-| GET | `/options?agent_id=X` | 2–5 LLM-generated dialogue picks for the named channel; read-only over `HISTORIES[X]` |
-| GET | `/events` | SSE — game-end notifications + reset signals (timeline events flow inline through `/action`) |
+| GET  | `/health` | liveness |
+| GET  | `/scenario` | scenario data (sanitised — author-only fields stripped) |
+| GET  | `/scenario_meta` | display_name + email_address per NPC; cheap probe for the chat header |
+| GET  | `/state` | live `InboxState` — qualities, action counter, fired beats, ended flag |
+| GET  | `/inbox` | rendered email list (chronological, with read flags) |
+| GET  | `/thread/{thread_id}` | per-thread email + reply log |
+| POST | `/open` | mark email read; mutates no qualities |
+| POST | `/send` | SSE — player reply triggers a tick (extractor + classifier in parallel, beat selection, chat-agent render). Streams `email_emitted`, `tick_decision`, `error` (on chat failure), `done`. |
+| GET  | `/debug/scenario` | (DEV) scenario AST for the debug panel |
+| GET  | `/debug/session/events` | (DEV) committed event log for the active session |
+| GET  | `/debug/session/state_at` | (DEV) state replayed up to event N |
+| POST | `/debug/session/save` | (DEV) snapshot session events to JSONL |
+| POST | `/debug/session/load` | (DEV) replay JSONL into a fresh session |
 
-## Env vars
+## Configuration
 
-Loaded via `pydantic-settings` (see `src/npc_service/config.py`) from
-the environment and an optional `.env` at the repo root.
+Everything lives on a `Settings(BaseSettings)` class in `src/npc_service/config.py` — pydantic-settings handles typed parsing, env-file loading, and case-insensitive snake_case → uppercase name coercion. `Settings()` is re-instantiated at each entry point (lifespan, uvicorn bootstrap, playtest boot) so test fixtures' `monkeypatch.setenv(...)` calls bind on the next construction.
+
+In practice four things actually get toggled — by tests, by `make sidecar`, or by the opt-in persistence feature:
 
 | Var | Default | Purpose |
 |---|---|---|
-| `LAUNCH_LLAMA` | `true` | Set `false` to skip auto-launch and run llama-server yourself |
-| `LLAMA_PORT` | `8080` | llama-server port |
-| `LLAMA_CTX` | `32768` | Context window |
-| `LLAMA_NGL` | `99` | GPU layers (-ngl); drop on GPU OOM |
-| `LLAMA_EXTRA_ARGS` | (unset) | Whitespace-split extra args appended verbatim |
-| `LLAMA_SERVER_BIN` | `<repo>/vendor/llama.cpp/llama-server[.exe]` | llama-server binary path |
-| `LLAMA_MODEL_PATH` | `<repo>/models/gemma-4-E4B-it-Q8_0.gguf` | Local GGUF; falls back to HF download |
-| `LLAMA_HF_REPO` | `unsloth/gemma-4-E4B-it-GGUF:Q8_0` | HF source when no local model |
-| `LLAMA_BASE_URL` | `http://127.0.0.1:${LLAMA_PORT}/v1` | Override only when pointing at a remote llama |
-| `NPC_SERVICE_PORT` | `8000` | sidecar port |
-| `NPC_LOG_LEVEL` | `info` | Python log level |
-| `SCENARIO_PATH` | `<sidecarDir>/scenario.json` | Scenario data file |
-| `SUMMARY_TRIGGER_FRAC` | `0.8` | Compaction kicks in when a HISTORY would exceed this fraction of `LLAMA_CTX` |
-| `SUMMARY_TRIGGER_TOKENS` | `0` | Absolute compaction trigger override (0 = compute from frac) |
-| `SUMMARY_KEEP_TAIL` | `4` | Trailing messages kept verbatim past the recap |
-| `ACTION_STREAM_TIMEOUT_SECONDS` | `120.0` | Whole-stream timeout for `/action` |
-| `OPTIONS_TIMEOUT_SECONDS` | `30.0` | Whole-call timeout for `/options` |
-| `LOGFIRE_TOKEN` | (unset) | Logfire write token; the sidecar also reads `npc_service/.logfire/logfire_credentials.json` |
+| `LAUNCH_LLAMA` | `true` | Set `false` to skip auto-launch (used by `make sidecar` and tests with a stubbed health probe) |
+| `SCENARIO_PATH` | (unset) | Override scenario YAML path; default falls back to `npc_service/scenario.yaml`. Tests set this per-fixture; the playtester sets it from CLI |
+| `NPC_LOGFIRE_CONSOLE` | `true` | `false` silences Logfire console output (conftest sets this for clean pytest captures) |
+| `SESSION_SAVE_PATH` | (unset) | When set, append committed events as JSONL and replay on boot. Unset → in-memory only |
 
-## Architecture notes
+The rest — `LLAMA_PORT`, `LLAMA_CTX`, `LLAMA_NGL`, `LLAMA_N_PARALLEL`, `LLAMA_KV_UNIFIED`, `LLAMA_HF_REPO`, `LLAMA_BASE_URL`, `EVAL_LLAMA_PORT`, `EVAL_LLAMA_BASE_URL`, `LLAMA_SERVER_BIN`, `LLAMA_MODEL_PATH`, `LLAMA_EXTRA_ARGS`, `NPC_SERVICE_PORT`, `NPC_LOG_LEVEL`, `HISTORY_COMPACT_FRAC`, `HISTORY_COMPACT_KEEP_TAIL` — are all readable from env via the same `Settings` class but tuned once and otherwise left alone. See `config.py` for the full list, defaults, and per-field rationale.
 
-- **Where llama-server lifecycle lives**: Python lifespan owns it.
-  The Godot side spawns *one* child (Python); Python spawns
-  llama-server as its own child. Single bootstrap point at the game
-  exe; single shutdown signal cascades. All LLM lifecycle code lives
-  next to the code that uses it.
-- **One `Agent` per asset persona**: each agent gets its own
-  `summarize_when_large` history processor over its own
-  `HISTORIES[id]`, so per-channel compaction is independent. A single
-  shared `OPTIONS_AGENT` is parameterised via the per-call user
-  prompt — keeps the system-prompt prefix cache-warm across channel
-  switches.
-- **`ToolOutput(AgentReport)` + `max_tokens=512`**: each agent emits
-  a structured `AgentReport` (currently a single `report_text`
-  field). Tool-output mode plus the per-turn token cap keeps replies
-  bounded and parses cleanly first try; an earlier `NativeOutput`
-  variant with no per-field cap blew turns up to 19K tokens.
-  Validation against the schema is the wire contract — keeps the
-  option open to grow more typed fields later without re-plumbing.
-- **`OPTIONS_AGENT` uses `PromptedOutput`, not `ToolOutput`**:
-  llama.cpp's `peg-gemma4` tool-call grammar generator emits a
-  malformed `thought ::=` rule on the `OptionsResponse` schema and
-  crashes GBNF install. `PromptedOutput` sends no `tools=[...]` so
-  `peg-gemma4` is never activated; the schema lives in the system
-  prompt and Pydantic AI parses the JSON client-side.
-  `output_retries=2` covers the rare bad-JSON turn. The per-asset
-  `AGENTS` keep `ToolOutput` — the flatter `AgentReport` schema
-  doesn't trip the bug.
-- **Why `seed_exchanges` are NOT seeded into history**: the agent is
-  configured with `output_type=ToolOutput(AgentReport)`, enforcing a
-  tool-call schema. Pre-populating history with a plain-text
-  `ModelResponse` would teach the model to emit text instead of
-  tool-calling. We embed `seed_exchanges` as in-prompt examples in
-  the system prompt instead.
-- **`opening_transmission` is rendered, not generated**: the string
-  lives in `scenario.json`. The server seeds it into `HISTORIES[id]`
-  as a scene-update so the agent treats it as their own prior
-  context; the *client* GETs `/scenario` and renders the string into
-  the chat at boot. The agent never speaks the text aloud (no LLM
-  call) — it's the player's first message in that channel.
-- **Why we discard partial agent turns on cancel**: if the player
-  switches channels or hits ABORT mid-stream, the in-flight response
-  is incomplete and state mutations would be unsafe. Persistence of
-  `HISTORIES[id]` and the `action_count` increment only happen after
-  the stream-output loop completes. Cancellation jumps straight to
-  the `finally` block via `CancelledError`, bypassing both.
-- **`/options` is read-only over the channel's history**: the call's
-  `result.all_messages()` is *discarded*. Writing it back would leak
-  the "Generate options for asset X." user prompt into the channel's
-  HISTORY and confuse the agent on the next turn. `ACTION_LOCK` is
-  global across channels so `/options` never reads `HISTORIES[id]`
-  mid-mutation.
-- **Timeline events fire per-channel**: each `TimelineEvent` has an
-  `injections: dict[agent_id, str]` map. When `action_count` crosses
-  the event's `after_actions` threshold, scene-update messages are
-  appended to *only* the addressed channels' HISTORIES — not all of
-  them. Validators at scenario load enforce that every key resolves
-  to a known agent_id.
+`LOGFIRE_TOKEN` is read directly via `os.getenv` and is also picked up from `npc_service/.logfire/logfire_credentials.json` if not set.
 
-## Ship-time bundling (out of MVP scope, but path-resolution is ship-ready)
+## Architecture
+
+- **Lifespan owns llama-server.** `launcher.start_llama` spawns it as a child process, enrolls it in a Windows Job Object with `KILL_ON_JOB_CLOSE` so it dies if the sidecar crashes, then waits on `/health` before building agents. `LAUNCH_LLAMA=false` skips the spawn and just probes — used by `make sidecar` and tests. The argv is rendered from `launcher.build_command(LlamaConfig)`; both the sidecar and `make llama` go through it so flags can't drift.
+- **One model handle, six agents.** A single `OpenAIChatModel` (Gemma 4 E4B via llama-server's OpenAI-compatible endpoint) is shared across `chat_agent`, `classifier_agent`, `extractor_agent`, `summary_agent`, `fact_checker_agent`, `director_agent`. Profile is built with `OpenAIModelProfile(openai_chat_send_back_thinking_parts=False)` — without it pydantic-ai re-serialises parsed `ThinkingPart`s as `<think>…</think>` in next-turn assistant content, violating Google's Gemma 4 multi-turn rule and inflating prompt tokens.
+- **The chat agent does double duty.** `ChatDeps.epilogue_digest` flips it into closing-email mode via conditional `@instructions` decorators (`_epilogue_framing_block`, `_epilogue_digest_block`) — terminal beats with `ends_session: true` route through `_render_via_epilogue_agent` instead of a second agent definition. Per-run instructions inject the dossier, optional plot directive, current commitments, and a top-K player-canon snapshot.
+- **`/send` runs the extractor and classifier in parallel.** `asyncio.gather` makes them latency-neutral. Extractor harvests open-ended specifics into `state.player_canon` (substring-anchor + salience-threshold); classifier judges the player's reply against the replied-to beat's `classify_reply_axes`. Director runs only when `find_due_beats` returns ≥2 eligible — short-circuited otherwise.
+- **State writes are owned by `spine.py`.** Three entry points: `apply_literal_effects` (beat-fire-time `value:` writes), `apply_classify_effect` (classifier verdict → quality, at next-reply time), `apply_canon_extraction` (extractor candidates → `state.player_canon`, REPLACE on collision, salience-thresholded). The chat agent never writes state — its only side effect is the fact-checker `ModelRetry` loop, which can refuse an output but not mutate.
+- **History compaction lives on the chat agent's history processor.** Token budget = `LLAMA_CTX × HISTORY_COMPACT_FRAC` (32K × 0.8 = 26,214 tokens at boot). When a per-thread `message_history` would exceed it, the oldest messages are summarised by `summary_agent` and replaced with a single recap; `HISTORY_COMPACT_KEEP_TAIL` recent messages stay verbatim past the recap. The token counter calls llama-server's `/tokenize` endpoint (root path, NOT under `/v1/`); tests stub it to zero so the unit suite doesn't need a live llama.
+- **Per-tick audit trail.** Every scheduler tick produces a `TickDecision` (eligibility report, selection method `none`/`sole`/`continue`/`director`, Director rationale when applicable, all quality deltas, what fired). It surfaces three ways: as Logfire span attributes, as a console log line, and as a `tick_decision` SSE event consumed by the DEV debug panel.
+- **Sessions are per-game; the engine is process-singleton.** `SCENARIO`, `AGENTS`, `LLAMA_PROC`, `SETTINGS` are loaded once in lifespan and never mutate. Per-game state lives in `SESSIONS[session_id]` — each carries its own `InboxState`, event log, and `asyncio.Lock`. Endpoints resolve a session via `Depends(get_session)`. The single-player default is `SESSIONS["default"]`, lazily created on first access.
+
+## Ship-time bundling
 
 Steam install layout target:
 
 ```
 <steam>/<game>/
 ├── smallville.exe
-├── llama-server.exe
-├── models/gemma-4-E4B-it-Q8_0.gguf
+├── vendor/llama.cpp/llama-server.exe
+├── models/ggml-org-gemma-4-E4B-it-Q8_0.gguf
 ├── python/python.exe       # python-embed-amd64
 ├── lib/                    # `uv pip install --target lib --no-deps -r ...`
 └── npc_service/
 ```
 
-`launcher.py:_exe_dir()` resolves to `<steam>/<game>/` whether dev or
-ship; `LLAMA_SERVER_BIN` and `LLAMA_MODEL_PATH` default off that.
+`launcher._exe_dir()` resolves to `<steam>/<game>/` whether dev or ship; `resolve_config()` derives the binary and model paths from that base, so no env override is needed.
 
 ## Troubleshooting
 
-- **Sidecar starts but `/health` reports `agents_ready: []`**: lifespan
-  failed midway. Check sidecar logs for the traceback.
-- **`llama-server failed to come up`**: check `npc_service/logs/llama-*.log`
-  for the underlying llama-server stderr. Common causes: port in use,
-  GPU OOM (drop `LLAMA_NGL`), missing `--jinja` (we set it; if you've
-  overridden `LLAMA_EXTRA_ARGS`, make sure it's still there).
-- **Agent turns are slow / runaway generation / `/action` stalls past
-  120s**: an unbounded `report_text` field plus `NativeOutput` mode
-  used to fill replies indefinitely and seed each turn into more
-  verbosity. The shipped sidecar uses `ToolOutput(AgentReport)` plus
-  `model_settings={"max_tokens": 512}`, which keeps turns bounded. If
-  you switch back to `NativeOutput`, also add `Field(max_length=...)`
-  on `report_text`.
-- **Empty agent responses / 18K-token "responses"**: `--reasoning on
-  --reasoning-format deepseek` is missing from llama-server. Without
-  the deepseek format, Gemma 4 E-models spend their token budget
-  inside an inline `<think>` block in the body. The bundled launcher
-  passes both flags automatically; if you run llama-server yourself,
-  include them.
-- **Old thoughts re-serialised into prior-turn assistant content**:
-  `OpenAIModelProfile(openai_chat_send_back_thinking_parts=False)` is
-  missing on the `OpenAIChatModel` constructor in `main.py`. Default
-  'auto' rewraps parsed `ThinkingPart`s as `<think>…</think>` in
-  historical content on the next call.
-- **`/options` returns `{"options": []}` repeatedly**: usually a
-  validation error in the LLM's response (PromptedOutput JSON failed
-  the `OptionsResponse` schema, e.g. fewer than 2 picks or duplicate
-  tags). Logged at WARNING. The Godot client falls into its
-  "No options available." path.
-- **Streaming feels chunky**: confirm `X-Accel-Buffering: no` is on
-  the response and curl was run with `-N`. On the C# side, confirm
-  `HttpCompletionOption.ResponseHeadersRead`.
+- **Sidecar boots but `/health` is unhappy** — lifespan failed midway. Check sidecar logs for the traceback.
+- **`llama-server failed to come up`** — check `npc_service/logs/llama-*.log` for the underlying stderr. Common causes: port `:8080` in use (`make kill-zombies` from the repo root), GPU OOM (drop `LLAMA_NGL` in config.py), corrupt GGUF (delete and re-download with `make download-model`).
+- **Empty agent responses or 19K-token monologues** — `--jinja`, `--reasoning on`, or `--reasoning-format deepseek` missing on llama-server. The bundled launcher sets all three; if you run llama-server outside `make llama` / `python -m npc_service.run_llama`, include them.
+- **Prior-turn `<think>` blocks leaking into request bodies** — `OpenAIModelProfile(openai_chat_send_back_thinking_parts=False)` is missing on the `OpenAIChatModel` constructor. Verify in Logfire by inspecting any chat-agent POST span's `http.request.body.text`.
+- **`request (N tokens) exceeds the available context size (M)`** — at startup the launcher passes `-c 32768 --kv-unified -np 128`, which gives any single slot the full 32K. Without `--kv-unified` each slot would get `32768 / 128 = 256` tokens; without it AND `-np N>1`, each slot gets `32768/N`. If you see this error, you're running llama-server with stale flags — restart via `python -m npc_service.run_llama`.
+- **`No module named npc_service`** — run `uv sync` from `npc_service/`.
+- **Streaming arrives in big bursts** — verify your reverse proxy isn't buffering. The server sets `X-Accel-Buffering: no` on the `/send` SSE response.

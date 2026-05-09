@@ -2,7 +2,7 @@
 
 Exists so the Makefile and the sidecar share one definition of llama-server's
 argv (`launcher.build_command`). Without this, the Makefile's hardcoded flags
-drift from `Settings` — e.g., `-np 8` in Make vs. `llama_n_parallel=128` in
+drift from `config.py` — e.g., `-np 8` in Make vs. `LLAMA_N_PARALLEL=128` in
 config.py, which silently bottlenecks the playtester.
 
 Stdio is inherited so llama's logs stream to the foreground terminal and

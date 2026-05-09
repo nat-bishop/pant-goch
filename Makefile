@@ -4,18 +4,31 @@ LLAMA_BIN   := vendor/llama.cpp/llama-server.exe
 LLAMA_HOST  := 127.0.0.1
 LLAMA_PORT  := 8080
 
+# Eval llama: Qwen 3.6 35B-A3B (MoE, ~3B active) on ik_llama.cpp. Powers the
+# synthetic-player agent and every LLM judge in the playtester. Different
+# family from Gemma (the SUT) to mitigate same-family preference leakage in
+# judging — see arxiv 2502.01534. ik_llama.cpp is a llama.cpp fork with
+# fused MoE kernels; see npc_service/scripts/playtest/README.md for the
+# build/vendor instructions. -np 64 matches `--parallel 64` in the playtester.
+EVAL_MODEL      := models/Qwen3.6-35B-A3B-Q8_0.gguf
+EVAL_MODEL_URL  := https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/Qwen3.6-35B-A3B-Q8_0.gguf
+EVAL_LLAMA_BIN  := vendor/ik_llama.cpp/llama-server.exe
+EVAL_LLAMA_PORT := 8081
+
 .DEFAULT_GOAL := help
 
 .PHONY: help
 help:
 	@echo "Inbox targets:"
 	@echo "  make run             Boot sidecar (spawns llama) + web dev server in parallel"
-	@echo "  make download-model  Fetch the Gemma 4 E4B Q8_0 GGUF (~8 GB)"
-	@echo "  make llama           Run llama-server               (terminal 1)"
-	@echo "  make sidecar         Run Python sidecar, no llama   (terminal 2)"
-	@echo "  make web             Run Vite dev server            (terminal 3)"
-	@echo "  make test            Run pytest"
-	@echo "  make playtest        Run the LLM playtester (requires llama up)"
+	@echo "  make download-model       Fetch the Gemma 4 E4B Q8_0 GGUF (~8 GB)"
+	@echo "  make download-eval-model  Fetch the Qwen 3.6 35B-A3B Q8_0 GGUF (~37 GB)"
+	@echo "  make llama                Run engine llama-server (Gemma on :8080)"
+	@echo "  make llama-eval           Run eval llama-server (Qwen 35B-A3B on :8081, ik_llama.cpp)"
+	@echo "  make sidecar              Run Python sidecar, no llama   (terminal 2)"
+	@echo "  make web                  Run Vite dev server            (terminal 3)"
+	@echo "  make test                 Run pytest"
+	@echo "  make playtest             Run the LLM playtester (requires both llamas up)"
 	@echo "  make lint-scenario   Lint npc_service/scenario.yaml (fast; spec rules only)"
 	@echo "  make analyze-scenario  Run ASP-backed reachability analyzer (clingo; sub-second on 13b)"
 	@echo "  make typecheck       Run TS typecheck on web/"
@@ -38,6 +51,13 @@ $(MODEL):
 .PHONY: download-model
 download-model: $(MODEL)
 
+$(EVAL_MODEL):
+	mkdir -p models
+	curl -L -o $(EVAL_MODEL) $(EVAL_MODEL_URL)
+
+.PHONY: download-eval-model
+download-eval-model: $(EVAL_MODEL)
+
 # Boots llama-server via npc_service.run_llama so the argv comes from the
 # same `launcher.build_command` the sidecar uses. Don't reintroduce a
 # hardcoded llama-server invocation here — it will drift from Settings
@@ -45,6 +65,17 @@ download-model: $(MODEL)
 .PHONY: llama
 llama: $(MODEL)
 	cd npc_service && uv run python -m npc_service.run_llama
+
+# Eval llama: Qwen 3.6 35B-A3B (MoE) on ik_llama.cpp. Direct invocation —
+# launcher.build_command is Gemma-specific (--jinja, --reasoning on, --reasoning-format
+# deepseek). Qwen wants different flags. -np 64 matches the playtester's
+# --parallel 64 default. -c 32768 with --kv-unified pages the KV across
+# slots (~constant total VRAM regardless of -np). If ik_llama.cpp doesn't
+# support --kv-unified, drop -c to 16384 to halve KV — see playtest README
+# for the OOM fallback ladder.
+.PHONY: llama-eval
+llama-eval: $(EVAL_MODEL)
+	$(EVAL_LLAMA_BIN) -m $(EVAL_MODEL) --host $(LLAMA_HOST) --port $(EVAL_LLAMA_PORT) -c 32768 --jinja -ngl 99 -np 64 --kv-unified
 
 .PHONY: sidecar
 sidecar:
@@ -99,4 +130,4 @@ clean:
 
 .PHONY: kill-zombies
 kill-zombies:
-	@powershell -Command 'Get-NetTCPConnection -LocalPort 8000,8080,5173,5174,5175,5176 -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $$_.OwningProcess -Force -ErrorAction SilentlyContinue }; Write-Host "killed any processes holding :8000/:8080/:5173-5176"'
+	@powershell -Command 'Get-NetTCPConnection -LocalPort 8000,8080,8081,5173,5174,5175,5176 -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $$_.OwningProcess -Force -ErrorAction SilentlyContinue }; Write-Host "killed any processes holding :8000/:8080/:8081/:5173-5176"'

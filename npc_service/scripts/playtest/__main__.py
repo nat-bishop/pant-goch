@@ -4,7 +4,8 @@ Boots the engine against the local llama, runs every persona × seed
 combination through `run_session`, evaluates with pydantic-evals, and
 writes a JSON dump to `npc_service/_analysis/playtest_<timestamp>.json`.
 
-Errors out with a clear message if llama-server isn't reachable.
+Errors out with a clear message if either llama-server isn't reachable
+(engine on :8080, eval on :8081 — see README.md for the two-server setup).
 """
 from __future__ import annotations
 
@@ -20,13 +21,25 @@ _PKG_SRC = Path(__file__).resolve().parents[2] / "src"
 if _PKG_SRC.is_dir() and str(_PKG_SRC) not in sys.path:
     sys.path.insert(0, str(_PKG_SRC))
 
+from npc_service.config import EVAL_LLAMA_BASE_URL, LLAMA_BASE_URL
+
 from .evaluators import (
-    ARIA_VOICE_RUBRIC,
-    AriaVoiceJudge,
+    AriaRoleAdherence,
     BeatCoverage,
     CanonHarvested,
+    ChoiceMeaningfulness,
+    ClimaxLanding,
+    Closure,
+    DirectorAmbiguity,
+    EmailBodyShape,
+    OfficeToneAdherence,
+    OnboardingClarity,
+    PacingMilestones,
+    PydanticRetryCount,
     SessionCompleted,
+    StakesEscalation,
     TerminalReached,
+    TransitionMotivation,
     _require_evals,
 )
 from .llm_playtest import (
@@ -53,12 +66,9 @@ async def _run_all(
     (`-np N`). If `use_evals`, also build a pydantic-evals Dataset and
     run it (returns the report); otherwise just return raw SessionRecords.
     """
-    model = boot_engine_for_playtest()
-    player_agent = _build_player_agent(model)
+    _engine_model, eval_model = boot_engine_for_playtest()
+    player_agent = _build_player_agent(eval_model)
 
-    # Build (persona, seed) pairs so the seed forwarded to llama is stable
-    # per case — running the same case twice (e.g., post-prompt-change
-    # regression) produces the same scripted player inputs.
     case_specs: list[tuple[PersonaSpec, int]] = [
         (persona, seed_idx)
         for persona in personas
@@ -72,8 +82,6 @@ async def _run_all(
             async with sem:
                 return await run_session(
                     persona, player_agent=player_agent, max_sends=max_sends,
-                    # Hash to a stable 31-bit int so different personas at the
-                    # same seed_idx don't produce identical player scripts.
                     seed=hash((persona.name, seed_idx)) & 0x7FFFFFFF,
                 )
 
@@ -85,8 +93,6 @@ async def _run_all(
     _require_evals()
     from pydantic_evals import Case, Dataset  # type: ignore[import-not-found]
 
-    # `inputs` carries (persona, seed_idx) so `_eval` can forward the seed
-    # to run_session for stable player-input replays.
     cases: list[Case] = []
     for persona, seed_idx in case_specs:
         cases.append(Case(
@@ -103,10 +109,18 @@ async def _run_all(
             TerminalReached(),
             BeatCoverage(),
             CanonHarvested(),
-            # Custom judge instead of bare LLMJudge — bare LLMJudge json-dumps
-            # the entire SessionRecord (full transcript + tick decisions +
-            # final state) into the prompt, which blew the context window.
-            AriaVoiceJudge(rubric=ARIA_VOICE_RUBRIC, model=model),
+            PydanticRetryCount(),
+            PacingMilestones(),
+            DirectorAmbiguity(),
+            EmailBodyShape(),
+            AriaRoleAdherence(model=eval_model),
+            OfficeToneAdherence(model=eval_model),
+            TransitionMotivation(model=eval_model),
+            OnboardingClarity(model=eval_model),
+            StakesEscalation(model=eval_model),
+            ClimaxLanding(model=eval_model),
+            Closure(model=eval_model),
+            ChoiceMeaningfulness(model=eval_model),
         ],
     )
 
@@ -117,11 +131,7 @@ async def _run_all(
             seed=hash((persona.name, seed_idx)) & 0x7FFFFFFF,
         )
 
-    # `run_session` constructs its own Session — no shared module state —
-    # so cases can run concurrently up to llama-server's parallel-slot
-    # budget (configure with `-np N`).
     report = await dataset.evaluate(_eval, max_concurrency=parallel)
-    # Records are inside report; we still want a flat list for the JSON dump.
     records = [c.output for c in report.cases]  # type: ignore[attr-defined]
     return records, report
 
@@ -162,21 +172,36 @@ def main(argv: list[str] | None = None) -> int:
         help="Skip pydantic-evals; just run sessions and dump JSON.",
     )
     parser.add_argument(
-        "--llama-url", default="http://127.0.0.1:8080",
-        help="Llama-server base URL for the health probe (default: localhost:8080).",
+        "--engine-url", default=LLAMA_BASE_URL.removesuffix("/v1"),
+        help="Engine llama-server base URL (default from config: Gemma on :8080).",
+    )
+    parser.add_argument(
+        "--eval-url", default=EVAL_LLAMA_BASE_URL.removesuffix("/v1"),
+        help="Eval llama-server base URL (default from config: Qwen on :8081). "
+             "Drives the synthetic player and every LLM judge.",
     )
     parser.add_argument(
         "--parallel", type=int, default=64,
-        help="Max sessions to run concurrently (default: 64). Llama-server "
-             "must be booted with at least this many parallel slots — the "
-             "Pydantic default `llama_n_parallel=128` covers this.",
+        help="Max sessions to run concurrently (default: 64). BOTH llama-servers "
+             "must be booted with at least this many parallel slots — the engine "
+             "default LLAMA_N_PARALLEL=128 covers it; ensure `make llama-eval` "
+             "boots with `-np 64` to match.",
     )
     args = parser.parse_args(argv)
 
-    if not probe_llama(args.llama_url):
+    # Probe both servers before starting; clear error names which one is missing.
+    if not probe_llama(args.engine_url):
         print(
-            f"ERROR: llama-server not reachable at {args.llama_url}. "
+            f"ERROR: engine llama-server not reachable at {args.engine_url}. "
             "Start it with `make llama` from the repo root.",
+            file=sys.stderr,
+        )
+        return 2
+    if not probe_llama(args.eval_url):
+        print(
+            f"ERROR: eval llama-server not reachable at {args.eval_url}. "
+            "Start it with `make llama-eval` from the repo root (boots Qwen "
+            "3.6 35B-A3B on ik_llama.cpp at :8081).",
             file=sys.stderr,
         )
         return 2
@@ -190,7 +215,8 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     print(f"Loaded {len(personas)} personas: {[p.name for p in personas]}")
     print(f"Running {len(personas)} × {args.seeds} = "
-          f"{len(personas) * args.seeds} sessions (max_sends={args.max_sends})")
+          f"{len(personas) * args.seeds} sessions "
+          f"(max_sends={args.max_sends}, parallel={args.parallel})")
 
     records, report = asyncio.run(_run_all(
         personas=personas,

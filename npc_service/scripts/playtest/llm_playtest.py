@@ -221,13 +221,19 @@ async def run_session(
 # ───────────────────────── boot helper ─────────────────────────
 
 
-def boot_engine_for_playtest(scenario_path: str | None = None) -> OpenAIChatModel:
-    """Initialise `engine_main.SCENARIO` + `AGENTS` against the local llama
-    so the harness can call `record_send` / `process_send` directly. Mirrors
-    `lifespan`'s setup minus the FastAPI ceremony.
+def boot_engine_for_playtest(
+    scenario_path: str | None = None,
+) -> tuple[OpenAIChatModel, OpenAIChatModel]:
+    """Initialise `engine_main.SCENARIO` + `AGENTS` against the local engine
+    llama (Gemma on :8080), and build a separate model handle for the eval
+    llama (Qwen on :8081, served by ik_llama.cpp). Mirrors `lifespan`'s
+    setup minus the FastAPI ceremony.
 
-    Returns the constructed model so the caller can build other agents
-    (synthetic-player, LLMJudge) against the same llama.
+    Returns `(engine_model, eval_model)`. The engine model powers the SUT
+    agents (chat/classifier/extractor/summary/fact-checker/director). The
+    eval model powers the synthetic-player agent and every LLM judge —
+    different family from the engine to mitigate preference leakage when
+    judging.
     """
     settings = Settings()
     if scenario_path:
@@ -236,19 +242,27 @@ def boot_engine_for_playtest(scenario_path: str | None = None) -> OpenAIChatMode
         settings = Settings()
     path = settings.scenario_path or _default_scenario_path()
     engine_main.SCENARIO = load_scenario(path)
-    api_url = settings.llama_base_url or "http://127.0.0.1:8080/v1"
-    tokenize_url = api_url.removesuffix("/v1") + "/tokenize"
-    model = OpenAIChatModel(
+
+    engine_url = settings.llama_base_url or f"http://{settings.llama_host}:{settings.llama_port}/v1"
+    tokenize_url = engine_url.removesuffix("/v1") + "/tokenize"
+    engine_model = OpenAIChatModel(
         "gemma-4-e4b",
-        provider=OpenAIProvider(base_url=api_url, api_key="not-needed"),
+        provider=OpenAIProvider(base_url=engine_url, api_key="not-needed"),
     )
     engine_main.AGENTS = build_agents(
-        model,
+        engine_model,
         token_counter=make_llama_token_counter(tokenize_url),
         token_budget=int(settings.llama_ctx * settings.history_compact_frac),
         history_keep_tail=settings.history_compact_keep_tail,
     )
-    return model
+
+    eval_url = settings.eval_llama_base_url or f"http://{settings.llama_host}:{settings.eval_llama_port}/v1"
+    eval_model = OpenAIChatModel(
+        "qwen3.6-35b-a3b",
+        provider=OpenAIProvider(base_url=eval_url, api_key="not-needed"),
+    )
+
+    return engine_model, eval_model
 
 
 def _default_scenario_path() -> str:
@@ -258,9 +272,10 @@ def _default_scenario_path() -> str:
     )
 
 
-def probe_llama(base_url: str = "http://127.0.0.1:8080") -> bool:
-    """True if llama-server is reachable + healthy. Caller errors clearly
-    when False — the playtester is useless without the model."""
+def probe_llama(base_url: str) -> bool:
+    """True if llama-server is reachable + healthy at this URL. Caller
+    iterates over the {engine, eval} pair so the error message can name
+    which one is missing."""
     try:
         r = httpx.get(f"{base_url}/health", timeout=2.0)
         return r.status_code == 200

@@ -11,12 +11,11 @@ os.environ.setdefault("NPC_LOGFIRE_CONSOLE", "false")
 import httpx
 import pytest
 
+from npc_service.config import LLAMA_BASE_URL, LLAMA_HOST, LLAMA_PORT
+
 
 # ───────────────────────── live-llama integration fixtures ─────────────────────────
 
-LLAMA_HOST = os.getenv("LLAMA_HOST", "127.0.0.1")
-LLAMA_PORT = int(os.getenv("LLAMA_PORT", "8080"))
-LLAMA_BASE_URL = f"http://{LLAMA_HOST}:{LLAMA_PORT}/v1"
 LLAMA_TOKENIZE_URL = f"http://{LLAMA_HOST}:{LLAMA_PORT}/tokenize"
 
 
