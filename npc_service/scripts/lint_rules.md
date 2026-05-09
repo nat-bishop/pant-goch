@@ -37,16 +37,6 @@ Severity tiered:
 - `recent_classifier_value match=any` with disjoint value sets reads as soft overlap (correct: a multi-slot window can co-satisfy). The lint downgrades to INFO; you're not nagged unless the overlap is hard.
 - Anchored predicates inside `Or_` (the `*calibration_done` anchor) are correctly skipped from the analysis as non-discriminating — Or_ relaxes constraints, never tightens them, so a shared Or_ subtree doesn't disjoin two terminals.
 
-## validate-facts-on-scene
-
-**WHAT.** Any beat with both `kind: scene` and `spec.validate_facts: true` is `ERROR`.
-
-**WHY.** `validate_facts: true` runs the fact-checker agent on the chat agent's output, requesting a retry on any miss. That's one extra LLM call per render attempt. On a scene, the beat re-fires every tick until `exit_when` is satisfied — so the fact-checker runs every tick. **Unbounded LLM cost per scenario run.** Reserve `validate_facts` for `kind: one_shot` beats (terminals, pivotal forks).
-
-**SCOPE.** Sound. The Pydantic model allows the combination (`BeatSpec._validate_field_combinations` doesn't catch it); lint catches it.
-
-**FALSE POSITIVES.** None — the combination is always wrong.
-
 ## pre-authored-post-boot
 
 **WHAT.** Any beat with `spec.pre_authored_prose` set whose preconditions include a `player_replies_to_thread_gte` predicate with `value ≥ 1` is `ERROR`.
@@ -67,7 +57,7 @@ The lint **skips `spec.must_not`** — that list naturally contains forbidden ph
 
 **WHY.** If the dossier bans "monster" and the beat's `intent` says "Aria addresses the player as a monster," the chat agent will likely echo the word — the prompt itself contains it. Same for `must_include_facts`: phrasing the directive with forbidden words tells the agent those words are required.
 
-**SCOPE.** Lexical only. The lint catches quoted-token slips. Semantic bans (`"any acknowledgement that the Program means replacement, elimination, or firing"`) remain a playtest concern — `validate_facts: true` + the fact-checker + integration tests are the catch-net.
+**SCOPE.** Lexical only. The lint catches quoted-token slips. Semantic bans (`"any acknowledgement that the Program means replacement, elimination, or firing"`) remain a playtest concern — the fact-checker (which runs automatically on any beat declaring `must_include_facts` / `must_not`) plus integration tests are the catch-net.
 
 **FALSE POSITIVES.** Possible when:
 - A ban entry uses an idiosyncratic structure that the allow-list signal heuristic doesn't catch. Example: "the words 'X' and 'Y' (acceptable in epilogue mode only)" — no `use`/`but`/`only`/`always` keyword, so tokens get extracted as forbidden. Currently no such entries exist.

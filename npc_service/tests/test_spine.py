@@ -1059,17 +1059,22 @@ def test_load_rejects_recent_classifier_value_unknown_quality():
         Scenario.model_validate(_scenario_dict(beats=[beat]))
 
 
-def test_load_rejects_validate_facts_without_constraints():
-    beat = _plot_beat(spec={"validate_facts": True})
+def test_load_rejects_pre_authored_with_must_include_facts():
+    """`pre_authored_prose` ships verbatim with no chat-agent call to
+    validate, so pairing it with `must_include_facts` is authoring
+    confusion — load-time error."""
+    beat = _plot_beat(spec={
+        "pre_authored_prose": "Hi.",
+        "must_include_facts": ["thank the player"],
+    })
     with pytest.raises(ValidationError):
         Scenario.model_validate(_scenario_dict(beats=[beat]))
 
 
-def test_load_accepts_validate_facts_with_must_include_facts():
-    beat = _plot_beat(spec={
-        "must_include_facts": ["thank the player"],
-        "validate_facts": True,
-    })
+def test_load_accepts_must_include_facts_on_chat_driven_beat():
+    """A chat-driven beat (no pre_authored_prose) with must_include_facts
+    loads cleanly — the validator engages automatically at render time."""
+    beat = _plot_beat(spec={"must_include_facts": ["thank the player"]})
     Scenario.model_validate(_scenario_dict(beats=[beat]))
 
 

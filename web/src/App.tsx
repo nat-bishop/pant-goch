@@ -4,6 +4,7 @@ import { AppHeader } from "./components/AppHeader";
 import { ChatHeader } from "./components/ChatHeader";
 import { ChatSidebar } from "./components/ChatSidebar";
 import { DebugDock } from "./debug/DebugDock";
+import { DebugReopenHandle } from "./debug/DebugReopenHandle";
 import { MessageComposer } from "./components/MessageComposer";
 import { MessageList } from "./components/MessageList";
 import { useTheme } from "./hooks/useTheme";
@@ -18,6 +19,7 @@ export default function App() {
   const state = useStore((s) => s.state);
   const view = useStore((s) => s.view);
   const chatMessages = useStore((s) => s.chatMessages);
+  const debugDockOpen = useStore((s) => s.debugDockOpen);
 
   useTheme();
 
@@ -44,8 +46,9 @@ export default function App() {
         </div>
         {/* DEV-only right-side dock. Vite's import.meta.env.DEV is a static
             literal in production builds, so the entire DebugDock module
-            tree-shakes out of the prod bundle. */}
-        {import.meta.env.DEV && <DebugDock />}
+            tree-shakes out of the prod bundle. When closed, a thin handle
+            takes the slot so the user can reopen without a page reload. */}
+        {import.meta.env.DEV && (debugDockOpen ? <DebugDock /> : <DebugReopenHandle />)}
       </div>
     </div>
   );

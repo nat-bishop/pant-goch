@@ -41,6 +41,7 @@ export interface DebugSelection {
 
 const LS_KEY_TAB = "debug.tab";
 const LS_KEY_BEATS_VIEW = "debug.beatsView";
+const LS_KEY_DOCK_OPEN = "debug.dockOpen";
 
 function loadSelection(): DebugSelection {
   let tab: DebugTab = "pacing";
@@ -54,6 +55,14 @@ function loadSelection(): DebugSelection {
     // localStorage may throw in private-browsing; defaults are fine.
   }
   return { tab, beatsView, quality: null, beat: null };
+}
+
+function loadDockOpen(): boolean {
+  try {
+    return localStorage.getItem(LS_KEY_DOCK_OPEN) !== "false";
+  } catch {
+    return true;
+  }
 }
 
 interface Store {
@@ -75,7 +84,9 @@ interface Store {
   debugScenario: DebugScenario | null;
   tickHistory: TickDecision[];
   debugSelection: DebugSelection;
-  playtestNoteCount: number;
+  // Dock visibility is orthogonal to which tab/beat is selected — kept at
+  // the top level so closing the dock doesn't churn DebugSelection.
+  debugDockOpen: boolean;
 
   boot(): Promise<void>;
   refreshInbox(): Promise<void>;
@@ -85,7 +96,7 @@ interface Store {
   setTheme(theme: Theme): void;
   recordTickDecision(decision: TickDecision): void;
   setDebugSelection(patch: Partial<DebugSelection>): void;
-  bumpPlaytestNoteCount(): void;
+  setDebugDockOpen(open: boolean): void;
 }
 
 export const useStore = create<Store>()((set, get) => ({
@@ -103,7 +114,7 @@ export const useStore = create<Store>()((set, get) => ({
   debugScenario: null,
   tickHistory: [],
   debugSelection: loadSelection(),
-  playtestNoteCount: 0,
+  debugDockOpen: loadDockOpen(),
 
   async boot() {
     // React StrictMode double-mounts in dev; without this guard, boot() runs
@@ -228,7 +239,13 @@ export const useStore = create<Store>()((set, get) => ({
     }
   },
 
-  bumpPlaytestNoteCount() {
-    set({ playtestNoteCount: get().playtestNoteCount + 1 });
+  setDebugDockOpen(open) {
+    if (get().debugDockOpen === open) return;
+    set({ debugDockOpen: open });
+    try {
+      localStorage.setItem(LS_KEY_DOCK_OPEN, open ? "true" : "false");
+    } catch {
+      // localStorage may throw in private-browsing; in-memory still updates.
+    }
   },
 }));

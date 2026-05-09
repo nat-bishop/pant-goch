@@ -52,6 +52,20 @@ threads:
   - id: marcus
     npc: marcus
 
+# Scenario-scope classify effect with a `thread:` gate. Used by
+# test_thread_filter to assert that scenario-scope classify effects fire
+# only when the player's reply thread matches. No `when:` predicate so
+# the only filter is `thread`.
+effects:
+  - quality: engagement
+    op: set
+    thread: aria
+    classify:
+      question: |
+        Was the player's reply substantive (engaged) or thin (deflected)?
+      allowed_values: [engaged, deflected]
+      map: { engaged: 1.0, deflected: 0.0 }
+
 # Beat order matters under the test harness's first-eligible Director stub:
 # marcus.intro_scene listed BEFORE aria.scene so the stub picks Marcus on
 # the first aria-tick when both are eligible (lets us exercise the

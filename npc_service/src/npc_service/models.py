@@ -228,6 +228,14 @@ class Effect(BaseModel):
     `when` is an optional predicate gating the effect. For literal effects
     it's evaluated at fire time; for classify effects it's evaluated at
     reply time before applying the verdict.
+
+    `thread` is consulted ONLY for scenario-scope classify effects: the
+    effect fires only when the player's just-sent reply is on the named
+    thread. Beat-scope effects already inherit thread from their owning
+    beat, so this field is a no-op there. Use case: an always-on classify
+    directive whose question is keyed to one NPC's voice (e.g. an
+    Aria-flavored warm/cold read) shouldn't fire on player replies to
+    other NPCs.
     """
 
     quality: str = Field(min_length=1)
@@ -235,6 +243,7 @@ class Effect(BaseModel):
     classify: ClassifyDirective | None = None
     op: Literal["set", "add", "max", "min"] = "set"
     when: Predicate | None = None
+    thread: str | None = None
 
     @model_validator(mode="after")
     def _exactly_one_source(self) -> "Effect":
@@ -407,14 +416,6 @@ class BeatSpec(BaseModel):
     # branching the intent string per turn count.
     escalation_notes: str | None = None
 
-    # When True, the chat agent's output_validator runs the fact-checker
-    # agent against this beat's `must_include_facts` + `must_not` and
-    # raises ModelRetry on any miss/violation. Default False — every
-    # un-flagged beat skips the validator entirely (zero per-render LLM
-    # cost). Authors flag this on critical beats (terminals, pivotal
-    # forks); leave it off on chatty scenes or pre-authored beats.
-    validate_facts: bool = False
-
     @model_validator(mode="after")
     def _validate_field_combinations(self) -> "BeatSpec":
         if not self.intent.strip() and not self.pre_authored_prose:
@@ -422,16 +423,10 @@ class BeatSpec(BaseModel):
                 "BeatSpec: at least one of `intent` or `pre_authored_prose` "
                 "must be set."
             )
-        if self.validate_facts and not (self.must_include_facts or self.must_not):
+        if self.pre_authored_prose and (self.must_include_facts or self.must_not):
             raise ValueError(
-                "BeatSpec: validate_facts=True requires at least one entry "
-                "in must_include_facts or must_not — otherwise the validator "
-                "has nothing to check."
-            )
-        if self.pre_authored_prose and self.validate_facts:
-            raise ValueError(
-                "BeatSpec: validate_facts has no effect when "
-                "`pre_authored_prose` is set (the prose ships verbatim, "
+                "BeatSpec: must_include_facts / must_not have no effect "
+                "when `pre_authored_prose` is set (the prose ships verbatim, "
                 "no chat-agent output to validate)."
             )
         return self
@@ -1155,8 +1150,9 @@ class CanonDropRecord(BaseModel):
 
 class FactCheckAttempt(BaseModel):
     """One pass through the chat agent's fact-check validator on a beat
-    flagged `validate_facts: true`. `flagged` attempts trigger ModelRetry
-    so the chat agent re-renders; `passed` attempts let the email through.
+    that declared `must_include_facts` or `must_not`. `flagged` attempts
+    trigger ModelRetry so the chat agent re-renders; `passed` attempts
+    let the email through.
     """
 
     status: Literal["passed", "flagged"]
@@ -1165,9 +1161,9 @@ class FactCheckAttempt(BaseModel):
 
 
 class FactCheckTrace(BaseModel):
-    """Per-fire fact-check trace, populated only when the firing beat had
-    `validate_facts: true`. Empty `attempts` is impossible — the validator
-    always runs at least once when enabled.
+    """Per-fire fact-check trace, populated only when the firing beat
+    declared `must_include_facts` or `must_not`. Empty `attempts` is
+    impossible — the validator always runs at least once when enabled.
 
     The frontend reads `attempts[-1].status` to decide whether to render a
     pass badge or a refusal indicator, and `len(attempts)` for retry count.
@@ -1204,7 +1200,8 @@ class TickDecision(BaseModel):
     # repopulates). Keys map to a flat dict shape mirroring PlayerCanonEntry
     # plus the key — frontend renders without needing the dataclass.
     player_canon: dict[str, dict] = Field(default_factory=dict)
-    # Populated only when the fired beat had `validate_facts: true`.
+    # Populated only when the fired beat declared must_include_facts or
+    # must_not (the conditions that engage the fact-checker validator).
     fact_check: FactCheckTrace | None = None
     # Per-axis classifier history snapshot, capped per axis. Built from
     # state.replies after this tick's classifier writes — so the most

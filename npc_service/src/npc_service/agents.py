@@ -7,11 +7,11 @@ lands as a `TextPart` (clean for subsequent turns), and dynamic
 `@instructions` keyed on `ChatDeps` to layer dossier, optional plot directive,
 current commitments, player canon, and — when ChatDeps carries an
 `epilogue_digest` — the closing-email framing plus the per-run digest. An
-`@output_validator` engages ONLY when the firing beat sets
-`spec.validate_facts=True`: it runs the fact-checker against the beat's
-must_include_facts / must_not lists and
-raises ModelRetry on any miss. Default-off keeps loop beats free of
-validator latency.
+`@output_validator` engages whenever the firing beat declares
+`must_include_facts` or `must_not`: it runs the fact-checker against
+those lists and raises ModelRetry on any miss/violation. Beats with
+neither list (e.g. the freeform chat-turn fallback) skip the validator
+entirely.
 
 CLASSIFIER_AGENT is one-shot, ToolOutput. It returns a list of per-quality
 results (one entry per classify-typed `Effect` in scope on the player's
@@ -37,10 +37,10 @@ handle as the chat agent (we don't have a separate cheaper provider in this
 local-llama setup), so the cost is one extra LLM round-trip on the rare
 overflow turn — preferred over drop-oldest because rapport carries forward.
 
-FACT_CHECKER_AGENT is opt-in, ToolOutput, and only invoked from the chat
-agent's output validator on beats with `spec.validate_facts=True`. Returns
-`{missing_facts, violations}`; both empty → output passes through; either
-non-empty → ModelRetry. Pay the cost only on critical beats.
+FACT_CHECKER_AGENT is ToolOutput, invoked from the chat agent's output
+validator on every beat that declares `must_include_facts` or
+`must_not`. Returns `{missing_facts, violations}`; both empty → output
+passes through; either non-empty → ModelRetry.
 
 DIRECTOR_AGENT picks one beat per tick from the currently-eligible set. The
 output schema is constructed PER CALL with `chosen_beat_id` constrained to
@@ -142,8 +142,8 @@ class ChatDeps:
     outbound_mode: bool = False
     # When non-None, the output validator appends one FactCheckAttempt
     # per pass so the debug overlay can render refusals + retry counts.
-    # `_fire_beat` is the single caller that sets this (only on beats
-    # that opted in via `validate_facts: true`).
+    # `_fire_beat` sets this on beats that declare must_include_facts or
+    # must_not; otherwise None and the validator skips trace work.
     fact_check_log: list[FactCheckAttempt] | None = None
 
 
@@ -451,10 +451,8 @@ def _attach_chat_deps_instructions(
         ctx: RunContext[ChatDeps], output: str
     ) -> str:
         spec = ctx.deps.plot_directive
-        if spec is None or not spec.validate_facts:
+        if spec is None or (not spec.must_include_facts and not spec.must_not):
             return output
-        if not spec.must_include_facts and not spec.must_not:
-            return output  # load-time validator should reject this; defensive
         # `ctx.retries` is a `dict[str, int]` in current Pydantic AI (per-tool
         # retry counters). Sum the values for an overall attempt count and
         # 1-index for human-readable logs ("attempt 1" reads better than
@@ -505,9 +503,9 @@ def build_agents(
     """Construct the four agents. The chat agent's per-run customization is
     in `@instructions` decorators below — they read from `ctx.deps` (ChatDeps)
     so a single shared agent handles every NPC and every turn type. The
-    `@output_validator` engages only when the firing beat sets
-    `spec.validate_facts=True`; the fact-checker agent is referenced via
-    closure so the validator never needs it on `ChatDeps`.
+    `@output_validator` engages whenever the firing beat declares
+    `must_include_facts` or `must_not`; the fact-checker agent is
+    referenced via closure so the validator never needs it on `ChatDeps`.
 
     When `token_counter` and `token_budget` are both provided, the chat agent
     gets a `history_processors` callable that summarises the oldest messages

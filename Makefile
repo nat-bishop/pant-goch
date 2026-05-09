@@ -15,7 +15,9 @@ help:
 	@echo "  make sidecar         Run Python sidecar, no llama   (terminal 2)"
 	@echo "  make web             Run Vite dev server            (terminal 3)"
 	@echo "  make test            Run pytest"
-	@echo "  make lint-scenario   Lint npc_service/scenario.yaml"
+	@echo "  make playtest        Run the LLM playtester (requires llama up)"
+	@echo "  make lint-scenario   Lint npc_service/scenario.yaml (fast; spec rules only)"
+	@echo "  make analyze-scenario  Run static state-space analyzer (slower; reachability/bounds)"
 	@echo "  make typecheck       Run TS typecheck on web/"
 	@echo "  make clean           Remove __pycache__ and logs/*.log"
 	@echo "  make kill-zombies    Force-kill stragglers on :8000/:8080/:5173-5176 (recovery)"
@@ -54,17 +56,19 @@ test:
 
 # Scenario linter. Runs against `npc_service/scenario.yaml` by default.
 # Loads the scenario via the Pydantic models (so `_cross_references`
-# parse errors surface first), then applies seven author-facing checks
-# the model doesn't catch on its own. See `npc_service/scripts/lint_rules.md`
+# parse errors surface first), then applies the author-facing checks the
+# model doesn't catch on its own. Fast — spec rules only. The state-space
+# analyzer is opt-in via `--analyzer`; run `make analyze-scenario` to
+# invoke it as its own target. See `npc_service/scripts/lint_rules.md`
 # for what each check does and why.
 .PHONY: lint-scenario
 lint-scenario:
 	cd npc_service && uv run python scripts/lint_scenario.py scenario.yaml
 
-# Static analyzer alone (without spec lint). Used for fine-grained CI runs
-# or when iterating on analyzer behavior. `make lint-scenario` already
-# includes the analyzer, so this is rarely the right target outside
-# analyzer development.
+# Static state-space analyzer. Slower than `lint-scenario` because it
+# enumerates reachable states; produces reachability, quality bounds,
+# and orphan-effect findings the spec lint can't. Run before commit /
+# in CI alongside `lint-scenario`.
 .PHONY: analyze-scenario
 analyze-scenario:
 	cd npc_service && uv run python scripts/analyze_scenario.py scenario.yaml

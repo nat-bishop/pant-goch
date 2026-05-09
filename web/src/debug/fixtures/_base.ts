@@ -51,37 +51,37 @@ export const baseScenarioMeta: ScenarioMeta = {
   beats: {
     "aria.welcome": {
       id: "aria.welcome", npc: "aria", thread: "aria",
-      is_scene: false, ends_session: false, pre_authored: true, validate_facts: false,
+      is_scene: false, ends_session: false, pre_authored: true, fact_checked: false,
       summary: "Welcome to the Continuity Program.",
     },
     "aria.calibration_scene": {
       id: "aria.calibration_scene", npc: "aria", thread: "aria",
-      is_scene: true, ends_session: false, pre_authored: false, validate_facts: false,
+      is_scene: true, ends_session: false, pre_authored: false, fact_checked: false,
       summary: "Calibration question loop until name canonized or 4 replies.",
     },
     "aria.bargain_scene": {
       id: "aria.bargain_scene", npc: "aria", thread: "aria",
-      is_scene: true, ends_session: false, pre_authored: false, validate_facts: false,
+      is_scene: true, ends_session: false, pre_authored: false, fact_checked: false,
       summary: "Aria asks for permission to reply on the player's behalf.",
     },
     "aria.recognition_scene": {
       id: "aria.recognition_scene", npc: "aria", thread: "aria",
-      is_scene: true, ends_session: false, pre_authored: false, validate_facts: false,
+      is_scene: true, ends_session: false, pre_authored: false, fact_checked: false,
       summary: "Aria asks the player how they would like to be addressed.",
     },
     "cpo.dispatch_first": {
       id: "cpo.dispatch_first", npc: "cpo", thread: "cpo",
-      is_scene: false, ends_session: false, pre_authored: false, validate_facts: false,
+      is_scene: false, ends_session: false, pre_authored: false, fact_checked: false,
       summary: "First Continuity Program Office contact — institutional voice.",
     },
     "aria.complete_integration": {
       id: "aria.complete_integration", npc: "aria", thread: "aria",
-      is_scene: false, ends_session: true, pre_authored: false, validate_facts: false,
+      is_scene: false, ends_session: true, pre_authored: false, fact_checked: false,
       summary: "Warm integration ending — calibration succeeded.",
     },
     "aria.complete_exile": {
       id: "aria.complete_exile", npc: "aria", thread: "aria",
-      is_scene: false, ends_session: true, pre_authored: false, validate_facts: false,
+      is_scene: false, ends_session: true, pre_authored: false, fact_checked: false,
       summary: "Cold ending — sustained refusal, exile.",
     },
   },

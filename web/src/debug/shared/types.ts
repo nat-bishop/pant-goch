@@ -15,6 +15,9 @@ export interface DebugPanelsProps {
   debugScenario: DebugScenario;
   selection: DebugSelection;
   onSelectionChange: (patch: Partial<DebugSelection>) => void;
+  // Optional: only DebugDock supplies this. Fixtures (DebugPreview) leave
+  // it undefined so cells don't render a close button.
+  onClose?: () => void;
 }
 
 export type PanelProps = DebugPanelsProps;

@@ -77,6 +77,14 @@ def client(monkeypatch):
             # each call hangs on httpx connect/read until timing out — adding
             # ~5-7 s per send and dragging the suite past 4 minutes.
             stack.enter_context(main.AGENTS.extractor_agent.override(model=_test_model_for_extractor_empty()))
+            # Fact-checker auto-engages whenever a beat declares
+            # must_include_facts / must_not (the test fixture's loop +
+            # terminals all do). Default to a clean pass so the validator
+            # is a no-op for tests that don't care; per-test overrides
+            # exercise the flagged path.
+            stack.enter_context(main.AGENTS.fact_checker_agent.override(
+                model=_test_model_for_fact_checker_clean(),
+            ))
             yield c
 
 
@@ -112,6 +120,16 @@ def _test_model_for_classifier_multi(results: list[dict]) -> TestModel:
     defense-in-depth paths (missing / duplicate / unknown axes)."""
     return TestModel(
         custom_output_text=json.dumps({"response": results}),
+        profile=_NATIVE_OUTPUT_PROFILE,
+    )
+
+
+def _test_model_for_fact_checker_clean() -> TestModel:
+    """Fact-checker that always returns a clean verdict (no missing facts,
+    no violations). Used as the default in the `client` fixture so the
+    auto-engaged validator no-ops unless a test explicitly overrides."""
+    return TestModel(
+        custom_output_text=json.dumps({"missing_facts": [], "violations": []}),
         profile=_NATIVE_OUTPUT_PROFILE,
     )
 
@@ -588,28 +606,7 @@ def test_apply_classification_appends_to_active_reply_via_send(client):
     assert last_reply.classifier_results[0].value == "engaged"
 
 
-# ───────────────────────── render validator (fact-checker) opt-in ─────────────────────────
-
-
-def test_fact_checker_not_called_for_default_off_beats(client):
-    """validate_facts=False (the default for aria.loop) → fact_checker_agent
-    is never invoked. Asserted via call counter on the agent's run."""
-    call_counter = {"count": 0}
-    real_run = main.AGENTS.fact_checker_agent.run
-
-    async def _counting_run(*args, **kwargs):
-        call_counter["count"] += 1
-        return await real_run(*args, **kwargs)
-
-    main.AGENTS.fact_checker_agent.run = _counting_run  # type: ignore[method-assign]
-    try:
-        welcome = client.get("/inbox").json()["folders"]["Inbox"][0]
-        list(consume_sse(client.stream("POST", "/send", json={
-            "in_reply_to": welcome["id"], "recipient": "Aria", "body": "hi",
-        })))
-    finally:
-        main.AGENTS.fact_checker_agent.run = real_run  # type: ignore[method-assign]
-    assert call_counter["count"] == 0
+# ───────────────────────── render validator (fact-checker) ─────────────────────────
 
 
 def _validator_test_bundle():
@@ -628,15 +625,14 @@ def _validator_test_deps() -> ChatDeps:
         plot_directive=BeatSpec(
             intent="x",
             must_include_facts=["thank the player"],
-            validate_facts=True,
         ),
     )
 
 
 @pytest.mark.asyncio
 async def test_validator_passes_when_fact_checker_returns_clean():
-    """validate_facts=True + fact-checker returning empty lists → body
-    passes through unchanged."""
+    """must_include_facts present + fact-checker returning empty lists →
+    body passes through unchanged."""
     bundle = _validator_test_bundle()
     with ExitStack() as stack:
         stack.enter_context(bundle.chat_agent.override(
@@ -656,9 +652,10 @@ async def test_validator_passes_when_fact_checker_returns_clean():
 
 @pytest.mark.asyncio
 async def test_validator_raises_when_fact_checker_flags():
-    """validate_facts=True + non-empty missing_facts → ModelRetry. With
-    chat_agent retries=2, exhaustion surfaces as UnexpectedModelBehavior;
-    capturing the raise confirms the validator engaged."""
+    """must_include_facts present + non-empty missing_facts → ModelRetry.
+    With chat_agent retries=2, exhaustion surfaces as
+    UnexpectedModelBehavior; capturing the raise confirms the validator
+    engaged."""
     bundle = _validator_test_bundle()
     with ExitStack() as stack:
         stack.enter_context(bundle.chat_agent.override(
@@ -676,7 +673,7 @@ async def test_validator_raises_when_fact_checker_flags():
             await bundle.chat_agent.run("hello", deps=_validator_test_deps())
 
 
-# ───────────────────────── /scenario_meta + /playtest_note ─────────────────────────
+# ───────────────────────── /scenario_meta ─────────────────────────
 
 
 def test_scenario_meta_returns_qualities_beats_and_graph(client):
@@ -797,36 +794,6 @@ def test_send_emits_canon_and_classifier_history_on_decision(client):
     # aria.loop. The welcome enters fired_beat_ids; the loop (kind=scene)
     # does NOT until its exit_when is satisfied.
     assert "aria.welcome" in decision["fired_beat_ids"]
-
-
-def test_playtest_note_writes_jsonl_line(client, tmp_path, monkeypatch):
-    """POST /playtest_note appends one JSONL record to a per-session file
-    under playtest_notes/. Snapshots last_tick_decision + qualities +
-    canon + recent emails so a "wait what was happening" question is
-    answerable from the file alone."""
-    monkeypatch.chdir(tmp_path)
-    # Drive at least one tick so LAST_TICK_DECISION is populated.
-    welcome = client.get("/inbox").json()["folders"]["Inbox"][0]
-    list(consume_sse(client.stream("POST", "/send", json={
-        "in_reply_to": welcome["id"], "recipient": "Aria", "body": "hi",
-    })))
-    res = client.post("/playtest_note", json={"note": "noticed odd phrasing"}).json()
-    assert res["note_count"] == 1
-    notes_path = tmp_path / "playtest_notes" / f"{main.SESSION_ID}.jsonl"
-    assert notes_path.exists()
-    line = notes_path.read_text(encoding="utf-8").strip()
-    rec = json.loads(line)
-    assert rec["note"] == "noticed odd phrasing"
-    assert rec["last_tick_decision"]["fired_beat_id"] == "aria.loop"
-    assert "qualities" in rec
-    assert "player_canon" in rec
-    assert isinstance(rec["recent_emails"], list)
-
-
-def test_playtest_note_rejects_empty_body(client):
-    """Empty notes are useless — reject at the schema layer (Field(min_length=1))."""
-    r = client.post("/playtest_note", json={"note": ""})
-    assert r.status_code == 422
 
 
 # ───────────────────────── helpers ─────────────────────────

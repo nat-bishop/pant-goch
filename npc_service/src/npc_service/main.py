@@ -22,7 +22,7 @@ from logfire import ConsoleOptions
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exception_handlers import http_exception_handler
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from pydantic_ai.messages import ModelResponse, TextPart
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
@@ -145,16 +145,6 @@ SETTINGS: Settings | None = None  # populated at lifespan boot; read by hot-path
 LLAMA_PROC: subprocess.Popen | None = None
 ACTION_LOCK = asyncio.Lock()  # serialises mutating endpoints
 EXTERNAL_LLAMA_PROBE_TIMEOUT_SECONDS = 2.0  # tests set this to 0.1 for fast boot
-# Most recent tick decision, updated from `_tick` after every scheduler
-# walk. Read by `/playtest_note` so a one-click annotation captures the
-# engine state at the moment the player flagged something. Held globally
-# rather than threaded through ChatDeps because note submission is
-# completely out-of-band from the /send pipeline.
-LAST_TICK_DECISION: TickDecision | None = None
-# Boot-stamped per-process id used to bucket playtest notes. One JSONL file
-# per server boot under `playtest_notes/{SESSION_ID}.jsonl`. Solo-dev
-# workflow: a fresh process is "this playthrough"; no rotation, no retention.
-SESSION_ID: str | None = None
 
 
 # ───────────────────────── lifespan ─────────────────────────
@@ -162,14 +152,11 @@ SESSION_ID: str | None = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    global SCENARIO, STATE, AGENTS, SETTINGS, LLAMA_PROC, SESSION_ID
+    global SCENARIO, STATE, AGENTS, SETTINGS, LLAMA_PROC
     global _DEBUG_SCENARIO_CACHE
 
     settings = Settings()
     SETTINGS = settings
-    # Per-boot id used to bucket playtest notes; uuid suffix disambiguates
-    # boots that happen within the same second.
-    SESSION_ID = f"{dt.datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
     scenario_path = settings.scenario_path or Path(__file__).resolve().parents[2] / "scenario.yaml"
     logfire.info("loading scenario from {path}", path=str(scenario_path))
     SCENARIO = load_scenario(scenario_path)
@@ -295,7 +282,8 @@ async def _fire_beat(
       - `scene_turn`: 1-indexed fire count for scene beats (computed
         after the email is appended), None for one-shots.
       - `fact_check`: per-attempt validator trace; None unless the beat
-        had `validate_facts: true` AND wasn't pre-authored.
+        declared `must_include_facts` or `must_not` AND wasn't
+        pre-authored.
 
     Render paths:
     - `spec.pre_authored_prose` set → ship verbatim (no LLM call). The
@@ -384,10 +372,11 @@ async def _fire_beat(
                 beat_id=beat.id,
                 mode="outbound" if is_outbound else "reply",
             )
-        # None when the beat didn't opt in — the validator's append-when-non-None
-        # check is the single mechanism for keeping unflagged beats trace-free.
+        # None when the beat declares no must_include_facts / must_not — the
+        # validator's append-when-non-None check is the single mechanism for
+        # keeping un-validated beats trace-free.
         fact_check_log: list[FactCheckAttempt] | None = (
-            [] if beat.spec.validate_facts else None
+            [] if (beat.spec.must_include_facts or beat.spec.must_not) else None
         )
         if beat.ends_session:
             email = await _render_via_epilogue_agent(
@@ -411,10 +400,10 @@ async def _fire_beat(
                 fact_check_log=fact_check_log,
             )
         if fact_check_log is not None:
-            # Empty list means the validator no-op'd (shouldn't happen since
-            # validate_facts requires must_include_facts/must_not at load
-            # time) — leave fact_check None in that case rather than ship
-            # an attempts=[] payload that's semantically misleading.
+            # Empty list means the validator no-op'd (shouldn't happen — we
+            # only allocate fact_check_log when must_include_facts / must_not
+            # is non-empty) — leave fact_check None in that case rather than
+            # ship an attempts=[] payload that's semantically misleading.
             fact_check = FactCheckTrace(attempts=fact_check_log) if fact_check_log else None
 
     STATE.emails.append(email)
@@ -1029,11 +1018,6 @@ async def _tick(
         span.set_attribute("fired_beat_id", fired_beat_id)
         span.set_attribute("quality_delta_count", len(quality_deltas))
         span.set_attribute("new_email_count", len(new_emails))
-        # Stash for /playtest_note so out-of-band annotations can snapshot
-        # the engine state at the moment of capture without reaching back
-        # through SSE history.
-        global LAST_TICK_DECISION
-        LAST_TICK_DECISION = decision
         return new_emails, plot_fired_threads, decision
 
 
@@ -1082,82 +1066,6 @@ async def get_state() -> dict:
     if STATE is None:
         raise HTTPException(503, "state not initialised")
     return STATE.public_view()
-
-
-class PlaytestNoteRequest(BaseModel):
-    note: str = Field(min_length=1)
-
-
-@app.post("/playtest_note")
-async def post_playtest_note(req: PlaytestNoteRequest) -> dict:
-    """Append one playtest annotation to a per-boot JSONL file.
-
-    Snapshots {timestamp, note, last_tick_decision, qualities, canon,
-    recent_emails (last 10 with body)} so a "wait what was happening when I
-    noticed this" question is answerable from the file alone — no need to
-    re-correlate with logs.
-
-    Returns the count of notes written this session so the panel can show
-    a session counter ("3 notes saved").
-    """
-    if STATE is None or SESSION_ID is None:
-        raise HTTPException(503, "state not initialised")
-    notes_dir = Path("playtest_notes")
-    notes_dir.mkdir(exist_ok=True)
-    notes_path = notes_dir / f"{SESSION_ID}.jsonl"
-    payload = {
-        "timestamp": dt.datetime.now().isoformat(timespec="seconds"),
-        "note": req.note,
-        "session_id": SESSION_ID,
-        "last_tick_decision": (
-            LAST_TICK_DECISION.model_dump() if LAST_TICK_DECISION else None
-        ),
-        "qualities": dict(STATE.qualities),
-        "player_canon": {
-            k: {
-                "summary": v.summary,
-                "literal_text_quote": v.literal_text_quote,
-                "salience": v.salience,
-                "category": v.category.value,
-                "turn_of_origin": v.turn_of_origin,
-            }
-            for k, v in STATE.player_canon.items()
-        },
-        "recent_emails": [
-            {
-                "id": e.id,
-                "beat_id": e.beat_id,
-                "thread_id": e.thread_id,
-                "sender": e.sender,
-                "body": e.body,
-            }
-            for e in STATE.emails[-10:]
-        ],
-    }
-    line = json.dumps(payload, ensure_ascii=False) + "\n"
-    # Append-mode write is atomic on Linux/macOS for sub-PIPE_BUF lines and
-    # sufficient on Windows for our scale. /send is serialized via
-    # ACTION_LOCK; /playtest_note runs concurrently with /send but the OS
-    # append-write is the right primitive for one-line records.
-    with notes_path.open("a", encoding="utf-8") as f:
-        f.write(line)
-    # Cheap count for the panel — line count of the file. Capped at the
-    # current write so we don't re-walk it on every call.
-    return {
-        "session_id": SESSION_ID,
-        "path": str(notes_path),
-        "note_count": _count_lines(notes_path),
-    }
-
-
-def _count_lines(path: Path) -> int:
-    """Plain line-count for the playtest-note counter. Sub-millisecond at
-    realistic note volumes — no need to maintain a counter in memory."""
-    try:
-        with path.open("rb") as f:
-            return sum(1 for _ in f)
-    except FileNotFoundError:
-        return 0
 
 
 @app.get("/scenario_meta")
@@ -1270,7 +1178,7 @@ def _beat_meta(beat: Beat) -> dict:
         "is_scene": beat.kind == "scene",
         "ends_session": beat.ends_session,
         "pre_authored": beat.spec.pre_authored_prose is not None,
-        "validate_facts": beat.spec.validate_facts,
+        "fact_checked": bool(beat.spec.must_include_facts or beat.spec.must_not),
         "summary": summary,
     }
 
@@ -1494,6 +1402,7 @@ async def process_send(rec: RecordedSend) -> SendResult:
         e for e in SCENARIO.effects
         if e.is_classify
         and (e.when is None or evaluate_predicate(e.when, STATE))
+        and (e.thread is None or e.thread == rec.thread_id)
     ]
     classify_effects = beat_classify_effects + scenario_classify_effects
     recipient_blurb = _persona_blurb_for_recipient(rec.req.recipient, rec.recipient_npc_id)

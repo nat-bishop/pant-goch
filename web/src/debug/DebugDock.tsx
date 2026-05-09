@@ -18,6 +18,7 @@ export function DebugDock() {
   const debugScenario = useStore((s) => s.debugScenario);
   const selection = useStore((s) => s.debugSelection);
   const setDebugSelection = useStore((s) => s.setDebugSelection);
+  const setDebugDockOpen = useStore((s) => s.setDebugDockOpen);
 
   if (!scenarioMeta || !debugScenario) {
     return (
@@ -34,6 +35,7 @@ export function DebugDock() {
         debugScenario={debugScenario}
         selection={selection}
         onSelectionChange={setDebugSelection}
+        onClose={() => setDebugDockOpen(false)}
       />
     </aside>
   );

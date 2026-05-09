@@ -58,7 +58,7 @@ function BeatTooltipBody({ meta }: { meta: BeatMeta }) {
         {meta.is_scene && <span>scene</span>}
         {meta.ends_session && <span className="text-meter-hot">terminal</span>}
         {meta.pre_authored && <span>pre-authored</span>}
-        {meta.validate_facts && <span>fact-checked</span>}
+        {meta.fact_checked && <span>fact-checked</span>}
       </div>
       {meta.summary && <div className="mt-1 whitespace-pre-wrap text-text">{meta.summary}</div>}
     </div>

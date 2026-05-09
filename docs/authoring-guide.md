@@ -31,7 +31,7 @@ Order matters. The dossier is the leverage point; everything else is downstream 
 4. **Choose qualities.** 3–5 total. One cumulative (relational temperature). One "now-axis" surfaced via `RecentClassifierValue` (recent register). One or two `commitment.*` entries for fact-surfacing. Only add more when authoring a beat surfaces a felt gap.
 5. **Choose terminal categories.** 3–4 attractors. Pick them by reading the literary skeleton — what readings does it support? Frankenstein supports integration / mutual ruin / exile / vengeance; Crucible supports confession / refusal / martyrdom.
 6. **Author the spine beats.** 1–3 anchored beats (welcome, key reveals where exact phrasing matters). One multi-turn loop. 5–10 midpoint plot beats including 2+ "novel-not-taken" forks — recovery beats, paths the source didn't take. See `CLAUDE.md` "Authoring vocabulary" for the schema.
-7. **Author terminals as directives, not prose.** Each terminal: `ends_session: true`, `validate_facts: true`, `intent` describing the genre + must-include facts + length window + voice constraints. The epilogue agent renders against the full ledger at runtime.
+7. **Author terminals as directives, not prose.** Each terminal: `ends_session: true`, `intent` describing the genre + must-include facts + length window + voice constraints (the fact-checker auto-engages whenever `must_include_facts` / `must_not` is non-empty). The epilogue agent renders against the full ledger at runtime.
 8. **Playtest 5+ runs cold.** Voice issues surface in the dossier, not the storylets. Iterate the dossier; storylets rarely need touching.
 
 Realistic budget per scenario at this discipline: 7–14 days solo.

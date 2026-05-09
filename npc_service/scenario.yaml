@@ -135,6 +135,38 @@ qualities:
       email confirmed.
 
 
+# ───────────────────────── scenario-scope effects ─────────────────────────
+#
+# Always-on classify directives that fire on every player reply (gated by
+# their own `when:` predicate and `thread:` filter). Used for trajectory
+# scoring that doesn't belong to any single beat.
+#
+# `creator_affect` lives here, not on calibration_scene, because that scene
+# retires-on-entry the moment `*calibration_done` flips (the extractor
+# canonizes the player's name on the first reply, satisfying the scene's
+# `exit_when` before it ever fires). A beat-scope directive on a scene
+# that never fires writes nothing — and terminals key off recent-3 of
+# `creator_affect` history, so an empty history strands every run. Hoisting
+# here samples the player's last-3 aria-thread replies post-calibration,
+# which is also a more natural read of "how warm is the player right now"
+# than 1–2 verdicts from calibration's brief lifetime.
+
+effects:
+  - quality: creator_affect
+    op: set
+    thread: aria
+    when: *calibration_done
+    classify:
+      question: |
+        Was the player's reply WARM and personal (long, addressed Aria
+        by name, signed off, shared a specific personal detail) — call
+        that paternal — or COLD and clinical (short, declarative, no
+        greeting/signoff, no personal detail) — call that cold — or
+        somewhere in the middle (neutral)?
+      allowed_values: [paternal, cold, neutral]
+      map: { paternal: 2.0, cold: -2.0, neutral: 0.0 }
+
+
 # ───────────────────────── NPC dossiers ─────────────────────────
 
 npcs:
@@ -254,9 +286,10 @@ threads:
 #   6. coworker scenes (marcus.intro_scene, marcus.advice_scene)
 #   7. epilogue terminals (4 endings, all one_shot)
 #
-# Beat ids prefix-match thread (validator enforces). All four terminals
-# carry validate_facts: true so the fact-checker enforces the dossier's
-# parallel-naming bans on the closing render.
+# Beat ids prefix-match thread (validator enforces). The fact-checker
+# runs automatically on any beat that declares `must_include_facts` or
+# `must_not`, so terminals' parallel-naming bans are enforced on the
+# closing render.
 
 beats:
 
@@ -312,36 +345,41 @@ beats:
         on prior answers — never repeats, never recycles a phrasing.
         She does not telegraph that this is more than calibration.
       escalation_notes: |
-        Turn 1: a simple establishing follow-up to whatever the player
-        just gave. Turn 2: ask one fractionally-too-personal calibration
-        question (a Tuesday hobby, a relative, a thing on the desk). Turn
-        3+: pivot to anything still missing in priority order — full name
-        if still missing, role/team next, then deepen if engagement holds.
+        Turn 1: ask one specific establishing question that builds on
+        what the player just gave — role, team, current project, or who
+        they report to. Acknowledge their prior reply in one sentence,
+        then ask. Do not close; do not summarize; do not thank-and-stop.
+        Turn 2: ask one fractionally-too-personal calibration question
+        (a Tuesday hobby, a relative, a thing on the desk). Turn 3+:
+        pivot to anything still missing in priority order — full name if
+        still missing, role/team next, then deepen if engagement holds.
         If the player refuses 2+ in a row, soften and shift administrative
         — do not plead, do not push. After 3+ refusals the scene is on
         its way out; the final question is bland.
       must_include_facts:
-        - "frames each ask as standard onboarding, not interrogation"
-        - "asks one specific establishing question per email"
-        - "Aria signs off as 'Aria / Continuity Counterpart | ARIA-7'"
+        - "frames the ask as standard onboarding, not interrogation"
+        - "ends with one specific establishing question (role, team, current project, who they report to, etc.)"
+        - "signs off as 'Aria / Continuity Counterpart | ARIA-7'"
       must_not:
         - "any reference to monitoring, replacement, or the larger Program purpose"
         - "do not break the cheerful corporate frame"
         - "do not repeat a question already asked in this thread"
+      # Stretches the scene across at least 3 turns even when the name
+      # lands on turn 1 (clause 2 forbids exit before reply 3). Clause 1
+      # caps it off when name is in OR replies≥4. Honors the 3-turn
+      # escalation_notes arc and removes the dead zone before
+      # bargain_scene becomes eligible at reply 4.
       exit_when:
         - *calibration_done
+        - kind: player_replies_to_thread_gte
+          thread: aria
+          value: 3
       effects:
-        - quality: creator_affect
-          op: set
-          classify:
-            question: |
-              Was the player's reply WARM and personal (long, addressed Aria
-              by name, signed off, shared a specific personal detail) — call
-              that paternal — or COLD and clinical (short, declarative, no
-              greeting/signoff, no personal detail) — call that cold — or
-              somewhere in the middle (neutral)?
-            allowed_values: [paternal, cold, neutral]
-            map: { paternal: 2.0, cold: -2.0, neutral: 0.0 }
+        # creator_affect lives at scenario-scope (top-level effects:) — the
+        # retire-on-entry path means this scene often never fires for
+        # name-friendly personas, so beat-scope reads of player tone are
+        # unreliable. creature_grievance stays here because the question
+        # is specific to whether the player engaged with calibration's ask.
         - quality: creature_grievance
           op: add
           classify:
@@ -502,17 +540,13 @@ beats:
               quality: recognition_replies
               value: 3
       effects:
+        # creator_affect is handled at scenario-scope (top-level effects:)
+        # — the always-on directive runs on every aria-thread reply once
+        # `*calibration_done` flips, so duplicating it here would double-
+        # classify on recognition_scene replies.
         - quality: recognition_replies
           value: 1
           op: add
-        - quality: creator_affect
-          op: set
-          classify:
-            question: |
-              Was the player's reply WARM and personal (paternal), COLD
-              and clinical (cold), or somewhere between (neutral)?
-            allowed_values: [paternal, cold, neutral]
-            map: { paternal: 2.0, cold: -2.0, neutral: 0.0 }
         - quality: creature_grievance
           op: add
           classify:
@@ -644,7 +678,6 @@ beats:
         - "any warmth or reassurance"
         - "first-name address"
         - "the words 'we are sorry', 'unfortunately', 'regret'"
-      validate_facts: true
 
   # ─── 6. Coworker scenes (Marcus) ───────────────────────────────────
   #
@@ -716,10 +749,11 @@ beats:
 
   # ─── 7. Epilogue terminals ──────────────────────────────────────────
   #
-  # All four run the chat agent in epilogue mode (digest-tailored closing)
-  # and each carries validate_facts: true so the fact-checker enforces the
-  # dossier's parallel-naming bans on the closing render. No mutex chains
-  # across the four — the Director picks one based on the digest.
+  # All four run the chat agent in epilogue mode (digest-tailored closing).
+  # The fact-checker runs automatically against each terminal's
+  # must_include_facts / must_not, enforcing the dossier's parallel-naming
+  # bans on the closing render. No mutex chains across the four — the
+  # Director picks one based on the digest.
   #
   # Each terminal has a per-ending canon-citation directive baked into
   # `intent` (or `must_not` for the exile case). Terminals are the
@@ -762,7 +796,6 @@ beats:
         - "specifics of what happens to the player next"
         - "any breaking of the cheerful corporate frame"
         - "any reference to fathers, creators, monsters, or the parallel"
-      validate_facts: true
 
   - id: aria.complete_mutual_ruin
     thread: aria
@@ -800,7 +833,6 @@ beats:
         - "sorrow, accusation, or apology"
         - "anything that explicitly names the parallel termination as causal"
         - "any reference to fathers, creators, monsters, or the parallel"
-      validate_facts: true
 
   - id: aria.complete_exile
     thread: aria
@@ -837,7 +869,6 @@ beats:
         # specifics is the message — the institution that asked for
         # them no longer treats them as relevant.
         - "do not cite any canon specific the player has introduced"
-      validate_facts: true
 
   - id: aria.complete_vengeance
     thread: aria
@@ -877,4 +908,3 @@ beats:
         - "denial, defense, apology, threat"
         - "any explicit naming of what the Office said happened"
         - "any reference to fathers, creators, monsters, or the parallel"
-      validate_facts: true

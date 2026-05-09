@@ -212,7 +212,7 @@ export interface BeatMeta {
   is_scene: boolean;
   ends_session: boolean;
   pre_authored: boolean;
-  validate_facts: boolean;
+  fact_checked: boolean;
   summary: string;
 }
 
@@ -281,20 +281,6 @@ export interface DebugScenario {
 export async function getDebugScenario(): Promise<DebugScenario> {
   const r = await fetch(`${API}/debug/scenario`);
   await ensureOk(r, "debug_scenario");
-  return r.json();
-}
-
-export async function postPlaytestNote(note: string): Promise<{
-  session_id: string;
-  path: string;
-  note_count: number;
-}> {
-  const r = await fetch(`${API}/playtest_note`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ note }),
-  });
-  await ensureOk(r, "playtest_note");
   return r.json();
 }
 

@@ -55,7 +55,6 @@ from npc_service.models import (
 ANCHORS = {
     "scene_write_collision": "scene-write-collision",
     "terminal_overlap": "terminal-overlap",
-    "validate_facts_on_scene": "validate-facts-on-scene",
     "pre_authored_post_boot": "pre-authored-post-boot",
     "forbidden_lexical": "forbidden-lexical",
     "classify_on_silent_npc": "classify-on-silent-npc",
@@ -462,24 +461,6 @@ def check_terminal_overlap(scenario: Scenario) -> list[Finding]:
     return findings
 
 
-def check_validate_facts_on_scene(scenario: Scenario) -> list[Finding]:
-    """Check #3. `validate_facts: true` on a `kind: scene` beat means one
-    extra fact-checker LLM call on every re-fire — unbounded cost."""
-    return [
-        Finding(
-            severity="ERROR",
-            location=b.id,
-            message=(
-                "validate_facts=True on a scene beat — fact-checker "
-                "would run on every re-fire (unbounded LLM cost)"
-            ),
-            anchor=ANCHORS["validate_facts_on_scene"],
-        )
-        for b in scenario.beats
-        if b.kind == "scene" and b.spec.validate_facts
-    ]
-
-
 def check_pre_authored_post_boot(scenario: Scenario) -> list[Finding]:
     """Check #4. `pre_authored_prose` only works at boot (no `player_body`
     available post-boot per `main.py:_fire_beat`). Flag any pre-authored
@@ -689,7 +670,6 @@ def lint_scenario(
     findings: list[Finding] = [
         *check_scene_write_collision(scenario),
         *check_terminal_overlap(scenario),
-        *check_validate_facts_on_scene(scenario),
         *check_pre_authored_post_boot(scenario),
         *check_forbidden_lexical(scenario),
         *check_classify_on_silent_npc(scenario),
@@ -698,11 +678,13 @@ def lint_scenario(
     if run_analyzer:
         # The static analyzer is heavier (state-space exploration) and lives
         # in a sibling module so its imports stay out of the spec-only lint
-        # path. Default `analyzer_max_states=300_000` matches the standalone
-        # `make analyze-scenario` cap so lint and analyze report identical
-        # reachability claims on production-sized scenarios. Tests pass
-        # run_analyzer=False to keep individual lint-rule tests focused on
-        # spec analysis.
+        # path. The CLI keeps this off by default (opt in with --analyzer)
+        # so `make lint-scenario` stays a fast author-feedback loop;
+        # `make analyze-scenario` is the canonical way to run the analyzer.
+        # `analyzer_max_states=300_000` matches that standalone cap so the
+        # two paths report identical reachability claims when both run.
+        # Tests pass run_analyzer=False to keep individual lint-rule tests
+        # focused on spec analysis.
         from analyze_scenario import (  # noqa: E402 — sibling-module import
             analyze_scenario as _analyze,
         )
@@ -742,6 +724,15 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Suppress INFO findings.",
     )
+    parser.add_argument(
+        "--analyzer",
+        action="store_true",
+        help=(
+            "Also run the static state-space analyzer (slow). "
+            "By default the CLI runs only the spec lint; use `make analyze-scenario` "
+            "to invoke the analyzer alone."
+        ),
+    )
     args = parser.parse_args(argv)
 
     path = Path(args.scenario)
@@ -755,7 +746,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ERROR: scenario failed to parse: {exc}", file=sys.stderr)
         return 2
 
-    findings = lint_scenario(scenario, analyzer_progress=not args.quiet)
+    findings = lint_scenario(
+        scenario,
+        run_analyzer=args.analyzer,
+        analyzer_progress=not args.quiet,
+    )
 
     has_error = False
     has_warn = False

@@ -235,36 +235,6 @@ def test_scene_write_collision_silenced_by_mutex():
     ), [f.format() for f in findings]
 
 
-def test_validate_facts_on_scene_flagged():
-    """validate_facts: true on a scene beat → ERROR."""
-    yaml_text = _scenario_with_extra_beats("""
-      - id: aria.loop
-        thread: aria
-        npc: aria
-        kind: scene
-        preconditions:
-          - kind: player_replies_to_thread_gte
-            thread: aria
-            value: 1
-        spec:
-          intent: "Loop."
-          exit_when:
-            - kind: player_replies_to_thread_gte
-              thread: aria
-              value: 99
-          must_include_facts:
-            - "asks one question"
-          validate_facts: true
-    """)
-    findings = _lint_yaml(yaml_text)
-    assert _has_finding(
-        findings,
-        severity="ERROR",
-        anchor="validate-facts-on-scene",
-        location_contains="aria.loop",
-    ), [f.format() for f in findings]
-
-
 def test_pre_authored_post_boot_flagged():
     """pre_authored_prose with player_replies_to_thread_gte ≥ 1 in
     preconditions → ERROR (linearity-trap antipattern). The base scenario's

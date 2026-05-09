@@ -1,13 +1,12 @@
 // Pure-prop debug surface: tab strip + active panel. The single seam
 // where DebugDock (store-bound) and DebugPreview (fixture-bound) both
-// converge. No store calls, no side effects — every input arrives via
-// `props`, every change leaves via `props.onSelectionChange`.
+// converge. No store calls, no side effects — inputs arrive via `props`,
+// changes leave via `props.onSelectionChange` and the optional `onClose`
+// (only DebugDock supplies the latter; fixtures stay close-less).
 
 import clsx from "clsx";
 import { TABS } from "./tabs";
 import type { DebugPanelsProps } from "./shared/types";
-import { postPlaytestNote } from "../api";
-import { useState } from "react";
 
 export function DebugPanels(props: DebugPanelsProps) {
   const active = TABS.find((t) => t.id === props.selection.tab) ?? TABS[0]!;
@@ -19,7 +18,15 @@ export function DebugPanels(props: DebugPanelsProps) {
           <h1 className="font-mono text-[10px] uppercase tracking-[0.16em] text-text-muted">
             Debug Menu
           </h1>
-          <NoteButton />
+          {props.onClose && (
+            <button
+              type="button"
+              onClick={props.onClose}
+              aria-label="close debug menu"
+              title="close debug menu"
+              className="rounded border border-border/60 px-2 py-0.5 text-[11px] leading-none text-text-muted hover:text-text"
+            >×</button>
+          )}
         </div>
         <nav className="flex gap-0">
           {TABS.map((t) => {
@@ -52,71 +59,5 @@ export function DebugPanels(props: DebugPanelsProps) {
         <ActiveComponent {...props} />
       </section>
     </aside>
-  );
-}
-
-// Small playtest-note capture button — keeps the old NotesSection workflow
-// alive without consuming a tab slot. Lives in the dock header so it's
-// reachable from any tab. (postPlaytestNote is async + isolated; no need
-// to thread it through props.)
-function NoteButton() {
-  const [open, setOpen] = useState(false);
-  const [note, setNote] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [feedback, setFeedback] = useState<string | null>(null);
-
-  async function save() {
-    if (!note.trim() || busy) return;
-    setBusy(true);
-    setFeedback(null);
-    try {
-      const res = await postPlaytestNote(note.trim());
-      setNote("");
-      setFeedback(`saved → ${res.path}`);
-    } catch (err) {
-      setFeedback(err instanceof Error ? err.message : "save failed");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  if (!open) {
-    return (
-      <button
-        type="button"
-        onClick={() => setOpen(true)}
-        className="rounded border border-border/60 px-2 py-0.5 text-[10px] uppercase tracking-wider text-text-muted hover:text-text"
-        title="capture a playtest note"
-      >+ note</button>
-    );
-  }
-  return (
-    <div className="flex flex-col gap-1">
-      <textarea
-        value={note}
-        onChange={(e) => setNote(e.target.value)}
-        rows={2}
-        autoFocus
-        placeholder="annotate this moment…"
-        className="w-56 rounded border border-border bg-bg p-1 text-[11px] focus:border-accent focus:outline-none"
-      />
-      <div className="flex items-center justify-end gap-1">
-        <button
-          type="button"
-          onClick={() => { setOpen(false); setNote(""); setFeedback(null); }}
-          className="text-[10px] text-text-muted hover:text-text"
-        >cancel</button>
-        <button
-          type="button"
-          onClick={save}
-          disabled={busy || !note.trim()}
-          className={clsx(
-            "rounded px-2 py-0.5 text-[10px] uppercase tracking-wider",
-            "bg-accent text-text-on-accent disabled:bg-bg-elevated disabled:text-text-muted",
-          )}
-        >{busy ? "…" : "save"}</button>
-      </div>
-      {feedback && <div className="text-[9px] text-text-muted">{feedback}</div>}
-    </div>
   );
 }

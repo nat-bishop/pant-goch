@@ -27,6 +27,7 @@ import npc_service.main as main
 from npc_service.agents import ChatDeps
 
 from .conftest import consume_sse
+from .test_app import _test_model_for_fact_checker_clean
 
 
 CHAT_TURN_PROSE = "Acknowledged. Calibration sample logged."
@@ -58,20 +59,46 @@ def client_multi(monkeypatch):
                     model=TestModel(custom_output_text=CHAT_TURN_PROSE),
                 ),
             )
-            # No classifier on these beats (no classify-typed effects), but
-            # the extractor still fires on every /send via asyncio.gather —
-            # stub it so it doesn't try to reach localhost:8080.
+            # The fixture authors a scenario-scope classify effect
+            # (`thread: aria`) so the thread-filter test can observe a
+            # gated dispatch — that means classifier_agent will run on any
+            # aria-thread /send even though the beats themselves have no
+            # classify-typed effects. Stub it so it doesn't reach
+            # localhost:8080. Empty response list means no quality writes,
+            # which keeps the unrelated routing tests in this file
+            # behaviorally identical to their pre-fixture-extension state.
+            #
+            # The extractor likewise fires on every /send via asyncio.gather
+            # and needs the same treatment.
             from pydantic_ai.profiles import ModelProfile
             import json
+            _native_profile = ModelProfile(
+                supports_json_schema_output=True,
+                default_structured_output_mode="native",
+            )
+            stack.enter_context(
+                main.AGENTS.classifier_agent.override(
+                    model=TestModel(
+                        custom_output_text=json.dumps({"response": []}),
+                        profile=_native_profile,
+                    ),
+                ),
+            )
             stack.enter_context(
                 main.AGENTS.extractor_agent.override(
                     model=TestModel(
                         custom_output_text=json.dumps({"candidates": []}),
-                        profile=ModelProfile(
-                            supports_json_schema_output=True,
-                            default_structured_output_mode="native",
-                        ),
+                        profile=_native_profile,
                     ),
+                ),
+            )
+            # The fact-checker auto-engages on every beat fire (both scenes
+            # in this fixture declare must_include_facts). Default to a
+            # clean pass so the validator no-ops and routing tests stay
+            # focused on dispatch rather than re-render retries.
+            stack.enter_context(
+                main.AGENTS.fact_checker_agent.override(
+                    model=_test_model_for_fact_checker_clean(),
                 ),
             )
             yield c
@@ -300,3 +327,123 @@ def test_outbound_render_does_not_pollute_thread_history(client_multi):
     )
     assert main._OUTBOUND_TRIGGER_PROMPT not in rendered
     assert "hello" not in rendered
+
+
+# ───────────────────────── Part C: scenario-scope thread filter ─────────────────────────
+
+
+def _install_classifier_run_capture(monkeypatch) -> list[dict]:
+    """Wrap classifier_agent.run so each invocation appends a record. Used
+    by the thread-filter test to assert classifier dispatch happens (or
+    doesn't) per the `Effect.thread` gate."""
+    captured: list[dict] = []
+    real_run = main.AGENTS.classifier_agent.run
+
+    async def _capturing_run(prompt, *args, **kwargs):
+        captured.append({"prompt": prompt})
+        return await real_run(prompt, *args, **kwargs)
+
+    monkeypatch.setattr(main.AGENTS.classifier_agent, "run", _capturing_run)
+    return captured
+
+
+def test_scenario_classify_effect_fires_on_matching_thread_only(
+    client_multi, monkeypatch,
+):
+    """The cross-thread fixture authors a scenario-scope classify effect
+    with `thread: aria`. A reply on the aria thread should batch that
+    effect into the classifier call; a reply on the marcus thread should
+    drop it (no other classify effects → no classifier call at all)."""
+    captured = _install_classifier_run_capture(monkeypatch)
+    welcome_id = _aria_welcome_id(client_multi)
+
+    # Tick 1: aria-thread reply. The scenario-scope effect's `thread: aria`
+    # gate matches → classifier_agent runs once.
+    list(consume_sse(client_multi.stream("POST", "/send", json={
+        "in_reply_to": welcome_id,
+        "recipient": "Aria",
+        "recipient_npc_id": "aria",
+        "body": "first reply on aria",
+    })))
+    aria_calls_after_first = len(captured)
+    assert aria_calls_after_first == 1, (
+        f"expected one classifier call on aria-thread reply, got "
+        f"{aria_calls_after_first}"
+    )
+
+    # Tick 2: marcus-thread reply. The scenario-scope effect's gate does
+    # NOT match. No beat-scope classify effects in this fixture either →
+    # classify_effects ends up empty → classifier_agent must NOT run.
+    marcus_email = next(
+        e for e in main.STATE.emails
+        if e.thread_id == "marcus" and e.sender != "you"
+    )
+    list(consume_sse(client_multi.stream("POST", "/send", json={
+        "in_reply_to": marcus_email.id,
+        "recipient": "Marcus",
+        "recipient_npc_id": "marcus",
+        "body": "first reply on marcus",
+    })))
+    assert len(captured) == aria_calls_after_first, (
+        f"classifier_agent must NOT run on a marcus-thread reply when "
+        f"the only directive is gated `thread: aria`; captured "
+        f"{len(captured) - aria_calls_after_first} unexpected call(s)"
+    )
+
+
+def test_effect_thread_field_round_trips_via_load_scenario(tmp_path):
+    """Author a minimal scenario YAML with `Effect.thread` set and assert
+    the field survives load_scenario without being silently dropped."""
+    from npc_service.models import load_scenario
+
+    yaml_text = """\
+title: "Thread-Field Round-Trip"
+premise: "Minimal."
+email_domain: "halcyon.com"
+fallback_player_local: "x"
+
+qualities:
+  - id: q
+    type: float
+    min: 0.0
+    max: 1.0
+    default: 0.0
+    description: "test"
+
+npcs:
+  - id: a
+    display_name: "A"
+    email_address: "A <a@halcyon.com>"
+    relationship_to_owner: "x"
+    base_voice_register: "x"
+    base_voice_forbidden: ["x"]
+    will_say: ["x"]
+    will_not_say: ["x"]
+
+threads:
+  - id: a
+    npc: a
+
+effects:
+  - quality: q
+    op: set
+    thread: a
+    classify:
+      question: "x"
+      allowed_values: [hot, cold]
+      map: { hot: 1.0, cold: 0.0 }
+
+beats:
+  - id: a.welcome
+    thread: a
+    npc: a
+    kind: one_shot
+    spec:
+      pre_authored_prose: "hi"
+"""
+    p = tmp_path / "s.yaml"
+    p.write_text(yaml_text, encoding="utf-8")
+    s = load_scenario(p)
+    assert len(s.effects) == 1
+    assert s.effects[0].thread == "a"
+    assert s.effects[0].is_classify

@@ -126,14 +126,54 @@ def test_phase2_body_beats_gate_on_calibration_done(scenario: Scenario):
         )
 
 
-def test_calibration_scene_has_two_classify_effects(scenario: Scenario):
-    """`aria.calibration_scene` has classify effects on both creator_affect
-    and creature_grievance — they ride on every reply during calibration."""
+def test_calibration_scene_classifies_only_grievance(scenario: Scenario):
+    """`aria.calibration_scene` keeps the `creature_grievance` classify
+    effect (specific to whether the player engaged with calibration's ask)
+    but NOT `creator_affect` — that one moved to scenario-scope so it fires
+    on every aria-thread reply, not only when this scene actually fires
+    (calibration_scene retires-on-entry for name-friendly personas)."""
     cal = scenario.beat_by_id["aria.calibration_scene"]
     assert cal.kind == "scene"
     classify_effects = [e for e in cal.spec.effects if e.is_classify]
     quality_targets = sorted(e.quality for e in classify_effects)
-    assert quality_targets == ["creator_affect", "creature_grievance"]
+    assert quality_targets == ["creature_grievance"]
+
+
+def test_creator_affect_classify_is_scenario_scope(scenario: Scenario):
+    """The `creator_affect` classify directive lives at scenario-scope
+    (`Scenario.effects`), gated `thread: aria` and `when: *calibration_done`.
+    Required for terminals' `recent_classifier_value(creator_affect, …)`
+    predicates to ever read non-empty history — `aria.calibration_scene`
+    retires-on-entry for any persona that names themselves on the first
+    reply, so a beat-scope directive there strands the signal."""
+    classify_effects = [
+        e for e in scenario.effects
+        if e.is_classify and e.quality == "creator_affect"
+    ]
+    assert len(classify_effects) == 1, (
+        "exactly one scenario-scope creator_affect classify directive expected"
+    )
+    eff = classify_effects[0]
+    assert eff.thread == "aria", (
+        f"creator_affect classify must be thread-gated to aria, got {eff.thread!r}"
+    )
+    assert eff.when is not None, "must carry the *calibration_done gate"
+    assert eff.classify is not None
+    assert set(eff.classify.allowed_values) == {"paternal", "cold", "neutral"}
+
+
+def test_recognition_scene_does_not_duplicate_creator_affect(scenario: Scenario):
+    """`aria.recognition_scene` previously also classified `creator_affect`;
+    that's now redundant with the scenario-scope directive (which fires on
+    every aria-thread reply post-calibration). Keep only the
+    recognition-specific classifies."""
+    rec = scenario.beat_by_id["aria.recognition_scene"]
+    classify_effects = [e for e in rec.spec.effects if e.is_classify]
+    quality_targets = sorted(e.quality for e in classify_effects)
+    assert "creator_affect" not in quality_targets, (
+        "recognition_scene should NOT classify creator_affect — that's "
+        "scenario-scope now"
+    )
 
 
 def test_bargain_scene_writes_state_and_classifies_into_string_quality(scenario: Scenario):
@@ -176,7 +216,9 @@ def test_bargain_state_quality_is_string(scenario: Scenario):
     }
 
 
-def test_terminals_carry_validate_facts(scenario: Scenario):
+def test_terminals_engage_fact_checker(scenario: Scenario):
+    """Every terminal declares either `must_include_facts` or `must_not`,
+    which auto-engages the fact-checker validator on the closing render."""
     for tid in (
         "aria.complete_integration",
         "aria.complete_mutual_ruin",
@@ -184,8 +226,8 @@ def test_terminals_carry_validate_facts(scenario: Scenario):
         "aria.complete_vengeance",
     ):
         beat = scenario.beat_by_id[tid]
-        assert beat.spec.validate_facts is True
         assert beat.ends_session is True
+        assert beat.spec.must_include_facts or beat.spec.must_not
 
 
 def test_cpo_replies_disabled(scenario: Scenario):
