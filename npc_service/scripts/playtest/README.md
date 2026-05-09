@@ -42,20 +42,24 @@ Output:
 
 ## Hardware
 
-The two-server setup at `--parallel 64` is sized for a **96 GB-VRAM GPU** (e.g., RTX PRO 6000 Blackwell). Approximate VRAM split (engine `--no-kv-unified` per-slot; eval `--kv-unified` shared pool):
+The two-server setup is sized for a **96 GB-VRAM GPU** (e.g., RTX PRO 6000 Blackwell). With `--kv-unified` on the eval server, the KV pool is reserved at boot, so the playtest's `--parallel` only affects how many sessions run concurrently — not VRAM. Approximate split:
 
 | Component | VRAM |
 |---|---|
 | Gemma 4 E4B Q8 weights + KV (128 slots × 32k, MQA) | ~15 GB |
-| Qwen 3.6 35B-A3B Q8_0 weights + KV (64 slots × 32k, GQA) | ~65 GB |
-| 2× CUDA contexts | ~1 GB |
-| **Total** | **~80 GB** |
+| Qwen 3.6 35B-A3B Q8_0 weights | ~37 GB |
+| Qwen KV pool (16 slots × 32k = 512k tokens, GQA) | ~10 GB |
+| Qwen recurrent state (Gated Delta Net layers) + compute scratch | ~14 GB |
+| Display / other | ~4 GB |
+| **Total** | **~80 GB** (margin ~16 GB) |
 
-If you OOM at first long-context request (the documented failure mode for KV cache expansion), step down in this order:
+The eval `-np 16` cap matches the playtester's tested `--parallel 16` ceiling — running `--parallel 64` against an `-np 16` server just queues 48 requests for free slots and serializes them. If you raise `eval_llama_n_parallel` in `config.py`, raise `--parallel` in lockstep — *and verify VRAM headroom under load*. At 64 × 32k the KV pool alone is 40 GB, which on a 96 GB card pushes utilization to 99 % and triggers driver paging (observed: 185 tok/s solo collapses to ~6 tok/s under load).
 
-1. Drop Qwen ctx-per-slot: edit `make llama-eval`'s `-c 32768` to `-c 16384` (16k per slot, plenty for condensed judge views).
-2. Step Qwen Q8_0 → Q6_K via `EVAL_MODEL_URL` in the Makefile (~28 GB weights, small quality cost).
-3. Drop `--parallel 64` to `--parallel 32` (halves Qwen's slot demand; sessions run in two batches).
+If you need higher concurrency without OOM, in priority order:
+
+1. Step Qwen Q8_0 → Q6_K via `EVAL_MODEL_URL` in the Makefile (~28 GB weights, small quality cost).
+2. Drop Qwen ctx-per-slot: set `EVAL_LLAMA_CTX=16384` (16k per slot, plenty for condensed judge views; halves the KV pool).
+3. Run the eval llama on a second GPU (set `EVAL_LLAMA_HOST` and remove the implicit single-GPU assumption in the table).
 
 ## What it tests
 

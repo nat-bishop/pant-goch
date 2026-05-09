@@ -23,7 +23,7 @@ help:
 	@echo "  make download-eval-model  Fetch the Qwen 3.6 35B-A3B Q8_0 GGUF (~37 GB)"
 	@echo "  make llama                Run engine llama-server (Gemma on :8080, single-user KV)"
 	@echo "  make llama-playtest       Run engine llama with bumped KV pool for the playtester (~2M ctx, 64 concurrent)"
-	@echo "  make llama-eval           Run eval llama-server (Qwen 35B-A3B on :8081, mainline llama.cpp, ~2M ctx)"
+	@echo "  make llama-eval           Run eval llama-server (Qwen 35B-A3B on :8081, -np 16 -c 512k, ~78 GB VRAM)"
 	@echo "  make sidecar              Run Python sidecar, no llama   (terminal 2)"
 	@echo "  make web                  Run Vite dev server            (terminal 3)"
 	@echo "  make test                 Run pytest"

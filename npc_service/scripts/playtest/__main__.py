@@ -183,11 +183,13 @@ def main(argv: list[str] | None = None) -> int:
              "Drives the synthetic player and every LLM judge.",
     )
     parser.add_argument(
-        "--parallel", type=int, default=64,
-        help="Max sessions to run concurrently (default: 64). BOTH llama-servers "
+        "--parallel", type=int, default=16,
+        help="Max sessions to run concurrently (default: 16). BOTH llama-servers "
              "must be booted with at least this many parallel slots — the engine "
-             "default LLAMA_N_PARALLEL=128 covers it; ensure `make llama-eval` "
-             "boots with `-np 64` to match.",
+             "default LLAMA_N_PARALLEL=128 covers it; the eval llama defaults to "
+             "EVAL_LLAMA_N_PARALLEL=16 (see config.py for why 16 and not 64). "
+             "Raising this above 16 without raising `eval_llama_n_parallel` will "
+             "queue requests rather than parallelise them.",
     )
     args = parser.parse_args(argv)
 

@@ -130,9 +130,18 @@ class Settings(BaseSettings):
     # agent. Total pool sizing is driven by `eval_llama_total_ctx`.
     eval_llama_ctx: int = 32768
     eval_llama_ngl: int = 99
-    # Slots match the playtester's default `--parallel 64`; bump together if
-    # you raise the playtest concurrency.
-    eval_llama_n_parallel: int = 64
+    # Slots = 16, smaller than the playtester's `--parallel 64` default. Why:
+    # `eval_llama_n_parallel × eval_llama_ctx` is the KV pool reservation
+    # (with `--kv-unified`, llama.cpp pre-allocates the full pool at boot),
+    # and at 64 × 32k = 2M tokens the Qwen 35B-A3B GQA KV pool is ~40 GB —
+    # which combined with weights (~37 GB) + compute (~10 GB) + the engine
+    # llama (~15 GB) overshoots a 96 GB Blackwell, pushing VRAM to 99% used
+    # and triggering driver paging that collapsed observed throughput from
+    # 185 tok/s solo to ~6 tok/s under playtest load (May 2026 measurement).
+    # 16 slots × 32k = 512k pool → ~10 GB KV → ~78 GB total, ~18 GB margin.
+    # Cap the playtester at `--parallel 16` to match. Raise these together
+    # only if you have headroom (multi-GPU, smaller quant, or ik_llama.cpp).
+    eval_llama_n_parallel: int = 16
     # Default `True`. The engine's measurement of `--no-kv-unified` being
     # ~2.7× faster (see `llama_kv_unified` above) was on dense Gemma 4 E4B;
     # Qwen 35B-A3B is MoE, where unified pages help expert-routing cache
