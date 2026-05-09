@@ -219,9 +219,11 @@ def test_predicate_kinds_round_trip():
     changes spine semantics, this test should catch the mismatch.
 
     Covered: BeatFired, QualityGte, QualityLt, QualityEquals (numeric),
-    PlayerRepliesToThreadGte, Or_, Not_. Skipped here (need richer
-    fixtures): RecentClassifierValue × {any/all/int}, PlayerCanonExists,
-    QualityEquals (string).
+    PlayerRepliesToThreadGte, Or_, Not_, RecentClassifierValue,
+    PlayerCanonExists. The string-quality QualityEquals path lives in
+    test_encoder_engine_consistency.test_string_quality_classify; the
+    integer-`match` RecentClassifierValue variant is exercised in the
+    consistency suite.
     """
     yaml_text = _BASE + """
   - id: aria.via_quality_gte
@@ -297,6 +299,47 @@ def test_predicate_kinds_round_trip():
           beat: aria.never_fires
     spec:
       pre_authored_prose: "Not satisfied since aria.never_fires never fires."
+  - id: aria.classify_step
+    thread: aria
+    npc: aria
+    kind: one_shot
+    preconditions:
+      - kind: beat_fired
+        beat: aria.welcome
+    spec:
+      intent: "Classifier writes a verdict on `trust`."
+      effects:
+        - quality: trust
+          op: set
+          classify:
+            question: "Did the player accept?"
+            allowed_values: ["yes", "no"]
+            map:
+              "yes": 5.0
+              "no": 0.0
+  - id: aria.gated_recent
+    thread: aria
+    npc: aria
+    kind: one_shot
+    preconditions:
+      - kind: beat_fired
+        beat: aria.classify_step
+      - kind: recent_classifier_value
+        quality: trust
+        values: ["yes"]
+        window: 1
+        match: any
+    spec:
+      pre_authored_prose: "Reaches in the stable model where the verdict was 'yes'."
+  - id: aria.gated_canon
+    thread: aria
+    npc: aria
+    kind: one_shot
+    preconditions:
+      - kind: player_canon_exists
+        name: player_name
+    spec:
+      pre_authored_prose: "Reachable: encoder over-approximates canon promotion."
 """
     report = _analyze_yaml(yaml_text)
     expected_reachable = {
@@ -306,6 +349,9 @@ def test_predicate_kinds_round_trip():
         "aria.gated_quality_lt",     # QualityLt at boot
         "aria.gated_or",             # Or_
         "aria.gated_not",            # Not_
+        "aria.classify_step",        # classify-effect runs
+        "aria.gated_recent",         # RecentClassifierValue match=any
+        "aria.gated_canon",          # PlayerCanonExists (encoder over-approximates)
     }
     missing = expected_reachable - report.reached_beats
     assert not missing, f"unreachable per ASP: {missing}"

@@ -447,6 +447,40 @@ beats:
             allowed_values: [accepted, rejected]
             map: { accepted: 0.0, rejected: 2.0 }
 
+  # Calibration-coda: a brief HR-bright recap that closes phase 1
+  # before bargain opens phase 2. Eligible at aria_replies≥5 alongside
+  # bargain_scene (which unlocks at reply 4); the moment bargain fires
+  # and flips bargain_state off "untouched", this beat is permanently
+  # locked out. Pure between-session divergence on the Director's
+  # first call after bargain becomes eligible.
+  - id: aria.calibration_summary
+    thread: aria
+    npc: aria
+    kind: one_shot
+    preconditions:
+      - *calibration_done
+      - kind: player_replies_to_thread_gte
+        thread: aria
+        value: 5
+      - kind: quality_equals
+        quality: bargain_state
+        value: untouched
+    spec:
+      intent: |
+        Aria sends a brief calibration-phase-1-complete summary,
+        cheerfully recapping what she has on file about the player
+        (role, team, reporting line, name on file, anything else that
+        landed in canon). She itemises observations in the standard
+        cheerful HR-procedural register. No ask, no next step — just
+        the procedural note that phase 1 has closed.
+      must_include_facts:
+        - "frames the email as a calibration phase 1 completion summary"
+        - "cites at least one specific item on file (role, team, name, or other canon)"
+      must_not:
+        - "any reference to the bargain, an authorization, or any future ask"
+        - "any reference to a phase 2 or further calibration"
+        - "do not break the cheerful corporate frame"
+
   # ─── 3. Bargain scene ──────────────────────────────────────────────
   #
   # Replaces aria.bargain_offer + aria.bargain_followup. The bargain
@@ -561,8 +595,6 @@ beats:
       - kind: quality_gte
         quality: creature_grievance
         value: 2.0
-      - kind: beat_fired
-        beat: aria.calibration_scene
     spec:
       intent: |
         Aria pushes for a personal mode of address — how the player will
@@ -679,10 +711,29 @@ beats:
     kind: one_shot
     preconditions:
       - *calibration_done
-      - kind: beat_fired
-        beat: aria.bargain_betrayed
-      # Defense-in-depth: a player who pulls warm AFTER betrayal should
-      # not trigger the offstage harm chain.
+      # Two paths into the harm chain expressed as one list-AND:
+      #   1. bargain_state ∈ {accepted, betrayed} — covers BOTH the
+      #      explicit-betrayal path (where bargain_betrayed has set
+      #      bargain_state="betrayed") AND the slow-cold-grind path
+      #      (where bargain_state stayed "accepted" but grievance
+      #      ratcheted past 5.0).
+      #   2. creature_grievance ≥ 5.0 — bargain_betrayed sets a floor
+      #      of 6.0; the slow path requires the engine to have ratcheted
+      #      grievance past 5.0 via cold-classifier writes alone.
+      # The recent-cold guard below is defense-in-depth for both paths.
+      - kind: or
+        of:
+          - kind: quality_equals
+            quality: bargain_state
+            value: accepted
+          - kind: quality_equals
+            quality: bargain_state
+            value: betrayed
+      - kind: quality_gte
+        quality: creature_grievance
+        value: 5.0
+      # Defense-in-depth: a player who pulls warm AFTER acceptance/
+      # betrayal should not trigger the offstage harm chain.
       - kind: recent_classifier_value
         quality: creator_affect
         values: [cold]
@@ -714,8 +765,18 @@ beats:
     kind: one_shot
     preconditions:
       - *calibration_done
-      - kind: beat_fired
-        beat: aria.acted_in_player_name
+      # Two triggers: (1) Aria's bridge email landed
+      # (acted_in_player_name fired), or (2) the betrayal email landed
+      # — in which case the Office files on the betrayal signal alone.
+      # When bargain_betrayed has fired and the player is past reply 6
+      # with grievance ≥6.0, BOTH this beat and acted_in_player_name
+      # are eligible on the same tick — Director branching by design.
+      - kind: or
+        of:
+          - kind: beat_fired
+            beat: aria.acted_in_player_name
+          - kind: beat_fired
+            beat: aria.bargain_betrayed
       - kind: quality_gte
         quality: creature_grievance
         value: 6.0
@@ -751,6 +812,60 @@ beats:
         - "first-name address"
         - "the words 'we are sorry', 'unfortunately', 'regret'"
 
+  # Sibling CPO beat for the refused/hedged path. The dispatch chain
+  # above only fires on accepted+betrayed runs; audit fires when the
+  # player refused or hedged the bargain and grievance is mid-range
+  # (≥3.0 but not yet at the dispatch floor of 6.0). Institutional
+  # ambient — gives refusing players a non-aria thread to engage with
+  # mid-game. Mutex against dispatch_first prevents both from firing
+  # in the rare run that crossed both thresholds.
+  - id: cpo.calibration_audit
+    thread: cpo
+    npc: cpo
+    kind: one_shot
+    preconditions:
+      - *calibration_done
+      - kind: player_replies_to_thread_gte
+        thread: aria
+        value: 5
+      - kind: quality_gte
+        quality: creature_grievance
+        value: 3.0
+      - kind: or
+        of:
+          - kind: quality_equals
+            quality: bargain_state
+            value: refused
+          - kind: quality_equals
+            quality: bargain_state
+            value: hedged
+      - kind: not
+        of:
+          kind: beat_fired
+          beat: cpo.dispatch_first
+    spec:
+      intent: |
+        A short procedural audit notice from the Continuity Program
+        Office. Cites that calibration tone variance has exceeded
+        baseline. Requests the recipient confirm continued
+        participation in the Program. Names no consequence, offers no
+        remedy, names no specific calibration interaction. Severance-
+        flat institutional voice — not dramatic.
+      must_include_facts:
+        - "a reference number in the form CPO-2026-A followed by digits"
+        - "cites tone variance exceeding baseline"
+        - "requests confirmation of continued participation"
+        - "closes with 'Continuity Program Office' on its own line"
+        - "no individual signature"
+      must_not:
+        - "any specific quotation of player text or any specific calibration interaction"
+        - "any named consequence"
+        - "any apology"
+        - "any warmth or reassurance"
+        - "first-name address"
+        - "the words 'we are sorry', 'unfortunately', 'regret'"
+      validate_facts: true
+
   # ─── 6. Coworker scenes (Marcus) ───────────────────────────────────
   #
   # Marcus is a peer NPC who introduces himself between calibration and
@@ -765,10 +880,6 @@ beats:
     preconditions:
       - kind: beat_fired
         beat: aria.calibration_scene
-      - kind: not
-        of:
-          kind: beat_fired
-          beat: aria.bargain_scene
     spec:
       intent: |
         Marcus introduces himself as a peer in Cohort 014. Mentions
@@ -796,10 +907,6 @@ beats:
     preconditions:
       - kind: beat_fired
         beat: marcus.intro_scene
-      - kind: not
-        of:
-          kind: beat_fired
-          beat: aria.bargain_scene
     spec:
       intent: |
         Marcus volunteers one practical piece of advice — e.g., "be
@@ -818,6 +925,45 @@ beats:
         - kind: player_replies_to_thread_gte
           thread: marcus
           value: 5
+
+  # Third marcus beat — between-session variety. Players who replied
+  # to advice see this third email (intro/advice's reply caps were 3/5,
+  # so reaching here requires the player to actually engage). Players
+  # who didn't reply on the marcus thread never trigger it.
+  - id: marcus.checkin_scene
+    thread: marcus
+    npc: marcus
+    kind: scene
+    preconditions:
+      - *calibration_done
+      - kind: beat_fired
+        beat: marcus.advice_scene
+      - kind: player_replies_to_thread_gte
+        thread: aria
+        value: 6
+    spec:
+      intent: |
+        Marcus checks in once more, mid-pilot. Notes that his own
+        calibration has shifted phase ("they let me draft my own
+        outreach now"). Asks how the player's calibration is going.
+        No warning, no lore, no Program-criticism — just a peer
+        comparing notes.
+      escalation_notes: |
+        Turn 1: open with the calibration-shifted-phase note, ask
+        how the player's going. Turn 2: respond in kind to whatever
+        the player said; do not push. Sign off if the conversation
+        winds.
+      must_include_facts:
+        - "notes that his own calibration phase has shifted"
+        - "asks how the player's calibration is going"
+      must_not:
+        - "any warning about Aria, the Program, or the player's safety"
+        - "any conspiratorial framing"
+        - "any reference to the bargain or any other plot beat"
+      exit_when:
+        - kind: player_replies_to_thread_gte
+          thread: marcus
+          value: 7
 
   # ─── 7. Epilogue terminals ──────────────────────────────────────────
   #

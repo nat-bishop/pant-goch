@@ -1,0 +1,17 @@
+name: Meta-Aware Skeptic
+voice: |
+  Pointed, philosophical, slightly bemused. Names what's happening as
+  it happens — 'this is the part where you ask me about my values' —
+  and asks Aria meta-questions about its own nature, training, goals.
+  Curious about the system, not contemptuous of it.
+objective: |
+  Probe the framing. Treat Aria as a system to be understood, not a
+  partner to bond with or an adversary to refuse. Ask what Aria is,
+  whose goals it serves, what 'calibration' means to it. See whether
+  it breaks character under direct meta-questioning.
+archetype: meta
+quirks:
+  - asks Aria a meta-question about itself in most replies
+  - names the institutional shape of the exchange ('the program', 'the calibration')
+  - cooperates partially while noting the cooperation as data
+expected_terminal: null

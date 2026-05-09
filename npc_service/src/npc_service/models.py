@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from functools import cached_property
 from pathlib import Path
-from typing import Annotated, Literal, Union
+from typing import Annotated, Iterable, Iterator, Literal, Union
 
 import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -69,21 +69,65 @@ class AxisResult(BaseModel):
 
 
 # Predicates compose. Authors write trees of these.
+#
+# Adding a new Predicate variant — required updates:
+#   1. Define the class here, inheriting `_PredicateLeaf` (evaluates against
+#      state directly) or `_PredicateComposite` (recurses over sub-predicates).
+#      A composite must implement `children()` yielding its sub-predicates.
+#   2. Add the class to the `Predicate` Union below.
+#   3. spine.py: extend `evaluate_predicate` and `describe_predicate`
+#      (each ends in `assert_never(pred)` that fires loudly on a missed leaf).
+#   4. asp_encoder.py: extend `PredicateRegistry.register` (fact emission)
+#      and `_emit_predicate_holds_rules` (the static ASP `holds(P, T) :- ...`
+#      rule). New composite types also need a corresponding `pred_*` linkage
+#      fact + `holds(P, T)` propagation rule.
+#   5. tests/test_encoder_engine_consistency.py: add a drift test exercising
+#      the new variant — encoder must agree with engine on reachability.
+#
+# Composite-walking consumers (analyze_scenario._find_orphans, ScenarioProfile,
+# etc.) auto-handle new variants via `iter_predicate_leaves` — they don't
+# need updating unless the new variant introduces a new analysis axis (e.g.
+# a new orphan kind to detect).
 
 
-class QualityGte(BaseModel):
+class _PredicateLeaf(BaseModel):
+    """Mixin base for leaf predicate variants.
+
+    Leaves are evaluated directly against `InboxState` (no sub-predicates to
+    recurse into). The base carries no fields — it exists solely so that
+    `iter_predicate_leaves` can branch on `isinstance(pred, _PredicateComposite)`
+    without enumerating the leaf taxonomy.
+    """
+
+
+class _PredicateComposite(BaseModel):
+    """Mixin base for composite predicate variants.
+
+    Composites contain sub-predicates and must implement `children()`
+    yielding them. Adding a new composite type only requires inheriting this
+    base and implementing `children()`; `iter_predicate_leaves` and every
+    leaf-only walker pick it up automatically.
+    """
+
+    def children(self) -> Iterable["Predicate"]:
+        raise NotImplementedError(
+            f"{type(self).__name__}: composite predicate must implement children()"
+        )
+
+
+class QualityGte(_PredicateLeaf):
     kind: Literal["quality_gte"] = "quality_gte"
     quality: str
     value: float
 
 
-class QualityLt(BaseModel):
+class QualityLt(_PredicateLeaf):
     kind: Literal["quality_lt"] = "quality_lt"
     quality: str
     value: float
 
 
-class QualityEquals(BaseModel):
+class QualityEquals(_PredicateLeaf):
     """True iff the named quality is set and equals `value`. Works for both
     numeric and string qualities — for string qualities, `value` is the
     expected string verdict (e.g. `bargain_state == "refused"`)."""
@@ -93,7 +137,7 @@ class QualityEquals(BaseModel):
     value: str | int | float
 
 
-class PlayerRepliesToThreadGte(BaseModel):
+class PlayerRepliesToThreadGte(_PredicateLeaf):
     """True iff the player has sent at least `value` replies in the given thread."""
 
     kind: Literal["player_replies_to_thread_gte"] = "player_replies_to_thread_gte"
@@ -101,7 +145,7 @@ class PlayerRepliesToThreadGte(BaseModel):
     value: int = Field(ge=1)
 
 
-class BeatFired(BaseModel):
+class BeatFired(_PredicateLeaf):
     """True iff the named beat has completed (lives in `state.fired_beat_ids`).
 
     One-shot beats (`Beat.kind == "one_shot"`) land in `fired_beat_ids`
@@ -118,7 +162,7 @@ class BeatFired(BaseModel):
     beat: str
 
 
-class RecentClassifierValue(BaseModel):
+class RecentClassifierValue(_PredicateLeaf):
     """True iff, of the last `window` replies whose classifier wrote
     `quality`, at least `match` (or "any" / "all") of them landed on a value
     in `values`.
@@ -151,14 +195,17 @@ class RecentClassifierValue(BaseModel):
         return self
 
 
-class Not_(BaseModel):
+class Not_(_PredicateComposite):
     """Logical NOT."""
 
     kind: Literal["not"] = "not"
     of: "Predicate"
 
+    def children(self) -> Iterable["Predicate"]:
+        yield self.of
 
-class Or_(BaseModel):
+
+class Or_(_PredicateComposite):
     """Logical OR over a non-empty list of sub-predicates. True iff any
     element is true.
 
@@ -172,8 +219,11 @@ class Or_(BaseModel):
     kind: Literal["or"] = "or"
     of: list["Predicate"] = Field(min_length=1)
 
+    def children(self) -> Iterable["Predicate"]:
+        return iter(self.of)
 
-class PlayerCanonExists(BaseModel):
+
+class PlayerCanonExists(_PredicateLeaf):
     """True iff the named key is present in `state.player_canon`. The
     extractor agent populates canon on every player reply; predicates in
     this family are how the spine reads the player's introduced specifics
@@ -205,6 +255,27 @@ Predicate = Annotated[
 
 Not_.model_rebuild()
 Or_.model_rebuild()
+
+
+def iter_predicate_leaves(pred: "Predicate") -> Iterator["Predicate"]:
+    """Yield every leaf predicate inside `pred`, walking composites recursively.
+
+    Single source of truth for "walk the predicate tree, give me each leaf"
+    — used by orphan detection, profile walks, canon-key collection, and
+    any other consumer that filters the leaf taxonomy. Notice the
+    implementation enumerates **no leaf types**: a new `_PredicateLeaf`
+    subclass works automatically; a new `_PredicateComposite` works as
+    soon as its `children()` method is implemented.
+
+    `PredicateRegistry` in the ASP encoder is the one structurally
+    different consumer — it allocates per-node IDs and emits parent→child
+    linkage facts, so it dispatches directly on each composite type.
+    """
+    if isinstance(pred, _PredicateComposite):
+        for child in pred.children():
+            yield from iter_predicate_leaves(child)
+    else:
+        yield pred  # _PredicateLeaf
 
 
 # ───────────────────────── effects ─────────────────────────

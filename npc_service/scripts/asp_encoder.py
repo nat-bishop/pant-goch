@@ -28,7 +28,7 @@ from __future__ import annotations
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Iterator
+from typing import Iterator, assert_never
 
 import clingo
 
@@ -45,6 +45,7 @@ from npc_service.models import (
     QualityLt,
     RecentClassifierValue,
     Scenario,
+    iter_predicate_leaves,
 )
 
 
@@ -234,9 +235,7 @@ class PredicateRegistry:
                 child_pid = self.register(sub)
                 self.facts.append(f"pred_or_arm({pid}, {child_pid}).")
         else:
-            raise TypeError(
-                f"PredicateRegistry: unhandled predicate type {type(pred).__name__}"
-            )
+            assert_never(pred)
         return pid
 
 
@@ -466,26 +465,22 @@ def _emit_canon(scenario: Scenario, registry: PredicateRegistry) -> str:
     """
     referenced: set[str] = set()
 
-    def _walk(p: Predicate) -> None:
-        if isinstance(p, PlayerCanonExists):
-            referenced.add(p.name)
-        elif isinstance(p, Not_):
-            _walk(p.of)
-        elif isinstance(p, Or_):
-            for sub in p.of:
-                _walk(sub)
+    def _collect(p: Predicate) -> None:
+        for leaf in iter_predicate_leaves(p):
+            if isinstance(leaf, PlayerCanonExists):
+                referenced.add(leaf.name)
 
     for beat in scenario.beats:
         for pred in beat.preconditions:
-            _walk(pred)
+            _collect(pred)
         for pred in beat.spec.exit_when:
-            _walk(pred)
+            _collect(pred)
         for effect in beat.spec.effects:
             if effect.when is not None:
-                _walk(effect.when)
+                _collect(effect.when)
     for effect in scenario.effects:
         if effect.when is not None:
-            _walk(effect.when)
+            _collect(effect.when)
 
     lines = ["% ───── PlayerCanonExists (extractor over-approximation) ─────"]
     for k in sorted(referenced):

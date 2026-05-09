@@ -28,7 +28,7 @@ Authoring order is not load-bearing for selection.
 """
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, assert_never
 
 import logfire
 
@@ -95,7 +95,7 @@ def evaluate_predicate(pred: Predicate, state: InboxState) -> bool:
         return any(evaluate_predicate(sub, state) for sub in pred.of)
     if isinstance(pred, PlayerCanonExists):
         return pred.name in state.player_canon
-    raise TypeError(f"unhandled predicate: {type(pred).__name__}")
+    assert_never(pred)
 
 
 def _evaluate_recent_classifier_value(
@@ -225,7 +225,7 @@ def describe_predicate(pred: Predicate, state: InboxState) -> str:
         if entry is None:
             return f"player_canon({pred.name}) — not yet"
         return f"player_canon({pred.name})={entry.summary}"
-    raise TypeError(f"unhandled predicate: {type(pred).__name__}")
+    assert_never(pred)
 
 
 def _fmt_quality(value: float | str | None) -> str:

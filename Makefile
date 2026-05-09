@@ -38,9 +38,13 @@ $(MODEL):
 .PHONY: download-model
 download-model: $(MODEL)
 
+# Boots llama-server via npc_service.run_llama so the argv comes from the
+# same `launcher.build_command` the sidecar uses. Don't reintroduce a
+# hardcoded llama-server invocation here — it will drift from Settings
+# (this is exactly how `-np` got stuck at 8 while config.py said 128).
 .PHONY: llama
 llama: $(MODEL)
-	$(LLAMA_BIN) -m $(MODEL) --host $(LLAMA_HOST) --port $(LLAMA_PORT) -c 32768 --jinja --reasoning on --reasoning-format deepseek -ngl 99 -np 8 --kv-unified
+	cd npc_service && uv run python -m npc_service.run_llama
 
 .PHONY: sidecar
 sidecar:

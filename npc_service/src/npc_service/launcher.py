@@ -192,7 +192,14 @@ def resolve_config(settings: Settings | None = None) -> LlamaConfig:
     )
 
 
-def _build_command(cfg: LlamaConfig) -> list[str]:
+def build_command(cfg: LlamaConfig) -> list[str]:
+    """Render the llama-server argv from a resolved LlamaConfig.
+
+    This is the single source of truth for how llama-server is invoked.
+    Both the sidecar (start_llama → Popen) and the standalone `make llama`
+    entry point (run_llama.py → subprocess.run) call this — keep them
+    rendering identical argv so the two boot paths can't drift.
+    """
     cmd = [str(cfg.bin)]
     if cfg.model_path is not None:
         cmd += ["-m", str(cfg.model_path)]
@@ -246,7 +253,7 @@ def _drain_pipe(pipe, log_file_handle, tag: str) -> None:
 
 def start_llama(cfg: LlamaConfig | None = None) -> subprocess.Popen:
     cfg = cfg or resolve_config()
-    cmd = _build_command(cfg)
+    cmd = build_command(cfg)
 
     with logfire.span(
         "start llama-server on port {port}",

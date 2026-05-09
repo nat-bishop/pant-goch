@@ -64,9 +64,6 @@ logfire.configure(
 )
 
 from npc_service.models import (
-    BeatFired,
-    Not_,
-    Or_,
     PlayerCanonExists,
     PlayerRepliesToThreadGte,
     Predicate,
@@ -75,6 +72,7 @@ from npc_service.models import (
     QualityLt,
     RecentClassifierValue,
     Scenario,
+    iter_predicate_leaves,
     load_scenario,
 )
 
@@ -151,46 +149,40 @@ class ScenarioProfile:
         recent_caps: dict[str, int] = {}
         quals_predicates: set[str] = set()
 
-        def walk(pred: Predicate) -> None:
-            if isinstance(pred, QualityGte):
-                quals_predicates.add(pred.quality)
-            elif isinstance(pred, QualityLt):
-                quals_predicates.add(pred.quality)
-            elif isinstance(pred, QualityEquals):
-                quals_predicates.add(pred.quality)
-            elif isinstance(pred, PlayerCanonExists):
-                canon_keys.add(pred.name)
-            elif isinstance(pred, PlayerRepliesToThreadGte):
-                thread_caps[pred.thread] = max(
-                    thread_caps.get(pred.thread, 0), pred.value + 1,
-                )
-            elif isinstance(pred, RecentClassifierValue):
-                classifier_qs.add(pred.quality)
-                # RecentClassifierValue READS the quality (via per-axis
-                # history). Counts the same as QualityGte for orphan-effect
-                # detection — without this, qualities written exclusively
-                # for trend-reads false-flag as orphan.
-                quals_predicates.add(pred.quality)
-                recent_caps[pred.quality] = max(
-                    recent_caps.get(pred.quality, 0), pred.window,
-                )
-            elif isinstance(pred, Not_):
-                walk(pred.of)
-            elif isinstance(pred, Or_):
-                for sub in pred.of:
-                    walk(sub)
+        def collect(pred: Predicate) -> None:
+            for leaf in iter_predicate_leaves(pred):
+                if isinstance(leaf, (QualityGte, QualityLt, QualityEquals)):
+                    quals_predicates.add(leaf.quality)
+                elif isinstance(leaf, PlayerCanonExists):
+                    canon_keys.add(leaf.name)
+                elif isinstance(leaf, PlayerRepliesToThreadGte):
+                    thread_caps[leaf.thread] = max(
+                        thread_caps.get(leaf.thread, 0), leaf.value + 1,
+                    )
+                elif isinstance(leaf, RecentClassifierValue):
+                    classifier_qs.add(leaf.quality)
+                    # RecentClassifierValue READS the quality (via per-axis
+                    # history). Counts the same as QualityGte for orphan-effect
+                    # detection — without this, qualities written exclusively
+                    # for trend-reads false-flag as orphan.
+                    quals_predicates.add(leaf.quality)
+                    recent_caps[leaf.quality] = max(
+                        recent_caps.get(leaf.quality, 0), leaf.window,
+                    )
+                # Other leaf kinds (BeatFired) carry no quality reference —
+                # silent skip is correct.
 
         for beat in scenario.beats:
             for top in beat.preconditions:
-                walk(top)
+                collect(top)
             for top in beat.spec.exit_when:
-                walk(top)
+                collect(top)
             for effect in beat.spec.effects:
                 if effect.when is not None:
-                    walk(effect.when)
+                    collect(effect.when)
         for effect in scenario.effects:
             if effect.when is not None:
-                walk(effect.when)
+                collect(effect.when)
 
         quals_with_effects: set[str] = set()
         for beat in scenario.beats:
@@ -356,30 +348,28 @@ def _find_orphans(
     # Predicate → references a quality no effect writes.
     seen: set[tuple[str, str, str]] = set()  # dedupe per (location, target, kind)
 
-    def walk_for_orphans(pred: Predicate, location: str) -> None:
-        if isinstance(pred, (QualityGte, QualityLt, QualityEquals)):
-            if pred.quality not in profile.qualities_with_effects:
-                key = (location, pred.quality, "quality")
-                if key not in seen:
-                    seen.add(key)
-                    orphan_predicates.append((location, pred.quality))
-        elif isinstance(pred, RecentClassifierValue):
-            if pred.quality not in profile.qualities_with_effects:
-                key = (location, pred.quality, "recent")
-                if key not in seen:
-                    seen.add(key)
-                    orphan_predicates.append((location, pred.quality))
-        elif isinstance(pred, Not_):
-            walk_for_orphans(pred.of, location)
-        elif isinstance(pred, Or_):
-            for sub in pred.of:
-                walk_for_orphans(sub, location)
+    def check_orphans(pred: Predicate, location: str) -> None:
+        for leaf in iter_predicate_leaves(pred):
+            if isinstance(leaf, (QualityGte, QualityLt, QualityEquals)):
+                if leaf.quality not in profile.qualities_with_effects:
+                    key = (location, leaf.quality, "quality")
+                    if key not in seen:
+                        seen.add(key)
+                        orphan_predicates.append((location, leaf.quality))
+            elif isinstance(leaf, RecentClassifierValue):
+                if leaf.quality not in profile.qualities_with_effects:
+                    key = (location, leaf.quality, "recent")
+                    if key not in seen:
+                        seen.add(key)
+                        orphan_predicates.append((location, leaf.quality))
+            # Other leaves (BeatFired, PlayerCanonExists, PlayerRepliesToThreadGte)
+            # don't reference a writable quality — skip.
 
     for beat in scenario.beats:
         for top in beat.preconditions:
-            walk_for_orphans(top, f"{beat.id}.preconditions")
+            check_orphans(top, f"{beat.id}.preconditions")
         for top in beat.spec.exit_when:
-            walk_for_orphans(top, f"{beat.id}.exit_when")
+            check_orphans(top, f"{beat.id}.exit_when")
 
     return orphan_effects, orphan_predicates
 
@@ -403,37 +393,34 @@ def _find_bound_mismatches(
     seen: set[tuple[str, str, str]] = set()
 
     def check(pred: Predicate, location: str) -> None:
-        if isinstance(pred, QualityGte):
-            bounds = quality_bounds.get(pred.quality)
-            if bounds is not None:
-                _, hi = bounds
-                if pred.value > hi:
-                    reason = (
-                        f"`>= {pred.value}` but quality maxes at {hi} "
-                        "across all reachable states"
-                    )
-                    key = (location, pred.quality, reason)
-                    if key not in seen:
-                        seen.add(key)
-                        mismatches.append((location, pred.quality, reason))
-        elif isinstance(pred, QualityLt):
-            bounds = quality_bounds.get(pred.quality)
-            if bounds is not None:
-                lo, _ = bounds
-                if pred.value <= lo:
-                    reason = (
-                        f"`< {pred.value}` but quality mins at {lo} "
-                        "across all reachable states"
-                    )
-                    key = (location, pred.quality, reason)
-                    if key not in seen:
-                        seen.add(key)
-                        mismatches.append((location, pred.quality, reason))
-        elif isinstance(pred, Not_):
-            check(pred.of, location)
-        elif isinstance(pred, Or_):
-            for sub in pred.of:
-                check(sub, location)
+        for leaf in iter_predicate_leaves(pred):
+            if isinstance(leaf, QualityGte):
+                bounds = quality_bounds.get(leaf.quality)
+                if bounds is not None:
+                    _, hi = bounds
+                    if leaf.value > hi:
+                        reason = (
+                            f"`>= {leaf.value}` but quality maxes at {hi} "
+                            "across all reachable states"
+                        )
+                        key = (location, leaf.quality, reason)
+                        if key not in seen:
+                            seen.add(key)
+                            mismatches.append((location, leaf.quality, reason))
+            elif isinstance(leaf, QualityLt):
+                bounds = quality_bounds.get(leaf.quality)
+                if bounds is not None:
+                    lo, _ = bounds
+                    if leaf.value <= lo:
+                        reason = (
+                            f"`< {leaf.value}` but quality mins at {lo} "
+                            "across all reachable states"
+                        )
+                        key = (location, leaf.quality, reason)
+                        if key not in seen:
+                            seen.add(key)
+                            mismatches.append((location, leaf.quality, reason))
+            # Other leaves carry no numeric threshold to compare; skip.
 
     for beat in scenario.beats:
         for top in beat.preconditions:
