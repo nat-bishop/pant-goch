@@ -157,11 +157,13 @@ def main(argv: list[str] | None = None) -> int:
         description="LLM playtester for smallville scenarios.",
     )
     parser.add_argument(
-        "--seeds", type=int, default=8,
-        help="Number of sessions per persona (default: 8). Each (persona, "
+        "--seeds", type=int, default=3,
+        help="Number of sessions per persona (default: 3). Each (persona, "
              "seed_idx) pair maps to a stable llama seed forwarded via "
              "extra_body, so re-running a case produces the same player "
-             "inputs (engine agents stay stochastic).",
+             "inputs (engine agents stay stochastic). 3 is the dev-loop "
+             "default; bump to 8+ for ship-readiness gates where variance "
+             "coverage matters.",
     )
     parser.add_argument(
         "--max-sends", type=int, default=25,

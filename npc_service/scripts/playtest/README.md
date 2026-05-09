@@ -29,12 +29,12 @@ make download-model        # Gemma 4 E4B Q8_0
 make download-eval-model   # Qwen 3.6 35B-A3B Q8_0
 
 # 3. Boot both llama servers in separate terminals
-make llama        # terminal 1: Gemma on :8080, -np 128
-make llama-eval   # terminal 2: Qwen on :8081, -np 64 (ik_llama.cpp)
+make llama-playtest   # terminal 1: Gemma on :8080, -np 64 --no-kv-unified
+make llama-eval       # terminal 2: Qwen on :8081, -np 64
 
 # 4. Run the playtester (terminal 3)
 make playtest
-# Or with overrides:
+# Or with overrides (ship-gate run with full variance coverage):
 uv run python -m scripts.playtest --seeds 8 --max-sends 25 --parallel 64
 ```
 
@@ -139,7 +139,7 @@ Result is the list of "reachable but Director-avoided" beats.
 
 ## Performance
 
-- 8 personas × 8 seeds = **64 sessions** at `--parallel 64`, ~25 sends each
+- 4 personas × 3 seeds = **12 sessions** at `--parallel 64` (dev-loop default), ~25 sends each. Bump `--seeds 8` for ship-gate runs (32 sessions) or `--seeds 8` plus restoring the 4 cut personas for the full variance grid (64 sessions).
 - Sessions run concurrently (`max_concurrency=parallel` in `Dataset.evaluate`); each call uses its own per-call `Session` object, no shared mutable module state
 - 8 LLM judges per case, mostly one call each (sliding-window judges cap at 6 calls/session) — total LLM-judge cost: ~8-13 calls × 64 = ~600-900 judge calls per run
 - Fully local — $0/run with two GGUF servers

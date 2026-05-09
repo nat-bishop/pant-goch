@@ -66,18 +66,43 @@ class Settings(BaseSettings):
     llama_hf_repo: str = "ggml-org/gemma-4-E4B-it-GGUF:Q8_0"
     llama_host: str = LLAMA_HOST
     llama_port: int = LLAMA_PORT
+    # Per-session conversation budget. Drives the chat agent's history-compaction
+    # threshold (`history_compact_frac × llama_ctx`). The summary agent pre-empts
+    # the model's hard ctx limit by recapping oldest messages once the running
+    # history would exceed this. Default sized for one in-flight session (single
+    # player); the playtester's per-session budget is the same — what scales for
+    # high concurrency is `llama_total_ctx` (the server's `-c` flag), NOT this.
     llama_ctx: int = 32768
     llama_ngl: int = 99
     # Number of parallel decoding slots in llama-server (`-np N`). Each slot
     # can serve one in-flight request; past N, requests queue server-side.
-    # On a 96 GB Blackwell with `--kv-unified` we comfortably go to 128.
-    # See benchmark in plan/migration-day notes.
+    # With `--no-kv-unified` (our default), each slot pre-allocates
+    # `llama_total_ctx / n_parallel` tokens of KV — so `-np` directly drives
+    # VRAM cost. Default 128 is over-provisioned for `make run` (single-user
+    # peaks at 2–4 concurrent agent calls per /send) but harmless on a 96 GB
+    # Blackwell at ~16 GB of preallocated KV. The playtester overrides via
+    # `LLAMA_N_PARALLEL=64` to match its `--parallel 64` driver.
     llama_n_parallel: int = 128
-    # Unified KV cache (`--kv-unified`): one ctx-sized KV buffer shared across
-    # all slots via paging. Without this, each slot gets its own ctx-sized KV
-    # and VRAM scales `N × ctx × hidden` — fast OOM at high `-np`. The
-    # paged path is well-tested in current llama.cpp; default ON.
-    llama_kv_unified: bool = True
+    # Unified KV cache (`--kv-unified`): one shared KV buffer of total size
+    # `llama_total_ctx` paged across all slots, with prefix bytes shared across
+    # sequences. Optimised for many-users-one-system-prompt fleets, where the
+    # shared prefix amortises prefill. Penalises workloads where each session
+    # has a distinct prefix (agentic/stateful), because the page-management
+    # overhead applies on every batch step but there's nothing to share —
+    # measured ~2.7× slower at 64-concurrent on Gemma 4 E4B Q8 vs per-slot
+    # allocation. Smallville is the latter (each session has its own persona,
+    # history, canon ledger), so default OFF. Recent llama.cpp builds enable
+    # unified by default when `-np` is auto, so we always emit an EXPLICIT
+    # flag (--kv-unified or --no-kv-unified) to defend against drift.
+    llama_kv_unified: bool = False
+    # Total KV pool size passed to llama-server's `-c` flag. With unified KV
+    # off (the default), llama-server divides this by `-np` per slot, so each
+    # slot gets `llama_total_ctx / n_parallel` tokens of context. Sizing rule:
+    # `llama_total_ctx >= n_parallel × llama_ctx` so each slot has the full
+    # per-session budget. Default 0 → fall back to `n_parallel × llama_ctx`
+    # automatically. The playtester sets `LLAMA_TOTAL_CTX=2097152` (2M = 64 ×
+    # 32k) explicitly so the value stays self-documenting at the call site.
+    llama_total_ctx: int = 0
     # Escape hatch for any flag we haven't promoted to a typed Settings field.
     # Whitespace-split, appended verbatim to the llama-server command.
     llama_extra_args: str = ""

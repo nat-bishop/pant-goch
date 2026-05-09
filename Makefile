@@ -4,15 +4,16 @@ LLAMA_BIN   := vendor/llama.cpp/llama-server.exe
 LLAMA_HOST  := 127.0.0.1
 LLAMA_PORT  := 8080
 
-# Eval llama: Qwen 3.6 35B-A3B (MoE, ~3B active) on ik_llama.cpp. Powers the
-# synthetic-player agent and every LLM judge in the playtester. Different
-# family from Gemma (the SUT) to mitigate same-family preference leakage in
-# judging — see arxiv 2502.01534. ik_llama.cpp is a llama.cpp fork with
-# fused MoE kernels; see npc_service/scripts/playtest/README.md for the
-# build/vendor instructions. -np 64 matches `--parallel 64` in the playtester.
+# Eval llama: Qwen 3.6 35B-A3B (MoE, ~3B active) on mainline llama.cpp.
+# Powers the synthetic-player agent and every LLM judge in the playtester.
+# Different family from Gemma (the SUT) to mitigate same-family preference
+# leakage in judging — see arxiv 2502.01534. Uses the same vendored
+# llama-server binary as the engine; ik_llama.cpp would offer ~25% better
+# MoE throughput but adds a from-source build step on Windows we don't
+# need yet.
 EVAL_MODEL      := models/Qwen3.6-35B-A3B-Q8_0.gguf
 EVAL_MODEL_URL  := https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/Qwen3.6-35B-A3B-Q8_0.gguf
-EVAL_LLAMA_BIN  := vendor/ik_llama.cpp/llama-server.exe
+EVAL_LLAMA_BIN  := vendor/llama.cpp/llama-server.exe
 EVAL_LLAMA_PORT := 8081
 
 .DEFAULT_GOAL := help
@@ -23,8 +24,9 @@ help:
 	@echo "  make run             Boot sidecar (spawns llama) + web dev server in parallel"
 	@echo "  make download-model       Fetch the Gemma 4 E4B Q8_0 GGUF (~8 GB)"
 	@echo "  make download-eval-model  Fetch the Qwen 3.6 35B-A3B Q8_0 GGUF (~37 GB)"
-	@echo "  make llama                Run engine llama-server (Gemma on :8080)"
-	@echo "  make llama-eval           Run eval llama-server (Qwen 35B-A3B on :8081, ik_llama.cpp)"
+	@echo "  make llama                Run engine llama-server (Gemma on :8080, single-user KV)"
+	@echo "  make llama-playtest       Run engine llama with bumped KV pool for the playtester (~2M ctx, 64 concurrent)"
+	@echo "  make llama-eval           Run eval llama-server (Qwen 35B-A3B on :8081, ik_llama.cpp, ~2M ctx)"
 	@echo "  make sidecar              Run Python sidecar, no llama   (terminal 2)"
 	@echo "  make web                  Run Vite dev server            (terminal 3)"
 	@echo "  make test                 Run pytest"
@@ -66,16 +68,26 @@ download-eval-model: $(EVAL_MODEL)
 llama: $(MODEL)
 	cd npc_service && uv run python -m npc_service.run_llama
 
-# Eval llama: Qwen 3.6 35B-A3B (MoE) on ik_llama.cpp. Direct invocation —
-# launcher.build_command is Gemma-specific (--jinja, --reasoning on, --reasoning-format
-# deepseek). Qwen wants different flags. -np 64 matches the playtester's
-# --parallel 64 default. -c 32768 with --kv-unified pages the KV across
-# slots (~constant total VRAM regardless of -np). If ik_llama.cpp doesn't
-# support --kv-unified, drop -c to 16384 to halve KV — see playtest README
-# for the OOM fallback ladder.
+# Engine llama, sized for the playtester at --parallel 64. Bumps `-np` to
+# 64 (matches max concurrency) and lets launcher.py auto-size `-c` to
+# `n_parallel × llama_ctx = 64 × 32k = 2M`. Single-session llama_ctx stays
+# 32k, so the chat agent's history-compaction threshold is unaffected.
+# KV cost ≈ 64 × 32k × ~4 KB/tok (Gemma MQA) ≈ ~8 GB VRAM. The default
+# `--no-kv-unified` (see config.py:llama_kv_unified) means llama-server
+# divides `-c` by `-np` per slot — each slot gets the full 32k budget.
+.PHONY: llama-playtest
+llama-playtest: $(MODEL)
+	cd npc_service && LLAMA_N_PARALLEL=64 uv run python -m npc_service.run_llama
+
+# Eval llama: Qwen 3.6 35B-A3B (MoE) on mainline llama.cpp. Direct invocation —
+# launcher.build_command is Gemma-specific (--jinja, --reasoning on,
+# --reasoning-format deepseek). Qwen wants different flags. Mirrors the
+# engine's `-c 32768 -np 128 --kv-unified` shape so single-call latency
+# stays sub-second; the unified KV pool dynamically allocates across
+# concurrent sessions.
 .PHONY: llama-eval
 llama-eval: $(EVAL_MODEL)
-	$(EVAL_LLAMA_BIN) -m $(EVAL_MODEL) --host $(LLAMA_HOST) --port $(EVAL_LLAMA_PORT) -c 32768 --jinja -ngl 99 -np 64 --kv-unified
+	$(EVAL_LLAMA_BIN) -m $(EVAL_MODEL) --host $(LLAMA_HOST) --port $(EVAL_LLAMA_PORT) -c 32768 --jinja -ngl 99 -np 128 --kv-unified
 
 .PHONY: sidecar
 sidecar:
@@ -110,14 +122,18 @@ lint-scenario:
 analyze-scenario:
 	cd npc_service && uv run python scripts/analyze_scenario.py scenario.yaml
 
-# LLM playtester. Probes /health on llama-server before booting; errors
-# clearly if llama isn't up. Installs the optional pydantic-evals dep on
+# LLM playtester. Probes /health on BOTH llama servers (engine on :8080,
+# eval on :8081) before booting; errors clearly if either isn't up. Boot
+# them in separate terminals first via `make llama-playtest` (bumped KV
+# pool) and `make llama-eval`. Installs the optional pydantic-evals dep on
 # first run via `uv sync --extra playtest`. PYTHONIOENCODING=utf-8 keeps
 # pydantic-evals' rich-rendered evaluation summary from crashing on the
-# Windows cp1252 console when it prints `✓` / `✗` glyphs.
+# Windows cp1252 console when it prints `✓` / `✗` glyphs. `python -u`
+# disables stdout buffering so progress is visible while the run is in
+# flight (default-buffered subprocesses don't flush until exit).
 .PHONY: playtest
 playtest:
-	cd npc_service && uv sync --extra playtest && PYTHONIOENCODING=utf-8 uv run python -m scripts.playtest
+	cd npc_service && uv sync --extra playtest && PYTHONIOENCODING=utf-8 uv run python -u -m scripts.playtest
 
 .PHONY: typecheck
 typecheck:

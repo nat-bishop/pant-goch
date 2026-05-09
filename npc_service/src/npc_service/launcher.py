@@ -178,13 +178,24 @@ def resolve_config(settings: Settings | None = None) -> LlamaConfig:
             model_path = None
             hf = s.llama_hf_repo
 
+    # `llama_total_ctx` is the server's `-c` flag. With unified KV off (our
+    # default), llama-server divides `-c` by `-np` per slot — so each slot
+    # gets `total_ctx / n_parallel` tokens. Default fallback computes
+    # `n_parallel × llama_ctx` so every slot has the full per-session budget
+    # without the caller having to remember the formula. Explicit
+    # `LLAMA_TOTAL_CTX` env override still wins (used by `make llama-playtest`
+    # to make the value self-documenting at the call site).
+    total_ctx = (
+        s.llama_total_ctx if s.llama_total_ctx > 0
+        else s.llama_n_parallel * s.llama_ctx
+    )
     return LlamaConfig(
         bin=bin_path,
         model_path=model_path,
         hf_repo=hf,
         port=s.llama_port,
         host=s.llama_host,
-        ctx=s.llama_ctx,
+        ctx=total_ctx,
         extra_args=s.llama_extra_args.split() if s.llama_extra_args else [],
         ngl=s.llama_ngl,
         n_parallel=s.llama_n_parallel,
@@ -215,8 +226,13 @@ def build_command(cfg: LlamaConfig) -> list[str]:
         "-ngl", str(cfg.ngl),
         "-np", str(cfg.n_parallel),
     ]
-    if cfg.kv_unified:
-        cmd.append("--kv-unified")
+    # Always pass an EXPLICIT kv-unified flag. Recent llama.cpp builds
+    # enable unified KV by default when `-np` is auto, so omitting the flag
+    # is not the same as disabling it. We measured `--kv-unified` to be
+    # ~2.7× slower than per-slot allocation at 64-concurrent on this stack
+    # (no shared prefix to amortise; pure page-management overhead) — see
+    # config.py:llama_kv_unified for the rationale.
+    cmd.append("--kv-unified" if cfg.kv_unified else "--no-kv-unified")
     cmd += cfg.extra_args
     return cmd
 
