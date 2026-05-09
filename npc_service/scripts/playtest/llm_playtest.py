@@ -114,10 +114,23 @@ async def _synthesise_reply(
     player_agent: Agent[PlayerDeps, str],
     persona: PersonaSpec,
     transcript: list[Email],
+    *,
+    seed: int | None = None,
 ) -> str:
-    """One synthetic-player call. Returns the body text."""
+    """One synthetic-player call. Returns the body text.
+
+    `seed`, when set, is forwarded to llama.cpp via `extra_body` so two
+    runs of the same persona under the same seed produce the same player
+    inputs (modulo prompt-cache state). Engine agents are left unseeded
+    on purpose — we want their stochasticity in the distribution.
+    """
     deps = PlayerDeps(persona=persona, recent_transcript=transcript[-6:])
-    result = await player_agent.run("Write your next reply.", deps=deps)
+    model_settings = (
+        {"extra_body": {"seed": seed}} if seed is not None else None
+    )
+    result = await player_agent.run(
+        "Write your next reply.", deps=deps, model_settings=model_settings,
+    )
     return result.output.strip()
 
 
@@ -135,6 +148,7 @@ async def run_session(
     *,
     player_agent: Agent[PlayerDeps, str],
     max_sends: int = 25,
+    seed: int | None = None,
 ) -> SessionRecord:
     """Drive one full session against a fresh per-call `Session`. Loops:
     pick reply target → synthesise body → record_send → process_send →
@@ -164,7 +178,7 @@ async def run_session(
 
         try:
             body = await _synthesise_reply(
-                player_agent, persona, list(session.state.emails),
+                player_agent, persona, list(session.state.emails), seed=seed,
             )
         except Exception as e:  # noqa: BLE001 — synthetic-player failure ends session
             error = f"synthetic player failure: {type(e).__name__}: {e}"

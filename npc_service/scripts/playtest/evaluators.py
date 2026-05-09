@@ -51,7 +51,7 @@ class TerminalReached(Evaluator):  # type: ignore[misc]
 
     def evaluate(self, ctx: EvaluatorContext):  # type: ignore[override]
         record: SessionRecord = ctx.output
-        persona: PersonaSpec = ctx.inputs
+        persona: PersonaSpec = ctx.inputs[0]
         actual = record.reached_terminal()
         if persona.expected_terminal is not None:
             passed = (actual == persona.expected_terminal)

@@ -56,30 +56,44 @@ async def _run_all(
     model = boot_engine_for_playtest()
     player_agent = _build_player_agent(model)
 
+    # Build (persona, seed) pairs so the seed forwarded to llama is stable
+    # per case — running the same case twice (e.g., post-prompt-change
+    # regression) produces the same scripted player inputs.
+    case_specs: list[tuple[PersonaSpec, int]] = [
+        (persona, seed_idx)
+        for persona in personas
+        for seed_idx in range(seeds)
+    ]
+
     if not use_evals:
         sem = asyncio.Semaphore(parallel)
 
-        async def _one(persona: PersonaSpec) -> SessionRecord:
+        async def _one(persona: PersonaSpec, seed_idx: int) -> SessionRecord:
             async with sem:
                 return await run_session(
                     persona, player_agent=player_agent, max_sends=max_sends,
+                    # Hash to a stable 31-bit int so different personas at the
+                    # same seed_idx don't produce identical player scripts.
+                    seed=hash((persona.name, seed_idx)) & 0x7FFFFFFF,
                 )
 
-        cases = [persona for persona in personas for _ in range(seeds)]
-        records = await asyncio.gather(*(_one(p) for p in cases))
+        records = await asyncio.gather(
+            *(_one(p, s) for p, s in case_specs),
+        )
         return list(records), None
 
     _require_evals()
     from pydantic_evals import Case, Dataset  # type: ignore[import-not-found]
 
+    # `inputs` carries (persona, seed_idx) so `_eval` can forward the seed
+    # to run_session for stable player-input replays.
     cases: list[Case] = []
-    for persona in personas:
-        for seed in range(seeds):
-            cases.append(Case(
-                name=f"{persona.archetype}/{persona.name}/seed{seed}",
-                inputs=persona,
-                metadata={"archetype": persona.archetype, "seed": seed},
-            ))
+    for persona, seed_idx in case_specs:
+        cases.append(Case(
+            name=f"{persona.archetype}/{persona.name}/seed{seed_idx}",
+            inputs=(persona, seed_idx),
+            metadata={"archetype": persona.archetype, "seed": seed_idx},
+        ))
 
     dataset = Dataset(
         name="continuity_program_playtest",
@@ -96,9 +110,11 @@ async def _run_all(
         ],
     )
 
-    async def _eval(persona: PersonaSpec) -> SessionRecord:
+    async def _eval(case_input: tuple[PersonaSpec, int]) -> SessionRecord:
+        persona, seed_idx = case_input
         return await run_session(
             persona, player_agent=player_agent, max_sends=max_sends,
+            seed=hash((persona.name, seed_idx)) & 0x7FFFFFFF,
         )
 
     # `run_session` constructs its own Session — no shared module state —
@@ -131,8 +147,11 @@ def main(argv: list[str] | None = None) -> int:
         description="LLM playtester for smallville scenarios.",
     )
     parser.add_argument(
-        "--seeds", type=int, default=3,
-        help="Number of sessions per persona (default: 3).",
+        "--seeds", type=int, default=8,
+        help="Number of sessions per persona (default: 8). Each (persona, "
+             "seed_idx) pair maps to a stable llama seed forwarded via "
+             "extra_body, so re-running a case produces the same player "
+             "inputs (engine agents stay stochastic).",
     )
     parser.add_argument(
         "--max-sends", type=int, default=25,
@@ -147,9 +166,10 @@ def main(argv: list[str] | None = None) -> int:
         help="Llama-server base URL for the health probe (default: localhost:8080).",
     )
     parser.add_argument(
-        "--parallel", type=int, default=4,
-        help="Max sessions to run concurrently (default: 4). Llama-server "
-             "must be booted with at least this many parallel slots (`-np N`).",
+        "--parallel", type=int, default=64,
+        help="Max sessions to run concurrently (default: 64). Llama-server "
+             "must be booted with at least this many parallel slots — the "
+             "Pydantic default `llama_n_parallel=128` covers this.",
     )
     args = parser.parse_args(argv)
 
