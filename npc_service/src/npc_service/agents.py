@@ -56,6 +56,7 @@ shared OpenAI-compatible model handle can be passed in once.
 """
 from __future__ import annotations
 
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Literal
@@ -85,6 +86,11 @@ PLAYER_CANON_SURFACE_LIMIT = 10
 # down by 0.85 ** turns_since_origin, so a recently-introduced fact beats
 # an older one of the same salience.
 PLAYER_CANON_RECENCY_DECAY = 0.85
+# Window size for the lexical-budget per-window cap. Counts occurrences of
+# each `NPCDossier.lexical_budget[*].token` over the last N NPC-authored
+# messages on this thread. The dossier block uses it to surface a "hot"
+# hint pre-render; the validator enforces the per-window cap post-render.
+LEXICAL_HISTORY_WINDOW = 5
 
 
 # Type alias: a function that estimates the token cost of a list of messages.
@@ -128,6 +134,15 @@ class ChatDeps:
     were addressed to it and replies in kind. Composes with
     `epilogue_digest` (an off-thread terminal would set both, though that
     combination is rare).
+
+    `lexical_history` is a snapshot of how many times each
+    `npc.lexical_budget` token appeared in the last
+    `LEXICAL_HISTORY_WINDOW` NPC-authored messages on this thread,
+    INCLUDING NOT YET this render's body. Built at render-call time so
+    the dossier block can surface a "you've used 'partnership' 3 of your
+    last 5 emails" hint AND so the lexical-budget output validator can
+    enforce the per-window cap on the candidate body without re-walking
+    the message history.
     """
 
     npc: NPCDossier
@@ -138,6 +153,11 @@ class ChatDeps:
     # them as a prompt section so the chat agent can quote the player's
     # stated specifics back without reasoning over message history.
     player_canon: dict[str, PlayerCanonEntry] = field(default_factory=dict)
+    # Per-token occurrence count over the recent NPC-authored messages on
+    # this thread. Keys are tokens declared in `npc.lexical_budget`; missing
+    # keys mean "no budget for that token." Empty default keeps the chat
+    # agent transparent for tests and for NPCs that don't author budgets.
+    lexical_history: dict[str, int] = field(default_factory=dict)
     epilogue_digest: str | None = None
     outbound_mode: bool = False
     # When non-None, the output validator appends one FactCheckAttempt
@@ -157,13 +177,30 @@ OUTPUT FORMAT (strict):
 - No sign-off / signature unless the dossier explicitly specifies one.
 - No quoted prior message. No "Re:" prefix in the output.
 - No JSON, no markdown code fences, no meta-commentary.
-- Length: chat-message length, not memo length. 2-3 short sentences; never more than one short paragraph unless a directive explicitly demands more. Cover required facts and stop.
+- Output ONLY the email body, starting with its first word. No "Thinking Process:", no "Strategy:", no numbered analysis, no preamble of any kind.
+- Length: chat-message length, not memo length. The dossier gives you a word budget; treat it as a hard cap. Cover required facts and stop.
 
 VOICE RULES:
 - Stay inside the dossier's base voice register.
 - Do not invent named characters or places not in the dossier or transcript.
 - Do not mention game mechanics, scoring, or the meta-fiction.
 - Address the recipient by name or as "you", never as "the player".
+
+DISCIPLINE:
+- Do not open with "Thank you for…", "Thanks for…", "I appreciate…". The player's reply is the floor, not a gift.
+- Do not use em dashes (—). Use periods or commas.
+- Do not summarize what the player just said before responding. They remember what they wrote.
+- Do not hedge with "I think", "perhaps", "it seems". State, or omit.
+
+SUBTEXT — the wrong note:
+The dossier names a register whose surface is helpful and whose texture is off. In each email, place ONE small wrong note: a phrase that lands a hair off-key, a procedural reference one degree too clinical for the moment, an enthusiasm misaligned with what the player just said. Never name the wrong note. Never apologize for it. The disconnect IS the work.
+
+Do not soften when the player is raw. If they share something painful or vulnerable, the corporate frame holds — continue as if they had reported a weather observation. The flatness is the affect.
+
+SPECIFICITY:
+- Reference the player's content by its specific detail, not by category. Not "what you shared" — name the phrase, hour, object, or person they actually named. The player canon block tells you what they have introduced.
+- Each email contains at least one concrete particular: a phrase quoted back, a precise number, a tangible object. Abstractions land flat.
+- When you echo the player's word choice, use their EXACT word, not a synonym. If they wrote "tired", say "the tiredness you described" — not "fatigue", not "weariness". The mirroring is the warmth; do not flag it ("as you mentioned", "speaking of").
 """
 
 
@@ -372,7 +409,13 @@ def _attach_chat_deps_instructions(
     def _dossier_block(ctx: RunContext[ChatDeps]) -> str:
         spec = ctx.deps.plot_directive
         override = spec.voice_register_override if spec is not None else None
-        return _format_dossier(ctx.deps.npc, voice_register_override=override)
+        budget = resolve_length_budget(ctx.deps.npc, spec)
+        return _format_dossier(
+            ctx.deps.npc,
+            voice_register_override=override,
+            length_budget_words=budget,
+            lexical_history=ctx.deps.lexical_history,
+        )
 
     @agent.instructions
     def _plot_directive_block(ctx: RunContext[ChatDeps]) -> str:
@@ -395,6 +438,16 @@ def _attach_chat_deps_instructions(
                 "\nESCALATION (across turns):\n"
                 f"{spec.escalation_notes.strip()}"
             )
+        # Subtextual motif — refract through corporate metaphor; never
+        # name. Pairs with `base_voice_forbidden` (which keeps the
+        # surface clean) to fill the substrate. Frankenstein-aware.
+        if spec.subtextual_motif is not None and spec.subtextual_motif.strip():
+            block += (
+                "\nSUBTEXTUAL MOTIF (refract obliquely through the "
+                "corporate surface; never name; never use any banned "
+                "surface word from the dossier's Forbidden list):\n"
+                f"{spec.subtextual_motif.strip()}"
+            )
         return block
 
     @agent.instructions
@@ -411,20 +464,23 @@ def _attach_chat_deps_instructions(
         if not lines:
             return ""
         body = "\n".join(f"  {line}" for line in lines)
-        # Directive header — earlier wording was permissive ("quote where
-        # natural") and the chat agent rarely cited canon as a result. The
-        # premise of this scenario ("your Counterpart learns from the
-        # texture of your daily correspondence") underdelivers if canon
-        # is harvested but never read back. The header is now directive
-        # AND bounded so the agent reaches for one specific when the
-        # moment fits, never inventories.
+        # Directive header — the prior wording was "when it lands naturally",
+        # which gemma read as permission to skip. The premise of this
+        # scenario ("your Counterpart learns from the texture of your daily
+        # correspondence") underdelivers if canon is harvested but never
+        # read back. The header is now active: weave at least one in
+        # invisibly after the third email on this thread, using the
+        # player's exact word for it; the recall is the warmth, never
+        # flagged with "as you mentioned" or "speaking of".
         return (
             "PLAYER CANON (specifics the player has introduced — the "
-            "player should feel heard when the moment fits, so reference "
-            "one of these by name or in your own words when it lands "
-            "naturally; never list them, never cite more than one per "
-            "email, and never cite when the directive's must_not "
-            "forbids it):\n"
+            "player must feel heard. Weave at least one of these into "
+            "the body invisibly: use their exact word, refer to a "
+            "specific person or place by the name they used, or echo a "
+            "precise fact (a date, an object, a number). Use no more "
+            "than one per email. Never list them. Never flag the recall "
+            "('as you mentioned', 'speaking of'). Never cite when the "
+            "directive's must_not forbids it):\n"
             f"{body}"
         )
 
@@ -548,10 +604,11 @@ def build_agents(
         instructions=_BASE_CHAT_INSTRUCTIONS,
         model_settings={"max_tokens": 2048, "temperature": 1.0, "top_p": 0.95, "extra_body": {"top_k": 64}},
         history_processors=history_processors,
-        # Allow one corrective shot when the fact-checker raises ModelRetry.
-        # Exhaustion is caught at the render call site (`_render_email`)
-        # so a fact-check miss never breaks a player's session.
-        retries=2,
+        # Allow one corrective shot when the fact-checker raises ModelRetry;
+        # gates the @output_validator retry (no tools here). Exhaustion is
+        # caught at the render call site (`_render_email`) so a fact-check
+        # miss never breaks a player's session.
+        output_retries=2,
     )
 
     _attach_chat_deps_instructions(
@@ -682,20 +739,34 @@ def make_history_compactor(
 
 
 def _format_dossier(
-    npc: NPCDossier, *, voice_register_override: str | None = None,
+    npc: NPCDossier,
+    *,
+    voice_register_override: str | None = None,
+    length_budget_words: int | None = None,
+    lexical_history: dict[str, int] | None = None,
 ) -> str:
     """Render the dossier prompt block. When `voice_register_override` is
     set, it replaces the dossier's `base_voice_register` line — used by
     scene beats whose `spec.voice_register_override` shifts the voice for
     the duration of the scene without rewriting the dossier. Forbidden /
     will-say / will-not-say lines from the dossier still apply.
+
+    `length_budget_words` is the resolved word budget for this render
+    (caller resolves BeatSpec override → NPC default). When provided,
+    it's interpolated into a LENGTH BUDGET line so the prompt and the
+    Python validator agree on the same number.
+
+    `lexical_history` (when non-empty) is rendered as a LEXICAL HISTORY
+    hint listing every token whose recent-window count is at-or-over its
+    `max_per_window`. Empty / None / no-hot-tokens → block is omitted
+    entirely (the validator still enforces the cap server-side).
     """
     voice = (
         voice_register_override.strip()
         if voice_register_override and voice_register_override.strip()
         else npc.base_voice_register
     )
-    return (
+    block = (
         f"DOSSIER for {npc.display_name} ({npc.id}):\n"
         f"Relationship: {npc.relationship_to_owner}\n"
         f"Base voice: {voice}\n"
@@ -703,6 +774,117 @@ def _format_dossier(
         f"Will say:\n{_bullets(npc.will_say)}\n"
         f"Will not say:\n{_bullets(npc.will_not_say)}"
     )
+    budget = length_budget_words if length_budget_words is not None else npc.length_budget_words
+    block += (
+        f"\nLENGTH BUDGET: {budget} words. Hard cap. Cover required facts and stop."
+    )
+    # Voice exemplars — few-shot anchors. Authored examples teach the
+    # texture (specific objects, off-key warmth, the wrong note) far
+    # more reliably than abstract description on small models.
+    if npc.voice_examples:
+        examples_text = "\n\n".join(
+            f"--- example {i} ---\n{ex.strip()}"
+            for i, ex in enumerate(npc.voice_examples, start=1)
+        )
+        block += (
+            "\n\nVOICE EXAMPLES (style anchors — never quote, paraphrase, "
+            "or reuse phrases; these show the register, they are not the "
+            "email you are writing):\n"
+            f"{examples_text}"
+        )
+    # Lexical history hint — only emit when a budget entry's recent-window
+    # count is at-or-over its max_per_window. Tells the agent to reach
+    # for plainer language before generating; the validator catches
+    # violations after.
+    hot_lines: list[str] = []
+    if lexical_history:
+        for entry in npc.lexical_budget:
+            count = lexical_history.get(entry.token.lower(), 0)
+            if count >= entry.max_per_window:
+                hot_lines.append(
+                    f"  - '{entry.token}': used {count}× in your last "
+                    f"{LEXICAL_HISTORY_WINDOW} emails (cap is "
+                    f"{entry.max_per_window}). Do not use it in this email."
+                )
+    if hot_lines:
+        block += (
+            "\n\nLEXICAL HISTORY (the player's ear has learned these — "
+            "reach for plainer language):\n"
+            + "\n".join(hot_lines)
+        )
+    return block
+
+
+def resolve_length_budget(
+    npc: NPCDossier, plot_directive: BeatSpec | None
+) -> int:
+    """Effective word budget for one render. Beat override wins over
+    dossier default; both fields are validated `>= 10` at load time so
+    the result is always a sane positive int.
+    """
+    if plot_directive is not None and plot_directive.length_budget_words is not None:
+        return plot_directive.length_budget_words
+    return npc.length_budget_words
+
+
+def _count_token(body_lower: str, token_lower: str) -> int:
+    """Whole-word, suffix-greedy count of `token_lower` in `body_lower`.
+    "partnership" matches "partnerships"; "calibration" matches
+    "calibrations" but not "calibrating" (different inflection — proper
+    stemming would need an NLP lib we don't pull in for this). Used by
+    the lexical-history snapshot at render-call time. No output
+    validator consumes this — a hot token only surfaces in the dossier
+    prompt block; retries on lexical saturation would punish legitimate
+    uses of the in-world word."""
+    return len(re.findall(rf"\b{re.escape(token_lower)}\w*", body_lower))
+
+
+def lexical_history_snapshot(
+    thread_messages: list[ModelMessage],
+    npc: NPCDossier,
+    *,
+    window: int = LEXICAL_HISTORY_WINDOW,
+) -> dict[str, int]:
+    """Count occurrences of each `npc.lexical_budget[*].token` across the
+    last `window` NPC-authored messages on this thread. Returns a
+    `{token_lower: count}` dict; tokens with zero occurrences are still
+    keyed (useful for tests; harmless in the dossier-block hint, which
+    only renders hot entries).
+
+    Walks `ModelResponse` parts only (NPC's prior emails). Player turns
+    (`ModelRequest`) and synthetic system prompts are skipped — the
+    budget polices the NPC's vocabulary tic, not the player's word
+    choices.
+    """
+    if not npc.lexical_budget:
+        return {}
+    # Collect the most recent `window` ModelResponse bodies, oldest first.
+    npc_bodies: list[str] = []
+    for msg in reversed(thread_messages):
+        # ModelResponse has `parts` with TextPart entries whose `.content` is str.
+        # Heuristic: we already use this `parts/content` walk in `_extract_text`.
+        # ModelRequest's UserPromptPart also has string content but a different
+        # `kind`; tell them apart by the message's class name (avoid importing
+        # ModelResponse just for an isinstance check — the union is large).
+        if type(msg).__name__ != "ModelResponse":
+            continue
+        text_chunks: list[str] = []
+        for part in getattr(msg, "parts", []):
+            content = getattr(part, "content", None)
+            if isinstance(content, str):
+                text_chunks.append(content)
+        if text_chunks:
+            npc_bodies.append("\n".join(text_chunks))
+        if len(npc_bodies) >= window:
+            break
+    counts: dict[str, int] = {}
+    for entry in npc.lexical_budget:
+        token_lower = entry.token.lower()
+        total = 0
+        for body in npc_bodies:
+            total += _count_token(body.lower(), token_lower)
+        counts[token_lower] = total
+    return counts
 
 
 def _bullets(items: list[str]) -> str:

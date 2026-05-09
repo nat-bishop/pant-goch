@@ -17,7 +17,7 @@ help:
 	@echo "  make test            Run pytest"
 	@echo "  make playtest        Run the LLM playtester (requires llama up)"
 	@echo "  make lint-scenario   Lint npc_service/scenario.yaml (fast; spec rules only)"
-	@echo "  make analyze-scenario  Run static state-space analyzer (slower; reachability/bounds)"
+	@echo "  make analyze-scenario  Run ASP-backed reachability analyzer (clingo; sub-second on 13b)"
 	@echo "  make typecheck       Run TS typecheck on web/"
 	@echo "  make clean           Remove __pycache__ and logs/*.log"
 	@echo "  make kill-zombies    Force-kill stragglers on :8000/:8080/:5173-5176 (recovery)"
@@ -40,7 +40,7 @@ download-model: $(MODEL)
 
 .PHONY: llama
 llama: $(MODEL)
-	$(LLAMA_BIN) -m $(MODEL) --host $(LLAMA_HOST) --port $(LLAMA_PORT) -c 32768 --jinja --reasoning on --reasoning-format deepseek -ngl 99
+	$(LLAMA_BIN) -m $(MODEL) --host $(LLAMA_HOST) --port $(LLAMA_PORT) -c 32768 --jinja --reasoning on --reasoning-format deepseek -ngl 99 -np 8 --kv-unified
 
 .PHONY: sidecar
 sidecar:
@@ -65,10 +65,12 @@ test:
 lint-scenario:
 	cd npc_service && uv run python scripts/lint_scenario.py scenario.yaml
 
-# Static state-space analyzer. Slower than `lint-scenario` because it
-# enumerates reachable states; produces reachability, quality bounds,
-# and orphan-effect findings the spec lint can't. Run before commit /
-# in CI alongside `lint-scenario`.
+# Static reachability analyzer (ASP-backed via clingo). Computes which
+# beats are reachable from boot, per-quality value bounds, and orphan/
+# bound-mismatch findings that the spec lint can't see. Sub-second on
+# the production scenario thanks to clingo's brave-mode consequence
+# reasoning — see DendryScope (Robison & Mateas, AIIDE 2023) for the
+# encoding precedent. Run before commit / in CI alongside `lint-scenario`.
 .PHONY: analyze-scenario
 analyze-scenario:
 	cd npc_service && uv run python scripts/analyze_scenario.py scenario.yaml

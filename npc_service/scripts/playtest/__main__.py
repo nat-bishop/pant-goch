@@ -44,23 +44,30 @@ async def _run_all(
     seeds: int,
     max_sends: int,
     use_evals: bool,
+    parallel: int,
 ) -> tuple[list[SessionRecord], object | None]:
-    """Run `seeds` sessions per persona. If `use_evals`, also build a
-    pydantic-evals Dataset and run it (returns the report); otherwise just
-    return raw SessionRecords.
+    """Run `seeds` sessions per persona, up to `parallel` at a time. Each
+    session uses its own per-call `Session` object — no shared module
+    state — so concurrency is safe; the only shared resource is llama-server,
+    which must be booted with at least `parallel` concurrent slots
+    (`-np N`). If `use_evals`, also build a pydantic-evals Dataset and
+    run it (returns the report); otherwise just return raw SessionRecords.
     """
     model = boot_engine_for_playtest()
     player_agent = _build_player_agent(model)
 
     if not use_evals:
-        records: list[SessionRecord] = []
-        for persona in personas:
-            for _ in range(seeds):
-                rec = await run_session(
+        sem = asyncio.Semaphore(parallel)
+
+        async def _one(persona: PersonaSpec) -> SessionRecord:
+            async with sem:
+                return await run_session(
                     persona, player_agent=player_agent, max_sends=max_sends,
                 )
-                records.append(rec)
-        return records, None
+
+        cases = [persona for persona in personas for _ in range(seeds)]
+        records = await asyncio.gather(*(_one(p) for p in cases))
+        return list(records), None
 
     _require_evals()
     from pydantic_evals import Case, Dataset  # type: ignore[import-not-found]
@@ -94,11 +101,10 @@ async def _run_all(
             persona, player_agent=player_agent, max_sends=max_sends,
         )
 
-    # max_concurrency=1 because run_session mutates module-global
-    # `engine_main.STATE` and starts each session with `reset_session()`.
-    # Two concurrent cases would clobber each other's state mid-flight; keep
-    # them sequential. The non-evals branch already loops sequentially.
-    report = await dataset.evaluate(_eval, max_concurrency=1)
+    # `run_session` constructs its own Session — no shared module state —
+    # so cases can run concurrently up to llama-server's parallel-slot
+    # budget (configure with `-np N`).
+    report = await dataset.evaluate(_eval, max_concurrency=parallel)
     # Records are inside report; we still want a flat list for the JSON dump.
     records = [c.output for c in report.cases]  # type: ignore[attr-defined]
     return records, report
@@ -140,6 +146,11 @@ def main(argv: list[str] | None = None) -> int:
         "--llama-url", default="http://127.0.0.1:8080",
         help="Llama-server base URL for the health probe (default: localhost:8080).",
     )
+    parser.add_argument(
+        "--parallel", type=int, default=4,
+        help="Max sessions to run concurrently (default: 4). Llama-server "
+             "must be booted with at least this many parallel slots (`-np N`).",
+    )
     args = parser.parse_args(argv)
 
     if not probe_llama(args.llama_url):
@@ -166,6 +177,7 @@ def main(argv: list[str] | None = None) -> int:
         seeds=args.seeds,
         max_sends=args.max_sends,
         use_evals=not args.no_evals,
+        parallel=args.parallel,
     ))
 
     out_dir = Path(__file__).resolve().parents[2] / "_analysis"

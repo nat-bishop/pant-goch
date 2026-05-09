@@ -5,13 +5,17 @@ description = "Inbox — single-surface epistolary game sidecar (FastAPI + Pydan
 requires-python = ">=3.11,<3.13"
 dependencies = [
     "fastapi>=0.115,<0.116",
-    "uvicorn[standard]>=0.32,<0.33",
+    "uvicorn[standard]>=0.35,<0.36",
     "pydantic>=2.10,<3",
-    "pydantic-ai>=1.0,<2",
+    "pydantic-ai>=1.93,<2",
     "pydantic-settings>=2.5,<3",
     "httpx>=0.28,<0.29",
     "logfire[fastapi,httpx]>=4.0,<5",
     "pyyaml>=6.0,<7",
+    # Static scenario analyzer encodes reachability as Answer Set Programming
+    # via clingo; see scripts/analyze_scenario.py for the encoder + driver and
+    # the AIIDE 2023 DendryScope paper for the published precedent.
+    "clingo>=5.7,<6",
 ]
 
 [build-system]
@@ -28,7 +32,7 @@ packages = ["src/npc_service"]
 [project.optional-dependencies]
 playtest = [
     # pydantic-evals shares the pydantic-ai release cadence; pin the same major.
-    "pydantic-evals>=1.0,<2",
+    "pydantic-evals>=1.93,<2",
 ]
 
 [dependency-groups]

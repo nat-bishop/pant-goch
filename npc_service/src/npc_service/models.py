@@ -330,6 +330,25 @@ class Quality(BaseModel):
         return self
 
 
+class LexicalBudgetEntry(BaseModel):
+    """One lexical-discipline cap on a token the chat agent over-uses. Read
+    by the Python-side `lexical_budget` validator (`agents.py`) and surfaced
+    to the chat agent via the dossier block when usage is hot.
+
+    `token`: the literal substring counted (case-insensitive, word-boundary).
+    `max_per_email`: hard cap on occurrences in one render's body — the
+    validator raises ModelRetry when exceeded.
+    `max_per_window`: occurrences allowed across the most recent
+    `lexical_history_window` NPC-authored messages on this thread, INCLUDING
+    the candidate body. Soft cap: when at-or-over, the dossier block
+    surfaces the count to the agent before the next render.
+    """
+
+    token: str = Field(min_length=1)
+    max_per_email: int = Field(ge=0)
+    max_per_window: int = Field(ge=0)
+
+
 class NPCDossier(BaseModel):
     """Static authoring artifact. Never mutated at runtime. Injected into the
     chat agent via deps + `@instructions`."""
@@ -344,6 +363,25 @@ class NPCDossier(BaseModel):
     base_voice_forbidden: list[str] = Field(default_factory=list)
     will_say: list[str] = Field(default_factory=list)
     will_not_say: list[str] = Field(default_factory=list)
+    # Few-shot anchors for the chat agent. 2-3 sample emails written in the
+    # NPC's voice — read by the model as a pattern the output should
+    # resemble in texture, not a phrasebook to quote from. Surfaces in the
+    # dossier block under VOICE EXAMPLES on every render. Empty list = no
+    # examples block emitted (back-compat default).
+    voice_examples: list[str] = Field(default_factory=list)
+    # Hard cap on words per rendered email. Validated Python-side
+    # (`agents.py` length validator); also interpolated into the textual
+    # length rule in `_BASE_CHAT_INSTRUCTIONS` so the prompt and the
+    # validator agree on the same number. CPO authors a tighter cap (60)
+    # because institutional notices should be terse; Aria/Marcus default
+    # to 80. BeatSpec.length_budget_words can override per-beat.
+    length_budget_words: int = Field(default=80, ge=10)
+    # Per-NPC lexical caps. Each entry names a token whose overuse hurts
+    # voice (e.g. Aria over-reaches for "partnership" / "calibration"
+    # because the in-world frame demands them). The validator at agents.py
+    # enforces `max_per_email`; the dossier block surfaces a "you're at N
+    # of M in your last K emails" hint when at-or-over `max_per_window`.
+    lexical_budget: list[LexicalBudgetEntry] = Field(default_factory=list)
     # When False, the frontend hides the composer for this NPC's thread —
     # the NPC sends but the player cannot reply. Used for institutional
     # senders (e.g. a Compliance Office) that exist as one-way notices.
@@ -415,6 +453,21 @@ class BeatSpec(BaseModel):
     # so the chat agent can modulate within a scene without an author
     # branching the intent string per turn count.
     escalation_notes: str | None = None
+
+    # Per-beat word-budget override. Defaults to the NPC dossier's
+    # `length_budget_words` when None. Set on terminals or scene beats
+    # whose authored intent demands more (or less) air than the dossier
+    # default — e.g. a procedural one_shot can authorise 120 words while
+    # the dossier default is 80.
+    length_budget_words: int | None = Field(default=None, ge=10)
+
+    # Optional per-beat subtextual motif — one short phrase naming the
+    # underlying-story movement the corporate surface refracts. Surfaces
+    # in the chat-agent prompt via `_plot_directive_block` under
+    # SUBTEXTUAL MOTIF. Frankenstein-aware: e.g. "the assembly of
+    # authorization", "abandonment via procedural delay". Only emitted
+    # when the field is set (None / empty = no block, back-compat).
+    subtextual_motif: str | None = None
 
     @model_validator(mode="after")
     def _validate_field_combinations(self) -> "BeatSpec":

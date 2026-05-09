@@ -45,7 +45,7 @@ def client_multi(monkeypatch):
     monkeypatch.setenv("LAUNCH_LLAMA", "false")
     monkeypatch.setattr(main, "EXTERNAL_LLAMA_PROBE_TIMEOUT_SECONDS", 0.1)
 
-    async def _first_eligible(due, *, reply_thread_id=None):
+    async def _first_eligible(session, due, *, reply_thread_id=None):
         if not due:
             return None, "none", None
         return due[0], "sole", None

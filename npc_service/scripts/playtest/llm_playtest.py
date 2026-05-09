@@ -135,34 +135,36 @@ async def run_session(
     *,
     player_agent: Agent[PlayerDeps, str],
     max_sends: int = 25,
-    boot: bool = True,
 ) -> SessionRecord:
-    """Drive one full session. Resets engine state, then loops:
+    """Drive one full session against a fresh per-call `Session`. Loops:
     pick reply target → synthesise body → record_send → process_send →
     record TickDecision → repeat until ended or max_sends.
 
-    Caller must have boot-initialised `engine_main.AGENTS` and
-    `engine_main.SCENARIO`. `boot=True` (default) calls `reset_session()`
-    on entry to clear any prior session's state.
+    Caller must have boot-initialised `engine_main.SCENARIO` + `AGENTS`
+    via `boot_engine_for_playtest`. Each call constructs its own session
+    and runs the boot tick locally — no shared module state, so multiple
+    sessions can run concurrently via `asyncio.gather`.
     """
-    if boot:
-        await engine_main.reset_session()
-    assert engine_main.STATE is not None
+    from npc_service.session import make_session
+    assert engine_main.SCENARIO is not None and engine_main.AGENTS is not None
+    session = make_session(engine_main.SCENARIO, engine_main.AGENTS)
+    # Boot tick — fires pre-authored beats with empty preconditions.
+    await engine_main._tick(session, player_body=None, in_response_to=None)
 
     decisions = []
     error: str | None = None
 
     for _ in range(max_sends):
-        if engine_main.STATE.ended:
+        if session.state.ended:
             break
-        target = _pick_reply_target(engine_main.STATE)
+        target = _pick_reply_target(session.state)
         if target is None:
             error = "no inbox email to reply to (engine not booted?)"
             break
 
         try:
             body = await _synthesise_reply(
-                player_agent, persona, list(engine_main.STATE.emails),
+                player_agent, persona, list(session.state.emails),
             )
         except Exception as e:  # noqa: BLE001 — synthetic-player failure ends session
             error = f"synthetic player failure: {type(e).__name__}: {e}"
@@ -185,8 +187,8 @@ async def run_session(
         )
 
         try:
-            rec = engine_main.record_send(req)
-            result = await engine_main.process_send(rec)
+            rec = engine_main.record_send(session, req)
+            result = await engine_main.process_send(session, rec)
         except Exception as e:  # ChatAgentFailure or anything else
             error = f"engine failure: {type(e).__name__}: {e}"
             break
@@ -195,9 +197,9 @@ async def run_session(
 
     return SessionRecord(
         persona_name=persona.name,
-        transcript=copy.deepcopy(engine_main.STATE.emails),
+        transcript=copy.deepcopy(session.state.emails),
         tick_decisions=decisions,
-        final_state=copy.deepcopy(engine_main.STATE),
+        final_state=copy.deepcopy(session.state),
         error=error,
     )
 

@@ -29,7 +29,7 @@ export type ChatId = string;
 // and the existing pattern of session-only debug state.
 const TICK_HISTORY_CAP = 100;
 
-export type DebugTab = "pacing" | "ticks" | "canon" | "beats";
+export type DebugTab = "pacing" | "ticks" | "canon" | "beats" | "timeline";
 export type BeatsView = "list" | "graph";
 
 export interface DebugSelection {
@@ -48,7 +48,7 @@ function loadSelection(): DebugSelection {
   let beatsView: BeatsView = "list";
   try {
     const t = localStorage.getItem(LS_KEY_TAB);
-    if (t === "pacing" || t === "ticks" || t === "canon" || t === "beats") tab = t;
+    if (t === "pacing" || t === "ticks" || t === "canon" || t === "beats" || t === "timeline") tab = t;
     const v = localStorage.getItem(LS_KEY_BEATS_VIEW);
     if (v === "list" || v === "graph") beatsView = v;
   } catch {

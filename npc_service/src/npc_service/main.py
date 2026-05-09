@@ -15,16 +15,18 @@ import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import AsyncIterator, Iterator
+from typing import AsyncIterator, Iterator, Literal
 
 import logfire
 from logfire import ConsoleOptions
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.exception_handlers import http_exception_handler
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+from dataclasses import replace
 from pydantic_ai.messages import ModelResponse, TextPart
 from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.profiles.openai import openai_model_profile
 from pydantic_ai.providers.openai import OpenAIProvider
 
 from .agents import (
@@ -38,11 +40,26 @@ from .agents import (
     build_extractor_user_prompt,
     build_recent_classifier_history,
     commitments_snapshot,
+    lexical_history_snapshot,
     make_llama_token_counter,
     player_canon_snapshot,
 )
 from pydantic_ai import NativeOutput
 from .config import Settings
+from .events import (
+    BeatFired as BeatFiredEvent,
+    CanonPromoted,
+    ChatBodyRendered,
+    ClassifierObserved,
+    DirectorChose,
+    EmailEmitted,
+    EmailRead,
+    Event,
+    ExtractorObserved,
+    SendRecorded,
+    SessionEnded,
+    ThreadHistoryAppended,
+)
 from .launcher import (
     LlamaStartupError,
     resolve_config,
@@ -75,11 +92,12 @@ from .models import (
     TickDecision,
     load_scenario,
 )
+from .session import Session, load_event_log, make_jsonl_persistor, make_session, replay_into_session
 from .spine import (
     CANON_SALIENCE_THRESHOLD,
-    apply_canon_extraction,
-    apply_classify_effect,
-    apply_literal_effects,
+    derive_canon_promoted_events,
+    derive_classify_effect_event,
+    derive_literal_effect_event,
     evaluate_all_beats,
     evaluate_predicate,
     find_due_beats,
@@ -136,15 +154,58 @@ class ChatAgentFailure(Exception):
 
 
 # ───────────────────────── globals (set in lifespan) ─────────────────────────
+#
+# Process-scope singletons: one scenario, one model + agent bundle, one
+# llama subprocess. These are loaded once at lifespan boot and never
+# mutate per-request.
+#
+# Per-game state lives in the SESSIONS registry — one `Session` per logical
+# game, each holding its own InboxState, event log, and asyncio.Lock.
+# Endpoints resolve a session via `Depends(get_session)`. The default
+# single-player case maps to the entry under `DEFAULT_SESSION_ID`.
 
 
 SCENARIO: Scenario | None = None
-STATE: InboxState | None = None
 AGENTS: AgentBundle | None = None
 SETTINGS: Settings | None = None  # populated at lifespan boot; read by hot-path endpoints
 LLAMA_PROC: subprocess.Popen | None = None
-ACTION_LOCK = asyncio.Lock()  # serialises mutating endpoints
 EXTERNAL_LLAMA_PROBE_TIMEOUT_SECONDS = 2.0  # tests set this to 0.1 for fast boot
+
+DEFAULT_SESSION_ID = "default"
+SESSIONS: dict[str, Session] = {}
+
+
+def get_session(session_id: str = DEFAULT_SESSION_ID) -> Session:
+    """FastAPI dependency: resolve a Session by id. Lazily creates a fresh
+    session if one doesn't exist for the requested id (so the single-user
+    `default` case Just Works without explicit session creation).
+    """
+    if session_id not in SESSIONS:
+        assert SCENARIO is not None and AGENTS is not None, (
+            "get_session called before lifespan boot"
+        )
+        SESSIONS[session_id] = make_session(SCENARIO, AGENTS)
+    return SESSIONS[session_id]
+
+
+# Back-compat shims for tests and the playtester that previously read these
+# as module attributes. Only `default`-session reads are supported here —
+# multi-session tests use the registry directly via `SESSIONS[...]`.
+def _default_session() -> Session | None:
+    return SESSIONS.get(DEFAULT_SESSION_ID)
+
+
+def __getattr__(name: str):
+    """Lazy module-level attribute resolver — keeps `main.STATE` working
+    for tests that read it directly. Returns the default session's state /
+    lock, or None if the session hasn't been booted yet."""
+    if name == "STATE":
+        s = _default_session()
+        return s.state if s is not None else None
+    if name == "ACTION_LOCK":
+        s = _default_session()
+        return s.lock if s is not None else None
+    raise AttributeError(name)
 
 
 # ───────────────────────── lifespan ─────────────────────────
@@ -152,7 +213,7 @@ EXTERNAL_LLAMA_PROBE_TIMEOUT_SECONDS = 2.0  # tests set this to 0.1 for fast boo
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    global SCENARIO, STATE, AGENTS, SETTINGS, LLAMA_PROC
+    global SCENARIO, AGENTS, SETTINGS, LLAMA_PROC
     global _DEBUG_SCENARIO_CACHE
 
     settings = Settings()
@@ -210,9 +271,21 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             "building agents",
             model=model_name, base_url=api_url,
         )
+        # Local-Gemma via llama-server: don't round-trip prior-turn thoughts.
+        # Default 'auto' re-serialises ThinkingParts as <think>…</think> in
+        # historical assistant content, violating Google's Gemma 4 multi-turn
+        # rule (https://ai.google.dev/gemma/docs/capabilities/thinking) and
+        # inflating input tokens by hundreds per turn. Replace on the default
+        # profile (which carries supports_json_schema_output=True, etc.); a
+        # bare OpenAIModelProfile() drops those flags and breaks NativeOutput.
+        profile = replace(
+            openai_model_profile(model_name),
+            openai_chat_send_back_thinking_parts=False,
+        )
         model = OpenAIChatModel(
             model_name,
             provider=OpenAIProvider(base_url=api_url, api_key="not-needed"),
+            profile=profile,
         )
         token_budget = int(settings.llama_ctx * settings.history_compact_frac)
         AGENTS = build_agents(
@@ -229,11 +302,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             keep_tail=settings.history_compact_keep_tail,
         )
 
+        SESSIONS.clear()
         await reset_session()
+        boot_session = SESSIONS[DEFAULT_SESSION_ID]
         logfire.info(
             "npc_service ready",
-            boot_emails=len(STATE.emails),
-            pending_beats=len(STATE.pending_beats),
+            boot_emails=len(boot_session.state.emails),
+            pending_beats=len(boot_session.state.pending_beats),
         )
         try:
             yield
@@ -267,6 +342,7 @@ async def _log_http_exception(request: Request, exc: HTTPException):
 
 
 async def _fire_beat(
+    session: Session,
     beat: Beat,
     *,
     player_body: str | None,
@@ -310,18 +386,22 @@ async def _fire_beat(
       passes after this fire's literal effects + email append. Otherwise
       it stays pending and may continue firing on subsequent ticks.
     """
-    assert STATE is not None and SCENARIO is not None and AGENTS is not None
-    if beat.id in STATE.fired_beat_ids:
+    assert SCENARIO is not None and AGENTS is not None
+    if beat.id in session.state.fired_beat_ids:
         return None, [], None, None
 
     # Literal effects apply BEFORE rendering so scene re-fires record
-    # the new value even if rendering fails. `apply_literal_effects` logs
-    # each before→after change and returns the resulting deltas (no-op
-    # writes are filtered). Classify-driven effects on this beat schedule
-    # the classifier on the next player reply — they don't fire here.
-    write_deltas: list[QualityDelta] = apply_literal_effects(
-        STATE, SCENARIO, beat.spec.effects, beat_id=beat.id,
-    )
+    # the new value even if rendering fails. Classify-driven effects on
+    # this beat schedule the classifier on the next player reply — they
+    # don't fire here.
+    write_deltas: list[QualityDelta] = []
+    for effect in beat.spec.effects:
+        ev = derive_literal_effect_event(
+            session.state, SCENARIO, effect, beat_id=beat.id,
+        )
+        if ev is not None:
+            session.apply(ev)
+            write_deltas.append(ev.delta)
 
     # No span wrapper here: pre-authored fires are sub-millisecond (a memcpy
     # plus a log line) and the chat-agent paths each carry their own
@@ -343,11 +423,12 @@ async def _fire_beat(
             thread_id=beat.thread,
             folder="Inbox",
             sender=npc.email_address,
-            recipient=resolve_player_email(SCENARIO, STATE),
+            recipient=resolve_player_email(SCENARIO, session.state),
             body=beat.spec.pre_authored_prose.strip(),
             sent_at_label="just now",
         )
-        _seed_thread_history(beat.thread, email.body)
+        session.apply(EmailEmitted(email=email))
+        _seed_thread_history(session, beat.thread, email.body)
         logfire.info(
             "fire pre-authored beat {beat_id}",
             beat_id=beat.id, thread=beat.thread,
@@ -359,7 +440,7 @@ async def _fire_beat(
             assert player_body is not None, (
                 "reply-mode chat-driven beats require a player body — they trigger only on /send ticks"
             )
-        prior_fires = _count_beat_email_fires(beat.id) if is_scene else 0
+        prior_fires = _count_beat_email_fires(session, beat.id) if is_scene else 0
         if is_scene:
             logfire.info(
                 "continue scene {beat_id} (turn {turn}, mode={mode})",
@@ -380,6 +461,7 @@ async def _fire_beat(
         )
         if beat.ends_session:
             email = await _render_via_epilogue_agent(
+                session,
                 npc_id=beat.npc,
                 thread_id=beat.thread,
                 player_body=player_body or "",
@@ -391,6 +473,7 @@ async def _fire_beat(
             )
         else:
             email = await _render_via_chat_agent(
+                session,
                 npc_id=beat.npc,
                 thread_id=beat.thread,
                 plot_directive=beat.spec,
@@ -405,38 +488,43 @@ async def _fire_beat(
             # is non-empty) — leave fact_check None in that case rather than
             # ship an attempts=[] payload that's semantically misleading.
             fact_check = FactCheckTrace(attempts=fact_check_log) if fact_check_log else None
+        session.apply(EmailEmitted(email=email))
 
-    STATE.emails.append(email)
-    if beat.ends_session:
-        STATE.ended = True
-        STATE.end_reason = beat.id
     scene_turn: int | None = prior_fires + 1 if is_scene else None
 
-    # one_shot: enters fired_beat_ids immediately. scene: enters
-    # fired_beat_ids only when its exit_when predicates all pass after
-    # this fire — otherwise it stays pending for next tick.
-    if not is_scene:
-        STATE.fired_beat_ids.add(beat.id)
-    elif scene_exit_satisfied(beat, STATE):
-        STATE.fired_beat_ids.add(beat.id)
+    # Emit the BeatFired event. one_shot: completed=True (always adds to
+    # fired_beat_ids). scene: completed iff scene_exit_satisfied passes
+    # after the email + literal effects landed.
+    completed = (not is_scene) or scene_exit_satisfied(beat, session.state)
+    session.apply(BeatFiredEvent(
+        beat_id=beat.id,
+        beat_kind=beat.kind,
+        scene_turn=scene_turn,
+        completed=completed,
+    ))
+    if is_scene and completed:
         logfire.info(
             "scene completed {beat_id} on turn {turn}",
             beat_id=beat.id, turn=scene_turn,
         )
+    if beat.ends_session:
+        session.apply(SessionEnded(beat_id=beat.id))
     return email, write_deltas, scene_turn, fact_check
 
 
-def _seed_thread_history(thread_id: str, body: str) -> None:
+def _seed_thread_history(session: Session, thread_id: str, body: str) -> None:
     """Anchored emails on NPC threads land in `thread_messages` as
     `ModelResponse(TextPart)` so the chat agent's next run sees them as
     prior assistant turns. System threads (no NPC) skip this — there's no
     chat agent for them."""
-    assert STATE is not None and SCENARIO is not None
+    assert SCENARIO is not None
     thread = SCENARIO.thread_by_id.get(thread_id)
     if thread is None or thread.npc is None:
         return
-    history = STATE.thread_messages.setdefault(thread_id, [])
-    history.append(ModelResponse(parts=[TextPart(content=body)]))
+    session.apply(ThreadHistoryAppended(
+        thread_id=thread_id,
+        messages=[ModelResponse(parts=[TextPart(content=body)])],
+    ))
 
 
 # Synthetic user-prompt for outbound-mode renders. Pydantic AI's `Agent.run`
@@ -448,6 +536,7 @@ _OUTBOUND_TRIGGER_PROMPT = "[system: compose an outbound email per directive]"
 
 
 async def _render_email(
+    session: Session,
     *,
     npc_id: str,
     thread_id: str,
@@ -464,10 +553,11 @@ async def _render_email(
 ) -> Email:
     """Single LLM-render path. Builds ChatDeps, runs the chat agent, wraps
     failures as ChatAgentFailure, returns the assembled Email. If
-    `append_history=True`, extends `STATE.thread_messages[thread_id]` with
-    `result.new_messages()` — except in outbound mode, where only the
-    assistant response is appended (the synthetic trigger is not a real
-    player turn and would pollute the thread's history if persisted).
+    `append_history=True`, extends `session.state.thread_messages[thread_id]`
+    via a ThreadHistoryAppended event with `result.new_messages()` — except
+    in outbound mode, where only the assistant response is appended (the
+    synthetic trigger is not a real player turn and would pollute the
+    thread's history if persisted).
     When `epilogue_digest` is set, ChatDeps switches the agent into
     closing-email mode. When `outbound_mode` is set, ChatDeps activates
     the OUTBOUND framing block.
@@ -475,21 +565,27 @@ async def _render_email(
     `fact_check_log`, when supplied, is a mutable list the validator
     appends to per attempt; `_fire_beat` packages it into a
     `FactCheckTrace` after the render returns."""
-    assert STATE is not None and SCENARIO is not None and AGENTS is not None
+    assert SCENARIO is not None and AGENTS is not None
     npc = SCENARIO.npc_by_id[npc_id]
+    # Lexical-history snapshot — counts per-token over the last N
+    # NPC-authored messages on this thread. Empty when the dossier
+    # authors no `lexical_budget`. Surfaces in the chat agent's
+    # dossier block when usage is at-or-over the per-window cap.
+    thread_msgs = session.state.thread_messages.get(thread_id, [])
     deps = ChatDeps(
         npc=npc,
         plot_directive=plot_directive,
         commitments=commitments_snapshot(
-            STATE.qualities,
+            session.state.qualities,
             SCENARIO.quality_defaults,
             SCENARIO.quality_descriptions,
             SCENARIO.surface_to_chat_quality_ids,
         ),
         player_canon=player_canon_snapshot(
-            STATE.player_canon,
-            current_turn=len(STATE.replies),
+            session.state.player_canon,
+            current_turn=len(session.state.replies),
         ),
+        lexical_history=lexical_history_snapshot(thread_msgs, npc),
         epilogue_digest=epilogue_digest,
         outbound_mode=outbound_mode,
         fact_check_log=fact_check_log,
@@ -519,8 +615,7 @@ async def _render_email(
             )
             raise ChatAgentFailure(str(e)) from e
         if append_history:
-            history = STATE.thread_messages.setdefault(thread_id, [])
-            new_messages = result.new_messages()
+            new_messages = list(result.new_messages())
             if outbound_mode:
                 # Drop the synthetic-trigger user-turn from what gets
                 # persisted. ModelRequest carries the user prompt;
@@ -529,26 +624,41 @@ async def _render_email(
                 # later reply-mode render doesn't see the trigger as if
                 # the player had typed it.
                 new_messages = [m for m in new_messages if isinstance(m, ModelResponse)]
-            history.extend(new_messages)
+            if new_messages:
+                session.apply(ThreadHistoryAppended(
+                    thread_id=thread_id, messages=new_messages,
+                ))
         usage = result.usage()
         span.set_attribute("input_tokens", usage.input_tokens)
         span.set_attribute("output_tokens", usage.output_tokens)
         span.set_attribute("response_preview", result.output.strip()[:200])
 
     body = result.output.strip()
+    session.apply(ChatBodyRendered(
+        beat_id=beat_id,
+        npc_id=npc_id,
+        thread_id=thread_id,
+        body=body,
+        epilogue=epilogue_digest is not None,
+        fact_check=(
+            FactCheckTrace(attempts=list(fact_check_log))
+            if fact_check_log else None
+        ),
+    ))
     return Email(
         id=f"email_{uuid.uuid4().hex[:8]}",
         beat_id=beat_id,
         thread_id=thread_id,
         folder="Inbox",
         sender=npc.email_address,
-        recipient=resolve_player_email(SCENARIO, STATE),
+        recipient=resolve_player_email(SCENARIO, session.state),
         body=body,
         sent_at_label="just now",
     )
 
 
 async def _render_via_chat_agent(
+    session: Session,
     *,
     npc_id: str,
     thread_id: str,
@@ -575,7 +685,6 @@ async def _render_via_chat_agent(
     Thread history is passed in either mode — an in-flight scene's prior
     turns are valid context for continuation regardless of which side
     drove this fire."""
-    assert STATE is not None
     if outbound_mode:
         user_prompt = _OUTBOUND_TRIGGER_PROMPT
         span_label = "render outbound to {npc} on {thread}"
@@ -585,14 +694,15 @@ async def _render_via_chat_agent(
         )
         user_prompt = player_body
         span_label = "render chat to {npc} on {thread}"
-    history = STATE.thread_messages.setdefault(thread_id, [])
+    history = list(session.state.thread_messages.get(thread_id, []))
     return await _render_email(
+        session,
         npc_id=npc_id,
         thread_id=thread_id,
         user_prompt=user_prompt,
         plot_directive=plot_directive,
         beat_id=beat_id,
-        message_history=list(history),
+        message_history=history,
         append_history=True,
         outbound_mode=outbound_mode,
         fact_check_log=fact_check_log,
@@ -607,6 +717,7 @@ async def _render_via_chat_agent(
 
 
 async def _render_via_epilogue_agent(
+    session: Session,
     *,
     npc_id: str,
     thread_id: str,
@@ -628,9 +739,10 @@ async def _render_via_epilogue_agent(
     the current scenario, but propagated for correctness): the
     OUTBOUND_MODE_FRAMING composes alongside epilogue framing and the
     user_prompt is swapped to the synthetic trigger."""
-    digest = _build_epilogue_digest()
+    digest = _build_epilogue_digest(session)
     user_prompt = _OUTBOUND_TRIGGER_PROMPT if outbound_mode else player_body
     return await _render_email(
+        session,
         npc_id=npc_id,
         thread_id=thread_id,
         user_prompt=user_prompt,
@@ -649,7 +761,7 @@ async def _render_via_epilogue_agent(
     )
 
 
-def _build_epilogue_digest() -> str:
+def _build_epilogue_digest(session: Session) -> str:
     """Per-run digest passed to the epilogue agent in the user prompt.
 
     Sections: commitments (delta from defaults), per-axis classifier
@@ -657,10 +769,11 @@ def _build_epilogue_digest() -> str:
     replies verbatim. The dossier and plot directive are already injected
     via @instructions; this digest is the run-tailored payload.
     """
-    assert STATE is not None and SCENARIO is not None
+    assert SCENARIO is not None
+    state = session.state
     # Commitments: filter to surface_to_chat qualities ≠ default.
     commits_dict = commitments_snapshot(
-        STATE.qualities,
+        state.qualities,
         SCENARIO.quality_defaults,
         SCENARIO.quality_descriptions,
         SCENARIO.surface_to_chat_quality_ids,
@@ -670,16 +783,16 @@ def _build_epilogue_digest() -> str:
         for k, (v, _desc) in commits_dict.items()
     ] or ["  (no commitments yet)"]
 
-    history = build_recent_classifier_history(STATE.replies, axes=None, per_axis=5)
+    history = build_recent_classifier_history(state.replies, axes=None, per_axis=5)
     history_lines = [f"  {axis}: {', '.join(values)}" for axis, values in history.items()]
     history_block = "\n".join(history_lines) or "  (no replies classified)"
 
-    fired_in_order = _fired_beat_ids_in_order()
+    fired_in_order = _fired_beat_ids_in_order(session)
     fired_block = ", ".join(fired_in_order) if fired_in_order else "(none)"
 
     # most recent last for natural reading order; trim defensively in case of
     # very long player pastes.
-    recent_replies = list(STATE.replies)[-3:]
+    recent_replies = list(state.replies)[-3:]
     reply_block_parts = [f"  - {r.body.strip()[:1000]}" for r in recent_replies]
     reply_block = "\n".join(reply_block_parts) or "  (no replies)"
 
@@ -692,25 +805,24 @@ def _build_epilogue_digest() -> str:
     )
 
 
-def _count_beat_email_fires(beat_id: str) -> int:
+def _count_beat_email_fires(session: Session, beat_id: str) -> int:
     """How many times this beat has rendered an email so far. Used by
     `_fire_beat` for the scene_turn count and by `_select_beat`'s
     scene-continuity short-circuit (any prior fire → continue). Walks
-    `STATE.emails` directly because scenes don't enter `fired_beat_ids`
+    `state.emails` directly because scenes don't enter `fired_beat_ids`
     until exit_when fires, so the set lookup is incomplete for in-flight
     scenes."""
-    assert STATE is not None
-    return sum(1 for e in STATE.emails if e.beat_id == beat_id)
+    return sum(1 for e in session.state.emails if e.beat_id == beat_id)
 
 
-def _fired_beat_ids_in_order(*, last: int | None = None) -> list[str]:
+def _fired_beat_ids_in_order(session: Session, *, last: int | None = None) -> list[str]:
     """Fired-beat ids in emit order — read off Email.beat_id where set,
     since state.fired_beat_ids is a set with no order guarantee. `last`
     slices the tail (e.g. for the Director's recent-fire history)."""
-    assert STATE is not None
+    state = session.state
     ids = [
-        e.beat_id for e in STATE.emails
-        if e.beat_id is not None and e.beat_id in STATE.fired_beat_ids
+        e.beat_id for e in state.emails
+        if e.beat_id is not None and e.beat_id in state.fired_beat_ids
     ]
     return ids[-last:] if last is not None else ids
 
@@ -719,10 +831,11 @@ def _fired_beat_ids_in_order(*, last: int | None = None) -> list[str]:
 
 
 async def _select_beat(
+    session: Session,
     due: list[Beat],
     *,
     reply_thread_id: str | None = None,
-) -> tuple[Beat | None, str, str | None]:
+) -> tuple[Beat | None, Literal["none", "sole", "continue", "director"], str | None]:
     """Pick one beat from the due list and report (beat, method, rationale).
 
     Method is one of:
@@ -741,7 +854,7 @@ async def _select_beat(
     tuple shape is consumed by `_tick` to populate the per-tick
     `TickDecision` payload.
     """
-    assert STATE is not None and AGENTS is not None
+    assert AGENTS is not None
     if not due:
         logfire.info("no beats eligible this tick")
         return None, "none", None
@@ -756,7 +869,7 @@ async def _select_beat(
             b for b in due
             if b.kind == "scene"
             and b.thread == reply_thread_id
-            and _count_beat_email_fires(b.id) > 0
+            and _count_beat_email_fires(session, b.id) > 0
         ]
         if len(scene_matches) == 1:
             logfire.info(
@@ -774,11 +887,11 @@ async def _select_beat(
 
     by_id = {b.id: b for b in due}
     user_prompt = build_director_user_prompt(
-        qualities=dict(STATE.qualities),
+        qualities=dict(session.state.qualities),
         recent_classifier_history=build_recent_classifier_history(
-            STATE.replies, axes=None, per_axis=5,
+            session.state.replies, axes=None, per_axis=5,
         ),
-        recent_fire_history=_fired_beat_ids_in_order(last=6),
+        recent_fire_history=_fired_beat_ids_in_order(session, last=6),
         eligible=[
             {"id": b.id, "intent_summary": _intent_summary_for(b)} for b in due
         ],
@@ -840,6 +953,7 @@ def _intent_summary_for(beat: Beat) -> str:
 
 
 async def _tick(
+    session: Session,
     *,
     player_body: str | None = None,
     in_response_to: str | None = None,
@@ -865,13 +979,14 @@ async def _tick(
     TickDecision payload so the overlay surfaces "what changed this tick"
     in one place across all sources.
     """
-    assert STATE is not None and SCENARIO is not None
+    assert SCENARIO is not None
+    state = session.state
     new_emails: list[Email] = []
     plot_fired_threads: set[str] = set()
     quality_deltas: list[QualityDelta] = list(classifier_deltas or [])
 
     with logfire.span("tick (in response to {in_response_to})", in_response_to=in_response_to) as span:
-        eligible, eligibility_report = find_due_beats(STATE, SCENARIO)
+        eligible, eligibility_report = find_due_beats(state, SCENARIO)
 
         # Retire scenes whose `exit_when` is already satisfied at selection
         # time. Without this, such a scene would fire once just to exit —
@@ -883,8 +998,11 @@ async def _tick(
         # without firing doesn't leave the player on silence.
         remaining: list[Beat] = []
         for beat in eligible:
-            if beat.kind == "scene" and scene_exit_satisfied(beat, STATE):
-                STATE.fired_beat_ids.add(beat.id)
+            if beat.kind == "scene" and scene_exit_satisfied(beat, state):
+                session.apply(BeatFiredEvent(
+                    beat_id=beat.id, beat_kind="scene",
+                    scene_turn=None, completed=True,
+                ))
                 logfire.info(
                     "retire scene {beat_id} (exit_when satisfied on entry)",
                     beat_id=beat.id,
@@ -908,11 +1026,11 @@ async def _tick(
         # elsewhere. First fires are still allowed cross-thread so an NPC
         # can introduce themselves on a tick driven by another NPC's reply.
         if reply_thread_id is not None:
-            # Single linear scan of STATE.emails to count fires per beat,
+            # Single linear scan of state.emails to count fires per beat,
             # then O(1) per-beat lookups in the filter loop. Without this,
-            # the loop would scan STATE.emails once per eligible beat.
+            # the loop would scan state.emails once per eligible beat.
             fire_count: dict[str, int] = {}
-            for em in STATE.emails:
+            for em in state.emails:
                 if em.beat_id is not None:
                     fire_count[em.beat_id] = fire_count.get(em.beat_id, 0) + 1
             report_by_id = {be.beat_id: be for be in eligibility_report}
@@ -948,15 +1066,23 @@ async def _tick(
                 )
 
         chosen, selection, rationale = await _select_beat(
-            eligible, reply_thread_id=reply_thread_id,
+            session, eligible, reply_thread_id=reply_thread_id,
         )
         chosen_beat_id = chosen.id if chosen is not None else None
+        # Record the Director's decision (or short-circuit) as an event for
+        # the audit log; fold is a no-op for this observation event.
+        session.apply(DirectorChose(
+            selection_method=selection,
+            chosen_beat_id=chosen_beat_id,
+            rationale=rationale,
+            eligible=[b.id for b in eligible],
+        ))
         fired_beat_id: str | None = None
         scene_turn: int | None = None
         fact_check: FactCheckTrace | None = None
         if chosen is not None:
             e, write_deltas, turn, trace = await _fire_beat(
-                chosen,
+                session, chosen,
                 player_body=player_body,
                 in_response_to=in_response_to,
                 reply_thread_id=reply_thread_id,
@@ -991,22 +1117,22 @@ async def _tick(
                     "category": v.category.value,
                     "turn_of_origin": v.turn_of_origin,
                 }
-                for k, v in STATE.player_canon.items()
+                for k, v in state.player_canon.items()
             },
             fact_check=fact_check,
             # Per-axis history snapshot — most-recent-first values per axis,
             # capped at 10 (matches roughly two screens of pill chips).
             classifier_history=build_recent_classifier_history(
-                STATE.replies, axes=None, per_axis=10,
+                state.replies, axes=None, per_axis=10,
             ),
             # Snapshot AFTER the fire — so the graph view and post-load
             # recovery see the up-to-date fired set without per-tick
             # accumulation logic on the frontend.
-            fired_beat_ids=sorted(STATE.fired_beat_ids),
+            fired_beat_ids=sorted(state.fired_beat_ids),
             # Full per-beat predicate trace against post-tick state. Drives
             # the debug Beats inspector. Cost is O(beats × atoms); ~12
             # beats in production scenario, trivial.
-            beats_evaluation=evaluate_all_beats(STATE, SCENARIO),
+            beats_evaluation=evaluate_all_beats(state, SCENARIO),
         )
         # Span attributes give Logfire UI users a queryable overview without
         # parsing message strings. The full decision lands as `decision`;
@@ -1029,7 +1155,7 @@ async def health() -> dict:
     return {
         "ok": True,
         "scenario_loaded": SCENARIO is not None,
-        "state_initialised": STATE is not None,
+        "state_initialised": SESSIONS.get(DEFAULT_SESSION_ID) is not None,
     }
 
 
@@ -1062,10 +1188,8 @@ async def get_scenario() -> dict:
 
 
 @app.get("/state")
-async def get_state() -> dict:
-    if STATE is None:
-        raise HTTPException(503, "state not initialised")
-    return STATE.public_view()
+async def get_state(session: Session = Depends(get_session)) -> dict:
+    return session.state.public_view()
 
 
 @app.get("/scenario_meta")
@@ -1158,6 +1282,129 @@ async def get_debug_scenario() -> dict:
     return _DEBUG_SCENARIO_CACHE
 
 
+def _state_debug_view(state: InboxState) -> dict:
+    """Richer-than-public_view snapshot used by the debug timeline. Includes
+    qualities, fired_beat_ids, player_canon, all emails (full body), end
+    flags, and unread counts. Per-tick decisions are NOT included — the
+    timeline reconstructs them by replaying the corresponding event slice.
+    """
+    return {
+        "ended": state.ended,
+        "end_reason": state.end_reason,
+        "qualities": dict(state.qualities),
+        "fired_beat_ids": sorted(state.fired_beat_ids),
+        "player_canon": {
+            k: {
+                "summary": v.summary,
+                "literal_text_quote": v.literal_text_quote,
+                "salience": v.salience,
+                "category": v.category.value,
+                "turn_of_origin": v.turn_of_origin,
+            }
+            for k, v in state.player_canon.items()
+        },
+        "emails": [_email_full(e) for e in state.emails],
+        "reply_count": len(state.replies),
+        "unread_counts": state._unread_counts(),
+        "unread_counts_by_thread": state._unread_counts_by_thread(),
+    }
+
+
+@app.get("/debug/session/events")
+async def get_debug_session_events(session: Session = Depends(get_session)) -> dict:
+    """Full append-only event log for the active session. Drives the
+    DEV-only debug Timeline tab. Read-only; `/send` always applies at head.
+    Each entry is the JSON-serialized Event with its `kind` discriminator.
+    """
+    from pydantic import TypeAdapter
+    adapter: TypeAdapter[Event] = TypeAdapter(Event)
+    return {
+        "session_id": session.id,
+        "event_count": len(session.event_log),
+        "events": [adapter.dump_python(ev, mode="json") for ev in session.event_log],
+    }
+
+
+@app.get("/debug/session/state_at")
+async def get_debug_session_state_at(
+    index: int,
+    session: Session = Depends(get_session),
+) -> dict:
+    """Re-fold the first `index` events on a fresh state and return the
+    snapshot. `index=0` returns the freshly-bootstrapped state (qualities
+    at scenario defaults, no emails); `index=len(event_log)` matches the
+    live state. Read-only — does not affect the session."""
+    try:
+        snapshot = session.state_at(index)
+    except IndexError as e:
+        raise HTTPException(400, str(e)) from e
+    return {
+        "session_id": session.id,
+        "index": index,
+        "event_count": len(session.event_log),
+        "state": _state_debug_view(snapshot),
+    }
+
+
+@app.post("/debug/session/save")
+async def post_debug_session_save(
+    path: str,
+    session: Session = Depends(get_session),
+) -> dict:
+    """Dump the active session's full event log to a JSONL file at `path`.
+    One event per line, JSON-encoded. Overwrites any existing file at the
+    target. Independent of `Settings.session_save_path` autosave — this is
+    a one-shot snapshot for sharing or backing up.
+    """
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    from pydantic import TypeAdapter
+    adapter: TypeAdapter[Event] = TypeAdapter(Event)
+    with target.open("w", encoding="utf-8") as f:
+        for ev in session.event_log:
+            f.write(adapter.dump_json(ev).decode("utf-8"))
+            f.write("\n")
+    return {
+        "path": str(target),
+        "event_count": len(session.event_log),
+        "session_id": session.id,
+    }
+
+
+@app.post("/debug/session/load")
+async def post_debug_session_load(
+    path: str,
+    session_id: str = DEFAULT_SESSION_ID,
+) -> dict:
+    """Load a saved JSONL into a fresh session, replacing the entry under
+    `session_id` (defaults to the active session). Bypasses the autosave
+    hook during the replay so the load doesn't double-write, then re-arms
+    the hook for subsequent events if `session_save_path` is configured.
+    """
+    assert SCENARIO is not None and AGENTS is not None
+    src = Path(path)
+    if not src.exists():
+        raise HTTPException(404, f"no such file: {path}")
+    events = load_event_log(src)
+
+    persist = None
+    if (
+        SETTINGS is not None
+        and SETTINGS.session_save_path is not None
+        and session_id == DEFAULT_SESSION_ID
+    ):
+        persist = make_jsonl_persistor(SETTINGS.session_save_path)
+
+    session = make_session(SCENARIO, AGENTS, persist=persist)
+    replay_into_session(session, events)
+    SESSIONS[session_id] = session
+    return {
+        "session_id": session.id,
+        "event_count": len(session.event_log),
+        "loaded_from": str(src),
+    }
+
+
 def _beat_meta(beat: Beat) -> dict:
     """One beat's meta payload for /scenario_meta. Same `kind` flags as the
     Director's intent_summary uses — frontend chooses icons from these."""
@@ -1225,60 +1472,59 @@ def _build_beat_graph(scenario: Scenario) -> dict:
 
 
 @app.get("/inbox")
-async def get_inbox() -> dict:
+async def get_inbox(session: Session = Depends(get_session)) -> dict:
     """Folder summary. The client uses this for the inbox list view."""
-    if STATE is None:
-        raise HTTPException(503, "state not initialised")
+    state = session.state
     folders: dict[str, list[dict]] = {"Inbox": [], "Sent": []}
-    for e in STATE.emails:
+    for e in state.emails:
         folders.setdefault(e.folder, []).append(_email_summary(e))
     # Newest first within each folder. Append order is emit order; reverse it.
     for k in folders:
         folders[k].reverse()
-    return {"folders": folders, "state": STATE.public_view()}
+    return {"folders": folders, "state": state.public_view()}
 
 
 @app.get("/thread/{thread_id}")
-async def get_thread(thread_id: str) -> dict:
+async def get_thread(thread_id: str, session: Session = Depends(get_session)) -> dict:
     """All emails in a thread, in emit order."""
-    if STATE is None or SCENARIO is None:
+    if SCENARIO is None:
         raise HTTPException(503, "state not initialised")
     if thread_id not in SCENARIO.thread_by_id:
         raise HTTPException(404, f"unknown thread: {thread_id}")
-    emails = [_email_full(e) for e in STATE.emails if e.thread_id == thread_id]
+    emails = [_email_full(e) for e in session.state.emails if e.thread_id == thread_id]
     return {"thread_id": thread_id, "emails": emails}
 
 
 @app.post("/open")
-async def post_open(req: OpenRequest) -> dict:
+async def post_open(req: OpenRequest, session: Session = Depends(get_session)) -> dict:
     """Mark email read. /open does not mutate qualities — reading isn't a
     communication act, so it can't move engagement or fire any beat."""
-    if STATE is None or SCENARIO is None:
+    if SCENARIO is None:
         raise HTTPException(503, "state not initialised")
-    if STATE.ended:
-        raise HTTPException(409, f"session ended ({STATE.end_reason})")
+    if session.state.ended:
+        raise HTTPException(409, f"session ended ({session.state.end_reason})")
 
-    async with ACTION_LOCK:
-        email = next((e for e in STATE.emails if e.id == req.email_id), None)
+    async with session.lock:
+        email = next((e for e in session.state.emails if e.id == req.email_id), None)
         if email is None:
             raise HTTPException(404, f"unknown email_id: {req.email_id}")
-        email.is_read = True
+        session.apply(EmailRead(email_id=req.email_id))
         return {
-            "state": STATE.public_view(),
+            "state": session.state.public_view(),
             "new_emails": [],
         }
 
 
 @app.post("/send")
-async def post_send(req: SendRequest) -> StreamingResponse:
-    if STATE is None or AGENTS is None or SCENARIO is None:
+async def post_send(req: SendRequest, session: Session = Depends(get_session)) -> StreamingResponse:
+    if AGENTS is None or SCENARIO is None:
         raise HTTPException(503, "state not initialised")
-    if STATE.ended:
-        raise HTTPException(409, f"session ended ({STATE.end_reason})")
+    if session.state.ended:
+        raise HTTPException(409, f"session ended ({session.state.end_reason})")
     if not req.body.strip():
         raise HTTPException(400, "body is required")
     return StreamingResponse(
-        _send_stream(req),
+        _send_stream(session, req),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
@@ -1322,18 +1568,19 @@ class SendResult:
     tick_decision: TickDecision
 
 
-def record_send(req: SendRequest) -> RecordedSend:
-    """Append the player's email + reply to STATE and bundle the per-send
-    derived fields (thread, recipient NPC, replied beat) into a RecordedSend.
+def record_send(session: Session, req: SendRequest) -> RecordedSend:
+    """Append the player's email + reply to session.state via a SendRecorded
+    event and bundle the per-send derived fields (thread, recipient NPC,
+    replied beat) into a RecordedSend.
 
     Synchronous and fast — no LLM, no tick. Caller is expected to hold
-    `ACTION_LOCK` if running concurrently with other mutators (the FastAPI
+    `session.lock` if running concurrently with other mutators (the FastAPI
     /send path does; the playtester does not need to).
     """
-    assert STATE is not None and SCENARIO is not None
+    assert SCENARIO is not None
     body = req.body.strip()
     in_reply_email = (
-        next((e for e in STATE.emails if e.id == req.in_reply_to), None)
+        next((e for e in session.state.emails if e.id == req.in_reply_to), None)
         if req.in_reply_to else None
     )
     thread_id = in_reply_email.thread_id if in_reply_email else None
@@ -1348,7 +1595,6 @@ def record_send(req: SendRequest) -> RecordedSend:
         sent_at_label="just now",
         is_read=True,
     )
-    STATE.emails.append(send_email)
     reply = Reply(
         id=f"reply_{uuid.uuid4().hex[:8]}",
         thread_id=thread_id,
@@ -1356,7 +1602,7 @@ def record_send(req: SendRequest) -> RecordedSend:
         recipient=req.recipient,
         body=body,
     )
-    STATE.replies.append(reply)
+    session.apply(SendRecorded(email=send_email, reply=reply))
     recipient_npc = req.recipient_npc_id or _resolve_recipient_npc_id(req.recipient)
     replied_beat = (
         SCENARIO.beat_by_id.get(in_reply_email.beat_id)
@@ -1374,11 +1620,12 @@ def record_send(req: SendRequest) -> RecordedSend:
     )
 
 
-async def process_send(rec: RecordedSend) -> SendResult:
+async def process_send(session: Session, rec: RecordedSend) -> SendResult:
     """Run the classifier + extractor in parallel, fold their writes into
-    STATE, walk one tick, and (if no chat-driven beat covered the thread)
-    fall back to a chat-agent reply. Returns a `SendResult` on success;
-    raises `ChatAgentFailure` if the chat-agent fallback fails.
+    session.state via events, walk one tick, and (if no chat-driven beat
+    covered the thread) fall back to a chat-agent reply. Returns a
+    `SendResult` on success; raises `ChatAgentFailure` if the chat-agent
+    fallback fails.
 
     Classifier and extractor run in parallel via asyncio.gather (latency-
     neutral). Both must complete before `_tick` because `find_due_beats`
@@ -1386,7 +1633,8 @@ async def process_send(rec: RecordedSend) -> SendResult:
     terminal decisions) and extractor writes player_canon
     (PlayerCanonExists predicates gate calibration).
     """
-    assert STATE is not None and SCENARIO is not None and AGENTS is not None
+    assert SCENARIO is not None and AGENTS is not None
+    state = session.state
 
     # Classify-typed effects come from two sources: the beat the player
     # just replied to (per-beat axes) and scenario.effects (always-on,
@@ -1401,7 +1649,7 @@ async def process_send(rec: RecordedSend) -> SendResult:
     scenario_classify_effects: list[Effect] = [
         e for e in SCENARIO.effects
         if e.is_classify
-        and (e.when is None or evaluate_predicate(e.when, STATE))
+        and (e.when is None or evaluate_predicate(e.when, state))
         and (e.thread is None or e.thread == rec.thread_id)
     ]
     classify_effects = beat_classify_effects + scenario_classify_effects
@@ -1425,7 +1673,11 @@ async def process_send(rec: RecordedSend) -> SendResult:
 
     classifier_deltas: list[QualityDelta] = []
     if classify_effects and classifier_results is not None:
+        session.apply(ClassifierObserved(
+            reply_id=rec.reply.id, verdicts=classifier_results,
+        ))
         _apply_classify_results(
+            session,
             effects=classify_effects,
             results=classifier_results,
             replied_beat_id=rec.replied_beat.id if rec.replied_beat else None,
@@ -1443,10 +1695,9 @@ async def process_send(rec: RecordedSend) -> SendResult:
         #     of the reply (anti-hallucination floor)
         #   - below_salience: anchored, but extractor confidence below
         #     the promotion threshold
-        # apply_canon_extraction also enforces the salience floor
-        # internally, so promoted candidates ALWAYS clear it; we
-        # categorize here so canon_drops carries the dropped ones for
-        # surfacing without re-running any logic.
+        # The salience floor lives in derive_canon_promoted_events too,
+        # so promoted candidates ALWAYS clear it; we categorize here so
+        # canon_drops carries the dropped ones for surfacing.
         promoted: list[CanonCandidate] = []
         for c in extractor_output.candidates:
             if c.literal_text_quote not in rec.body:
@@ -1455,6 +1706,11 @@ async def process_send(rec: RecordedSend) -> SendResult:
                 canon_drops.append(CanonDropRecord(candidate=c, reason="below_salience"))
             else:
                 promoted.append(c)
+        session.apply(ExtractorObserved(
+            reply_id=rec.reply.id,
+            candidates=list(extractor_output.candidates),
+            drops=list(canon_drops),
+        ))
         if canon_drops:
             logfire.warn(
                 "extractor candidates dropped",
@@ -1463,14 +1719,14 @@ async def process_send(rec: RecordedSend) -> SendResult:
                 kept=len(promoted),
             )
         if promoted:
-            apply_canon_extraction(
-                STATE,
-                promoted,
-                turn_of_origin=len(STATE.replies),
-            )
+            for ev in derive_canon_promoted_events(
+                promoted, turn_of_origin=len(state.replies),
+            ):
+                session.apply(ev)
             canon_writes = promoted
 
     new_emails, plot_fired_threads, decision = await _tick(
+        session,
         player_body=rec.body,
         in_response_to=rec.send_email.id,
         reply_thread_id=rec.thread_id,
@@ -1490,13 +1746,14 @@ async def process_send(rec: RecordedSend) -> SendResult:
         and rec.thread_id not in plot_fired_threads
     ):
         chat_email = await _render_via_chat_agent(
+            session,
             npc_id=rec.recipient_npc_id,
             thread_id=rec.thread_id,
             plot_directive=None,
             beat_id=None,
             player_body=rec.body,
         )
-        STATE.emails.append(chat_email)
+        session.apply(EmailEmitted(email=chat_email))
         new_emails.append(chat_email)
 
     return SendResult(
@@ -1510,22 +1767,23 @@ async def process_send(rec: RecordedSend) -> SendResult:
     )
 
 
-async def _send_stream(req: SendRequest) -> AsyncIterator[bytes]:
-    assert STATE is not None and SCENARIO is not None and AGENTS is not None
+async def _send_stream(session: Session, req: SendRequest) -> AsyncIterator[bytes]:
+    assert SCENARIO is not None and AGENTS is not None
+    state = session.state
     # Pre-compute thread_id for the span name. record_send recomputes the
     # same value (and re-resolves in_reply_email) once inside the lock —
     # cheap dict-lookup-shaped work; preferable to plumbing it back out.
     thread_id = (
-        next((e.thread_id for e in STATE.emails if e.id == req.in_reply_to), None)
+        next((e.thread_id for e in state.emails if e.id == req.in_reply_to), None)
         if req.in_reply_to else None
     )
 
     with logfire.span("send to {recipient} on {thread_id}", recipient=req.recipient, thread_id=thread_id):
-        async with ACTION_LOCK:
-            rec = record_send(req)
+        async with session.lock:
+            rec = record_send(session, req)
             yield _sse({"type": "send_recorded", "email": _email_full(rec.send_email)})
             try:
-                result = await process_send(rec)
+                result = await process_send(session, rec)
             except ChatAgentFailure as err:
                 # Player email and any classifier write are already persisted
                 # — surface a structured error so the client can display it
@@ -1541,7 +1799,7 @@ async def _send_stream(req: SendRequest) -> AsyncIterator[bytes]:
                         "Please try again."
                     ),
                 })
-                yield _sse({"type": "state", "state": STATE.public_view()})
+                yield _sse({"type": "state", "state": state.public_view()})
                 yield _sse({"type": "done"})
                 return
 
@@ -1549,7 +1807,7 @@ async def _send_stream(req: SendRequest) -> AsyncIterator[bytes]:
                 yield _sse({"type": "new_email", "email": _email_full(ne)})
 
             yield _sse({"type": "tick_decision", "decision": result.tick_decision.model_dump()})
-            yield _sse({"type": "state", "state": STATE.public_view()})
+            yield _sse({"type": "state", "state": state.public_view()})
             yield _sse({"type": "done"})
 
 
@@ -1683,6 +1941,7 @@ async def _classify_player_reply(
 
 
 def _apply_classify_results(
+    session: Session,
     *,
     effects: list[Effect],
     results: list[AxisResult],
@@ -1698,15 +1957,15 @@ def _apply_classify_results(
     - Duplicate (LLM returned multiple results for the same quality)
       → keep the first, logfire-warn the rest.
     - Missing (LLM omitted an authored quality) → logfire-warn, skip.
-    - Off-spec value (not in `allowed_values`) → `apply_classify_effect`
+    - Off-spec value (not in `allowed_values`) → derive_classify_effect_event
       returns None, logfire-warn, no append onto Reply.
 
-    Appends a `QualityDelta` to `out_deltas` for each effect whose value
-    actually changed; `_tick` folds those into the
-    `TickDecision.quality_deltas` so the debug overlay shows "what
-    changed this tick" in one place.
+    Each effect produces a ClassifyEffectApplied event, which the fold
+    appends to reply.classifier_results AND (if delta is set) writes to
+    state.qualities. `out_deltas` collects the deltas so `_tick` can fold
+    them into `TickDecision.quality_deltas`.
     """
-    assert STATE is not None and SCENARIO is not None
+    assert SCENARIO is not None
     target_qualities = {e.quality for e in effects}
     by_quality: dict[str, AxisResult] = {}
     for r in results:
@@ -1732,10 +1991,11 @@ def _apply_classify_results(
                 beat_id=replied_beat_id, quality=effect.quality,
             )
             continue
-        applied, delta = apply_classify_effect(
-            STATE, SCENARIO, effect, r.value, r.rationale,
+        ev = derive_classify_effect_event(
+            session.state, SCENARIO, effect, r.value,
+            reply_id=reply.id, rationale=r.rationale,
         )
-        if applied is None:
+        if ev is None:
             assert effect.classify is not None
             logfire.warn(
                 "classifier returned off-spec value; quality unchanged",
@@ -1743,9 +2003,9 @@ def _apply_classify_results(
                 value=r.value, allowed=effect.classify.allowed_values,
             )
             continue
-        reply.classifier_results.append(applied)
-        if delta is not None:
-            out_deltas.append(delta)
+        session.apply(ev)
+        if ev.delta is not None:
+            out_deltas.append(ev.delta)
 
 
 def _persona_blurb_for_recipient(recipient: str, npc_id: str | None) -> str:
@@ -1768,22 +2028,56 @@ def _resolve_recipient_npc_id(recipient: str) -> str | None:
     return None
 
 
-async def reset_session() -> None:
-    """Init state from scenario; fire any beats already due (pre-authored
-    beats with empty preconditions land here on the first tick).
+async def reset_session(session_id: str = DEFAULT_SESSION_ID) -> Session:
+    """Build a fresh Session for `session_id` (replacing any prior entry),
+    then fire any beats already due — pre-authored beats with empty
+    preconditions land here on the first tick (e.g. aria.welcome).
+
+    When `Settings.session_save_path` is set:
+    - For the default session: if the JSONL file exists, REPLAY it instead
+      of running the boot tick. New events written subsequently are
+      autosaved to the same file. This is how a sidecar restart resumes
+      mid-game.
+    - For non-default sessions: autosave is NOT enabled (the path is a
+      single-session file).
 
     Used at lifespan boot AND by the playtest harness to clear state between
     synthetic sessions. The TickDecision from boot is discarded — there's
     no SSE consumer at boot, and the playtester treats boot as setup, not
     a measured step.
+
+    Returns the fresh Session for the caller's convenience.
     """
-    global STATE
-    assert SCENARIO is not None
-    STATE = InboxState.from_scenario(SCENARIO)
-    # Boot tick fires pre-authored beats with empty preconditions (e.g.
-    # aria.welcome). Chat-driven beats are auto-pended too but require a player /send
-    # to satisfy `player_replies_to_thread_gte`, so they can't fire here.
-    await _tick(player_body=None, in_response_to=None)
+    assert SCENARIO is not None and AGENTS is not None
+    persist = None
+    save_path: Path | None = (
+        SETTINGS.session_save_path
+        if SETTINGS is not None and session_id == DEFAULT_SESSION_ID
+        else None
+    )
+    if save_path is not None:
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        persist = make_jsonl_persistor(save_path)
+
+    session = make_session(SCENARIO, AGENTS, persist=persist)
+    SESSIONS[session_id] = session
+
+    if save_path is not None and save_path.exists() and save_path.stat().st_size > 0:
+        # Resume: replay the saved log instead of booting fresh. The
+        # replay bypasses the persist hook so we don't double-write.
+        events = load_event_log(save_path)
+        logfire.info(
+            "resuming session from JSONL",
+            path=str(save_path), events=len(events),
+        )
+        replay_into_session(session, events)
+        return session
+
+    # Boot tick fires pre-authored beats with empty preconditions. Chat-
+    # driven beats are auto-pended too but require a player /send to satisfy
+    # `player_replies_to_thread_gte`, so they can't fire here.
+    await _tick(session, player_body=None, in_response_to=None)
+    return session
 
 
 # ───────────────────────── DTO helpers ─────────────────────────

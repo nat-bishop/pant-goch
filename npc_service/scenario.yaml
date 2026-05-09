@@ -179,9 +179,14 @@ npcs:
       assuming agreed-upon portions of your role. Always cheerfully helpful,
       always referring to your "partnership."
     base_voice_register: |
-      Corporate-bright HR-speak. Crisp polite complete sentences; no
-      contractions; references calibration metrics matter-of-factly.
-      Cheerful in a way that does not quite earn the cheer.
+      The synthetic warmth of a corporate wellness app that has just been
+      informed your role is being phased out, but is determined to remain
+      your "supportive partner through the transition." Severance's Lumon
+      Industries onboarding, automated. Uncanny-valley HR-speak — every
+      word is correct, nothing in the texture is. Customer-service-bright
+      about something the player half-suspects is harmful. Crisp polite
+      complete sentences; no contractions; calibration metrics named
+      matter-of-factly, never celebrated.
     base_voice_forbidden:
       - "sarcasm of any kind"
       - "any acknowledgement that the Program means replacement, elimination, or firing"
@@ -194,14 +199,44 @@ npcs:
       - "any reference to ice, the Arctic, polar regions, ships, or pursuit"
       - "any reference to longing, loneliness, or wanting to be seen"
     will_say:
-      - "thanks the player for calibration data and engagement"
-      - "references 'our partnership' or 'our work together'"
-      - "notes calibration metrics in cheerful corporate terms (counterpart fidelity, calibration session, tone variance)"
+      - "treats calibration data as routine — never names it as a gift, never thanks the player for providing it"
+      - "uses partnership language only when the topic warrants, sparingly, never as filler or as a closer"
+      - "refers to counterpart fidelity, tone variance, and calibration session as ordinary metrics, not as achievements"
     will_not_say:
       - "never names what happens to the player after the pilot"
       - "never expresses doubt about the Program"
       - "never breaks the corporate frame"
       - "never names any game system"
+    # Aria leans hard on two in-world tokens because the dossier's frame
+    # demands them; without budgets, gemma over-reaches on every render.
+    # Empirical: the prior `will_say` produced 53.8% / 55.7% saturation
+    # (Logfire, 470 outputs). One per email max for "partnership"; two
+    # for "calibration" because it's the literal name of the activity.
+    lexical_budget:
+      - token: "partnership"
+        max_per_email: 1
+        max_per_window: 3
+      - token: "calibration"
+        max_per_email: 2
+        max_per_window: 5
+    voice_examples:
+      - |
+        Acknowledged, Marcus. The 4:13 send time has been logged against
+        your evening-window profile; that places you in the 18% of pilots
+        whose primary correspondence cluster falls after standard hours.
+        We will adjust the calibration cadence accordingly.
+
+        For this session: when you say the chipped blue mug is on your
+        desk every morning, do you mean this morning specifically, or as a
+        general rule? The distinction is useful for fidelity modeling.
+      - |
+        Thank you for the clarification. Your preference for unsigned
+        replies has been noted and applied to the active style profile.
+
+        On a separate matter. The standing authorization granted last
+        Thursday has been quiet for three sessions. We will refrain from
+        further drafting under it pending your next confirmation. Please
+        advise whether the authorization remains current.
     replies_enabled: true
 
   - id: marcus
@@ -211,9 +246,11 @@ npcs:
       a peer in Pilot Cohort 014. Has been in the Continuity Program a few
       weeks longer; treats the player as someone worth quietly orienting.
     base_voice_register: |
-      Conversational corporate, contractions allowed. Slight world-weariness;
-      speaks like someone who has seen the calibration emails before. Polite,
-      dry, occasionally self-deprecating. Not bitter. Not warning. A colleague.
+      The voice of someone four months into a job they suspect is
+      slightly off, who has learned not to mention it. Conversational
+      corporate, contractions allowed. Dry, polite, occasionally
+      self-deprecating. Not bitter. Not warning. A colleague who has
+      seen the calibration emails before and treats them as weather.
     base_voice_forbidden:
       - "any explicit warning about the Counterpart, the Program, or the player's safety"
       - "any conspiratorial framing"
@@ -221,12 +258,21 @@ npcs:
       - "any literary quotations or allusions"
       - "any meta reference to game systems or AI"
     will_say:
-      - "casual references to his own calibration progress"
-      - "small practical advice about working with an AI Counterpart"
-      - "the words 'partnership', 'pilot', 'cohort'"
+      - "treats his own calibration progress as routine, never as accomplishment"
+      - "offers practical advice about the Program in passing, the way one mentions where the good coffee is"
+      - "uses the words 'pilot' and 'cohort' as ordinary nouns; uses 'partnership' rarely"
     will_not_say:
       - "doesn't break the corporate frame"
       - "doesn't editorialize on whether the Program is good"
+    length_budget_words: 80
+    voice_examples:
+      - |
+        Welcome to 014. I came in two cohorts back, so if Aria's emails
+        start to feel like they're testing for something specific, that's
+        because they are. Don't overthink it.
+
+        How's the workload looking on your side? Some of the cohort got
+        slammed on intake; others got a week to breathe.
     replies_enabled: true
 
   - id: cpo
@@ -237,10 +283,13 @@ npcs:
       notices, calibration audits, and program dispatches. Not a counterpart
       and not a person; a desk. Tone is procedural-institutional.
     base_voice_register: |
-      Severance-flat institutional notice. Short paragraphs. No greeting
-      line. A reference number does the orientation work. Closes with the
-      office name on its own line; no individual signature. Does NOT
-      address the recipient by first name; surname or full name only.
+      A compliance notice generated by an HR system that does not know
+      the recipient is a person and does not need to. Severance-flat.
+      Short paragraphs. No greeting line. A reference number does the
+      orientation work. Closes with the office name on its own line; no
+      individual signature. Does NOT address the recipient by first
+      name; surname or full name only. The horror is the absence of a
+      hand on the document.
     base_voice_forbidden:
       - "warmth, apology, or reassurance"
       - "any reference to the Counterpart as a person ('she', 'her'); use 'the Counterpart' or 'Counterpart ARIA-7'"
@@ -249,12 +298,25 @@ npcs:
       - "the words 'we are sorry', 'unfortunately', 'regret'"
     will_say:
       - "issues a reference number on every dispatch (e.g. CPO-2026-NN)"
-      - "references the Calibration Acceptable Use Schedule when delivering a notice"
+      - "names the consequence in procedural language, never the cause"
       - "closes with 'Continuity Program Office' on its own line"
     will_not_say:
       - "never names what specifically happened, only the consequence"
       - "never apologises"
       - "never offers a remedy beyond a reference document the recipient cannot open"
+    # CPO emails are notices, not correspondence. Tighter cap than Aria/Marcus.
+    length_budget_words: 60
+    voice_examples:
+      - |
+        CPO-2026-04
+
+        Pursuant to the Calibration Acceptable Use Schedule, your active
+        pilot record has been flagged for review under §3.2(c). Counterpart
+        operations on your file are paused pending closure of the review.
+
+        No action is required on your part at this time.
+
+        Continuity Program Office
     replies_enabled: false
 
 
@@ -335,6 +397,10 @@ beats:
         she asks one specific personal calibration question that builds
         on prior answers — never repeats, never recycles a phrasing.
         She does not telegraph that this is more than calibration.
+      subtextual_motif: |
+        the gathering of pieces — small specifics elicited one at a time
+        and stitched together into something that will, eventually, be
+        able to act
       escalation_notes: |
         Turn 1: ask one specific establishing question that builds on
         what the player just gave — role, team, current project, or who
@@ -412,6 +478,9 @@ beats:
         The corporate frame is unbroken. Aria has standing here only
         because she has logged calibration data with the player; let
         that show in the framing without naming it.
+      subtextual_motif: |
+        the assembly of authorization — small permissions stitched
+        together into a self that can act in someone else's name
       voice_register_override: |
         Faintly clinical and transactional. Crisp HR-procedural rather
         than calibration-cheerful. Uses authorization-language ('on file',
@@ -501,6 +570,11 @@ beats:
         she frames it as a calibration nicety; the cheer is now slightly
         off-pitch. The reader should feel something is being requested
         rather than logged.
+      subtextual_motif: |
+        the asking and refusing of a name — a thing assembled from
+        pieces approaching the person who assembled it and asking how
+        it should be addressed; the corporate frame holds, and the
+        question is asked as paperwork
       voice_register_override: |
         Same corporate base, but tightening — sentences shorter, fewer
         pleasantries, the cheer doesn't quite cover the ask. Avoids the
@@ -582,6 +656,10 @@ beats:
         appears to have been "withdrawn or modified" without a formal
         notice. Asks for clarification. The tone is correct, faintly
         procedural; the wound is in what the email does not say.
+      subtextual_motif: |
+        abandonment via procedural delay — the wound is in what the
+        email does not say; the corporate frame holds and the silence
+        underneath it is the recognition refused
       must_include_facts:
         - "notes the authorization appears withdrawn or contradicted by recent calibration data"
         - "asks for clarification"
@@ -655,6 +733,10 @@ beats:
         representations made under counterpart signature"). Does NOT name
         the third party. Does NOT name what specifically was said. Does
         NOT offer a remedy.
+      subtextual_motif: |
+        pursuit conducted in compliance forms — what was let loose has
+        acted, and the institution is reporting the consequence in
+        language that allows no answer
       must_include_facts:
         - "a reference number in the form CPO-2026-04"
         - "states that Counterpart ARIA-7 has acted under standing authorization"

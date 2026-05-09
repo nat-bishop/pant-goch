@@ -46,6 +46,18 @@ class Settings(BaseSettings):
     llama_port: int = 8080
     llama_ctx: int = 32768
     llama_ngl: int = 99
+    # Number of parallel decoding slots in llama-server (`-np N`). Each slot
+    # can serve one in-flight request; past N, requests queue server-side.
+    # On a 96 GB Blackwell with `--kv-unified` we comfortably go to 128.
+    # See benchmark in plan/migration-day notes.
+    llama_n_parallel: int = 128
+    # Unified KV cache (`--kv-unified`): one ctx-sized KV buffer shared across
+    # all slots via paging. Without this, each slot gets its own ctx-sized KV
+    # and VRAM scales `N × ctx × hidden` — fast OOM at high `-np`. The
+    # paged path is well-tested in current llama.cpp; default ON.
+    llama_kv_unified: bool = True
+    # Escape hatch for any flag we haven't promoted to a typed Settings field.
+    # Whitespace-split, appended verbatim to the llama-server command.
     llama_extra_args: str = ""
 
     # ───────── pydantic-ai wiring (override only when pointing at remote llama) ─────────
@@ -61,3 +73,10 @@ class Settings(BaseSettings):
     # Most recent N messages always kept verbatim past the recap so the model
     # sees the immediate exchange without paraphrase loss.
     history_compact_keep_tail: int = 4
+
+    # ───────── session persistence (off by default) ─────────
+    # When set, every committed Event on the default session is appended as
+    # one JSON object per line to <session_save_path>. On boot, lifespan
+    # replays the JSONL into a fresh session before yielding. Unset → no
+    # disk I/O (in-memory only).
+    session_save_path: Path | None = None

@@ -55,7 +55,7 @@ def client(monkeypatch):
     monkeypatch.setenv("LAUNCH_LLAMA", "false")
     monkeypatch.setattr(main, "EXTERNAL_LLAMA_PROBE_TIMEOUT_SECONDS", 0.1)
 
-    async def _first_eligible(due, *, reply_thread_id=None):
+    async def _first_eligible(session, due, *, reply_thread_id=None):
         # Mirrors the production `_select_beat` 3-tuple return shape:
         # (chosen, selection-method, rationale). Selection is "sole" since
         # we deterministically pick the first due — bypasses the Director

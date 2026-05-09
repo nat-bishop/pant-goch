@@ -23,7 +23,7 @@ Three agents already; one model. None of them are wrong. The patterns below are 
 **Why it works:** modern instruct models are RLHF'd on chat-templated tool-calling. Tool-call schemas constrain output to your Pydantic model. Pydantic AI parses args back into the model with full validation. Streaming yields partial fields in declaration order — put the long text field first if you want progressive UX.
 
 **Failure modes / mitigations:**
-- Gemma 4 E-models burn the budget in `<think>` blocks → `--reasoning off` on llama-server.
+- Gemma 4 E-models default to thinking-on. Run llama-server with `--reasoning on --reasoning-format deepseek` so thoughts go to the separate `reasoning_content` field, AND set `OpenAIModelProfile(openai_chat_send_back_thinking_parts=False)` so pydantic-ai doesn't round-trip parsed `ThinkingPart`s back into prior-turn `content` on the next call.
 - `NativeOutput` (GBNF response_format) lets unbounded text fields fill the buffer → 19K-token cascading turns. Use `ToolOutput` + `max_tokens` cap (Smallville does, see CLAUDE.md).
 - Field declaration order matters for streaming. Long text fields first.
 

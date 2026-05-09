@@ -32,6 +32,11 @@ from typing import Literal
 
 import logfire
 
+from .events import (
+    CanonPromoted,
+    ClassifyEffectApplied,
+    LiteralEffectApplied,
+)
 from .models import (
     AxisResult,
     Beat,
@@ -277,7 +282,7 @@ def _combine_op(
     return _clamp_quality(new, quality_id, scenario)
 
 
-def _apply_one_write(
+def _build_quality_delta(
     state: InboxState,
     scenario: Scenario,
     quality_id: str,
@@ -286,14 +291,15 @@ def _apply_one_write(
     *,
     source_label: str,
 ) -> QualityDelta | None:
-    """Apply a single value-write. Returns the resulting QualityDelta if
-    the value changed, or None for no-ops. Logs every effective write.
+    """Compute the QualityDelta for a single value-write against current
+    state. Returns None for no-ops (value unchanged after the op + clamp).
+    Pure: does NOT mutate state. The caller commits the change by emitting
+    the corresponding event through `session.apply`.
     """
     before = state.qualities.get(quality_id)
     new = _combine_op(before, incoming, op, quality_id, scenario)
     if before == new:
         return None
-    state.qualities[quality_id] = new
     logfire.info(
         "quality {q}: {before} -> {after} via {source}",
         q=quality_id,
@@ -306,92 +312,82 @@ def _apply_one_write(
     )
 
 
-def apply_literal_effects(
+def derive_literal_effect_event(
     state: InboxState,
     scenario: Scenario,
-    effects: list[Effect],
+    effect: Effect,
     *,
     beat_id: str | None = None,
-) -> list[QualityDelta]:
-    """Apply every literal-value effect in `effects` (those with
-    `effect.value` set). Classify-driven effects are skipped — they fire at
-    reply time via `apply_classify_effect`.
-
-    Each effect's `when:` predicate (if set) is evaluated against current
-    state; the write is skipped when `when` is false. Source labels read
-    `effect:<beat_id>:<quality>` for an auditable trail.
+) -> LiteralEffectApplied | None:
+    """Compute the event for one literal effect. Returns None when the
+    effect is no-op (classify effect, `when` predicate false, or value
+    unchanged). Caller is expected to apply the event before deriving the
+    next effect on the same quality — `before` is read from current state.
     """
-    deltas: list[QualityDelta] = []
-    for effect in effects:
-        if effect.is_classify:
-            continue
-        if effect.when is not None and not evaluate_predicate(effect.when, state):
-            continue
-        source_label = (
-            f"effect:{beat_id}:{effect.quality}"
-            if beat_id else f"effect:{effect.quality}"
-        )
-        delta = _apply_one_write(
-            state, scenario, effect.quality, effect.value, effect.op,  # type: ignore[arg-type]
-            source_label=source_label,
-        )
-        if delta is not None:
-            deltas.append(delta)
-    return deltas
+    if effect.is_classify:
+        return None
+    if effect.when is not None and not evaluate_predicate(effect.when, state):
+        return None
+    source_label = (
+        f"effect:{beat_id}:{effect.quality}"
+        if beat_id else f"effect:{effect.quality}"
+    )
+    delta = _build_quality_delta(
+        state, scenario, effect.quality, effect.value, effect.op,  # type: ignore[arg-type]
+        source_label=source_label,
+    )
+    if delta is None:
+        return None
+    return LiteralEffectApplied(delta=delta, beat_id=beat_id)
 
 
-def apply_classify_effect(
+def derive_classify_effect_event(
     state: InboxState,
     scenario: Scenario,
     effect: Effect,
     verdict: str,
+    *,
+    reply_id: str,
     rationale: str = "",
-) -> tuple[AxisResult | None, QualityDelta | None]:
-    """Apply one classifier verdict to its target quality.
+) -> ClassifyEffectApplied | None:
+    """Compute the event for one classifier verdict.
 
-    For numeric qualities, the verdict indexes into `effect.classify.map`
-    to produce a float; the caller's `op` (set/add/max/min) combines it
-    with the current value. For string qualities, the verdict string is
-    the value (only `op: set` is valid; validated at load time).
-
-    Returns `(axis_result, quality_delta)`:
-    - `axis_result`: AxisResult on success (caller appends to
-      `Reply.classifier_results`), or None when the verdict isn't a
-      valid value for this directive.
-    - `quality_delta`: the resulting QualityDelta if the value actually
-      changed, or None for no-ops (verdict skipped, value unchanged,
-      `when:` predicate false).
+    Returns None when the verdict isn't a valid value for this directive
+    (the verdict is dropped entirely — not even the AxisResult is recorded).
+    Returns an event with `delta=None` when the verdict is valid but the
+    write is gated out (`when` predicate false at apply time, value
+    unchanged, or quality not in scenario) — the AxisResult is still
+    recorded on the reply so downstream predicates can read it.
     """
     if not effect.is_classify:
-        raise ValueError(f"apply_classify_effect requires a classify effect; got {effect}")
+        raise ValueError(f"derive_classify_effect_event requires a classify effect; got {effect}")
     directive = effect.classify  # type: ignore[union-attr]
     if verdict not in directive.allowed_values:
-        return None, None
+        return None
+
+    axis_result = AxisResult(
+        quality=effect.quality, value=verdict, rationale=rationale,
+    )
+
     if effect.when is not None and not evaluate_predicate(effect.when, state):
-        # Predicate failed at apply time — return the AxisResult so the
-        # ledger still records the verdict (predicates downstream may
-        # still want to read it), but don't write the quality.
-        return AxisResult(quality=effect.quality, value=verdict, rationale=rationale), None
+        return ClassifyEffectApplied(reply_id=reply_id, axis=axis_result, delta=None)
 
     q = scenario.quality_by_id.get(effect.quality)
     if q is None:
-        return None, None
+        return ClassifyEffectApplied(reply_id=reply_id, axis=axis_result, delta=None)
 
     if q.type == "string":
         incoming: float | str = verdict
     else:
         if directive.map is None:
-            return None, None
+            return ClassifyEffectApplied(reply_id=reply_id, axis=axis_result, delta=None)
         incoming = directive.map[verdict]
 
-    delta = _apply_one_write(
+    delta = _build_quality_delta(
         state, scenario, effect.quality, incoming, effect.op,
         source_label=f"classify:{effect.quality}",
     )
-    axis_result = AxisResult(
-        quality=effect.quality, value=verdict, rationale=rationale,
-    )
-    return axis_result, delta
+    return ClassifyEffectApplied(reply_id=reply_id, axis=axis_result, delta=delta)
 
 
 # ───────────────────────── player canon mutation ─────────────────────────
@@ -404,36 +400,94 @@ def apply_classify_effect(
 CANON_SALIENCE_THRESHOLD = 0.5
 
 
-def apply_canon_extraction(
-    state: InboxState,
+def derive_canon_promoted_events(
     candidates: list,  # list[CanonCandidate] from agents.py — typed loosely to avoid an import cycle
     turn_of_origin: int,
     salience_threshold: float = CANON_SALIENCE_THRESHOLD,
-) -> list[str]:
-    """Promote extractor-agent candidates above the salience threshold into
-    `state.player_canon`. REPLACE semantics on key collision (later mention
-    overwrites earlier — supports "actually call me Robert" mid-session).
+) -> list[CanonPromoted]:
+    """Build CanonPromoted events for every candidate above the salience
+    threshold. REPLACE semantics on key collision is handled by fold —
+    later events overwrite earlier ones for the same key.
 
     The caller is responsible for substring-validating each candidate's
     `literal_text_quote` against the player's reply BEFORE handing it here;
     candidates whose quote isn't a substring of the actual reply must be
-    dropped at the orchestration boundary, not silently here.
-
-    Returns the list of canon keys that were created or replaced this call.
+    dropped at the orchestration boundary.
     """
-    promoted: list[str] = []
+    events: list[CanonPromoted] = []
     for c in candidates:
         if c.salience < salience_threshold:
             continue
-        state.player_canon[c.key] = PlayerCanonEntry(
+        entry = PlayerCanonEntry(
             summary=c.summary,
             literal_text_quote=c.literal_text_quote,
             salience=c.salience,
             category=c.category,
             turn_of_origin=turn_of_origin,
         )
-        promoted.append(c.key)
-    return promoted
+        events.append(CanonPromoted(key=c.key, entry=entry))
+    return events
+
+
+# ───────────────────────── transitional shims ─────────────────────────
+# These mirror the pre-event-sourcing API. main.py still uses them while
+# step 3 of the event-sourcing migration is in progress; once main.py
+# threads `Session` through every call site and emits events directly,
+# these shims (and the in-line state mutation they perform) are deleted.
+# Until then they delegate to the new derive_*_event API plus a manual
+# fold so the runtime semantics are identical.
+
+
+def apply_literal_effects(
+    state: InboxState,
+    scenario: Scenario,
+    effects: list[Effect],
+    *,
+    beat_id: str | None = None,
+) -> list[QualityDelta]:
+    """Transitional shim — see header above."""
+    deltas: list[QualityDelta] = []
+    for effect in effects:
+        ev = derive_literal_effect_event(state, scenario, effect, beat_id=beat_id)
+        if ev is None:
+            continue
+        state.qualities[ev.delta.quality] = ev.delta.after
+        deltas.append(ev.delta)
+    return deltas
+
+
+def apply_classify_effect(
+    state: InboxState,
+    scenario: Scenario,
+    effect: Effect,
+    verdict: str,
+    rationale: str = "",
+) -> tuple[AxisResult | None, QualityDelta | None]:
+    """Transitional shim — see header above."""
+    reply_id = state.replies[-1].id if state.replies else "__shim_no_reply__"
+    ev = derive_classify_effect_event(
+        state, scenario, effect, verdict, reply_id=reply_id, rationale=rationale,
+    )
+    if ev is None:
+        return None, None
+    if ev.delta is not None:
+        state.qualities[ev.delta.quality] = ev.delta.after
+    return ev.axis, ev.delta
+
+
+def apply_canon_extraction(
+    state: InboxState,
+    candidates: list,
+    turn_of_origin: int,
+    salience_threshold: float = CANON_SALIENCE_THRESHOLD,
+) -> list[str]:
+    """Transitional shim — see header above."""
+    events = derive_canon_promoted_events(
+        candidates, turn_of_origin, salience_threshold,
+    )
+    for ev in events:
+        state.player_canon[ev.key] = ev.entry
+    return [ev.key for ev in events]
 
 
 # ───────────────────────── beat scheduler ─────────────────────────

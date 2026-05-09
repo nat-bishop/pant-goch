@@ -284,6 +284,56 @@ export async function getDebugScenario(): Promise<DebugScenario> {
   return r.json();
 }
 
+// /debug/session/* payloads — DEV-only event-log timeline. The session
+// records every state change as an Event; the timeline scrubs read-only
+// snapshots reconstructed via fold(). `kind` is the discriminated-union
+// tag matching backend Event subclasses.
+export interface SessionEvent {
+  kind: string;
+  [k: string]: unknown;
+}
+
+export interface DebugSessionEvents {
+  session_id: string;
+  event_count: number;
+  events: SessionEvent[];
+}
+
+export interface DebugSessionStateAt {
+  session_id: string;
+  index: number;
+  event_count: number;
+  state: {
+    ended: boolean;
+    end_reason: string | null;
+    qualities: Record<string, number | string>;
+    fired_beat_ids: string[];
+    player_canon: Record<string, {
+      summary: string;
+      literal_text_quote: string;
+      salience: number;
+      category: string;
+      turn_of_origin: number;
+    }>;
+    emails: Email[];
+    reply_count: number;
+    unread_counts: Record<string, number>;
+    unread_counts_by_thread: Record<string, number>;
+  };
+}
+
+export async function getDebugSessionEvents(): Promise<DebugSessionEvents> {
+  const r = await fetch(`${API}/debug/session/events`);
+  await ensureOk(r, "debug_session_events");
+  return r.json();
+}
+
+export async function getDebugSessionStateAt(index: number): Promise<DebugSessionStateAt> {
+  const r = await fetch(`${API}/debug/session/state_at?index=${index}`);
+  await ensureOk(r, "debug_session_state_at");
+  return r.json();
+}
+
 export type SseEvent =
   | { type: "send_recorded"; email: Email }
   | { type: "new_email"; email: Email }

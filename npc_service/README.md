@@ -27,14 +27,14 @@ the sidecar spawns):
 llama-server \
   -m ../models/gemma-4-E4B-it-Q8_0.gguf \
   --host 127.0.0.1 --port 8080 \
-  -c 32768 --jinja --reasoning off -ngl 99
+  -c 32768 --jinja --reasoning on --reasoning-format deepseek -ngl 99
 ```
 
-`--jinja` is required for Gemma's chat template; `--reasoning off`
-disables the default thinking-mode for E-models (without it, the
-model emits all its tokens inside a hidden `<think>` block and
-returns empty content). The bundled `launcher.py` sets both flags
-automatically.
+`--jinja` is required for Gemma's chat template. `--reasoning on
+--reasoning-format deepseek` keeps Gemma 4 E-models in thinking-mode
+(they're trained for it) but routes the thoughts into a separate
+`reasoning_content` field on the response instead of bleeding into
+the body. The bundled `launcher.py` sets all three automatically.
 
 ## Verify
 
@@ -191,11 +191,17 @@ ship; `LLAMA_SERVER_BIN` and `LLAMA_MODEL_PATH` default off that.
   `model_settings={"max_tokens": 512}`, which keeps turns bounded. If
   you switch back to `NativeOutput`, also add `Field(max_length=...)`
   on `report_text`.
-- **Empty agent responses / 18K-token "responses"**: `--reasoning off`
-  is missing from llama-server. Gemma 4 E-models default to
-  thinking-on, spending all their tokens inside a hidden `<think>`
-  block. The bundled launcher passes this flag automatically; if you
-  run llama-server yourself, include it.
+- **Empty agent responses / 18K-token "responses"**: `--reasoning on
+  --reasoning-format deepseek` is missing from llama-server. Without
+  the deepseek format, Gemma 4 E-models spend their token budget
+  inside an inline `<think>` block in the body. The bundled launcher
+  passes both flags automatically; if you run llama-server yourself,
+  include them.
+- **Old thoughts re-serialised into prior-turn assistant content**:
+  `OpenAIModelProfile(openai_chat_send_back_thinking_parts=False)` is
+  missing on the `OpenAIChatModel` constructor in `main.py`. Default
+  'auto' rewraps parsed `ThinkingPart`s as `<think>…</think>` in
+  historical content on the next call.
 - **`/options` returns `{"options": []}` repeatedly**: usually a
   validation error in the LLM's response (PromptedOutput JSON failed
   the `OptionsResponse` schema, e.g. fewer than 2 picks or duplicate

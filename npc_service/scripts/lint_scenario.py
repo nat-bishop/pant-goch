@@ -664,7 +664,7 @@ def lint_scenario(
     scenario: Scenario,
     *,
     run_analyzer: bool = True,
-    analyzer_max_states: int = 300_000,
+    analyzer_time_limit_s: int = 30,
     analyzer_progress: bool = False,
 ) -> list[Finding]:
     findings: list[Finding] = [
@@ -676,13 +676,14 @@ def lint_scenario(
         *check_reachability_contradiction(scenario),
     ]
     if run_analyzer:
-        # The static analyzer is heavier (state-space exploration) and lives
-        # in a sibling module so its imports stay out of the spec-only lint
-        # path. The CLI keeps this off by default (opt in with --analyzer)
-        # so `make lint-scenario` stays a fast author-feedback loop;
+        # The static analyzer (ASP-backed via clingo) lives in a sibling
+        # module so its imports stay out of the spec-only lint path. The
+        # CLI keeps this off by default (opt in with --analyzer) so
+        # `make lint-scenario` stays a fast author-feedback loop;
         # `make analyze-scenario` is the canonical way to run the analyzer.
-        # `analyzer_max_states=300_000` matches that standalone cap so the
-        # two paths report identical reachability claims when both run.
+        # `analyzer_time_limit_s=30` matches the standalone default; with
+        # brave-mode the production scenario solves in ~0.3s, so the cap
+        # only bites on grossly oversized scenarios.
         # Tests pass run_analyzer=False to keep individual lint-rule tests
         # focused on spec analysis.
         from analyze_scenario import (  # noqa: E402 — sibling-module import
@@ -690,7 +691,7 @@ def lint_scenario(
         )
         report = _analyze(
             scenario,
-            max_states=analyzer_max_states,
+            time_limit_s=analyzer_time_limit_s,
             progress=analyzer_progress,
         )
         for af in report.to_findings(scenario):

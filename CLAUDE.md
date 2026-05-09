@@ -38,7 +38,8 @@ The schema is in `npc_service/src/npc_service/models.py`; existing patterns live
 
 Each is anchored by an inline comment at the call site explaining why:
 
-- `launcher.py` — `--jinja` and `--reasoning off` on llama-server.
+- `launcher.py` — `--jinja`, `--reasoning on`, and `--reasoning-format deepseek` on llama-server (Gemma 4 best practice; routes thoughts into the separate `reasoning_content` field rather than the body).
+- `main.py` — `OpenAIModelProfile(openai_chat_send_back_thinking_parts=False)` on the model. Without this, pydantic-ai's default 'auto' round-trips parsed `ThinkingPart`s back into prior assistant `content` as `<think>…</think>` blocks, violating Google's Gemma 4 multi-turn rule and inflating input tokens.
 - `agents.py` — chat agent's `output_type=str`; classifier's `max_tokens=2048`; `_BASE_CHAT_INSTRUCTIONS` body-only rules (regression-tested in `tests/test_app.py`).
 - `web/index.html` — inline pre-bundle theme script (FOUC fix).
 - `web/src/store.ts` — `bootStarted` (StrictMode guard); `firstOpenForChat` (welcome typing-replay).

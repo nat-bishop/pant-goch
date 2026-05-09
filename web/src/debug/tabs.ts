@@ -7,6 +7,7 @@ import { BeatsPanel } from "./beats/BeatsPanel";
 import { CanonPanel } from "./canon/CanonPanel";
 import { PacingPanel } from "./pacing/PacingPanel";
 import { TickLogPanel } from "./ticks/TickLogPanel";
+import { TimelinePanel } from "./timeline/TimelinePanel";
 import type { PanelProps } from "./shared/types";
 import type { DebugTab } from "../store";
 
@@ -42,4 +43,5 @@ export const TABS: TabDef[] = [
     component: BeatsPanel,
     badge: (p) => Object.keys(p.debugScenario.beats).length || null,
   },
+  { id: "timeline", label: "Timeline", component: TimelinePanel },
 ];

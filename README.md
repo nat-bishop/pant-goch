@@ -50,7 +50,7 @@ make sidecar     # terminal 2: Python sidecar (LAUNCH_LLAMA=false)
 make web         # terminal 3: Vite dev server
 ```
 
-The two flags `--jinja` and `--reasoning off` on llama-server are non-negotiable for Gemma 4 E-models — without them you get either an empty response or a 19K-token monologue inside a hidden `<think>` block. The bundled launcher sets both.
+The flags `--jinja --reasoning on --reasoning-format deepseek` on llama-server are non-negotiable for Gemma 4 E-models — without `--jinja` the chat template doesn't load; without the reasoning settings you get a 19K-token monologue inside the body. The bundled launcher sets all three. Pydantic-ai also needs `OpenAIModelProfile(openai_chat_send_back_thinking_parts=False)` to stop it round-tripping parsed thoughts back into next-turn assistant content.
 
 ## Tests
 
@@ -146,7 +146,8 @@ smallville/
 
 ## Troubleshooting
 
-- **Empty agent responses or 19K-token monologues** — `--jinja` and/or `--reasoning off` missing on llama-server. The bundled launcher sets both; if you run llama-server yourself, include them.
+- **Empty agent responses or 19K-token monologues** — `--jinja`, `--reasoning on`, or `--reasoning-format deepseek` missing on llama-server. The bundled launcher sets all three; if you run llama-server yourself, include them.
+- **Prior-turn `<think>` blocks leaking into request bodies** — pydantic-ai's `OpenAIModelProfile(openai_chat_send_back_thinking_parts=False)` is missing on the `OpenAIChatModel` constructor. Default 'auto' re-serialises parsed thoughts as `<think>…</think>` in next-turn assistant content. Verify in Logfire by inspecting any chat-agent POST span's `http.request.body.text`.
 - **`No module named npc_service`** — run `uv sync` from `npc_service/`.
 - **Streaming arrives in big bursts** — verify your reverse proxy isn't buffering. The server sets `X-Accel-Buffering: no` on the `/send` SSE response.
 - **Port 8000 already in use** — set `NPC_SERVICE_PORT` in `npc_service/.env` and update `web/vite.config.ts`'s proxy target. Or `make kill-zombies` to force-kill stragglers on :8000/:8080/:5173-5176.

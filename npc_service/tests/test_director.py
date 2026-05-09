@@ -107,15 +107,23 @@ def state_with_only_calibration_due(production_scenario: Scenario) -> InboxState
     return state
 
 
-def _swap_globals(monkeypatch, scenario: Scenario, state: InboxState):
-    """`_select_beat` reads STATE / AGENTS / SCENARIO from module globals.
-    Tests inject fixtures by overriding those slots."""
+def _build_session(monkeypatch, scenario: Scenario, state: InboxState):
+    """`_select_beat` now takes a `Session`; SCENARIO/AGENTS still live as
+    module-level singletons. Tests build the Session explicitly and patch
+    the SCENARIO/AGENTS module slots."""
+    from npc_service.session import Session
     placeholder_model = TestModel(custom_output_text="placeholder")
     agents = build_agents(placeholder_model)
-    monkeypatch.setattr(main, "STATE", state)
     monkeypatch.setattr(main, "SCENARIO", scenario)
     monkeypatch.setattr(main, "AGENTS", agents)
-    return agents
+    session = Session(scenario=scenario, agents=agents, state=state)
+    return session, agents
+
+
+# Back-compat alias: the existing tests below call `_swap_globals(...)`. The
+# new shape returns (session, agents); old tests will receive `agents` only.
+def _swap_globals(monkeypatch, scenario: Scenario, state: InboxState):
+    return _build_session(monkeypatch, scenario, state)
 
 
 @pytest.mark.asyncio
@@ -129,7 +137,7 @@ async def test_director_receives_both_ids_when_two_scenes_eligible(
     fire (it would otherwise pre-empt the Director when there's a prior
     fire on a same-thread scene).
     """
-    agents = _swap_globals(
+    session, agents = _swap_globals(
         monkeypatch, production_scenario, state_with_two_eligible_scenes,
     )
 
@@ -159,7 +167,7 @@ async def test_director_receives_both_ids_when_two_scenes_eligible(
     assert len(eligible) >= 2  # confirms we hit the Director branch
 
     chosen, selection, rationale = await main._select_beat(
-        eligible, reply_thread_id=None,
+        session, eligible, reply_thread_id=None,
     )
 
     assert selection == "director"
@@ -186,7 +194,7 @@ async def test_director_shortcircuits_when_only_one_beat_due(
 ):
     """One eligible beat → `_select_beat` returns it as `selection="sole"`
     without calling the Director. Tests the cost-saving short-circuit."""
-    agents = _swap_globals(
+    session, agents = _swap_globals(
         monkeypatch, production_scenario, state_with_only_calibration_due,
     )
 
@@ -206,7 +214,7 @@ async def test_director_shortcircuits_when_only_one_beat_due(
         f"{[b.id for b in eligible]}"
     )
 
-    chosen, selection, rationale = await main._select_beat(eligible)
+    chosen, selection, rationale = await main._select_beat(session, eligible)
 
     assert selection == "sole"
     assert chosen is not None
@@ -222,7 +230,7 @@ async def test_director_none_means_skip_tick(
     """Director may return `chosen_beat_id="none"` to skip the tick — the
     contract that lets the Director punt when no eligible beat fits the
     moment."""
-    agents = _swap_globals(
+    session, agents = _swap_globals(
         monkeypatch, production_scenario, state_with_two_eligible_scenes,
     )
 
@@ -242,7 +250,7 @@ async def test_director_none_means_skip_tick(
         state_with_two_eligible_scenes, production_scenario,
     )
     chosen, selection, rationale = await main._select_beat(
-        eligible, reply_thread_id=None,
+        session, eligible, reply_thread_id=None,
     )
 
     assert chosen is None
@@ -273,7 +281,7 @@ async def test_select_beat_continues_active_scene_skips_director(
         sent_at_label="just now",
     ))
 
-    agents = _swap_globals(monkeypatch, production_scenario, state)
+    session, agents = _swap_globals(monkeypatch, production_scenario, state)
 
     call_count = {"n": 0}
 
@@ -293,7 +301,7 @@ async def test_select_beat_continues_active_scene_skips_director(
     assert len(eligible) >= 2
 
     chosen, selection, rationale = await main._select_beat(
-        eligible, reply_thread_id="aria",
+        session, eligible, reply_thread_id="aria",
     )
 
     assert selection == "continue"
