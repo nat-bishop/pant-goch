@@ -226,8 +226,8 @@ def boot_engine_for_playtest(
 ) -> tuple[OpenAIChatModel, OpenAIChatModel]:
     """Initialise `engine_main.SCENARIO` + `AGENTS` against the local engine
     llama (Gemma on :8080), and build a separate model handle for the eval
-    llama (Qwen on :8081, served by ik_llama.cpp). Mirrors `lifespan`'s
-    setup minus the FastAPI ceremony.
+    llama (Qwen on :8081). Mirrors `lifespan`'s setup minus the FastAPI
+    ceremony.
 
     Returns `(engine_model, eval_model)`. The engine model powers the SUT
     agents (chat/classifier/extractor/summary/fact-checker/director). The

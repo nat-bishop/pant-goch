@@ -142,6 +142,14 @@ class LlamaConfig:
     ngl: int
     n_parallel: int
     kv_unified: bool
+    # `--reasoning <mode>` (on|off|auto) toggles whether the chat template
+    # instructs the model to think. Engine (Gemma 4) sets "on" + a format so
+    # thinking lands in `reasoning_content`. Eval (Qwen MoE) sets "off" — the
+    # synthetic player and judges want concrete short replies, not a chain of
+    # thought eating the token budget. `reasoning_format` is independent: only
+    # emitted when set, controls how llama.cpp parses `<think>` tags.
+    reasoning_mode: str | None = None
+    reasoning_format: str | None = None
 
 
 def _exe_dir() -> Path:
@@ -200,6 +208,61 @@ def resolve_config(settings: Settings | None = None) -> LlamaConfig:
         ngl=s.llama_ngl,
         n_parallel=s.llama_n_parallel,
         kv_unified=s.llama_kv_unified,
+        reasoning_mode="on",
+        reasoning_format="deepseek",
+    )
+
+
+def resolve_eval_config(settings: Settings | None = None) -> LlamaConfig:
+    """Pull eval llama-server invocation params from settings.
+
+    Sister to `resolve_config`. The eval llama (Qwen 3.6 35B-A3B) powers the
+    playtester's synthetic player + LLM judges — different family from the
+    engine SUT to mitigate same-family preference leakage in judging
+    (arxiv 2502.01534). Same `build_command` path; the only family-specific
+    axis today is `reasoning_format` (None for Qwen — its chat template
+    handles `<think>` on its own under `--jinja`)."""
+    s = settings or Settings()
+    base = _exe_dir()
+
+    bin_path = s.eval_llama_server_bin or base / "vendor" / "llama.cpp" / _bin_name("llama-server")
+
+    if s.eval_llama_model_path:
+        model_path: Path | None = s.eval_llama_model_path
+        hf: str | None = None
+    else:
+        candidate = base / "models" / "Qwen3.6-35B-A3B-Q8_0.gguf"
+        if candidate.exists():
+            model_path = candidate
+            hf = None
+        else:
+            model_path = None
+            hf = s.eval_llama_hf_repo
+
+    total_ctx = (
+        s.eval_llama_total_ctx if s.eval_llama_total_ctx > 0
+        else s.eval_llama_n_parallel * s.eval_llama_ctx
+    )
+    return LlamaConfig(
+        bin=bin_path,
+        model_path=model_path,
+        hf_repo=hf,
+        port=s.eval_llama_port,
+        host=s.eval_llama_host,
+        ctx=total_ctx,
+        extra_args=s.eval_llama_extra_args.split() if s.eval_llama_extra_args else [],
+        ngl=s.eval_llama_ngl,
+        n_parallel=s.eval_llama_n_parallel,
+        kv_unified=s.eval_llama_kv_unified,
+        # Thinking on: Qwen's `<think>` block runs in the model's plan, then
+        # the actual reply lands in `content`. `deepseek` format pulls the
+        # thinking trace into `reasoning_content` (separate field) so it
+        # doesn't pollute the body. The synthetic player + judges have
+        # max_tokens=2048 in their model_settings, plenty of room for a
+        # thinking pass plus a 2-6 sentence reply. If a judge ever truncates
+        # mid-think, bump its max_tokens — don't disable reasoning here.
+        reasoning_mode="on",
+        reasoning_format="deepseek",
     )
 
 
@@ -220,9 +283,21 @@ def build_command(cfg: LlamaConfig) -> list[str]:
         "--host", cfg.host,
         "--port", str(cfg.port),
         "-c", str(cfg.ctx),
-        "--jinja",  # REQUIRED for Gemma chat template
-        "--reasoning", "on",  # Per Gemma 4 best practices; reasoning-format keeps it out of body
-        "--reasoning-format", "deepseek",  # Pulls thinking into `reasoning_content` (separate field)
+        "--jinja",  # REQUIRED for Gemma chat template (and Qwen's bundled template)
+    ]
+    if cfg.reasoning_mode is not None:
+        # `on`/`off`/`auto`. Engine (Gemma 4) wants `on` so the model thinks
+        # before replying; eval (Qwen) wants `off` so judges/player produce
+        # direct short replies without burning the token budget on a `<think>`
+        # block they'd never finish.
+        cmd += ["--reasoning", cfg.reasoning_mode]
+    if cfg.reasoning_format is not None:
+        # Per Gemma 4 best practices; reasoning-format pulls thinking into
+        # `reasoning_content` (separate field) instead of inlining it in the
+        # body. Eval doesn't set this — when reasoning is off, there's no
+        # `<think>` tag to parse anyway.
+        cmd += ["--reasoning-format", cfg.reasoning_format]
+    cmd += [
         "-ngl", str(cfg.ngl),
         "-np", str(cfg.n_parallel),
     ]

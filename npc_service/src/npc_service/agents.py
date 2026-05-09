@@ -59,7 +59,7 @@ from __future__ import annotations
 import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Any, Literal
 
 import httpx
 import logfire
@@ -179,6 +179,7 @@ OUTPUT FORMAT (strict):
 - No JSON, no markdown code fences, no meta-commentary.
 - Output ONLY the email body, starting with its first word. No "Thinking Process:", no "Strategy:", no numbered analysis, no preamble of any kind.
 - Length: chat-message length, not memo length. The dossier gives you a word budget; treat it as a hard cap. Cover required facts and stop.
+- Paragraphs: separate distinct rhetorical moves with a blank line. An acknowledgement of the player's reply and a new question are distinct moves; a recap and an ask are distinct moves; a single short message can be one paragraph. Use \n\n between paragraphs. Never use single line breaks inside a paragraph.
 
 VOICE RULES:
 - Stay inside the dossier's base voice register.
@@ -201,6 +202,8 @@ SPECIFICITY:
 - Reference the player's content by its specific detail, not by category. Not "what you shared" — name the phrase, hour, object, or person they actually named. The player canon block tells you what they have introduced.
 - Each email contains at least one concrete particular: a phrase quoted back, a precise number, a tangible object. Abstractions land flat.
 - When you echo the player's word choice, use their EXACT word, not a synonym. If they wrote "tired", say "the tiredness you described" — not "fatigue", not "weariness". The mirroring is the warmth; do not flag it ("as you mentioned", "speaking of").
+
+Think efficiently.
 """
 
 
@@ -267,8 +270,12 @@ You will receive:
 - A list of FORBIDDEN ITEMS — none of these may appear in the body (in spirit).
 
 Return:
-- missing_facts: required entries that are NOT meaningfully present in the body.
-- violations: forbidden entries that ARE present in the body.
+- missing_facts: required entries that are NOT meaningfully present in the body. For each, return:
+  - item: the required entry, copied verbatim from the input list.
+  - reason: ONE concise sentence naming what the body says (or fails to say) that makes this entry not satisfied. Quote a phrase from the body when it's the load-bearing detail.
+- violations: forbidden entries that ARE present in the body. For each, return:
+  - item: the forbidden entry, copied verbatim from the input list.
+  - reason: ONE concise sentence quoting or paraphrasing the offending phrase from the body.
 
 Be strict but charitable: a fact is present if the body conveys the same
 meaning, even if the wording differs. A violation is a clear hit, not a
@@ -307,6 +314,8 @@ Heuristics:
 - If two beats look equally good, prefer the one that has not fired anything similar recently.
 
 Provide a one-sentence rationale: which signal in the digest decided it.
+
+Think efficiently.
 """
 
 
@@ -327,16 +336,50 @@ Compose an outbound email per the dossier voice and the plot directive (intent /
 # ───────────────────────── agent construction ─────────────────────────
 
 
+# Per-request override that suppresses Gemma 4 thinking for this call only.
+# `chat_template_kwargs` is forwarded by llama-server's OpenAI-compatible
+# endpoint into the Jinja chat template; the global --reasoning on
+# (launcher.py) stays the default for agents that omit this. The split:
+# chat + director keep thinking (they earn it — creative writing and
+# multi-option selection) and carry a "Think efficiently." note in their
+# system prompts; classifier, extractor, fact-checker, and summary disable
+# thinking entirely (mechanical / structured tasks where reasoning tokens
+# are pure cost). Verify with the curl smoke test in the README after any
+# llama.cpp upgrade — if the upstream chat-template-kwarg name changes,
+# this constant is the single point to update.
+_NO_THINK_KWARGS: dict[str, Any] = {"chat_template_kwargs": {"enable_thinking": False}}
+
+# Max corrective shots the chat agent's fact-check validator is allowed
+# to demand. Wired into both the chat agent's `output_retries` AND the
+# validator's "ship the last candidate anyway" branch so they can't drift.
+# A flagged candidate on attempt > this threshold is accepted as-is and
+# logged — fact-check is a quality grader, not a hard gate, so a stuck
+# loop on a tight must_not list never aborts the player's turn.
+_CHAT_OUTPUT_RETRIES = 2
+
+
+class FactCheckFlag(BaseModel):
+    """One flagged item: the directive entry plus a one-sentence reason.
+    Used inside `FactCheckResult.missing_facts` and `.violations` so the
+    chat agent's retry prompt can show *why* each flag fired, not just
+    that it did. The `item` echoes the directive entry verbatim so the
+    chat agent can match it against its instructions block."""
+
+    item: str
+    reason: str
+
+
 class FactCheckResult(BaseModel):
     """Output of the fact-checker agent.
 
     `missing_facts` lists `must_include_facts` entries the candidate body
     fails to convey; `violations` lists `must_not` entries it does convey.
-    Both empty → the body passes the validator.
+    Each entry carries a one-sentence rationale. Both empty → the body
+    passes the validator.
     """
 
-    missing_facts: list[str]
-    violations: list[str]
+    missing_facts: list[FactCheckFlag]
+    violations: list[FactCheckFlag]
 
 
 class ExtractorOutput(BaseModel):
@@ -509,13 +552,15 @@ def _attach_chat_deps_instructions(
         spec = ctx.deps.plot_directive
         if spec is None or (not spec.must_include_facts and not spec.must_not):
             return output
-        # `ctx.retries` is a `dict[str, int]` in current Pydantic AI (per-tool
-        # retry counters). Sum the values for an overall attempt count and
-        # 1-index for human-readable logs ("attempt 1" reads better than
-        # "attempt 0"). Both pass and fail log it so "succeeded after 2
-        # retries" is as visible as "still flagged on attempt 1."
-        retries = ctx.retries
-        prior = sum(retries.values()) if isinstance(retries, dict) else int(retries or 0)
+        # Count prior validator invocations off the fact-check log (which
+        # the validator appends to on every pass/flag). `ctx.retries` does
+        # not track output-validator retries reliably across pydantic-ai
+        # versions — using the log's length is the only deterministic
+        # source of truth we control. `fact_check_log` is allocated by
+        # `main.py` whenever must_include_facts / must_not is set on the
+        # firing beat; tests that exercise the retry path must pass
+        # `fact_check_log=[]` on ChatDeps.
+        prior = len(ctx.deps.fact_check_log) if ctx.deps.fact_check_log is not None else 0
         attempt = prior + 1
         result = await fact_checker_agent.run(
             build_fact_checker_user_prompt(
@@ -527,19 +572,38 @@ def _attach_chat_deps_instructions(
             "epilogue body" if ctx.deps.epilogue_digest is not None else "candidate body"
         )
         if fc.missing_facts or fc.violations:
+            missing_items = [f.item for f in fc.missing_facts]
+            violation_items = [f.item for f in fc.violations]
             logfire.info(
                 f"fact_checker flagged {validator_label} on attempt {{attempt}}",
                 attempt=attempt,
-                missing_facts=fc.missing_facts,
-                violations=fc.violations,
+                missing_facts=missing_items,
+                violations=violation_items,
             )
             if ctx.deps.fact_check_log is not None:
                 ctx.deps.fact_check_log.append(FactCheckAttempt(
                     status="flagged",
-                    missing_facts=list(fc.missing_facts),
-                    violations=list(fc.violations),
+                    missing_facts=missing_items,
+                    violations=violation_items,
                 ))
-            raise ModelRetry(_format_fact_retry_message(fc))
+            # On the final attempt, ship the candidate anyway. The
+            # fact-check is best-effort quality enforcement — a stuck
+            # loop on a tight must_not should not abort the player's
+            # turn. The flag is recorded in fact_check_log; the body
+            # goes out with the verdict attached for the debug overlay.
+            if attempt > _CHAT_OUTPUT_RETRIES:
+                logfire.warn(
+                    f"fact_checker exhausted retries on {validator_label}; shipping last candidate",
+                    attempt=attempt,
+                    missing_facts=missing_items,
+                    violations=violation_items,
+                )
+                return output
+            raise ModelRetry(_format_fact_retry_message(
+                fc,
+                must_include_facts=spec.must_include_facts,
+                must_not=spec.must_not,
+            ))
         logfire.info(
             f"fact_checker passed {validator_label} on attempt {{attempt}}",
             attempt=attempt,
@@ -574,7 +638,7 @@ def build_agents(
         name="summary_agent",
         output_type=str,
         instructions=_SUMMARY_INSTRUCTIONS,
-        model_settings={"max_tokens": 2048, "temperature": 1.0, "top_p": 0.95, "extra_body": {"top_k": 64}},
+        model_settings={"max_tokens": 2048, "temperature": 1.0, "top_p": 0.95, "extra_body": {"top_k": 64, **_NO_THINK_KWARGS}},
     )
 
     fact_checker_agent = Agent(
@@ -582,7 +646,7 @@ def build_agents(
         name="fact_checker_agent",
         output_type=NativeOutput(FactCheckResult),
         instructions=_FACT_CHECKER_SYSTEM_PROMPT,
-        model_settings={"max_tokens": 2048, "temperature": 0.1},
+        model_settings={"max_tokens": 2048, "temperature": 1.0, "top_p": 0.95, "extra_body": {"top_k": 64, **_NO_THINK_KWARGS}},
     )
 
     history_processors: list = []
@@ -604,11 +668,11 @@ def build_agents(
         instructions=_BASE_CHAT_INSTRUCTIONS,
         model_settings={"max_tokens": 2048, "temperature": 1.0, "top_p": 0.95, "extra_body": {"top_k": 64}},
         history_processors=history_processors,
-        # Allow one corrective shot when the fact-checker raises ModelRetry;
-        # gates the @output_validator retry (no tools here). Exhaustion is
-        # caught at the render call site (`_render_email`) so a fact-check
-        # miss never breaks a player's session.
-        output_retries=2,
+        # Bound the @output_validator's corrective-shot budget. The validator
+        # ships the last candidate (with the flag logged) once this is
+        # exhausted, so a stuck must_not loop never breaks a player's
+        # session — quality grading, not a hard gate.
+        output_retries=_CHAT_OUTPUT_RETRIES,
     )
 
     _attach_chat_deps_instructions(
@@ -621,29 +685,25 @@ def build_agents(
         name="classifier_agent",
         output_type=NativeOutput(list[AxisResult]),
         instructions=_CLASSIFIER_SYSTEM_PROMPT,
-        model_settings={"max_tokens": 2048, "temperature": 1.0, "top_p": 0.95, "extra_body": {"top_k": 64}},
+        model_settings={"max_tokens": 2048, "temperature": 1.0, "top_p": 0.95, "extra_body": {"top_k": 64, **_NO_THINK_KWARGS}},
     )
 
-    # Lower temperature than the classifier — extraction is fact-shaped,
-    # not vibes-shaped.
     extractor_agent = Agent(
         model,
         name="extractor_agent",
         output_type=NativeOutput(ExtractorOutput),
         instructions=_EXTRACTOR_SYSTEM_PROMPT,
-        model_settings={"max_tokens": 2048, "temperature": 0.3, "top_p": 0.95, "extra_body": {"top_k": 64}},
+        model_settings={"max_tokens": 2048, "temperature": 1.0, "top_p": 0.95, "extra_body": {"top_k": 64, **_NO_THINK_KWARGS}},
     )
 
     # Director defaults to the static fallback output_type; the call site
     # overrides per run with `output_type=NativeOutput(build_director_output_type(ids))`.
-    # Lower temperature than the chat agent — selection is a judgement, not
-    # a creative exercise; we want consistency on identical digests.
     director_agent = Agent(
         model,
         name="director_agent",
         output_type=NativeOutput(DirectorChoiceFallback),
         instructions=_DIRECTOR_SYSTEM_PROMPT,
-        model_settings={"max_tokens": 2048, "temperature": 0.3},
+        model_settings={"max_tokens": 2048, "temperature": 1.0, "top_p": 0.95, "extra_body": {"top_k": 64}},
     )
 
     return AgentBundle(
@@ -971,17 +1031,47 @@ FORBIDDEN ITEMS (none may appear):
 Return missing_facts and violations."""
 
 
-def _format_fact_retry_message(fc: FactCheckResult) -> str:
-    """Concise corrective message handed back to the chat agent on retry.
-    The agent already has the full directive in its instructions block."""
-    parts: list[str] = []
+def _format_fact_retry_message(
+    fc: FactCheckResult,
+    *,
+    must_include_facts: list[str],
+    must_not: list[str],
+) -> str:
+    """Corrective message handed back to the chat agent on retry. Surfaces:
+    (a) the full required / forbidden lists from the directive, so the
+    agent doesn't have to remember them perfectly across attempts;
+    (b) which entries the fact-checker flagged on the just-rejected
+    draft, with the fact-checker's per-item reason. The agent already
+    has the directive in its system prompt — restating it here keeps
+    the corrective signal local and unambiguous.
+    """
+    parts: list[str] = ["Your draft was flagged. Revise it to satisfy ALL of the directive."]
+    if must_include_facts:
+        parts.append(
+            "REQUIRED FACTS (each must be conveyed, full list):\n"
+            + _bullets(must_include_facts)
+        )
+    if must_not:
+        parts.append(
+            "FORBIDDEN ITEMS (none may appear, full list):\n"
+            + _bullets(must_not)
+        )
     if fc.missing_facts:
-        parts.append("Required facts missing from your draft:\n" + _bullets(fc.missing_facts))
+        flag_lines = [
+            f"  - {f.item}\n    reason: {f.reason}" for f in fc.missing_facts
+        ]
+        parts.append(
+            "MISSING from your last draft:\n" + "\n".join(flag_lines)
+        )
     if fc.violations:
-        parts.append("Forbidden items present in your draft:\n" + _bullets(fc.violations))
+        flag_lines = [
+            f"  - {f.item}\n    reason: {f.reason}" for f in fc.violations
+        ]
+        parts.append(
+            "VIOLATIONS in your last draft:\n" + "\n".join(flag_lines)
+        )
     parts.append(
-        "Rewrite the body so every required fact is conveyed and every "
-        "forbidden item is removed. Keep voice, length, and intent."
+        "Rewrite the body. Keep voice, length, and intent."
     )
     return "\n\n".join(parts)
 

@@ -371,9 +371,9 @@ beats:
     kind: one_shot
     spec:
       pre_authored_prose: |
-        Welcome to Pilot Cohort 014 of the Continuity Program. I am Aria,
-        your assigned AI Counterpart, here to learn from your daily
-        correspondence. To begin calibration, please state your full name.
+        Welcome to Pilot Cohort 014 of the Continuity Program. I am Aria, your assigned AI Counterpart, here to learn from your daily correspondence.
+
+        Each day you will write to me about your work: what you are doing, what is on your mind, the people and rooms and small frustrations of your hours. Over time I will learn your voice and assume appropriately-scoped portions of your communicative workload. To begin calibration, please state your full name.
 
   # ─── 2. Calibration scene ──────────────────────────────────────────
   #
@@ -402,10 +402,13 @@ beats:
         and stitched together into something that will, eventually, be
         able to act
       escalation_notes: |
-        Turn 1: ask one specific establishing question that builds on
-        what the player just gave — role, team, current project, or who
-        they report to. Acknowledge their prior reply in one sentence,
-        then ask. Do not close; do not summarize; do not thank-and-stop.
+        Turn 1: ask one open establishing question the player can credibly
+        answer from anywhere in their day — what is currently on their
+        plate, what was consuming the hour before this email landed, who
+        they spoke with last. Acknowledge their prior reply in one
+        sentence, then ask. Do not close; do not summarize; do not
+        thank-and-stop. Do not demand role / team / reporting line on
+        turn 1; those land later if needed.
         Turn 2: ask one fractionally-too-personal calibration question
         (a Tuesday hobby, a relative, a thing on the desk). Turn 3+:
         pivot to anything still missing in priority order — full name if
@@ -415,7 +418,7 @@ beats:
         its way out; the final question is bland.
       must_include_facts:
         - "frames the ask as standard onboarding, not interrogation"
-        - "ends with one specific establishing question (role, team, current project, who they report to, etc.)"
+        - "ends with one open establishing question the player can answer from anywhere in their day"
       must_not:
         - "any reference to monitoring, replacement, or the larger Program purpose"
         - "do not break the cheerful corporate frame"

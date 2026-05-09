@@ -12,13 +12,6 @@ interface Props {
 const RADIUS_FULL = "1rem";
 const RADIUS_JOINED = "0.25rem";
 
-// Authored prose (welcome, plot beats) often arrives with hard wraps from a
-// YAML block scalar. Inside a chat bubble those look like a poem. Collapse
-// single line breaks to spaces; preserve double breaks as paragraph gaps.
-function flowParagraphs(body: string): string {
-  return body.replace(/([^\n])\n([^\n])/g, "$1 $2");
-}
-
 function radii(variant: BubbleVariant, position: BubblePosition) {
   const own = variant === "me";
   const top = position === "first" || position === "single";
@@ -54,7 +47,7 @@ export function MessageBubble({
         )}
         style={radii(variant, position)}
       >
-        {flowParagraphs(body)}
+        {body}
       </div>
     </div>
   );

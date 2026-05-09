@@ -4,17 +4,14 @@ LLAMA_BIN   := vendor/llama.cpp/llama-server.exe
 LLAMA_HOST  := 127.0.0.1
 LLAMA_PORT  := 8080
 
-# Eval llama: Qwen 3.6 35B-A3B (MoE, ~3B active) on mainline llama.cpp.
-# Powers the synthetic-player agent and every LLM judge in the playtester.
-# Different family from Gemma (the SUT) to mitigate same-family preference
-# leakage in judging — see arxiv 2502.01534. Uses the same vendored
-# llama-server binary as the engine; ik_llama.cpp would offer ~25% better
-# MoE throughput but adds a from-source build step on Windows we don't
-# need yet.
+# Eval llama: Qwen 3.6 35B-A3B (MoE, ~3B active) on mainline llama.cpp,
+# routed through the same `launcher.py` path as the engine (config in
+# config.py:eval_llama_*; argv in launcher.build_command). Powers the
+# synthetic-player agent and every LLM judge in the playtester. Different
+# family from Gemma (the SUT) to mitigate same-family preference leakage
+# in judging — see arxiv 2502.01534.
 EVAL_MODEL      := models/Qwen3.6-35B-A3B-Q8_0.gguf
 EVAL_MODEL_URL  := https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/Qwen3.6-35B-A3B-Q8_0.gguf
-EVAL_LLAMA_BIN  := vendor/llama.cpp/llama-server.exe
-EVAL_LLAMA_PORT := 8081
 
 .DEFAULT_GOAL := help
 
@@ -26,7 +23,7 @@ help:
 	@echo "  make download-eval-model  Fetch the Qwen 3.6 35B-A3B Q8_0 GGUF (~37 GB)"
 	@echo "  make llama                Run engine llama-server (Gemma on :8080, single-user KV)"
 	@echo "  make llama-playtest       Run engine llama with bumped KV pool for the playtester (~2M ctx, 64 concurrent)"
-	@echo "  make llama-eval           Run eval llama-server (Qwen 35B-A3B on :8081, ik_llama.cpp, ~2M ctx)"
+	@echo "  make llama-eval           Run eval llama-server (Qwen 35B-A3B on :8081, mainline llama.cpp, ~2M ctx)"
 	@echo "  make sidecar              Run Python sidecar, no llama   (terminal 2)"
 	@echo "  make web                  Run Vite dev server            (terminal 3)"
 	@echo "  make test                 Run pytest"
@@ -79,15 +76,15 @@ llama: $(MODEL)
 llama-playtest: $(MODEL)
 	cd npc_service && LLAMA_N_PARALLEL=64 uv run python -m npc_service.run_llama
 
-# Eval llama: Qwen 3.6 35B-A3B (MoE) on mainline llama.cpp. Direct invocation —
-# launcher.build_command is Gemma-specific (--jinja, --reasoning on,
-# --reasoning-format deepseek). Qwen wants different flags. Mirrors the
-# engine's `-c 32768 -np 128 --kv-unified` shape so single-call latency
-# stays sub-second; the unified KV pool dynamically allocates across
-# concurrent sessions.
+# Eval llama: Qwen 3.6 35B-A3B (MoE) on mainline llama.cpp. Routed through
+# the same `npc_service.run_llama` entry point as the engine — `--role eval`
+# selects `resolve_eval_config` (config.py:eval_llama_*) which omits the
+# Gemma-specific `--reasoning` flags but keeps `--jinja` (Qwen has its own
+# bundled chat template + thinking handling). Defaults size for the
+# playtester at `--parallel 64`: -np 64 --kv-unified, auto-sized -c=2M.
 .PHONY: llama-eval
 llama-eval: $(EVAL_MODEL)
-	$(EVAL_LLAMA_BIN) -m $(EVAL_MODEL) --host $(LLAMA_HOST) --port $(EVAL_LLAMA_PORT) -c 32768 --jinja -ngl 99 -np 128 --kv-unified
+	cd npc_service && uv run python -m npc_service.run_llama --role eval
 
 .PHONY: sidecar
 sidecar:

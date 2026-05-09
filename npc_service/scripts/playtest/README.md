@@ -7,15 +7,13 @@ Drives full smallville sessions against the production engine + a separate eval 
 | Server | Model | Port | Binary | Purpose |
 |---|---|---|---|---|
 | Engine | Gemma 4 E4B Q8_0 | 8080 | `vendor/llama.cpp/llama-server.exe` | The SUT — chat/classifier/extractor/summary/fact-checker/director agents. Same model players will face in the actual game. |
-| Eval | Qwen 3.6 35B-A3B Q8_0 (MoE) | 8081 | `vendor/ik_llama.cpp/llama-server.exe` | The synthetic player AND every LLM judge. Different family from the engine to mitigate same-family preference leakage in judging (arxiv 2502.01534). |
+| Eval | Qwen 3.6 35B-A3B Q8_0 (MoE) | 8081 | `vendor/llama.cpp/llama-server.exe` | The synthetic player AND every LLM judge. Different family from the engine to mitigate same-family preference leakage in judging (arxiv 2502.01534). |
 
 Both run concurrently for the duration of the playtest. The synthetic player and the SUT alternate turns within sessions; the LLM judges fire after sessions complete (Gemma idle then, but stays loaded — reload latency exceeds any saving).
 
-### Why `ik_llama.cpp` for the eval server
+### Single binary, two roles
 
-Mainline `llama.cpp`'s MoE expert routing isn't optimized for A3B-style routing — at `--parallel 64` the throughput gap vs vLLM/SGLang is real. `ik_llama.cpp` is a llama.cpp fork (https://github.com/ikawrakow/ik_llama.cpp) with fused MoE kernels and hybrid CPU+GPU expert offload — closes most of the gap while keeping the GGUF + llama-server CLI shape, the OpenAI-compat endpoint, and Windows-native operation (no WSL2/Docker). vLLM/SGLang would be faster still but require WSL2 on Windows and a different lifecycle (no Job Object cleanup) — defer those for "if/when this becomes multi-tenant production."
-
-You need to vendor the `ik_llama.cpp` binary at `vendor/ik_llama.cpp/llama-server.exe`. Either build from source (cmake; same shape as building mainline llama.cpp) or grab a release build from the upstream repo.
+Both servers run mainline `llama.cpp` via the same `launcher.build_command` entry point. `make llama-eval` dispatches `python -m npc_service.run_llama --role eval`, which pulls flags from `config.py:eval_llama_*` (defaults sized for `--parallel 64`) and omits the Gemma-specific `--reasoning` flags — Qwen's bundled chat template handles thinking on its own under `--jinja`. No second vendored binary, no from-source build.
 
 ## Quickstart
 
@@ -44,7 +42,7 @@ Output:
 
 ## Hardware
 
-The two-server setup at `--parallel 64` is sized for a **96 GB-VRAM GPU** (e.g., RTX PRO 6000 Blackwell). Approximate VRAM split with `--kv-unified` on both servers:
+The two-server setup at `--parallel 64` is sized for a **96 GB-VRAM GPU** (e.g., RTX PRO 6000 Blackwell). Approximate VRAM split (engine `--no-kv-unified` per-slot; eval `--kv-unified` shared pool):
 
 | Component | VRAM |
 |---|---|
@@ -58,8 +56,6 @@ If you OOM at first long-context request (the documented failure mode for KV cac
 1. Drop Qwen ctx-per-slot: edit `make llama-eval`'s `-c 32768` to `-c 16384` (16k per slot, plenty for condensed judge views).
 2. Step Qwen Q8_0 → Q6_K via `EVAL_MODEL_URL` in the Makefile (~28 GB weights, small quality cost).
 3. Drop `--parallel 64` to `--parallel 32` (halves Qwen's slot demand; sessions run in two batches).
-
-If `ik_llama.cpp` doesn't support `--kv-unified` (it tracks mainline closely but verify on your build), each slot reserves its own ctx-sized KV — you'll need to drop ctx-per-slot or `-np` aggressively.
 
 ## What it tests
 

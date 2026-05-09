@@ -9,7 +9,6 @@ from contextlib import ExitStack
 
 import pytest
 from fastapi.testclient import TestClient
-from pydantic_ai.exceptions import UnexpectedModelBehavior
 from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.models.test import TestModel
@@ -18,7 +17,7 @@ from pydantic_ai.providers.openai import OpenAIProvider
 
 import npc_service.main as main
 from npc_service.agents import ChatDeps, build_agents
-from npc_service.models import BeatSpec, NPCDossier
+from npc_service.models import BeatSpec, FactCheckAttempt, NPCDossier
 
 from .conftest import consume_sse
 
@@ -651,12 +650,18 @@ async def test_validator_passes_when_fact_checker_returns_clean():
 
 
 @pytest.mark.asyncio
-async def test_validator_raises_when_fact_checker_flags():
-    """must_include_facts present + non-empty missing_facts → ModelRetry.
-    With chat_agent retries=2, exhaustion surfaces as
-    UnexpectedModelBehavior; capturing the raise confirms the validator
-    engaged."""
+async def test_validator_ships_last_candidate_after_retries_exhausted():
+    """must_include_facts present + persistently-flagged fact-checker:
+    retries 1 and 2 raise ModelRetry, attempt 3 (the last) accepts the
+    body anyway and ships it. The fact_check_log records all three
+    flagged attempts so the debug overlay sees the verdict trail.
+
+    Quality grader, not a hard gate — a stuck must_not loop should
+    never abort a player's turn."""
     bundle = _validator_test_bundle()
+    fact_check_log: list[FactCheckAttempt] = []
+    deps = _validator_test_deps()
+    deps.fact_check_log = fact_check_log
     with ExitStack() as stack:
         stack.enter_context(bundle.chat_agent.override(
             model=TestModel(custom_output_text="ok"),
@@ -664,13 +669,20 @@ async def test_validator_raises_when_fact_checker_flags():
         stack.enter_context(bundle.fact_checker_agent.override(
             model=TestModel(
                 custom_output_text=json.dumps({
-                    "missing_facts": ["thank the player"], "violations": [],
+                    "missing_facts": [
+                        {"item": "thank the player", "reason": "no thanks present"}
+                    ],
+                    "violations": [],
                 }),
                 profile=_NATIVE_OUTPUT_PROFILE,
             ),
         ))
-        with pytest.raises(UnexpectedModelBehavior):
-            await bundle.chat_agent.run("hello", deps=_validator_test_deps())
+        result = await bundle.chat_agent.run("hello", deps=deps)
+    assert result.output.strip() == "ok"
+    # All three attempts logged as flagged — the verdict is preserved
+    # for telemetry / debug overlay even though we shipped the body.
+    assert len(fact_check_log) == 3
+    assert all(a.status == "flagged" for a in fact_check_log)
 
 
 # ───────────────────────── /scenario_meta ─────────────────────────

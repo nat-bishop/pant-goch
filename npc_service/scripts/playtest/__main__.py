@@ -203,7 +203,7 @@ def main(argv: list[str] | None = None) -> int:
         print(
             f"ERROR: eval llama-server not reachable at {args.eval_url}. "
             "Start it with `make llama-eval` from the repo root (boots Qwen "
-            "3.6 35B-A3B on ik_llama.cpp at :8081).",
+            "3.6 35B-A3B at :8081).",
             file=sys.stderr,
         )
         return 2

@@ -110,7 +110,7 @@ class Settings(BaseSettings):
     # ───────── pydantic-ai wiring (override only when pointing at remote llama) ─────────
     llama_base_url: str | None = None
 
-    # ───────── eval llama (playtester second server, Qwen on ik_llama.cpp) ─────────
+    # ───────── eval llama (playtester second server, Qwen on mainline llama.cpp) ─────────
     # Powers the synthetic-player agent and the LLM judges. Different family from
     # the engine SUT (Gemma) to mitigate same-family preference leakage in judging
     # — see arxiv 2502.01534. Default points at port 8081 so the engine llama on
@@ -118,6 +118,31 @@ class Settings(BaseSettings):
     # playtester just probes /health on this URL before starting.
     eval_llama_port: int = EVAL_LLAMA_PORT
     eval_llama_base_url: str | None = None
+    # Boot-time fields (mirror engine field-for-field; routed through
+    # `launcher.resolve_eval_config` → `build_command`). Defaults sized for the
+    # playtester at `--parallel 64`.
+    eval_llama_server_bin: Path | None = None
+    eval_llama_model_path: Path | None = None
+    eval_llama_hf_repo: str = "unsloth/Qwen3.6-35B-A3B-GGUF:Q8_0"
+    eval_llama_host: str = LLAMA_HOST
+    # Per-session conversation budget. Same default as the engine so the
+    # synthetic player + judges have the same headroom as the production chat
+    # agent. Total pool sizing is driven by `eval_llama_total_ctx`.
+    eval_llama_ctx: int = 32768
+    eval_llama_ngl: int = 99
+    # Slots match the playtester's default `--parallel 64`; bump together if
+    # you raise the playtest concurrency.
+    eval_llama_n_parallel: int = 64
+    # Default `True`. The engine's measurement of `--no-kv-unified` being
+    # ~2.7× faster (see `llama_kv_unified` above) was on dense Gemma 4 E4B;
+    # Qwen 35B-A3B is MoE, where unified pages help expert-routing cache
+    # locality. The original raw `make llama-eval` command (deleted) used
+    # `--kv-unified`. Re-measure on Qwen before flipping. With unified, `-c`
+    # is the total pool dynamically shared across slots; the auto-sized
+    # `n_parallel × ctx = 2M` pool gives every slot up to 32k headroom.
+    eval_llama_kv_unified: bool = True
+    eval_llama_total_ctx: int = 0
+    eval_llama_extra_args: str = ""
 
     scenario_path: Path | None = None
 
