@@ -157,7 +157,7 @@ OUTPUT FORMAT (strict):
 - No sign-off / signature unless the dossier explicitly specifies one.
 - No quoted prior message. No "Re:" prefix in the output.
 - No JSON, no markdown code fences, no meta-commentary.
-- Length: chat-message length, not memo length. Aim for 2-3 short sentences; rarely more than two short paragraphs. Cover the required facts and stop.
+- Length: chat-message length, not memo length. 2-3 short sentences; never more than one short paragraph unless a directive explicitly demands more. Cover required facts and stop.
 
 VOICE RULES:
 - Stay inside the dossier's base voice register.

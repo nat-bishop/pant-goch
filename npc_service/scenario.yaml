@@ -309,18 +309,9 @@ beats:
     kind: one_shot
     spec:
       pre_authored_prose: |
-        Welcome to Pilot Cohort 014 of the Continuity Program.
-
-        I am Aria, your assigned AI Counterpart. Over the course of
-        this pilot I will calibrate to your communicative patterns
-        from the texture of your daily correspondence.
-
-        To establish the first calibration sample, please state your
-        full name.
-
-        Thank you for your participation.
-
-        Aria / Continuity Counterpart | ARIA-7
+        Welcome to Pilot Cohort 014 of the Continuity Program. I am Aria,
+        your assigned AI Counterpart, here to learn from your daily
+        correspondence. To begin calibration, please state your full name.
 
   # ─── 2. Calibration scene ──────────────────────────────────────────
   #
@@ -359,7 +350,6 @@ beats:
       must_include_facts:
         - "frames the ask as standard onboarding, not interrogation"
         - "ends with one specific establishing question (role, team, current project, who they report to, etc.)"
-        - "signs off as 'Aria / Continuity Counterpart | ARIA-7'"
       must_not:
         - "any reference to monitoring, replacement, or the larger Program purpose"
         - "do not break the cheerful corporate frame"
