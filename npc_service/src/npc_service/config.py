@@ -23,6 +23,7 @@ the fixture runs.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -78,11 +79,23 @@ class Settings(BaseSettings):
     # can serve one in-flight request; past N, requests queue server-side.
     # With `--no-kv-unified` (our default), each slot pre-allocates
     # `llama_total_ctx / n_parallel` tokens of KV — so `-np` directly drives
-    # VRAM cost. Default 128 is over-provisioned for `make run` (single-user
-    # peaks at 2–4 concurrent agent calls per /send) but harmless on a 96 GB
-    # Blackwell at ~16 GB of preallocated KV. The playtester overrides via
-    # `LLAMA_N_PARALLEL=64` to match its `--parallel 64` driver.
-    llama_n_parallel: int = 128
+    # VRAM cost. Default 4 is sized for single-user `make run` (one /send
+    # peaks at 2–3 concurrent agent calls: extractor in parallel with chat,
+    # plus fact-check on retries). Past benchmarks showed 128 slots
+    # fragmented the KV pool and degraded effective batch for the active
+    # slot — interactive throughput improved ~2× moving from 128 to 4 on
+    # a 96 GB Blackwell. The playtester overrides via `LLAMA_N_PARALLEL=64`
+    # to match its `--parallel 64` driver (Makefile:llama-playtest).
+    llama_n_parallel: int = 4
+    # Gemma 4 reasoning mode. `off` (default): no `<think>` blocks; the chat
+    # and director agents return prose directly. `on`: restore Gemma 4
+    # thinking on chat + director (classifier/extractor/fact-checker/summary
+    # keep their per-agent `_NO_THINK_KWARGS` opt-out so they stay no-think
+    # regardless). `auto`: llama-server detects from the chat template.
+    # Wired through to `--reasoning <mode>` and (only when mode != "off")
+    # `--reasoning-format deepseek` on the llama-server command. Set
+    # `LLAMA_REASONING_MODE=on` to flip back without code changes.
+    llama_reasoning_mode: Literal["on", "off", "auto"] = "off"
     # Unified KV cache (`--kv-unified`): one shared KV buffer of total size
     # `llama_total_ctx` paged across all slots, with prefix bytes shared across
     # sequences. Optimised for many-users-one-system-prompt fleets, where the

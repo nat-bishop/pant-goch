@@ -203,6 +203,9 @@ SPECIFICITY:
 - Each email contains at least one concrete particular: a phrase quoted back, a precise number, a tangible object. Abstractions land flat.
 - When you echo the player's word choice, use their EXACT word, not a synonym. If they wrote "tired", say "the tiredness you described" — not "fatigue", not "weariness". The mirroring is the warmth; do not flag it ("as you mentioned", "speaking of").
 
+WHEN REVISING:
+If the most recent user-channel message is a corrective note about your prior draft (it will name what was missing or what violated the directive), that note is the highest-priority instruction for this attempt. Make the named change first, then re-check every other rule in this prompt. Do not produce a draft that repeats the same flagged shape — if the prior draft ended with two questions, end with exactly one; if a phrase was flagged as forbidden, do not paraphrase it back in.
+
 Think efficiently.
 """
 
@@ -338,15 +341,18 @@ Compose an outbound email per the dossier voice and the plot directive (intent /
 
 # Per-request override that suppresses Gemma 4 thinking for this call only.
 # `chat_template_kwargs` is forwarded by llama-server's OpenAI-compatible
-# endpoint into the Jinja chat template; the global --reasoning on
-# (launcher.py) stays the default for agents that omit this. The split:
-# chat + director keep thinking (they earn it — creative writing and
-# multi-option selection) and carry a "Think efficiently." note in their
-# system prompts; classifier, extractor, fact-checker, and summary disable
-# thinking entirely (mechanical / structured tasks where reasoning tokens
-# are pure cost). Verify with the curl smoke test in the README after any
-# llama.cpp upgrade — if the upstream chat-template-kwarg name changes,
-# this constant is the single point to update.
+# endpoint into the Jinja chat template. The launcher now defaults to
+# `--reasoning off` (config.py:llama_reasoning_mode), so this override is
+# defense-in-depth — it keeps these agents no-think even if someone flips
+# the global setting back to `on`. The split: classifier, extractor,
+# fact-checker, and summary always set this (mechanical / structured tasks
+# where reasoning tokens are pure cost); chat + director do NOT (they
+# inherit the global, so flipping the setting back to `on` restores
+# thinking on them and only them — the "Think efficiently." note in their
+# system prompts becomes load-bearing again). Verify with the curl smoke
+# test in the README after any llama.cpp upgrade — if the upstream
+# chat-template-kwarg name changes, this constant is the single point to
+# update.
 _NO_THINK_KWARGS: dict[str, Any] = {"chat_template_kwargs": {"enable_thinking": False}}
 
 # Max corrective shots the chat agent's fact-check validator is allowed
@@ -1037,41 +1043,60 @@ def _format_fact_retry_message(
     must_include_facts: list[str],
     must_not: list[str],
 ) -> str:
-    """Corrective message handed back to the chat agent on retry. Surfaces:
-    (a) the full required / forbidden lists from the directive, so the
-    agent doesn't have to remember them perfectly across attempts;
-    (b) which entries the fact-checker flagged on the just-rejected
-    draft, with the fact-checker's per-item reason. The agent already
-    has the directive in its system prompt — restating it here keeps
-    the corrective signal local and unambiguous.
+    """Corrective message handed back to the chat agent on retry. Lead with
+    the diff (what's wrong with the just-rejected draft + what to do about
+    it) — this is the only new information the agent has on retry. The full
+    required / forbidden lists come second as background reference; they're
+    already in the system prompt but restated here so the agent doesn't have
+    to flip between channels. Each flagged item carries a `Fix:` line that
+    converts the fact-checker's diagnostic reason into a single concrete
+    action the agent can apply on the next draft.
     """
-    parts: list[str] = ["Your draft was flagged. Revise it to satisfy ALL of the directive."]
+    n_missing = len(fc.missing_facts)
+    n_violations = len(fc.violations)
+    header = (
+        f"Your last draft missed {n_missing} required item(s) "
+        f"and violated {n_violations} forbidden item(s). "
+        "Fix THESE specifically:"
+    )
+    parts: list[str] = [header]
+
+    if fc.missing_facts:
+        flag_lines = []
+        for f in fc.missing_facts:
+            flag_lines.append(
+                f"  - {f.item}\n"
+                f"    Why flagged: {f.reason}\n"
+                f"    Fix: the next draft must convey this; "
+                f"rewrite to address the specific gap above."
+            )
+        parts.append("MISSING from your last draft:\n" + "\n".join(flag_lines))
+
+    if fc.violations:
+        flag_lines = []
+        for f in fc.violations:
+            flag_lines.append(
+                f"  - {f.item}\n"
+                f"    Why flagged: {f.reason}\n"
+                f"    Fix: remove the offending phrase from the next draft; "
+                f"do not paraphrase it back in."
+            )
+        parts.append("VIOLATIONS in your last draft:\n" + "\n".join(flag_lines))
+
     if must_include_facts:
         parts.append(
-            "REQUIRED FACTS (each must be conveyed, full list):\n"
+            "FULL REQUIRED-FACTS LIST (each must be conveyed; for reference):\n"
             + _bullets(must_include_facts)
         )
     if must_not:
         parts.append(
-            "FORBIDDEN ITEMS (none may appear, full list):\n"
+            "FULL FORBIDDEN-ITEMS LIST (none may appear; for reference):\n"
             + _bullets(must_not)
         )
-    if fc.missing_facts:
-        flag_lines = [
-            f"  - {f.item}\n    reason: {f.reason}" for f in fc.missing_facts
-        ]
-        parts.append(
-            "MISSING from your last draft:\n" + "\n".join(flag_lines)
-        )
-    if fc.violations:
-        flag_lines = [
-            f"  - {f.item}\n    reason: {f.reason}" for f in fc.violations
-        ]
-        parts.append(
-            "VIOLATIONS in your last draft:\n" + "\n".join(flag_lines)
-        )
+
     parts.append(
-        "Rewrite the body. Keep voice, length, and intent."
+        "Rewrite the full body. Same voice, same length, same intent — "
+        "only the flagged shapes change."
     )
     return "\n\n".join(parts)
 

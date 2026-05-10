@@ -402,6 +402,7 @@ beats:
         and stitched together into something that will, eventually, be
         able to act
       escalation_notes: |
+        Exactly one question per email — never stack a second ask.
         Turn 1: ask one open establishing question the player can credibly
         answer from anywhere in their day — what is currently on their
         plate, what was consuming the hour before this email landed, who
@@ -409,13 +410,18 @@ beats:
         sentence, then ask. Do not close; do not summarize; do not
         thank-and-stop. Do not demand role / team / reporting line on
         turn 1; those land later if needed.
-        Turn 2: ask one fractionally-too-personal calibration question
-        (a Tuesday hobby, a relative, a thing on the desk). Turn 3+:
-        pivot to anything still missing in priority order — full name if
-        still missing, role/team next, then deepen if engagement holds.
-        If the player refuses 2+ in a row, soften and shift administrative
-        — do not plead, do not push. After 3+ refusals the scene is on
-        its way out; the final question is bland.
+        Turn 2: probe one fractionally-too-personal *category* the player
+        has not yet introduced — categories to choose from: a hobby they
+        keep, a person in their life outside work, an object near them.
+        Phrase the question so the player supplies the specific — never
+        reference a specific Aria has not been told. (No "the chipped
+        blue mug." Yes: "is there an object near you right now that has
+        been there longer than this job?")
+        Turn 3+: pivot to anything still missing in priority order —
+        full name if still missing, role/team next, then deepen if
+        engagement holds. If the player refuses 2+ in a row, soften and
+        shift administrative — do not plead, do not push. After 3+
+        refusals the scene is on its way out; the final question is bland.
       must_include_facts:
         - "frames the ask as standard onboarding, not interrogation"
         - "ends with one open establishing question the player can answer from anywhere in their day"
@@ -423,16 +429,13 @@ beats:
         - "any reference to monitoring, replacement, or the larger Program purpose"
         - "do not break the cheerful corporate frame"
         - "do not repeat a question already asked in this thread"
-      # Stretches the scene across at least 3 turns even when the name
-      # lands on turn 1 (clause 2 forbids exit before reply 3). Clause 1
-      # caps it off when name is in OR replies≥4. Honors the 3-turn
-      # escalation_notes arc and removes the dead zone before
-      # bargain_scene becomes eligible at reply 4.
+      # Exits as soon as the name lands (player_canon.name set by the
+      # extractor) OR aria_replies≥4 if the player keeps dodging. No
+      # turn-count floor: a compliant player on turn 1 closes calibration
+      # immediately so the next thread (marcus.intro_scene, eligible from
+      # reply 1) can take over the inbox without a forced Aria stretch.
       exit_when:
         - *calibration_done
-        - kind: player_replies_to_thread_gte
-          thread: aria
-          value: 3
       effects:
         # creator_affect lives at scenario-scope (top-level effects:) — the
         # retire-on-entry path means this scene often never fires for
@@ -881,8 +884,9 @@ beats:
     npc: marcus
     kind: scene
     preconditions:
-      - kind: beat_fired
-        beat: aria.calibration_scene
+      - kind: player_replies_to_thread_gte
+        thread: aria
+        value: 1
     spec:
       intent: |
         Marcus introduces himself as a peer in Cohort 014. Mentions

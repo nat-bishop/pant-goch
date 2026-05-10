@@ -46,7 +46,7 @@ The schema is in `npc_service/src/npc_service/models.py`; existing patterns live
 
 Each is anchored by an inline comment at the call site explaining why:
 
-- `launcher.py` — `--jinja`, `--reasoning on`, and `--reasoning-format deepseek` on llama-server (Gemma 4 best practice; routes thoughts into the separate `reasoning_content` field rather than the body).
+- `launcher.py` — `--jinja` on llama-server is always required (Gemma chat template). `--reasoning` / `--reasoning-format` are setting-driven (`config.py:llama_reasoning_mode`, default `off`); set `LLAMA_REASONING_MODE=on` to restore them. The perf flags `--flash-attn on`, `--batch-size 512 --ubatch-size 512`, `--cache-type-k q8_0 --cache-type-v q8_0` are non-negotiable for single-user throughput — KV-quant requires flash-attn.
 - `main.py` — `OpenAIModelProfile(openai_chat_send_back_thinking_parts=False)` on the model. Without this, pydantic-ai's default 'auto' round-trips parsed `ThinkingPart`s back into prior assistant `content` as `<think>…</think>` blocks, violating Google's Gemma 4 multi-turn rule and inflating input tokens.
 - `agents.py` — chat agent's `output_type=str`; classifier's `max_tokens=2048`; `_BASE_CHAT_INSTRUCTIONS` body-only rules (regression-tested in `tests/test_app.py`).
 - `web/index.html` — inline pre-bundle theme script (FOUC fix).

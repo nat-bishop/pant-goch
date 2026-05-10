@@ -7,17 +7,53 @@ update both tests in lockstep.
 """
 from __future__ import annotations
 
+import pytest
+
+from npc_service.config import Settings
 from npc_service.launcher import build_command, resolve_config, resolve_eval_config
 
 
-def test_engine_argv_includes_reasoning_flags() -> None:
+def test_engine_argv_default_has_no_reasoning_flags() -> None:
+    """Engine default is `llama_reasoning_mode='off'` (config.py) — neither
+    `--reasoning` nor `--reasoning-format` should appear in the argv. Flip
+    via env (`LLAMA_REASONING_MODE=on`) restores them; covered below.
+    """
     cmd = build_command(resolve_config())
     assert "--jinja" in cmd
-    # Gemma 4 best practice: reasoning routed into a separate field, not body.
+    assert "--reasoning" not in cmd
+    assert "--reasoning-format" not in cmd
+
+
+def test_engine_argv_includes_perf_flags() -> None:
+    """The performance flags applied to every llama-server boot: flash-attn,
+    explicit batch sizes, q8_0 KV cache."""
+    cmd = build_command(resolve_config())
+    # `--flash-attn on` — prerequisite for KV-quant and faster prefill.
+    assert "--flash-attn" in cmd
+    fa_idx = cmd.index("--flash-attn")
+    assert cmd[fa_idx + 1] == "on"
+    # Batch sizes (Gemma 4 reference config).
+    assert "--batch-size" in cmd and "--ubatch-size" in cmd
+    # KV cache quantization (halves KV memory; requires flash-attn).
+    assert "--cache-type-k" in cmd
+    assert "--cache-type-v" in cmd
+    k_idx = cmd.index("--cache-type-k")
+    v_idx = cmd.index("--cache-type-v")
+    assert cmd[k_idx + 1] == "q8_0"
+    assert cmd[v_idx + 1] == "q8_0"
+
+
+def test_engine_argv_reasoning_on_restores_flags(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Flipping `LLAMA_REASONING_MODE=on` should restore both `--reasoning on`
+    and `--reasoning-format deepseek` — no code change needed."""
+    monkeypatch.setenv("LLAMA_REASONING_MODE", "on")
+    cmd = build_command(resolve_config(Settings()))
     assert "--reasoning" in cmd
-    assert "on" in cmd
+    r_idx = cmd.index("--reasoning")
+    assert cmd[r_idx + 1] == "on"
     assert "--reasoning-format" in cmd
-    assert "deepseek" in cmd
+    f_idx = cmd.index("--reasoning-format")
+    assert cmd[f_idx + 1] == "deepseek"
 
 
 def test_eval_argv_enables_thinking_with_deepseek_format() -> None:
@@ -28,9 +64,11 @@ def test_eval_argv_enables_thinking_with_deepseek_format() -> None:
     # deepseek format routes the `<think>` trace to `reasoning_content` so
     # the body stays clean.
     assert "--reasoning" in cmd
-    assert "on" in cmd
+    r_idx = cmd.index("--reasoning")
+    assert cmd[r_idx + 1] == "on"
     assert "--reasoning-format" in cmd
-    assert "deepseek" in cmd
+    f_idx = cmd.index("--reasoning-format")
+    assert cmd[f_idx + 1] == "deepseek"
 
 
 def test_eval_uses_eval_port_and_unified_kv() -> None:

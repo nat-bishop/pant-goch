@@ -18,7 +18,7 @@ uv run python -m npc_service.run_llama              # in a sibling terminal
 
 Option B is the iterate-fast path: leave llama running, restart only the sidecar. `run_llama.py` shares `launcher.build_command` with the lifespan path so the argv can't drift between Makefile-launched and sidecar-launched llama.
 
-The flags `--jinja --reasoning on --reasoning-format deepseek -ngl 99 -np 128 --kv-unified` on llama-server are non-negotiable on Gemma 4 E-models. Without `--jinja` the chat template doesn't load. Without the reasoning settings you get a 19K-token monologue inside the body. `-np 128 --kv-unified` lets the server serve the engine's six concurrent agent calls without per-slot KV blowing VRAM. The bundled launcher sets all of them.
+The flag `--jinja` on llama-server is non-negotiable on Gemma 4 E-models — without it the chat template doesn't load. The launcher also passes `--flash-attn on`, `--batch-size 512 --ubatch-size 512`, `--cache-type-k q8_0 --cache-type-v q8_0` (KV-quant requires flash-attn), `-ngl 99`, and `-np 4 --no-kv-unified` for single-user interactive use. `make llama-playtest` overrides `LLAMA_N_PARALLEL=64` for the playtester (Makefile). Gemma 4 thinking is OFF by default; set `LLAMA_REASONING_MODE=on` to restore `--reasoning on --reasoning-format deepseek` on chat + director (classifier/extractor/fact-checker/summary stay no-think via per-agent overrides).
 
 ## Verify
 
@@ -106,8 +106,8 @@ Steam install layout target:
 
 - **Sidecar boots but `/health` is unhappy** — lifespan failed midway. Check sidecar logs for the traceback.
 - **`llama-server failed to come up`** — check `npc_service/logs/llama-*.log` for the underlying stderr. Common causes: port `:8080` in use (`make kill-zombies` from the repo root), GPU OOM (drop `LLAMA_NGL` in config.py), corrupt GGUF (delete and re-download with `make download-model`).
-- **Empty agent responses or 19K-token monologues** — `--jinja`, `--reasoning on`, or `--reasoning-format deepseek` missing on llama-server. The bundled launcher sets all three; if you run llama-server outside `make llama` / `python -m npc_service.run_llama`, include them.
+- **Empty agent responses or 19K-token monologues** — `--jinja` missing on llama-server (chat template not loaded). The bundled launcher always sets it. If 19K-token reasoning monologues appear in bodies after flipping `LLAMA_REASONING_MODE=on`, also verify `--reasoning-format deepseek` is on the argv — without it Gemma 4 inlines `<think>` blocks into `content`.
 - **Prior-turn `<think>` blocks leaking into request bodies** — `OpenAIModelProfile(openai_chat_send_back_thinking_parts=False)` is missing on the `OpenAIChatModel` constructor. Verify in Logfire by inspecting any chat-agent POST span's `http.request.body.text`.
-- **`request (N tokens) exceeds the available context size (M)`** — at startup the launcher passes `-c 32768 --kv-unified -np 128`, which gives any single slot the full 32K. Without `--kv-unified` each slot would get `32768 / 128 = 256` tokens; without it AND `-np N>1`, each slot gets `32768/N`. If you see this error, you're running llama-server with stale flags — restart via `python -m npc_service.run_llama`.
+- **`request (N tokens) exceeds the available context size (M)`** — at single-user startup the launcher passes `-np 4 --no-kv-unified` with `-c` auto-sized to `n_parallel × llama_ctx = 4 × 32k = 128k`, so each slot gets the full 32k. Under playtest, `LLAMA_N_PARALLEL=64` is set in the Makefile and `-c` auto-scales to `64 × 32k = 2M`. If you see this error you're running llama-server with stale flags — restart via `python -m npc_service.run_llama`.
 - **`No module named npc_service`** — run `uv sync` from `npc_service/`.
 - **Streaming arrives in big bursts** — verify your reverse proxy isn't buffering. The server sets `X-Accel-Buffering: no` on the `/send` SSE response.

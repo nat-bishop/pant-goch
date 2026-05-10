@@ -95,8 +95,8 @@ def state_with_two_eligible_scenes(production_scenario: Scenario) -> InboxState:
 @pytest.fixture
 def state_with_only_calibration_due(production_scenario: Scenario) -> InboxState:
     """1 reply, no canon name → only aria.calibration_scene is eligible.
-    With this setup the bargain / recognition scenes (post-calibration)
-    haven't unlocked yet."""
+    The bargain / recognition scenes haven't unlocked yet; the marcus
+    scenes are pre-fired so the coworker thread doesn't compete."""
     state = InboxState.from_scenario(production_scenario)
     for beat in find_due_beats(state, production_scenario)[0]:
         state.fired_beat_ids.add(beat.id)
@@ -104,6 +104,8 @@ def state_with_only_calibration_due(production_scenario: Scenario) -> InboxState
         id="r0", thread_id="aria", beat_responded_to=None,
         recipient="Aria", body="(t)",
     ))
+    state.fired_beat_ids.add("marcus.intro_scene")
+    state.fired_beat_ids.add("marcus.advice_scene")
     return state
 
 

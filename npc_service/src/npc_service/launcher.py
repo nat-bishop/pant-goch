@@ -197,6 +197,15 @@ def resolve_config(settings: Settings | None = None) -> LlamaConfig:
         s.llama_total_ctx if s.llama_total_ctx > 0
         else s.llama_n_parallel * s.llama_ctx
     )
+    # Reasoning is setting-driven (config.py:llama_reasoning_mode). Default
+    # `off` → drop both flags from the command line so llama-server's own
+    # default takes over (no `<think>` block in Gemma 4 outputs). Flip to
+    # `on` via env to restore thinking on chat + director; the per-agent
+    # `_NO_THINK_KWARGS` overrides in agents.py keep classifier/extractor/
+    # fact-checker/summary no-think regardless. `auto` lets llama-server
+    # detect from the chat template.
+    reasoning_mode = s.llama_reasoning_mode if s.llama_reasoning_mode != "off" else None
+    reasoning_format = "deepseek" if reasoning_mode in ("on", "auto") else None
     return LlamaConfig(
         bin=bin_path,
         model_path=model_path,
@@ -208,8 +217,8 @@ def resolve_config(settings: Settings | None = None) -> LlamaConfig:
         ngl=s.llama_ngl,
         n_parallel=s.llama_n_parallel,
         kv_unified=s.llama_kv_unified,
-        reasoning_mode="on",
-        reasoning_format="deepseek",
+        reasoning_mode=reasoning_mode,
+        reasoning_format=reasoning_format,
     )
 
 
@@ -284,18 +293,35 @@ def build_command(cfg: LlamaConfig) -> list[str]:
         "--port", str(cfg.port),
         "-c", str(cfg.ctx),
         "--jinja",  # REQUIRED for Gemma chat template (and Qwen's bundled template)
+        # Flash attention: faster prefill, smaller per-token attention footprint,
+        # prerequisite for the q8_0 KV cache below. `on` not `auto` — we want
+        # an explicit choice so a future llama.cpp default flip doesn't surprise
+        # us. Verified against tools/server/README.md (takes on/off/auto).
+        "--flash-attn", "on",
+        # Standard Gemma 4 batch sizing (NVIDIA Jetson + Unsloth reference
+        # configs). `--batch-size` is the logical max (default 2048 oversizes
+        # for our short prompts); `--ubatch-size` is the physical max that
+        # actually runs on the GPU in one step.
+        "--batch-size", "512",
+        "--ubatch-size", "512",
+        # KV cache quantization to q8_0 halves KV memory at near-zero quality
+        # cost on Q8 weights. Requires flash-attn (above); without flash-attn,
+        # llama.cpp dequantizes per attention op and the math is slower than
+        # not quantizing at all. Valid types: f32, f16, bf16, q8_0, q4_0,
+        # q4_1, iq4_nl, q5_0, q5_1 (per tools/server/README.md).
+        "--cache-type-k", "q8_0",
+        "--cache-type-v", "q8_0",
     ]
     if cfg.reasoning_mode is not None:
-        # `on`/`off`/`auto`. Engine (Gemma 4) wants `on` so the model thinks
-        # before replying; eval (Qwen) wants `off` so judges/player produce
-        # direct short replies without burning the token budget on a `<think>`
-        # block they'd never finish.
+        # `on`/`auto`. Setting-driven (config.py:llama_reasoning_mode). When
+        # unset (the default), both this and `--reasoning-format` are dropped
+        # entirely so llama-server's own default takes over — no `<think>`
+        # block in Gemma 4 outputs for the engine path.
         cmd += ["--reasoning", cfg.reasoning_mode]
     if cfg.reasoning_format is not None:
-        # Per Gemma 4 best practices; reasoning-format pulls thinking into
-        # `reasoning_content` (separate field) instead of inlining it in the
-        # body. Eval doesn't set this — when reasoning is off, there's no
-        # `<think>` tag to parse anyway.
+        # `deepseek` pulls thinking into a separate `reasoning_content` field
+        # instead of inlining `<think>` tags in the body. Only meaningful when
+        # reasoning is on.
         cmd += ["--reasoning-format", cfg.reasoning_format]
     cmd += [
         "-ngl", str(cfg.ngl),
