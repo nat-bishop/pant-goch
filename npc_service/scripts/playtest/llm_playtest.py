@@ -69,7 +69,13 @@ Output requirements:
 def _build_player_agent(model: OpenAIChatModel) -> Agent[PlayerDeps, str]:
     """Construct the synthetic-player agent. Temperature is slightly hotter
     than the production chat agent (1.1 vs 1.0) so persona variation
-    surfaces across seeds without drifting off-character."""
+    surfaces across seeds without drifting off-character.
+
+    `extra_body` (top_k, chat_template_kwargs, seed) lives in
+    `_synthesise_reply`, not here — pydantic-ai shallow-merges per-call
+    settings, so any agent-level `extra_body` is clobbered by the
+    per-call seed override anyway. Keeping it in one place avoids the
+    illusion of agent-level defaults that don't actually apply."""
     agent: Agent[PlayerDeps, str] = Agent(
         model,
         name="synthetic_player",
@@ -77,10 +83,9 @@ def _build_player_agent(model: OpenAIChatModel) -> Agent[PlayerDeps, str]:
         output_type=str,
         instructions=_PLAYER_SYSTEM,
         model_settings={
-            "max_tokens": 2048,
+            "max_tokens": 2000,
             "temperature": 1.1,
             "top_p": 0.95,
-            "extra_body": {"top_k": 64},
         },
     )
 
@@ -123,13 +128,26 @@ async def _synthesise_reply(
     runs of the same persona under the same seed produce the same player
     inputs (modulo prompt-cache state). Engine agents are left unseeded
     on purpose — we want their stochasticity in the distribution.
+
+    Re-assembles the agent's `extra_body` from scratch each call (top_k +
+    chat_template_kwargs from the agent ctor, plus the per-call seed).
+    pydantic-ai's `merge_model_settings` is a SHALLOW dict merge — passing
+    `{"extra_body": {"seed": ...}}` here would clobber the agent's full
+    `extra_body` dict (dropping `enable_thinking=False` and `top_k`),
+    re-enabling Qwen's thinking pass and 10×-ing player call latency. So
+    we rebuild explicitly. Single source of truth for player extra_body
+    sampling lives here as a result.
     """
     deps = PlayerDeps(persona=persona, recent_transcript=transcript[-6:])
-    model_settings = (
-        {"extra_body": {"seed": seed}} if seed is not None else None
-    )
+    extra_body: dict[str, object] = {
+        "top_k": 64,
+        "chat_template_kwargs": {"enable_thinking": False},
+    }
+    if seed is not None:
+        extra_body["seed"] = seed
     result = await player_agent.run(
-        "Write your next reply.", deps=deps, model_settings=model_settings,
+        "Write your next reply.", deps=deps,
+        model_settings={"extra_body": extra_body},
     )
     return result.output.strip()
 

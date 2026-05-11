@@ -116,6 +116,22 @@ def _downsample(items: list[_T], max_n: int) -> list[_T]:
     return [items[int(i * step)] for i in range(max_n)]
 
 
+# Judge model settings — thinking ON, max_tokens generous. Rationale:
+# the rubrics are G-Eval style (numbered checklist + per-item reasoning
+# before scoring), which is essentially asking the judge to think out
+# loud — Qwen's native thinking pass is exactly that. Without thinking,
+# the judge often scores from first-look heuristics; with thinking, the
+# score reflects the rubric. 8192 max_tokens (4x the prior 2048 player
+# cap) leaves ~5-6k for thinking + a few hundred for the final JSON, so
+# even verbose deliberation doesn't truncate the GradingOutput tool call.
+_JUDGE_MODEL_SETTINGS = {
+    "max_tokens": 8192,
+    "extra_body": {
+        "chat_template_kwargs": {"enable_thinking": True},
+    },
+}
+
+
 async def _llm_judge(
     *,
     inputs: str,
@@ -128,6 +144,7 @@ async def _llm_judge(
     from pydantic_evals.evaluators.llm_as_a_judge import judge_input_output  # type: ignore[import-not-found]
     grading = await judge_input_output(
         inputs=inputs, output=output, rubric=rubric, model=model,
+        model_settings=_JUDGE_MODEL_SETTINGS,
     )
     return EvaluationReason(value=grading.score, reason=grading.reason or "")
 

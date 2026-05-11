@@ -304,13 +304,15 @@ def build_command(cfg: LlamaConfig) -> list[str]:
         # actually runs on the GPU in one step.
         "--batch-size", "512",
         "--ubatch-size", "512",
-        # KV cache quantization to q8_0 halves KV memory at near-zero quality
-        # cost on Q8 weights. Requires flash-attn (above); without flash-attn,
-        # llama.cpp dequantizes per attention op and the math is slower than
-        # not quantizing at all. Valid types: f32, f16, bf16, q8_0, q4_0,
-        # q4_1, iq4_nl, q5_0, q5_1 (per tools/server/README.md).
-        "--cache-type-k", "q8_0",
-        "--cache-type-v", "q8_0",
+        # KV cache stays in fp16. A previous build pinned both K and V
+        # to q8_0 (CLAUDE.md flagged the flags as "non-negotiable for
+        # single-user throughput"), but `scripts/bench_kv_compare.py`
+        # showed it costs Qwen 3.6 35B-A3B ~2.5× on short outputs (Gated
+        # Delta Net + linear-attention dequant), and the engine-side
+        # Gemma win (+24% at 32-concurrent) only matters under playtest
+        # load — in production we're single-user where absolute throughput
+        # is irrelevant. Flash-attn (above) stays on regardless: it's the
+        # prefill-and-attention math win, independent of KV dtype.
     ]
     if cfg.reasoning_mode is not None:
         # `on`/`auto`. Setting-driven (config.py:llama_reasoning_mode). When

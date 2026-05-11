@@ -672,7 +672,17 @@ def build_agents(
         deps_type=ChatDeps,
         output_type=str,
         instructions=_BASE_CHAT_INSTRUCTIONS,
-        model_settings={"max_tokens": 2048, "temperature": 1.0, "top_p": 0.95, "extra_body": {"top_k": 64}},
+        # `max_tokens=768` is generous for an email body (typical 100-400
+        # tokens; longest authored bodies in scenario.yaml hit ~500). The
+        # prior 2048 cap was the source of compound playtest slowdowns:
+        # when the chat agent looped or rambled, a single Gemma call
+        # would generate to 2048 at 5 tok/s under load = 100s/call, then
+        # cascade with fact-checker retries. 768 caps the worst case at
+        # ~37s/call under heavy load while still leaving headroom for
+        # legitimate long emails. Classifier/extractor/director/summary
+        # stay at 2048 — they emit structured JSON that genuinely needs
+        # the budget for nested rationale fields.
+        model_settings={"max_tokens": 768, "temperature": 1.0, "top_p": 0.95, "extra_body": {"top_k": 64}},
         history_processors=history_processors,
         # Bound the @output_validator's corrective-shot budget. The validator
         # ships the last candidate (with the flag logged) once this is
