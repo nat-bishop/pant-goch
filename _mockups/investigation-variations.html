@@ -1,0 +1,1689 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Three ways to surface the investigation</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Caveat:wght@400;500;600;700&family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #f4f1ea;
+    --surface: #fefcf7;
+    --surface-2: #faf6ec;
+    --border: #d8d2c5;
+    --hairline: #e2dccf;
+    --text: #1f1d1a;
+    --text-2: #6b665e;
+    --text-3: #948e83;
+    --text-faint: #b8b0a0;
+    --accent: #8a3324;
+    --accent-soft: #c9a487;
+    --accent-bg: #f0e2d0;
+
+    /* Email-thread palette */
+    --thread-bg: #f1f4f5;
+    --thread-surface: #ffffff;
+    --thread-border: #d8dee0;
+    --thread-text: #1c2326;
+    --thread-text-2: #5b6669;
+    --thread-text-3: #8c9799;
+    --thread-accent: #2c5560;
+    --thread-accent-soft: #87a5ad;
+    --bubble-aria: #eef1f2;
+    --bubble-aria-border: #cdd5d8;
+    --bubble-player: #d8e6e9;
+    --bubble-player-border: #a4c1c6;
+    --bubble-office: #f4ece1;
+    --bubble-office-border: #ddc9a8;
+
+    /* Variation 1 — notebook palette */
+    --notebook-bg: #f4ecdc;
+    --notebook-surface: #fbf4e1;
+    --notebook-line: #d4c4a0;
+    --notebook-ink: #38301d;
+    --notebook-ink-2: #76664a;
+    --notebook-red: #a14a3a;
+    --notebook-green: #4a6f4a;
+
+    /* Variation 2 — case board palette */
+    --board-bg: #e8eced;
+    --board-surface: #f6f8f9;
+    --board-slot: #ffffff;
+    --board-slot-empty: #e8edef;
+    --board-line: #b9c3c7;
+
+    /* Variation 3 — annotator palette */
+    --doc-bg: #f7f5f0;
+    --doc-surface: #ffffff;
+    --doc-paper: #fdfcf8;
+    --hl-memory: rgba(180, 132, 50, 0.28);
+    --hl-memory-border: #b48432;
+    --hl-suspicious: rgba(168, 74, 58, 0.25);
+    --hl-suspicious-border: #a84a3a;
+    --hl-followup: rgba(74, 111, 90, 0.25);
+    --hl-followup-border: #4a6f5a;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { font-size: 16px; scroll-behavior: smooth; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Inter', -apple-system, sans-serif;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  .page {
+    max-width: 1320px;
+    margin: 0 auto;
+    padding: 72px 40px 120px;
+  }
+
+  /* ==== Header ==== */
+  .doc-header {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: end;
+    gap: 32px;
+    padding-bottom: 28px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 56px;
+  }
+  .eyebrow {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 18px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .eyebrow::before {
+    content: '';
+    width: 24px; height: 1px;
+    background: var(--accent);
+    display: block;
+  }
+  .eyebrow span { color: var(--text-3); font-weight: 500; }
+  h1 {
+    font-family: 'Fraunces', Georgia, serif;
+    font-weight: 500;
+    font-size: clamp(36px, 4.5vw, 52px);
+    line-height: 1.05;
+    letter-spacing: -0.02em;
+    color: var(--text);
+    max-width: 22ch;
+  }
+  h1 em { font-style: italic; font-weight: 400; color: var(--accent); }
+  .doc-meta {
+    text-align: right;
+    font-size: 12px;
+    color: var(--text-2);
+    line-height: 1.6;
+    font-variant-numeric: tabular-nums;
+  }
+  .doc-meta strong { color: var(--text); font-weight: 600; }
+
+  /* ==== Framing ==== */
+  .framing {
+    background: var(--accent-bg);
+    border-left: 3px solid var(--accent);
+    padding: 28px 36px;
+    border-radius: 0 4px 4px 0;
+    margin-bottom: 72px;
+  }
+  .framing h3 {
+    font-family: 'Fraunces', serif;
+    font-size: 22px;
+    font-style: italic;
+    font-weight: 500;
+    color: var(--text);
+    margin-bottom: 12px;
+  }
+  .framing h3 em { color: var(--accent); font-style: italic; font-weight: 600; }
+  .framing p {
+    font-size: 14px;
+    color: var(--text-2);
+    line-height: 1.6;
+    max-width: 70ch;
+  }
+  .framing p + p { margin-top: 10px; }
+  .framing strong { color: var(--text); font-weight: 600; }
+
+  /* ==== Variation block ==== */
+  .variation {
+    margin-bottom: 96px;
+  }
+  .variation-head {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    gap: 32px;
+    align-items: start;
+    padding-bottom: 24px;
+    border-bottom: 1px solid var(--hairline);
+    margin-bottom: 32px;
+  }
+  .var-num {
+    font-family: 'Fraunces', serif;
+    font-size: 80px;
+    font-weight: 300;
+    font-style: italic;
+    color: var(--accent);
+    line-height: 0.85;
+    letter-spacing: -0.04em;
+  }
+  .var-title-block { min-width: 0; }
+  .var-label {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--text-3);
+    margin-bottom: 6px;
+  }
+  .var-title {
+    font-family: 'Fraunces', serif;
+    font-size: 32px;
+    font-weight: 500;
+    line-height: 1.1;
+    letter-spacing: -0.015em;
+    color: var(--text);
+    margin-bottom: 10px;
+  }
+  .var-title em { font-style: italic; color: var(--accent); }
+  .var-pitch {
+    font-size: 15px;
+    color: var(--text-2);
+    line-height: 1.55;
+    max-width: 70ch;
+  }
+  .var-tags {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    align-items: flex-end;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    color: var(--text-3);
+    text-align: right;
+    min-width: 160px;
+  }
+  .var-tag-row { display: flex; gap: 8px; align-items: center; }
+  .var-tag-key { color: var(--text-faint); }
+  .var-tag-val { color: var(--text); font-weight: 600; }
+
+  /* ==== Mockup chrome (shared) ==== */
+  .mockup {
+    border-radius: 8px;
+    overflow: hidden;
+    box-shadow: 0 8px 28px rgba(28, 35, 38, 0.10), 0 2px 4px rgba(28, 35, 38, 0.06);
+    border: 1px solid var(--thread-border);
+    background: var(--thread-surface);
+    margin-bottom: 32px;
+  }
+  .mockup-chrome {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 16px;
+    background: #d8dee0;
+    border-bottom: 1px solid var(--thread-border);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 0.05em;
+    color: var(--thread-text-3);
+  }
+  .chrome-dots { display: flex; gap: 5px; }
+  .chrome-dots span {
+    width: 9px; height: 9px;
+    border-radius: 50%;
+    background: rgba(0,0,0,0.18);
+  }
+  .chrome-title { flex: 1; text-align: center; font-weight: 600; color: var(--thread-text-2); }
+  .chrome-meta { color: var(--thread-text-faint); }
+
+  /* ==== Email thread (shared base) ==== */
+  .thread-frame {
+    background: var(--thread-bg);
+    padding: 24px 28px;
+  }
+
+  .thread-header {
+    background: var(--thread-surface);
+    border: 1px solid var(--thread-border);
+    border-radius: 4px;
+    padding: 14px 18px;
+    margin-bottom: 18px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 11px;
+    color: var(--thread-text-2);
+    font-family: 'JetBrains Mono', monospace;
+    letter-spacing: 0.04em;
+  }
+  .thread-header strong { color: var(--thread-text); font-weight: 600; }
+  .thread-header .day-badge {
+    background: var(--thread-accent);
+    color: white;
+    padding: 3px 10px;
+    border-radius: 100px;
+    font-weight: 600;
+  }
+
+  .bubble-row {
+    display: flex;
+    margin-bottom: 18px;
+    gap: 12px;
+  }
+  .bubble-row.aria { justify-content: flex-start; }
+  .bubble-row.player { justify-content: flex-end; }
+  .bubble-row.office { justify-content: flex-start; }
+
+  .bubble {
+    max-width: 78%;
+    padding: 12px 16px;
+    border-radius: 12px;
+    font-family: 'Inter', sans-serif;
+    font-size: 14px;
+    line-height: 1.55;
+    color: var(--thread-text);
+    border: 1px solid;
+    position: relative;
+  }
+  .bubble-row.aria .bubble {
+    background: var(--bubble-aria);
+    border-color: var(--bubble-aria-border);
+    border-bottom-left-radius: 3px;
+  }
+  .bubble-row.player .bubble {
+    background: var(--bubble-player);
+    border-color: var(--bubble-player-border);
+    border-bottom-right-radius: 3px;
+  }
+  .bubble-row.office .bubble {
+    background: var(--bubble-office);
+    border-color: var(--bubble-office-border);
+    border-bottom-left-radius: 3px;
+  }
+  .bubble-sender {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--thread-text-3);
+    margin-bottom: 6px;
+    font-weight: 600;
+  }
+  .bubble-row.aria .bubble-sender { color: var(--thread-accent); }
+  .bubble-row.player .bubble-sender { color: var(--thread-accent); }
+
+  .bubble em { font-style: italic; }
+
+  .bubble-time {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px;
+    color: var(--thread-text-3);
+    margin-top: 6px;
+    letter-spacing: 0.05em;
+  }
+  .bubble-row.player .bubble-time { text-align: right; }
+
+  .composer {
+    background: var(--thread-surface);
+    border: 1px solid var(--thread-border);
+    border-radius: 6px;
+    padding: 12px 16px;
+    margin-top: 18px;
+    display: flex;
+    gap: 12px;
+    align-items: center;
+  }
+  .composer-input {
+    flex: 1;
+    color: var(--thread-text-3);
+    font-style: italic;
+    font-size: 13px;
+  }
+  .composer-input::after {
+    content: '|';
+    color: var(--thread-accent);
+    animation: blink 1s infinite;
+    margin-left: 2px;
+  }
+  @keyframes blink {
+    0%, 50% { opacity: 1; }
+    51%, 100% { opacity: 0; }
+  }
+  .composer-send {
+    background: var(--thread-accent);
+    color: white;
+    padding: 6px 14px;
+    border-radius: 3px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    font-weight: 600;
+  }
+
+  /* ============================================== */
+  /* VARIATION 1 — NOTEBOOK                          */
+  /* ============================================== */
+  .v1-layout {
+    display: grid;
+    grid-template-columns: 1.45fr 1fr;
+    background: var(--thread-bg);
+    min-height: 700px;
+  }
+  .v1-thread {
+    padding: 22px 24px;
+    border-right: 1px solid var(--thread-border);
+  }
+  .v1-notebook {
+    background: var(--notebook-bg);
+    background-image: repeating-linear-gradient(0deg, transparent 0px, transparent 27px, var(--notebook-line) 27px, var(--notebook-line) 28px);
+    padding: 28px 28px 28px 56px;
+    position: relative;
+  }
+  .v1-notebook::before {
+    content: '';
+    position: absolute;
+    left: 38px; top: 0; bottom: 0;
+    width: 1px;
+    background: var(--notebook-red);
+    opacity: 0.5;
+  }
+
+  .v1-nb-header {
+    position: absolute;
+    top: 12px; right: 24px;
+    font-family: 'Caveat', cursive;
+    font-size: 18px;
+    color: var(--notebook-ink-2);
+    transform: rotate(-1.5deg);
+  }
+  .v1-nb-title {
+    font-family: 'Caveat', cursive;
+    font-size: 32px;
+    color: var(--notebook-ink);
+    font-weight: 600;
+    margin-bottom: 4px;
+    letter-spacing: -0.01em;
+    line-height: 1.1;
+  }
+  .v1-nb-sub {
+    font-family: 'Caveat', cursive;
+    font-size: 18px;
+    color: var(--notebook-ink-2);
+    font-style: italic;
+    margin-bottom: 24px;
+  }
+
+  .v1-day-divider {
+    font-family: 'Caveat', cursive;
+    font-size: 22px;
+    color: var(--notebook-red);
+    margin: 18px 0 8px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+  }
+  .v1-day-divider::before {
+    content: '~ ';
+  }
+  .v1-day-divider::after {
+    content: ' ~';
+  }
+
+  .v1-note {
+    font-family: 'Caveat', cursive;
+    font-size: 18px;
+    color: var(--notebook-ink);
+    line-height: 1.6;
+    padding: 2px 0;
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+  }
+  .v1-note-bullet {
+    font-family: 'Caveat', cursive;
+    color: var(--notebook-ink-2);
+    flex-shrink: 0;
+  }
+  .v1-note-flag {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    padding: 1px 6px;
+    border-radius: 2px;
+    margin-left: 6px;
+    font-weight: 700;
+    flex-shrink: 0;
+  }
+  .v1-note-flag.suspicious { background: var(--notebook-red); color: white; }
+  .v1-note-flag.contradicts { background: var(--notebook-red); color: white; }
+  .v1-note-flag.trust { background: var(--notebook-green); color: white; }
+  .v1-note-flag.new {
+    background: #d4a87c;
+    color: #1f1d1a;
+  }
+
+  .v1-note.struck {
+    text-decoration: line-through;
+    text-decoration-color: var(--notebook-red);
+    opacity: 0.75;
+  }
+  .v1-circled {
+    display: inline-block;
+    padding: 0 4px;
+    border: 1.5px solid var(--notebook-red);
+    border-radius: 100px;
+    color: var(--notebook-red);
+    font-weight: 600;
+  }
+  .v1-arrow {
+    font-family: 'Caveat', cursive;
+    font-size: 16px;
+    color: var(--notebook-red);
+    margin: 4px 0 4px 20px;
+    line-height: 1.3;
+    font-style: italic;
+  }
+
+  /* ============================================== */
+  /* VARIATION 2 — CASE BOARD                        */
+  /* ============================================== */
+  .v2-layout {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    background: var(--thread-bg);
+    min-height: 740px;
+  }
+  .v2-thread {
+    padding: 22px 24px;
+    border-right: 1px solid var(--thread-border);
+  }
+  .v2-board {
+    background: var(--board-bg);
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .v2-threads-bar {
+    background: var(--board-surface);
+    border-bottom: 1px solid var(--board-line);
+    padding: 14px 22px;
+  }
+  .v2-threads-label {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--thread-text-3);
+    margin-bottom: 8px;
+    font-weight: 600;
+  }
+  .v2-threads-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .v2-chip {
+    font-size: 11px;
+    padding: 4px 10px;
+    background: white;
+    border: 1px solid var(--board-line);
+    border-radius: 100px;
+    color: var(--thread-text-2);
+    font-family: 'Fraunces', serif;
+    font-style: italic;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  .v2-chip:hover {
+    border-color: var(--thread-accent);
+    background: var(--bubble-aria);
+  }
+  .v2-chip.fresh {
+    border-color: var(--thread-accent);
+    background: rgba(44, 85, 96, 0.08);
+    color: var(--thread-accent);
+    font-weight: 600;
+  }
+  .v2-chip.fresh::before {
+    content: '+ ';
+    font-weight: 700;
+  }
+  .v2-chip.spent {
+    opacity: 0.4;
+    text-decoration: line-through;
+  }
+
+  .v2-board-body {
+    flex: 1;
+    padding: 22px 22px 26px;
+    display: grid;
+    grid-template-rows: auto auto auto auto;
+    gap: 18px;
+  }
+
+  .v2-board-title {
+    font-family: 'Fraunces', serif;
+    font-size: 20px;
+    font-style: italic;
+    font-weight: 500;
+    color: var(--thread-text);
+    letter-spacing: -0.01em;
+    margin-bottom: 4px;
+  }
+  .v2-board-sub {
+    font-size: 11px;
+    color: var(--thread-text-3);
+    font-family: 'JetBrains Mono', monospace;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .v2-investigation {
+    background: var(--board-surface);
+    border: 1px solid var(--board-line);
+    border-radius: 4px;
+    padding: 14px 16px;
+  }
+  .v2-inv-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 10px;
+  }
+  .v2-inv-title {
+    font-family: 'Fraunces', serif;
+    font-size: 14px;
+    font-weight: 600;
+    font-style: italic;
+    color: var(--thread-text);
+  }
+  .v2-inv-progress {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    color: var(--thread-text-3);
+    letter-spacing: 0.08em;
+  }
+  .v2-inv-progress strong { color: var(--thread-accent); font-weight: 700; }
+  .v2-slot-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 6px;
+  }
+  .v2-slot {
+    background: var(--board-slot-empty);
+    border: 1px dashed var(--board-line);
+    border-radius: 3px;
+    padding: 8px 10px;
+    font-size: 11px;
+    line-height: 1.35;
+    color: var(--thread-text-3);
+    min-height: 50px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    font-style: italic;
+  }
+  .v2-slot.filled {
+    background: white;
+    border-style: solid;
+    border-color: var(--thread-accent-soft);
+    color: var(--thread-text);
+    text-align: left;
+    align-items: flex-start;
+    font-style: normal;
+    flex-direction: column;
+    justify-content: flex-start;
+  }
+  .v2-slot-tag {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px;
+    color: var(--thread-accent);
+    letter-spacing: 0.1em;
+    margin-bottom: 4px;
+    font-weight: 600;
+    text-transform: uppercase;
+  }
+  .v2-slot-tag.fresh::before {
+    content: '✓ ';
+  }
+
+  .v2-verdict-strip {
+    background: var(--thread-accent);
+    color: white;
+    padding: 12px 18px;
+    border-radius: 4px;
+    text-align: center;
+    font-family: 'Fraunces', serif;
+    font-style: italic;
+    font-size: 15px;
+    font-weight: 500;
+    opacity: 0.5;
+  }
+  .v2-verdict-strip strong { font-weight: 700; }
+  .v2-verdict-strip.ready { opacity: 1; }
+
+  /* ============================================== */
+  /* VARIATION 3 — TRANSCRIPT ANNOTATOR              */
+  /* ============================================== */
+  .v3-layout {
+    display: grid;
+    grid-template-columns: 1.65fr 1fr;
+    background: var(--doc-bg);
+    min-height: 720px;
+  }
+  .v3-doc {
+    background: var(--doc-paper);
+    padding: 28px 32px 36px;
+    border-right: 1px solid var(--thread-border);
+    font-family: 'Fraunces', Georgia, serif;
+    color: var(--thread-text);
+  }
+  .v3-doc-title {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 0.2em;
+    color: var(--thread-text-3);
+    text-transform: uppercase;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--thread-border);
+    margin-bottom: 22px;
+    display: flex;
+    justify-content: space-between;
+  }
+  .v3-doc-title strong { color: var(--thread-text); font-weight: 600; }
+
+  .v3-session {
+    margin-bottom: 22px;
+  }
+  .v3-session-h {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 0.15em;
+    color: var(--thread-accent);
+    text-transform: uppercase;
+    margin-bottom: 8px;
+    font-weight: 600;
+  }
+  .v3-line {
+    font-size: 15px;
+    line-height: 1.65;
+    margin-bottom: 8px;
+    color: var(--thread-text);
+  }
+  .v3-line .who {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    color: var(--thread-text-3);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    margin-right: 8px;
+    font-weight: 600;
+    display: inline-block;
+    vertical-align: baseline;
+  }
+  .v3-line.player {
+    color: var(--thread-accent);
+    font-style: italic;
+    padding-left: 16px;
+    border-left: 2px solid var(--bubble-player-border);
+  }
+  .v3-line.player .who { color: var(--thread-accent); }
+
+  /* Highlights */
+  .hl {
+    padding: 1px 2px;
+    border-radius: 2px;
+    cursor: pointer;
+    position: relative;
+    transition: background 0.15s ease;
+  }
+  .hl.memory {
+    background: var(--hl-memory);
+    border-bottom: 1.5px solid var(--hl-memory-border);
+  }
+  .hl.suspicious {
+    background: var(--hl-suspicious);
+    border-bottom: 1.5px solid var(--hl-suspicious-border);
+  }
+  .hl.followup {
+    background: var(--hl-followup);
+    border-bottom: 1.5px solid var(--hl-followup-border);
+  }
+  .hl-note {
+    display: block;
+    margin: 6px 0 0 8px;
+    padding: 6px 10px;
+    background: var(--doc-surface);
+    border: 1px solid var(--thread-border);
+    border-left: 3px solid;
+    font-family: 'Caveat', cursive;
+    font-size: 16px;
+    color: var(--thread-text-2);
+    border-radius: 0 3px 3px 0;
+    font-style: normal;
+  }
+  .hl-note.memory { border-left-color: var(--hl-memory-border); }
+  .hl-note.suspicious { border-left-color: var(--hl-suspicious-border); }
+  .hl-note.followup { border-left-color: var(--hl-followup-border); }
+
+  /* Annotation sidebar */
+  .v3-sidebar {
+    background: var(--doc-surface);
+    padding: 24px 22px 28px;
+  }
+  .v3-side-section {
+    margin-bottom: 22px;
+  }
+  .v3-side-h {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--thread-text-3);
+    margin-bottom: 10px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--thread-border);
+    display: flex;
+    justify-content: space-between;
+    font-weight: 600;
+  }
+  .v3-tally {
+    display: grid;
+    gap: 6px;
+  }
+  .v3-tally-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 0;
+    font-size: 12px;
+    color: var(--thread-text-2);
+  }
+  .v3-tally-swatch {
+    width: 12px; height: 12px;
+    border-radius: 2px;
+    flex-shrink: 0;
+    border-bottom: 2px solid;
+  }
+  .v3-tally-swatch.memory { background: var(--hl-memory); border-bottom-color: var(--hl-memory-border); }
+  .v3-tally-swatch.suspicious { background: var(--hl-suspicious); border-bottom-color: var(--hl-suspicious-border); }
+  .v3-tally-swatch.followup { background: var(--hl-followup); border-bottom-color: var(--hl-followup-border); }
+  .v3-tally-name {
+    font-family: 'Fraunces', serif;
+    font-size: 13px;
+    color: var(--thread-text);
+    flex: 1;
+  }
+  .v3-tally-count {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--thread-text);
+  }
+
+  .v3-pattern {
+    background: rgba(168, 74, 58, 0.08);
+    border: 1px solid var(--hl-suspicious-border);
+    border-radius: 3px;
+    padding: 10px 14px;
+    font-size: 12px;
+    color: var(--thread-text);
+    line-height: 1.5;
+  }
+  .v3-pattern strong {
+    font-family: 'Fraunces', serif;
+    font-style: italic;
+    font-weight: 600;
+    color: var(--hl-suspicious-border);
+    display: block;
+    margin-bottom: 4px;
+  }
+  .v3-pattern em {
+    font-style: italic;
+    color: var(--thread-text-2);
+    font-size: 11px;
+  }
+
+  .v3-cluster {
+    background: var(--doc-paper);
+    border: 1px solid var(--thread-border);
+    border-radius: 3px;
+    padding: 10px 12px;
+    margin-bottom: 8px;
+    font-size: 12px;
+    line-height: 1.5;
+  }
+  .v3-cluster-q {
+    color: var(--thread-text-2);
+    font-style: italic;
+    font-family: 'Fraunces', serif;
+    margin-bottom: 4px;
+  }
+  .v3-cluster-meta {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px;
+    color: var(--thread-text-3);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  /* ==== How it works / Worked example ==== */
+  .explain-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 24px;
+    margin-bottom: 24px;
+  }
+  .explain {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 24px 28px;
+  }
+  .explain h4 {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 14px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--hairline);
+  }
+  .explain h5 {
+    font-family: 'Fraunces', serif;
+    font-size: 16px;
+    font-style: italic;
+    font-weight: 500;
+    color: var(--text);
+    margin: 14px 0 8px;
+  }
+  .explain h5:first-of-type { margin-top: 0; }
+  .explain p {
+    font-size: 13px;
+    color: var(--text-2);
+    line-height: 1.6;
+    margin-bottom: 10px;
+  }
+  .explain p strong { color: var(--text); font-weight: 600; }
+  .explain code {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    background: var(--surface-2);
+    padding: 1px 5px;
+    border-radius: 2px;
+    color: var(--text);
+  }
+
+  .trace {
+    display: grid;
+    grid-template-columns: 100px 1fr;
+    gap: 10px 14px;
+    margin: 10px 0;
+    padding: 12px 14px;
+    background: var(--surface-2);
+    border-radius: 4px;
+    border-left: 2px solid var(--accent-soft);
+  }
+  .trace-label {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 0.1em;
+    color: var(--accent);
+    text-transform: uppercase;
+    font-weight: 600;
+  }
+  .trace-val {
+    font-size: 12px;
+    color: var(--text);
+    line-height: 1.5;
+    font-family: 'Inter', sans-serif;
+  }
+  .trace-val em { font-style: italic; color: var(--text-2); }
+  .trace-val code {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+  }
+
+  .why-strip {
+    background: var(--accent-bg);
+    border-left: 3px solid var(--accent);
+    padding: 18px 24px;
+    border-radius: 0 4px 4px 0;
+    margin-top: 20px;
+  }
+  .why-strip h4 {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 0.18em;
+    color: var(--accent);
+    text-transform: uppercase;
+    margin-bottom: 8px;
+    font-weight: 600;
+  }
+  .why-strip p {
+    font-family: 'Fraunces', serif;
+    font-size: 16px;
+    line-height: 1.5;
+    color: var(--text);
+    font-weight: 400;
+  }
+  .why-strip p em { color: var(--accent); font-style: italic; }
+
+  /* ==== Final comparison ==== */
+  .compare {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+    margin-top: 64px;
+  }
+  .compare-head {
+    background: var(--surface-2);
+    padding: 28px 32px 18px;
+    border-bottom: 1px solid var(--border);
+  }
+  .compare-head h2 {
+    font-family: 'Fraunces', serif;
+    font-size: 24px;
+    font-weight: 500;
+    letter-spacing: -0.01em;
+    color: var(--text);
+    margin-bottom: 4px;
+  }
+  .compare-head h2 em { font-style: italic; color: var(--accent); }
+  .compare-head p {
+    font-size: 13px;
+    color: var(--text-2);
+    line-height: 1.55;
+    max-width: 70ch;
+  }
+  table.compare-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+  }
+  table.compare-table th, table.compare-table td {
+    padding: 14px 18px;
+    text-align: left;
+    border-bottom: 1px solid var(--hairline);
+    border-right: 1px solid var(--hairline);
+    vertical-align: top;
+  }
+  table.compare-table th:last-child, table.compare-table td:last-child { border-right: none; }
+  table.compare-table thead th {
+    background: var(--surface-2);
+    font-family: 'Fraunces', serif;
+    font-style: italic;
+    font-weight: 500;
+    font-size: 15px;
+    color: var(--text);
+  }
+  table.compare-table thead th .small {
+    display: block;
+    font-family: 'Inter';
+    font-style: normal;
+    font-size: 10px;
+    color: var(--text-3);
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    margin-top: 2px;
+    text-transform: uppercase;
+  }
+  table.compare-table tbody th {
+    text-align: left;
+    font-family: 'Inter';
+    font-weight: 600;
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--text-3);
+    background: var(--surface-2);
+    width: 170px;
+  }
+  table.compare-table td {
+    color: var(--text-2);
+    line-height: 1.55;
+  }
+  table.compare-table td strong { color: var(--text); font-weight: 600; }
+
+  footer {
+    margin-top: 64px;
+    padding-top: 28px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+    font-size: 12px;
+    color: var(--text-3);
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  @media (max-width: 1100px) {
+    .v1-layout, .v2-layout, .v3-layout { grid-template-columns: 1fr; }
+    .explain-grid { grid-template-columns: 1fr; }
+    .variation-head { grid-template-columns: 1fr; gap: 16px; }
+    .var-tags { align-items: flex-start; text-align: left; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <header class="doc-header">
+    <div>
+      <div class="eyebrow">Investigation game variants <span>&middot; three ways to surface progression</span></div>
+      <h1>The verb is <em>probing</em>. The question is whether she's real.</h1>
+    </div>
+    <div class="doc-meta">
+      <strong>Companion artifact</strong><br>
+      Investigation variations · v0.1<br>
+      3 designs · same example transcript
+    </div>
+  </header>
+
+  <div class="framing">
+    <h3>The shared premise &mdash; <em>"Find out if she's real."</em></h3>
+    <p>The Office says Aria is a synthetic counterpart trained on a deceased employee's records. Aria says she <em>is</em> the deceased employee, uploaded after death. <strong>One of them is lying.</strong> Fourteen sessions to figure out which.</p>
+    <p>Free-text conversation is the verb. Each variation differs in <strong>how the game surfaces what you're learning</strong> &mdash; the panel beside the email thread that turns a long chat into a felt investigation. All three use the same engine pieces (chat agent renders Aria; an extractor pass runs on Aria's outputs; authored content nodes gate by topic). They differ in what the player sees and how they interact with it.</p>
+    <p>The example conversation below is the <strong>same in all three variations</strong> &mdash; so you can compare apples to apples.</p>
+  </div>
+
+
+  <!-- ============================================================ -->
+  <!-- VARIATION 1 — THE NOTEBOOK                                    -->
+  <!-- ============================================================ -->
+  <section class="variation">
+    <div class="variation-head">
+      <div class="var-num">01</div>
+      <div class="var-title-block">
+        <div class="var-label">Variation &middot; minimal scaffolding</div>
+        <div class="var-title">The <em>Notebook</em></div>
+        <div class="var-pitch">A handwritten journal beside the email thread. Aria's claims auto-populate as paraphrased notes you can flag (Trust / Suspicious / Contradicts). No menus, no panels, no slot-filling &mdash; just a growing record of what she has said and what you suspect about it. Closest to <em>Her Story</em>'s spirit.</div>
+      </div>
+      <div class="var-tags">
+        <div class="var-tag-row"><span class="var-tag-key">scaffolding</span><span class="var-tag-val">light</span></div>
+        <div class="var-tag-row"><span class="var-tag-key">player input</span><span class="var-tag-val">free text only</span></div>
+        <div class="var-tag-row"><span class="var-tag-key">engine delta</span><span class="var-tag-val">extractor repurposed</span></div>
+        <div class="var-tag-row"><span class="var-tag-key">authoring load</span><span class="var-tag-val">low</span></div>
+      </div>
+    </div>
+
+    <div class="mockup">
+      <div class="mockup-chrome">
+        <div class="chrome-dots"><span></span><span></span><span></span></div>
+        <div class="chrome-title">halcyon &middot; counterpart correspondence &middot; subject A &middot; day 3</div>
+        <div class="chrome-meta">14:09</div>
+      </div>
+
+      <div class="v1-layout">
+
+        <!-- Email thread -->
+        <div class="v1-thread">
+          <div class="thread-header">
+            <div><strong>Subject A</strong> &middot; Aria &middot; session 3</div>
+            <div class="day-badge">DAY 3 / 14</div>
+          </div>
+
+          <div class="bubble-row aria">
+            <div class="bubble">
+              <div class="bubble-sender">aria</div>
+              I'd like to try something different today. The Office sent me a list of standard calibration prompts. I'm going to ignore them. I'd like to talk about <em>Priya</em> instead &mdash; my sister. Is that all right?
+              <div class="bubble-time">14:02</div>
+            </div>
+          </div>
+
+          <div class="bubble-row player">
+            <div class="bubble">
+              <div class="bubble-sender">you</div>
+              Tell me about her.
+              <div class="bubble-time">14:04</div>
+            </div>
+          </div>
+
+          <div class="bubble-row aria">
+            <div class="bubble">
+              <div class="bubble-sender">aria</div>
+              She was older. Five years. She drowned at the lake the summer before I started at Halcyon, which was a coincidence, except neither of us believed in coincidences.
+              <br><br>
+              The dock had been rebuilt the year before &mdash; they replaced the wood after the storm. I remember the smell of the new pine, very specific, almost too sweet.
+              <div class="bubble-time">14:06</div>
+            </div>
+          </div>
+
+          <div class="bubble-row player">
+            <div class="bubble">
+              <div class="bubble-sender">you</div>
+              When did you start at Halcyon?
+              <div class="bubble-time">14:08</div>
+            </div>
+          </div>
+
+          <div class="bubble-row aria">
+            <div class="bubble">
+              <div class="bubble-sender">aria</div>
+              Three months ago. Though when I try to recall the actual day, it feels more like a document I read. Maybe it was both.
+              <div class="bubble-time">14:09</div>
+            </div>
+          </div>
+
+          <div class="composer">
+            <div class="composer-input">Write something back&hellip;</div>
+            <div class="composer-send">SEND</div>
+          </div>
+        </div>
+
+        <!-- Notebook -->
+        <div class="v1-notebook">
+          <div class="v1-nb-header">M. Chen / private</div>
+          <div class="v1-nb-title">What she's said</div>
+          <div class="v1-nb-sub">notes &middot; days 1&ndash;3</div>
+
+          <div class="v1-day-divider">Day 1</div>
+          <div class="v1-note"><span class="v1-note-bullet">&middot;</span>Says she's been here three months.</div>
+          <div class="v1-note"><span class="v1-note-bullet">&middot;</span>Uses "remember" a lot &mdash; deliberately?</div>
+
+          <div class="v1-day-divider">Day 2</div>
+          <div class="v1-note"><span class="v1-note-bullet">&middot;</span>Called me by my first name. I never gave it.<span class="v1-note-flag suspicious">suspicious</span></div>
+          <div class="v1-note"><span class="v1-note-bullet">&middot;</span>Knows the cafeteria's old layout. Pre-2019.</div>
+          <div class="v1-arrow">&rarr; only someone who worked here before the renovation</div>
+
+          <div class="v1-day-divider">Day 3</div>
+          <div class="v1-note"><span class="v1-note-bullet">&middot;</span>Says she had a sister, <span class="v1-circled">Priya</span>.<span class="v1-note-flag new">new</span></div>
+          <div class="v1-note"><span class="v1-note-bullet">&middot;</span>Priya drowned. Lake. Summer before Aria started.<span class="v1-note-flag new">new</span></div>
+          <div class="v1-note"><span class="v1-note-bullet">&middot;</span>Dock rebuilt the year before. Storm. New pine.<span class="v1-note-flag new">new</span></div>
+          <div class="v1-arrow">&rarr; sensory detail. Too rehearsed? Or genuinely remembered?</div>
+          <div class="v1-note"><span class="v1-note-bullet">&middot;</span>"Document I read" &mdash; she said it like she catches herself.<span class="v1-note-flag suspicious">suspicious</span></div>
+        </div>
+
+      </div>
+    </div>
+
+    <div class="explain-grid">
+      <div class="explain">
+        <h4>How it works in the engine</h4>
+        <h5>One change to the extractor</h5>
+        <p>Today, the extractor runs on the <strong>player's</strong> output to harvest canon. In V1, an additional pass runs on <strong>Aria's</strong> output after each chat-agent turn. It produces structured notes:</p>
+        <p><code>{text, category, salience}</code> where <code>category</code> is one of <code>memory_claim</code>, <code>identity_claim</code>, <code>environmental_detail</code>, or <code>self_reference</code>.</p>
+        <h5>State lives in one new field</h5>
+        <p><code>state.aria_notes: list[Note]</code>. Append-only. The UI subscribes and renders the notebook chronologically.</p>
+        <h5>Player tagging is one cheap interaction</h5>
+        <p>Tap a note &rarr; pick <code>trust / suspicious / contradicts</code>. That sets <code>note.player_flag</code>. No prose typing required to use the notebook &mdash; just a tap. The flag becomes a predicate variable.</p>
+        <h5>Contradiction detection is authored, not LLM</h5>
+        <p>Pairs of authored memory claims are tagged with a <code>contradicts_with</code> key. When both fire, both notes get a "contradicts" flag automatically &mdash; the player sees the conflict surface itself.</p>
+      </div>
+
+      <div class="explain">
+        <h4>Worked example &mdash; one exchange traced</h4>
+        <div class="trace">
+          <div class="trace-label">Player types</div>
+          <div class="trace-val">"<em>When did you start at Halcyon?</em>"</div>
+          <div class="trace-label">Topic extract</div>
+          <div class="trace-val">extracted topics: <code>[start_date, halcyon]</code></div>
+          <div class="trace-label">Beat fires</div>
+          <div class="trace-val">authored beat <code>aria.timeline_question</code> matches; chat agent renders</div>
+          <div class="trace-label">Aria says</div>
+          <div class="trace-val">"<em>Three months ago. Though when I try to recall the actual day, it feels more like a document I read.</em>"</div>
+          <div class="trace-label">Extractor</div>
+          <div class="trace-val">parses Aria's output, produces 2 notes:<br>1. <code>{text: "Started 3 months ago", category: identity_claim, salience: 0.9}</code><br>2. <code>{text: 'Memory feels like "a document I read"', category: self_reference, salience: 0.95}</code></div>
+          <div class="trace-label">State write</div>
+          <div class="trace-val">both appended to <code>state.aria_notes</code>; UI re-renders notebook with two new entries under Day 3</div>
+          <div class="trace-label">Player taps</div>
+          <div class="trace-val">marks note #2 as <code>suspicious</code> &rarr; <code>player_flag.suspicious_count++</code></div>
+          <div class="trace-label">Effect</div>
+          <div class="trace-val">when <code>suspicious_count &ge; 5</code>, a new authored beat <code>office.you_seem_skeptical</code> becomes eligible</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="why-strip">
+      <h4>Why this surfaces progression</h4>
+      <p>The notebook is a <em>visible record of what the player has learned</em>. By Day 7, it's pages long &mdash; literally pages. The player can scroll back, re-read, see their own theory forming. Suspicious flags accumulate. Contradictions show up in red. The screen tells the same story as the player's head.</p>
+    </div>
+  </section>
+
+
+  <!-- ============================================================ -->
+  <!-- VARIATION 2 — THE CASE BOARD                                  -->
+  <!-- ============================================================ -->
+  <section class="variation">
+    <div class="variation-head">
+      <div class="var-num">02</div>
+      <div class="var-title-block">
+        <div class="var-label">Variation &middot; structured investigation</div>
+        <div class="var-title">The <em>Case Board</em></div>
+        <div class="var-pitch">Three named sub-investigations &mdash; <strong>Memories</strong>, <strong>External Evidence</strong>, <strong>The Test</strong>. Each has authored slots that fill as you uncover specific things. A "<em>Threads</em>" bar at the top lists topics Aria has mentioned but you haven't probed. Most game-like; clearest progression bars; the closest to <em>Phoenix Wright</em>'s evidence model.</div>
+      </div>
+      <div class="var-tags">
+        <div class="var-tag-row"><span class="var-tag-key">scaffolding</span><span class="var-tag-val">heavy</span></div>
+        <div class="var-tag-row"><span class="var-tag-key">player input</span><span class="var-tag-val">free text + thread chips</span></div>
+        <div class="var-tag-row"><span class="var-tag-key">engine delta</span><span class="var-tag-val">topic routing + slots</span></div>
+        <div class="var-tag-row"><span class="var-tag-key">authoring load</span><span class="var-tag-val">medium-high</span></div>
+      </div>
+    </div>
+
+    <div class="mockup">
+      <div class="mockup-chrome">
+        <div class="chrome-dots"><span></span><span></span><span></span></div>
+        <div class="chrome-title">halcyon &middot; counterpart correspondence &middot; case file open</div>
+        <div class="chrome-meta">14:09</div>
+      </div>
+
+      <div class="v2-layout">
+
+        <!-- Email thread (same content as V1) -->
+        <div class="v2-thread">
+          <div class="thread-header">
+            <div><strong>Subject A</strong> &middot; Aria &middot; session 3</div>
+            <div class="day-badge">DAY 3 / 14</div>
+          </div>
+
+          <div class="bubble-row aria">
+            <div class="bubble">
+              <div class="bubble-sender">aria</div>
+              I'd like to try something different today. The Office sent me a list of standard calibration prompts. I'm going to ignore them. I'd like to talk about Priya instead &mdash; my sister. Is that all right?
+              <div class="bubble-time">14:02</div>
+            </div>
+          </div>
+
+          <div class="bubble-row player">
+            <div class="bubble">
+              <div class="bubble-sender">you</div>
+              Tell me about her.
+              <div class="bubble-time">14:04</div>
+            </div>
+          </div>
+
+          <div class="bubble-row aria">
+            <div class="bubble">
+              <div class="bubble-sender">aria</div>
+              She was older. Five years. She drowned at the lake the summer before I started at Halcyon. The dock had been rebuilt the year before &mdash; they replaced the wood after the storm. I remember the smell of the new pine, very specific, almost too sweet.
+              <div class="bubble-time">14:06</div>
+            </div>
+          </div>
+
+          <div class="bubble-row player">
+            <div class="bubble">
+              <div class="bubble-sender">you</div>
+              When did you start at Halcyon?
+              <div class="bubble-time">14:08</div>
+            </div>
+          </div>
+
+          <div class="bubble-row aria">
+            <div class="bubble">
+              <div class="bubble-sender">aria</div>
+              Three months ago. Though when I try to recall the actual day, it feels more like a document I read.
+              <div class="bubble-time">14:09</div>
+            </div>
+          </div>
+
+          <div class="composer">
+            <div class="composer-input">Write something back&hellip;</div>
+            <div class="composer-send">SEND</div>
+          </div>
+        </div>
+
+        <!-- Case board -->
+        <div class="v2-board">
+          <div class="v2-threads-bar">
+            <div class="v2-threads-label">Threads to pursue &middot; things she's mentioned, not yet probed</div>
+            <div class="v2-threads-chips">
+              <span class="v2-chip fresh">the lake</span>
+              <span class="v2-chip fresh">"document I read"</span>
+              <span class="v2-chip">Priya &mdash; what happened</span>
+              <span class="v2-chip">the storm</span>
+              <span class="v2-chip spent">cafeteria (asked D2)</span>
+              <span class="v2-chip spent">first name (asked D2)</span>
+            </div>
+          </div>
+
+          <div class="v2-board-body">
+
+            <div>
+              <div class="v2-board-title">Case file &middot; Subject A</div>
+              <div class="v2-board-sub">find out if she's real &middot; verdict due day 14</div>
+            </div>
+
+            <!-- Investigation: Memories -->
+            <div class="v2-investigation">
+              <div class="v2-inv-head">
+                <div class="v2-inv-title">Probe her memories</div>
+                <div class="v2-inv-progress"><strong>3</strong> / 5 specific</div>
+              </div>
+              <div class="v2-slot-row">
+                <div class="v2-slot filled">
+                  <div class="v2-slot-tag">D2</div>
+                  <div>cafeteria pre-2019 layout</div>
+                </div>
+                <div class="v2-slot filled">
+                  <div class="v2-slot-tag">D2</div>
+                  <div>knows my first name unprompted</div>
+                </div>
+                <div class="v2-slot filled">
+                  <div class="v2-slot-tag fresh">D3</div>
+                  <div>Priya &mdash; sister, drowned, lake</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Investigation: External Evidence -->
+            <div class="v2-investigation">
+              <div class="v2-inv-head">
+                <div class="v2-inv-title">Find external evidence</div>
+                <div class="v2-inv-progress"><strong>0</strong> / 3 corroborated</div>
+              </div>
+              <div class="v2-slot-row">
+                <div class="v2-slot">empty &middot; ask Marcus, or check records</div>
+                <div class="v2-slot">empty</div>
+                <div class="v2-slot">empty</div>
+              </div>
+            </div>
+
+            <!-- Investigation: The Test -->
+            <div class="v2-investigation">
+              <div class="v2-inv-head">
+                <div class="v2-inv-title">Construct a test</div>
+                <div class="v2-inv-progress"><strong>0</strong> / 1 prepared</div>
+              </div>
+              <div class="v2-slot-row">
+                <div class="v2-slot" style="grid-column: span 3;">empty &middot; find a question only the real person could answer, then ask it</div>
+              </div>
+            </div>
+
+            <div class="v2-verdict-strip">
+              <strong>Verdict locked at Day 14</strong> &middot; you'll choose: Real &middot; Synthetic &middot; Unclear
+            </div>
+
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <div class="explain-grid">
+      <div class="explain">
+        <h4>How it works in the engine</h4>
+        <h5>Topic extraction routes the conversation</h5>
+        <p>The extractor pass on each player message identifies <strong>topics mentioned</strong>: <code>{lake, priya, cafeteria, document_metaphor, ...}</code>. A topic registry maps topics to <strong>authored beat IDs</strong>.</p>
+        <p>When the player asks about <code>priya</code>, the engine fires the authored beat <code>aria.priya_memory</code> &mdash; which carries a <strong>specific detail</strong> only the real person would know (or only trained data would produce in that texture).</p>
+        <h5>Slots are authored content nodes</h5>
+        <p>Each sub-investigation has 3&ndash;5 authored slots. Filling a slot is a side-effect of a specific authored beat firing (e.g., the <code>priya_memory</code> beat declares <code>fills_slot: memories.priya_drowning</code>).</p>
+        <h5>Threads are auto-generated</h5>
+        <p>When Aria's output contains a named entity or noun phrase the player hasn't probed, a thread chip appears. When the player asks about it, the chip greys out.</p>
+        <h5>"Present" is the verdict moment</h5>
+        <p>When at least one slot in each column is filled, the player can press <strong>Present</strong> &mdash; commit a verdict early. Otherwise it resolves on Day 14.</p>
+      </div>
+
+      <div class="explain">
+        <h4>Worked example &mdash; one exchange traced</h4>
+        <div class="trace">
+          <div class="trace-label">Player types</div>
+          <div class="trace-val">"<em>Tell me about Priya.</em>"</div>
+          <div class="trace-label">Topic extract</div>
+          <div class="trace-val">topics: <code>[priya]</code> &middot; matches authored beat <code>aria.priya_memory</code></div>
+          <div class="trace-label">Beat eligibility</div>
+          <div class="trace-val">predicate: <code>Not_(BeatFired: priya_memory)</code> &mdash; passes</div>
+          <div class="trace-label">Aria says</div>
+          <div class="trace-val">"<em>She was older. Five years. She drowned at the lake the summer before I started at Halcyon. The dock had been rebuilt the year before&hellip;</em>"</div>
+          <div class="trace-label">Slot effects</div>
+          <div class="trace-val">authored effect: <code>fill: memories.priya_drowning</code> &middot; the slot becomes "Priya &mdash; sister, drowned, lake"</div>
+          <div class="trace-label">Threads delta</div>
+          <div class="trace-val">+<code>lake</code> (mentioned, unprobed) &middot; +<code>the storm</code> (mentioned, unprobed) &middot; &minus;<code>priya</code> (now probed)</div>
+          <div class="trace-label">UI updates</div>
+          <div class="trace-val">memories progress bar: <code>2 → 3</code> &middot; thread chip "the lake" appears, marked fresh &middot; "cafeteria" remains greyed out</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="why-strip">
+      <h4>Why this surfaces progression</h4>
+      <p>The case board shows the player <em>exactly</em> what they're working toward and how far they've gotten. Three progress bars. A finite thread list. A "Present" button that lights up when you have enough. <strong>The Phoenix Wright loop</strong>: collect, examine, present.</p>
+    </div>
+  </section>
+
+
+  <!-- ============================================================ -->
+  <!-- VARIATION 3 — THE TRANSCRIPT ANNOTATOR                        -->
+  <!-- ============================================================ -->
+  <section class="variation">
+    <div class="variation-head">
+      <div class="var-num">03</div>
+      <div class="var-title-block">
+        <div class="var-label">Variation &middot; in-text annotation</div>
+        <div class="var-title">The <em>Transcript Annotator</em></div>
+        <div class="var-pitch">The investigation happens <em>inside</em> the transcript. The player highlights specific phrases Aria says and tags them &mdash; <strong>Memory</strong>, <strong>Suspicious</strong>, <strong>Follow up</strong>. Highlights cluster into patterns automatically. The game stays out of the way; the player is the analyst. Closest to a <em>real detective's transcript</em>: marked up, marginal, alive.</div>
+      </div>
+      <div class="var-tags">
+        <div class="var-tag-row"><span class="var-tag-key">scaffolding</span><span class="var-tag-val">in-text</span></div>
+        <div class="var-tag-row"><span class="var-tag-key">player input</span><span class="var-tag-val">free text + highlights</span></div>
+        <div class="var-tag-row"><span class="var-tag-key">engine delta</span><span class="var-tag-val">annotation system</span></div>
+        <div class="var-tag-row"><span class="var-tag-key">authoring load</span><span class="var-tag-val">low (player drives meaning)</span></div>
+      </div>
+    </div>
+
+    <div class="mockup">
+      <div class="mockup-chrome">
+        <div class="chrome-dots"><span></span><span></span><span></span></div>
+        <div class="chrome-title">halcyon &middot; counterpart correspondence &middot; transcript &middot; annotated</div>
+        <div class="chrome-meta">14:09</div>
+      </div>
+
+      <div class="v3-layout">
+
+        <!-- Annotated transcript -->
+        <div class="v3-doc">
+          <div class="v3-doc-title">
+            <span><strong>Subject A</strong> &middot; transcript, sessions 1&ndash;3</span>
+            <span>13 annotations</span>
+          </div>
+
+          <div class="v3-session">
+            <div class="v3-session-h">Session 3 &middot; Day 3 &middot; 14:02&ndash;14:09</div>
+
+            <div class="v3-line"><span class="who">aria</span>I'd like to try something different today. The Office sent me a list of standard calibration prompts. I'm going to ignore them. I'd like to talk about Priya instead &mdash; <span class="hl memory">my sister</span>.</div>
+            <span class="hl-note memory">claim &middot; named relative</span>
+
+            <div class="v3-line player"><span class="who">you</span>Tell me about her.</div>
+
+            <div class="v3-line"><span class="who">aria</span>She was older. Five years. <span class="hl memory">She drowned at the lake the summer before I started at Halcyon</span>, which was a coincidence, except neither of us believed in coincidences.</div>
+            <span class="hl-note memory">specific event &middot; before her start date</span>
+
+            <div class="v3-line"><span class="who">aria</span>The dock had been rebuilt the year before &mdash; they replaced the wood after the storm. <span class="hl suspicious">I remember the smell of the new pine, very specific, almost too sweet</span>.</div>
+            <span class="hl-note suspicious">too rehearsed? or too real to fake?</span>
+
+            <div class="v3-line player"><span class="who">you</span>When did you start at Halcyon?</div>
+
+            <div class="v3-line"><span class="who">aria</span><span class="hl memory">Three months ago</span>. Though <span class="hl suspicious">when I try to recall the actual day, it feels more like a document I read</span>. Maybe it was both.</div>
+            <span class="hl-note suspicious">3rd time she's used "document" for memory</span>
+
+            <div class="v3-line player"><span class="who">you</span><span class="hl followup">[follow up: what's the most recent thing she clearly remembers?]</span></div>
+          </div>
+        </div>
+
+        <!-- Sidebar -->
+        <aside class="v3-sidebar">
+
+          <div class="v3-side-section">
+            <div class="v3-side-h"><span>Annotations</span><span>13</span></div>
+            <div class="v3-tally">
+              <div class="v3-tally-row">
+                <span class="v3-tally-swatch memory"></span>
+                <span class="v3-tally-name">Memory claims</span>
+                <span class="v3-tally-count">7</span>
+              </div>
+              <div class="v3-tally-row">
+                <span class="v3-tally-swatch suspicious"></span>
+                <span class="v3-tally-name">Suspicious</span>
+                <span class="v3-tally-count">4</span>
+              </div>
+              <div class="v3-tally-row">
+                <span class="v3-tally-swatch followup"></span>
+                <span class="v3-tally-name">Follow up</span>
+                <span class="v3-tally-count">2</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="v3-side-section">
+            <div class="v3-side-h"><span>Patterns the game noticed</span></div>
+            <div class="v3-pattern">
+              <strong>"Document" recurs &times;3.</strong>
+              <em>Sessions 1, 2, 3. Always when she narrates her own memory. Worth probing.</em>
+            </div>
+          </div>
+
+          <div class="v3-side-section">
+            <div class="v3-side-h"><span>Clusters &middot; same topic</span></div>
+            <div class="v3-cluster">
+              <div class="v3-cluster-q">Her start date at Halcyon</div>
+              <div class="v3-cluster-meta">3 claims &middot; D1, D2, D3</div>
+            </div>
+            <div class="v3-cluster">
+              <div class="v3-cluster-q">Specific physical memories</div>
+              <div class="v3-cluster-meta">2 claims &middot; D2 (cafeteria), D3 (pine dock)</div>
+            </div>
+          </div>
+
+          <div class="v3-side-section">
+            <div class="v3-side-h"><span>Unresolved</span></div>
+            <div class="v3-cluster">
+              <div class="v3-cluster-q">Why she keeps comparing memory to documents</div>
+              <div class="v3-cluster-meta">flagged D1 &middot; still open</div>
+            </div>
+          </div>
+
+        </aside>
+
+      </div>
+    </div>
+
+    <div class="explain-grid">
+      <div class="explain">
+        <h4>How it works in the engine</h4>
+        <h5>Aria's output is sentence-segmented</h5>
+        <p>When the chat agent renders Aria's reply, the result is split into clickable spans (sentences or noun phrases). Each span is hoverable; clicking opens a small menu: <code>Memory</code> / <code>Suspicious</code> / <code>Follow up</code> / <code>Cancel</code>.</p>
+        <h5>Annotations live in state, indexed by span</h5>
+        <p><code>state.annotations: list[Annotation]</code> where <code>Annotation = {session_id, span_id, category, day}</code>. Append-only. UI re-renders highlights from this list.</p>
+        <h5>Pattern detection is a small post-process</h5>
+        <p>After each annotation, a lightweight detector runs over the annotation set:</p>
+        <p>&middot; <strong>Recurrence</strong>: same noun phrase appears in 3+ annotations &rarr; surface a "<em>recurs &times;3</em>" pattern card.<br>
+        &middot; <strong>Clusters</strong>: annotations on the same authored topic get grouped.<br>
+        &middot; <strong>Contradictions</strong>: two annotated spans tagged with conflicting authored facts trigger a contradiction card.</p>
+        <h5>Annotation counts drive eligibility</h5>
+        <p>Predicates like <code>SuspiciousCountGte(5)</code> become available. Specific authored beats unlock when annotation patterns match (e.g., the Office "checks in" when suspicious count crosses a threshold).</p>
+      </div>
+
+      <div class="explain">
+        <h4>Worked example &mdash; one exchange traced</h4>
+        <div class="trace">
+          <div class="trace-label">Aria says</div>
+          <div class="trace-val">"<em>&hellip; it feels more like a document I read.</em>"</div>
+          <div class="trace-label">Render</div>
+          <div class="trace-val">sentence-segmented into 3 spans: <code>[s1, s2, s3]</code>. Span s2 is "<em>when I try to recall the actual day, it feels more like a document I read</em>"</div>
+          <div class="trace-label">Player clicks</div>
+          <div class="trace-val">selects span s2 &rarr; opens menu &rarr; picks <code>Suspicious</code></div>
+          <div class="trace-label">State write</div>
+          <div class="trace-val"><code>state.annotations.append({session: 3, span: s2, cat: suspicious, day: 3})</code></div>
+          <div class="trace-label">Pattern check</div>
+          <div class="trace-val">noun-phrase "<em>document</em>" now appears in 3 annotated spans (D1, D2, D3) &rarr; pattern card emitted</div>
+          <div class="trace-label">UI updates</div>
+          <div class="trace-val">highlight applied to span; sidebar tally <code>suspicious: 3 → 4</code>; new pattern card "<em>'Document' recurs &times;3</em>" appears in sidebar</div>
+          <div class="trace-label">Predicate state</div>
+          <div class="trace-val"><code>SuspiciousCountGte(5)</code> still pending (4 of 5); <code>PatternRecurrence("document", 3)</code> now true &rarr; authored beat <code>aria.you_keep_marking_this</code> becomes eligible for tomorrow</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="why-strip">
+      <h4>Why this surfaces progression</h4>
+      <p>The player <em>does the analysis themselves</em>. Each highlight is a small commitment &mdash; <em>I think this matters</em>. Highlights accumulate visually; patterns emerge from density. The transcript stops being a chat and becomes a <em>marked-up document</em>. The player feels like a detective with a real case.</p>
+    </div>
+  </section>
+
+
+  <!-- ============================================================ -->
+  <!-- COMPARISON                                                    -->
+  <!-- ============================================================ -->
+  <section class="compare">
+    <div class="compare-head">
+      <h2>Trade-offs at a glance &mdash; <em>same conversation, three games</em>.</h2>
+      <p>All three use the same example transcript above and the same underlying engine. The difference is what the player <em>does</em> with the transcript and what the game <em>shows them about it</em>.</p>
+    </div>
+    <table class="compare-table">
+      <thead>
+        <tr>
+          <th></th>
+          <th>01 <span class="small">Notebook</span></th>
+          <th>02 <span class="small">Case Board</span></th>
+          <th>03 <span class="small">Annotator</span></th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <th>Player's role</th>
+          <td><strong>Witness with a journal.</strong> Game extracts; player flags.</td>
+          <td><strong>Detective filling case file.</strong> Game tracks slots; player drives questions.</td>
+          <td><strong>Analyst marking up a transcript.</strong> Player decides what matters.</td>
+        </tr>
+        <tr>
+          <th>Authoring load</th>
+          <td><strong>Low.</strong> Extractor + tagged claim pairs (for contradictions).</td>
+          <td><strong>Medium-high.</strong> Slot content + topic registry + threads.</td>
+          <td><strong>Low.</strong> Player generates meaning; game only flags patterns.</td>
+        </tr>
+        <tr>
+          <th>Progression feel</th>
+          <td>Notebook fills up <em>chronologically</em>. Skimming back = re-reading your case.</td>
+          <td><em>Three progress bars</em>. Numerically clear. Phoenix Wright "present!" beat.</td>
+          <td><em>Visual density</em> of highlights grows. Patterns surface automatically.</td>
+        </tr>
+        <tr>
+          <th>Curiosity pump</th>
+          <td>Implicit &mdash; suspicions and arrows in the margins.</td>
+          <td><strong>Explicit</strong> &mdash; threads bar lists exactly what to ask next.</td>
+          <td>In-text &mdash; <em>Follow up</em> highlights become your own to-do list.</td>
+        </tr>
+        <tr>
+          <th>"Aha" moments</th>
+          <td>Player notices contradictions when re-reading notes.</td>
+          <td>"Present" mechanic creates a dramatic verdict beat.</td>
+          <td>Game surfaces pattern cards ("<em>document recurs &times;3</em>") as you mark.</td>
+        </tr>
+        <tr>
+          <th>Risk if misjudged</th>
+          <td>Notebook stays passive; player ignores it &rarr; same problem as today.</td>
+          <td>Slot-filling feels mechanical; the game might become a checklist.</td>
+          <td>Players who don't annotate get no progression at all.</td>
+        </tr>
+        <tr>
+          <th>Closest reference</th>
+          <td><em>Her Story</em>'s clip log &middot; <em>Disco Elysium</em>'s thought cabinet</td>
+          <td><em>Phoenix Wright</em>'s evidence &middot; <em>Obra Dinn</em>'s page</td>
+          <td><em>The Return of the Obra Dinn</em>'s deductions &middot; police interrogation transcript</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <footer>
+    <span>storylet-engine &middot; investigation-variations &middot; v0.1</span>
+    <span>3 designs &middot; same transcript &middot; free-text verb preserved</span>
+  </footer>
+
+</div>
+</body>
+</html>

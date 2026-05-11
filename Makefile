@@ -28,7 +28,7 @@ help:
 	@echo "  make web                  Run Vite dev server            (terminal 3)"
 	@echo "  make test                 Run pytest"
 	@echo "  make playtest             Run the LLM playtester (requires both llamas up)"
-	@echo "  make lint-scenario   Lint npc_service/scenario.yaml (fast; spec rules only)"
+	@echo "  make lint-scenario   Lint handler/scenario.yaml (fast; spec rules only)"
 	@echo "  make analyze-scenario  Run ASP-backed reachability analyzer (clingo; sub-second on 13b)"
 	@echo "  make typecheck       Run TS typecheck on web/"
 	@echo "  make clean           Remove __pycache__ and logs/*.log"
@@ -57,13 +57,13 @@ $(EVAL_MODEL):
 .PHONY: download-eval-model
 download-eval-model: $(EVAL_MODEL)
 
-# Boots llama-server via npc_service.run_llama so the argv comes from the
+# Boots llama-server via handler.run_llama so the argv comes from the
 # same `launcher.build_command` the sidecar uses. Don't reintroduce a
 # hardcoded llama-server invocation here — it will drift from Settings
 # (this is exactly how `-np` got stuck at 8 while config.py said 128).
 .PHONY: llama
 llama: $(MODEL)
-	cd npc_service && uv run python -m npc_service.run_llama
+	cd handler && uv run python -m handler.run_llama
 
 # Engine llama, sized for the playtester at --parallel 64. Bumps `-np` to
 # 64 (matches max concurrency) and lets launcher.py auto-size `-c` to
@@ -74,21 +74,21 @@ llama: $(MODEL)
 # divides `-c` by `-np` per slot — each slot gets the full 32k budget.
 .PHONY: llama-playtest
 llama-playtest: $(MODEL)
-	cd npc_service && LLAMA_N_PARALLEL=64 uv run python -m npc_service.run_llama
+	cd handler && LLAMA_N_PARALLEL=64 uv run python -m handler.run_llama
 
 # Eval llama: Qwen 3.6 35B-A3B (MoE) on mainline llama.cpp. Routed through
-# the same `npc_service.run_llama` entry point as the engine — `--role eval`
+# the same `handler.run_llama` entry point as the engine — `--role eval`
 # selects `resolve_eval_config` (config.py:eval_llama_*) which omits the
 # Gemma-specific `--reasoning` flags but keeps `--jinja` (Qwen has its own
 # bundled chat template + thinking handling). Defaults size for the
 # playtester at `--parallel 64`: -np 64 --kv-unified, auto-sized -c=2M.
 .PHONY: llama-eval
 llama-eval: $(EVAL_MODEL)
-	cd npc_service && uv run python -m npc_service.run_llama --role eval
+	cd handler && uv run python -m handler.run_llama --role eval
 
 .PHONY: sidecar
 sidecar:
-	cd npc_service && LAUNCH_LLAMA=false uv run python -m npc_service
+	cd handler && LAUNCH_LLAMA=false uv run python -m handler
 
 .PHONY: web
 web:
@@ -96,18 +96,18 @@ web:
 
 .PHONY: test
 test:
-	cd npc_service && uv run pytest
+	cd handler && uv run pytest
 
-# Scenario linter. Runs against `npc_service/scenario.yaml` by default.
+# Scenario linter. Runs against `handler/scenario.yaml` by default.
 # Loads the scenario via the Pydantic models (so `_cross_references`
 # parse errors surface first), then applies the author-facing checks the
 # model doesn't catch on its own. Fast — spec rules only. The state-space
 # analyzer is opt-in via `--analyzer`; run `make analyze-scenario` to
-# invoke it as its own target. See `npc_service/scripts/lint_rules.md`
+# invoke it as its own target. See `handler/scripts/lint_rules.md`
 # for what each check does and why.
 .PHONY: lint-scenario
 lint-scenario:
-	cd npc_service && uv run python scripts/lint_scenario.py scenario.yaml
+	cd handler && uv run python scripts/lint_scenario.py scenario.yaml
 
 # Static reachability analyzer (ASP-backed via clingo). Computes which
 # beats are reachable from boot, per-quality value bounds, and orphan/
@@ -117,7 +117,7 @@ lint-scenario:
 # encoding precedent. Run before commit / in CI alongside `lint-scenario`.
 .PHONY: analyze-scenario
 analyze-scenario:
-	cd npc_service && uv run python scripts/analyze_scenario.py scenario.yaml
+	cd handler && uv run python scripts/analyze_scenario.py scenario.yaml
 
 # LLM playtester. Probes /health on BOTH llama servers (engine on :8080,
 # eval on :8081) before booting; errors clearly if either isn't up. Boot
@@ -130,7 +130,7 @@ analyze-scenario:
 # flight (default-buffered subprocesses don't flush until exit).
 .PHONY: playtest
 playtest:
-	cd npc_service && uv sync --extra playtest && PYTHONIOENCODING=utf-8 uv run python -u -m scripts.playtest
+	cd handler && uv sync --extra playtest && PYTHONIOENCODING=utf-8 uv run python -u -m scripts.playtest
 
 .PHONY: typecheck
 typecheck:

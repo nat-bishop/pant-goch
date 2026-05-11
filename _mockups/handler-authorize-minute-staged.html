@@ -1,0 +1,497 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HANDLER — Minute Sheet, staged (concept v.0.5)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Courier+Prime:ital,wght@0,400;0,700;1,400;1,700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --room: #16191e;
+    --paper: #eee5cd;
+    --ink: #1c1814;
+    --ink-soft: #4a4438;
+    --ink-faint: #837c6c;
+    --rule: #b8af96;
+    --stamp: #7a1f18;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html, body {
+    background: var(--room);
+    color: var(--ink);
+    font-family: 'Courier Prime', 'Courier New', monospace;
+    font-weight: 400;
+    line-height: 1.6;
+    min-height: 100vh;
+    padding: 60px 24px 80px;
+    background-image: radial-gradient(ellipse 60% 50% at 50% 0%, rgba(200, 180, 120, 0.04) 0%, transparent 60%);
+  }
+
+  /* The sheet */
+  .page {
+    max-width: 820px;
+    margin: 0 auto;
+    background: var(--paper);
+    padding: 64px 110px 56px 110px;
+    box-shadow: 0 30px 60px rgba(0,0,0,0.5), 0 6px 16px rgba(0,0,0,0.35);
+    position: relative;
+    color: var(--ink);
+    min-height: 760px;
+    display: flex;
+    flex-direction: column;
+    background-image:
+      radial-gradient(ellipse 100% 100% at 50% 50%, transparent 75%, rgba(150, 130, 80, 0.10) 100%),
+      url("data:image/svg+xml,%3Csvg viewBox='0 0 400 400' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.18'/%3E%3C/svg%3E");
+  }
+
+  /* TOP SECRET — modest, top right, always present */
+  .classification {
+    position: absolute;
+    top: 36px;
+    right: 60px;
+    color: var(--stamp);
+    border: 1.5px solid var(--stamp);
+    padding: 4px 12px;
+    font-size: 10px;
+    letter-spacing: 0.32em;
+    font-weight: 700;
+    text-transform: uppercase;
+    background: rgba(122, 31, 24, 0.04);
+  }
+
+  /* ───────── ALWAYS-VISIBLE HEADER ───────── */
+  .topbar {
+    border-bottom: 1px solid var(--ink);
+    padding-bottom: 14px;
+    margin-bottom: 12px;
+  }
+
+  .topbar-1 {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.18em;
+    color: var(--ink);
+    margin-bottom: 12px;
+  }
+
+  .topbar-1 .doc {
+    letter-spacing: 0.32em;
+  }
+  .topbar-1 .ref {
+    font-weight: 400;
+    color: var(--ink-soft);
+    letter-spacing: 0.12em;
+  }
+
+  .topbar-2 {
+    display: grid;
+    grid-template-columns: 70px 1fr;
+    gap: 10px;
+    font-size: 12px;
+    line-height: 1.85;
+    color: var(--ink-soft);
+  }
+  .topbar-2 .lbl {
+    color: var(--ink);
+    font-weight: 700;
+    letter-spacing: 0.08em;
+  }
+  .topbar-2 .v {
+    color: var(--ink-soft);
+  }
+  .topbar-2 .warn { color: var(--stamp); font-weight: 700; }
+
+  /* ───────── STAGE CONTAINER ───────── */
+  .stages {
+    flex: 1;
+    position: relative;
+    padding-top: 36px;
+    padding-bottom: 24px;
+    min-height: 540px;
+  }
+
+  .stage {
+    position: absolute;
+    inset: 36px 0 24px 0;
+    opacity: 0;
+    visibility: hidden;
+    transform: translateY(10px);
+    transition: opacity 320ms ease, transform 320ms ease, visibility 0s linear 320ms;
+    display: flex;
+    flex-direction: column;
+  }
+  .stage.active {
+    opacity: 1;
+    visibility: visible;
+    transform: none;
+    transition: opacity 320ms ease, transform 320ms ease, visibility 0s linear 0s;
+  }
+
+  /* ───────── STAGE 1 — BRIEF ───────── */
+  .brief-h {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.28em;
+    color: var(--ink-faint);
+    text-transform: uppercase;
+    margin-bottom: 22px;
+  }
+
+  .brief-body {
+    font-size: 14.5px;
+    line-height: 2.05;
+    color: var(--ink);
+    max-width: 58ch;
+    flex: 1;
+  }
+
+  /* ───────── STAGE 2 — DECIDE ───────── */
+  .decide-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 28px;
+  }
+
+  .decide-h {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.28em;
+    color: var(--ink-faint);
+    text-transform: uppercase;
+  }
+
+  .nav-back {
+    font-size: 11px;
+    letter-spacing: 0.18em;
+    color: var(--ink-faint);
+    text-decoration: none;
+    cursor: pointer;
+    text-transform: uppercase;
+  }
+  .nav-back:hover { color: var(--stamp); }
+
+  .opts { flex: 1; }
+
+  .opt {
+    display: grid;
+    grid-template-columns: 38px 36px 1fr;
+    gap: 12px;
+    padding: 18px 8px 18px 0;
+    cursor: pointer;
+    margin: 0 -8px;
+    transition: background 120ms ease, opacity 200ms ease;
+    align-items: start;
+    border-bottom: 1px dashed rgba(122, 31, 24, 0.12);
+  }
+  .opt:last-child { border-bottom: none; }
+  .opt:hover { background: rgba(122, 31, 24, 0.04); }
+
+  .has-selection .opt:not(.selected) { opacity: 0.35; }
+
+  .opt-num {
+    color: var(--ink);
+    font-size: 14px;
+    line-height: 1.7;
+  }
+  .opt-check {
+    color: var(--ink);
+    font-weight: 700;
+    font-size: 14px;
+    line-height: 1.7;
+    user-select: none;
+  }
+  .opt.selected .opt-check { color: var(--stamp); }
+
+  .opt-title {
+    font-size: 14.5px;
+    font-weight: 700;
+    color: var(--ink);
+    line-height: 1.7;
+    margin-bottom: 4px;
+  }
+  .opt-prose {
+    font-size: 14px;
+    line-height: 1.85;
+    color: var(--ink-soft);
+    max-width: 56ch;
+  }
+
+  /* ───────── STAGE 3 — CONFIRMED ───────── */
+  .confirm-h {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.28em;
+    color: var(--ink-faint);
+    text-transform: uppercase;
+    margin-bottom: 28px;
+  }
+
+  .confirm-body {
+    font-size: 14.5px;
+    line-height: 2.05;
+    color: var(--ink);
+    max-width: 58ch;
+    flex: 1;
+  }
+  .confirm-body .pick {
+    display: block;
+    font-weight: 700;
+    margin: 14px 0;
+    color: var(--ink);
+  }
+
+  .auth-stamp {
+    color: var(--stamp);
+    border: 1.5px solid var(--stamp);
+    padding: 6px 16px;
+    font-size: 11px;
+    letter-spacing: 0.28em;
+    font-weight: 700;
+    transform: rotate(-3deg);
+    background: rgba(122, 31, 24, 0.05);
+    text-transform: uppercase;
+    display: inline-block;
+    margin-top: 20px;
+    opacity: 0;
+    transition: opacity 800ms ease 200ms;
+  }
+  .stage.active .auth-stamp { opacity: 1; }
+
+  /* ───────── ACTIONS ROW ───────── */
+  .actions {
+    margin-top: auto;
+    padding-top: 36px;
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    gap: 18px;
+  }
+
+  .btn {
+    background: transparent;
+    border: 1px solid var(--ink);
+    padding: 10px 22px;
+    font-family: inherit;
+    font-size: 12px;
+    letter-spacing: 0.22em;
+    color: var(--ink);
+    cursor: pointer;
+    text-transform: uppercase;
+    font-weight: 700;
+    transition: all 140ms ease;
+  }
+  .btn:hover:not(:disabled) {
+    background: var(--ink);
+    color: var(--paper);
+  }
+  .btn:disabled {
+    color: var(--ink-faint);
+    border-color: var(--ink-faint);
+    cursor: not-allowed;
+  }
+  .btn.primary {
+    background: var(--ink);
+    color: var(--paper);
+  }
+  .btn.primary:hover:not(:disabled) {
+    background: var(--stamp);
+    border-color: var(--stamp);
+  }
+
+  /* ───────── FOOTER ───────── */
+  .foot {
+    margin-top: 24px;
+    padding-top: 14px;
+    border-top: 1px solid var(--ink-faint);
+    display: flex;
+    justify-content: space-between;
+    font-size: 10.5px;
+    color: var(--ink-faint);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+  }
+</style>
+</head>
+<body>
+
+<div class="page">
+
+  <div class="classification">TOP SECRET</div>
+
+  <!-- ALWAYS-VISIBLE HEADER -->
+  <div class="topbar">
+    <div class="topbar-1">
+      <span class="doc">MINUTE</span>
+      <span class="ref">Op. LYNX-EXFIL &nbsp;·&nbsp; Cycle 3 of 6 &nbsp;·&nbsp; 0314 Z</span>
+    </div>
+    <div class="topbar-2">
+      <div class="lbl">STATUS</div>
+      <div class="v">
+        LYNX cover <strong style="color:var(--ink)">6 / 10</strong>
+        &nbsp;·&nbsp; KESTREL cover <strong style="color:var(--ink)">7 / 10</strong>
+        &nbsp;·&nbsp; Stage <strong style="color:var(--ink)">2 / 3</strong>
+        &nbsp;·&nbsp; Cycles remaining <span class="warn">4 / 6</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- STAGES -->
+  <div class="stages">
+
+    <!-- STAGE 1: BRIEF -->
+    <div class="stage active" data-stage="brief">
+      <div class="brief-h">— Brief —</div>
+      <div class="brief-body">
+        Papers are in hand. KESTREL completed the pickup at the river market without contact; the bag is at the eastern safehouse and clean. LYNX is moving but slow. The southern surveillance grid has not stood down — the photographs from forty-eight hours ago are working their way up. We have four cycles before counter-intel's window closes against us; two before LYNX's legend stops holding. The route options at the eastern terminus are open. None of this lasts.
+      </div>
+      <div class="actions">
+        <button class="btn primary" data-go="decide">Review options ▸</button>
+      </div>
+    </div>
+
+    <!-- STAGE 2: DECIDE -->
+    <div class="stage" data-stage="decide">
+      <div class="decide-top">
+        <span class="decide-h">— Options —</span>
+        <a class="nav-back" data-go="brief">◂ Brief</a>
+      </div>
+      <div class="opts" id="opts">
+
+        <div class="opt" data-n="1">
+          <div class="opt-num">i.</div>
+          <div class="opt-check">[&nbsp;&nbsp;]</div>
+          <div>
+            <div class="opt-title">Move LYNX to the tertiary safehouse alone.</div>
+            <div class="opt-prose">Two hours on foot through three districts. No escort — a second body doubles her signature. She arrives thinned but in position for the train.</div>
+          </div>
+        </div>
+
+        <div class="opt" data-n="2">
+          <div class="opt-num">ii.</div>
+          <div class="opt-check">[&nbsp;&nbsp;]</div>
+          <div>
+            <div class="opt-title">Run the eastern train extraction now.</div>
+            <div class="opt-prose">The papers are in hand. The legend still holds. The surveillance has not closed. None of those three is true if we wait. She will be exposed for the length of the route.</div>
+          </div>
+        </div>
+
+        <div class="opt" data-n="3">
+          <div class="opt-num">iii.</div>
+          <div class="opt-check">[&nbsp;&nbsp;]</div>
+          <div>
+            <div class="opt-title">KESTREL diversion in District 7.</div>
+            <div class="opt-prose">KESTREL walks loud through District 7 to pull counter-intel off LYNX's lanes. She takes the exposure. LYNX gets one clean cycle. The stage does not advance.</div>
+          </div>
+        </div>
+
+        <div class="opt" data-n="4">
+          <div class="opt-num">iv.</div>
+          <div class="opt-check">[&nbsp;&nbsp;]</div>
+          <div>
+            <div class="opt-title">Hold position. Read the room.</div>
+            <div class="opt-prose">We do nothing this cycle. Both agents stay put. We let the surveillance pattern speak. The cost is time, and time is tightening.</div>
+          </div>
+        </div>
+
+      </div>
+      <div class="actions">
+        <button class="btn primary" id="authBtn" disabled>Authorize ▸</button>
+      </div>
+    </div>
+
+    <!-- STAGE 3: CONFIRMED -->
+    <div class="stage" data-stage="confirmed">
+      <div class="confirm-h">— Authorized —</div>
+      <div class="confirm-body">
+        Course of action authorized for cycle 3:
+        <span class="pick" id="confirmPick">—</span>
+        Dispatched to field. Outcome will be reported in the next correspondence.
+
+        <div>
+          <span class="auth-stamp">AUTHORIZED 0314 Z &nbsp;·&nbsp; N.B.</span>
+        </div>
+      </div>
+      <div class="actions">
+        <button class="btn primary">Continue to cycle 4 ▸</button>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- FOOTER -->
+  <div class="foot">
+    <span>PF.19-X &nbsp;·&nbsp; S.42 (Spec. Ops.)</span>
+    <span>Cycle 3 of 6</span>
+  </div>
+
+</div>
+
+<script>
+  const stages = document.querySelectorAll('.stage');
+  const opts = document.querySelectorAll('.opt');
+  const optsContainer = document.getElementById('opts');
+  const authBtn = document.getElementById('authBtn');
+  const confirmPick = document.getElementById('confirmPick');
+
+  const titles = {
+    '1': 'i. Move LYNX to the tertiary safehouse alone.',
+    '2': 'ii. Run the eastern train extraction now.',
+    '3': 'iii. KESTREL diversion in District 7.',
+    '4': 'iv. Hold position. Read the room.'
+  };
+  let picked = null;
+
+  function go(name) {
+    stages.forEach(s => s.classList.toggle('active', s.dataset.stage === name));
+  }
+
+  document.querySelectorAll('[data-go]').forEach(el => {
+    el.addEventListener('click', (e) => {
+      e.preventDefault();
+      go(el.dataset.go);
+    });
+  });
+
+  function select(n) {
+    picked = n;
+    opts.forEach(o => {
+      o.classList.remove('selected');
+      o.querySelector('.opt-check').innerHTML = '[&nbsp;&nbsp;]';
+    });
+    const opt = document.querySelector(`.opt[data-n="${n}"]`);
+    if (opt) {
+      opt.classList.add('selected');
+      opt.querySelector('.opt-check').innerHTML = '[ X ]';
+      optsContainer.classList.add('has-selection');
+      authBtn.disabled = false;
+    }
+  }
+
+  opts.forEach(opt => opt.addEventListener('click', () => select(opt.dataset.n)));
+
+  authBtn.addEventListener('click', () => {
+    if (!picked) return;
+    confirmPick.textContent = titles[picked];
+    go('confirmed');
+  });
+
+  document.addEventListener('keydown', (e) => {
+    const active = document.querySelector('.stage.active').dataset.stage;
+    if (active === 'brief' && e.key === 'Enter') go('decide');
+    if (active === 'decide') {
+      if (['1','2','3','4'].includes(e.key)) select(e.key);
+      if (e.key === 'Enter' && !authBtn.disabled) authBtn.click();
+      if (e.key === 'Escape') go('brief');
+    }
+  });
+</script>
+</body>
+</html>

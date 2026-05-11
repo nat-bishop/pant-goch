@@ -1,0 +1,718 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HANDLER — Modern Intelligence (concept v.0.3-D)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400;1,500&family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;1,400&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0a0c10;
+    --bg-2: #0f1218;
+    --bg-3: #161922;
+    --text: #d6d9de;
+    --text-bright: #f0f2f5;
+    --text-soft: #aab0b8;
+    --text-dim: #7a7f87;
+    --text-faint: #4a4e55;
+    --hairline: #1d2027;
+    --hairline-bright: #2a2e38;
+    --accent: #c47b54;        /* terracotta — only on AUTHORIZE */
+    --accent-bright: #d68d66;
+    --accent-dim: #6f4530;
+    --live: #8db575;          /* pale ops-live green — only the live dot */
+    --warn-bright: #c66a6a;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html, body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Instrument Sans', system-ui, sans-serif;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    min-height: 100vh;
+  }
+
+  /* Film grain — very faint atmospheric texture */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 100;
+    opacity: 0.04;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 300 300' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.6'/%3E%3C/svg%3E");
+    mix-blend-mode: overlay;
+  }
+
+  /* Faint atmospheric gradient — sterile blue cast, almost imperceptible */
+  body::after {
+    content: '';
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: -1;
+    background:
+      radial-gradient(ellipse 60% 50% at 80% 0%, rgba(40, 60, 90, 0.10) 0%, transparent 60%),
+      radial-gradient(ellipse 60% 50% at 0% 100%, rgba(60, 30, 20, 0.06) 0%, transparent 60%);
+  }
+
+  .mono { font-family: 'JetBrains Mono', monospace; }
+  .serif-i { font-family: 'Instrument Serif', serif; font-style: italic; }
+
+  /* ───────── TOP BAR ───────── */
+  .topbar {
+    border-bottom: 1px solid var(--hairline);
+    padding: 14px 56px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+  }
+  .topbar-l { display: flex; gap: 28px; align-items: center; }
+  .topbar-l .restrict { color: var(--text-soft); display: flex; gap: 6px; align-items: center; }
+  .topbar-r { display: flex; gap: 18px; align-items: center; }
+
+  .dot {
+    width: 6px;
+    height: 6px;
+    background: var(--live);
+    border-radius: 50%;
+    box-shadow: 0 0 0 0 rgba(141, 181, 117, 0.55);
+    animation: pulse 2.4s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(141, 181, 117, 0.5); }
+    50%      { box-shadow: 0 0 0 7px rgba(141, 181, 117, 0); }
+  }
+
+  /* ───────── PAGE ───────── */
+  .page {
+    max-width: 1320px;
+    margin: 0 auto;
+    padding: 72px 56px 200px;
+  }
+
+  /* HERO */
+  .hero {
+    margin-bottom: 56px;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: end;
+    gap: 56px;
+    padding-bottom: 36px;
+    border-bottom: 1px solid var(--hairline);
+  }
+  .hero-l .eyebrow {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    letter-spacing: 0.24em;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    margin-bottom: 18px;
+  }
+  .hero-l h1 {
+    font-family: 'Instrument Sans', sans-serif;
+    font-weight: 500;
+    font-size: 60px;
+    line-height: 0.96;
+    letter-spacing: -0.028em;
+    margin-bottom: 16px;
+    color: var(--text-bright);
+  }
+  .hero-l h1 em {
+    font-family: 'Instrument Serif', serif;
+    font-style: italic;
+    font-weight: 400;
+    color: var(--accent);
+  }
+  .hero-l .h-sub {
+    font-family: 'Instrument Serif', serif;
+    font-style: italic;
+    font-size: 20px;
+    color: var(--text-soft);
+    letter-spacing: -0.005em;
+  }
+  .hero-r {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 0.2em;
+    color: var(--text-faint);
+    text-transform: uppercase;
+    text-align: right;
+    line-height: 1.9;
+  }
+  .hero-r .v { color: var(--text-soft); font-size: 11px; }
+
+  /* ───────── STATE ───────── */
+  .state {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 0;
+    margin-bottom: 80px;
+    border-top: 1px solid var(--hairline);
+    border-bottom: 1px solid var(--hairline);
+  }
+  .state-cell {
+    padding: 24px 28px 22px;
+    border-right: 1px solid var(--hairline);
+    position: relative;
+  }
+  .state-cell:last-child { border-right: none; }
+
+  .state-cell .lbl {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 0.22em;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    margin-bottom: 16px;
+  }
+  .state-cell .v {
+    font-family: 'Instrument Sans', sans-serif;
+    font-weight: 500;
+    font-size: 38px;
+    letter-spacing: -0.025em;
+    line-height: 1;
+    margin-bottom: 4px;
+    color: var(--text-bright);
+  }
+  .state-cell .v .max {
+    color: var(--text-dim);
+    font-size: 20px;
+    margin-left: 2px;
+    font-weight: 400;
+  }
+  .state-cell .delta {
+    font-family: 'Instrument Serif', serif;
+    font-style: italic;
+    font-size: 13px;
+    color: var(--text-dim);
+    margin-top: 6px;
+    letter-spacing: -0.005em;
+  }
+  .state-cell .delta.warn { color: var(--warn-bright); }
+  .state-cell.urgent .v { color: var(--warn-bright); }
+
+  .spark {
+    margin-top: 14px;
+    height: 28px;
+    width: 100%;
+    display: block;
+  }
+  .spark path { fill: none; stroke: var(--text-faint); stroke-width: 1.2; }
+  .spark circle { fill: var(--text-soft); }
+  .spark .axis { stroke: var(--hairline-bright); stroke-width: 1; stroke-dasharray: 2 3; }
+
+  /* ───────── MAIN GRID ───────── */
+  .main {
+    display: grid;
+    grid-template-columns: 1fr 320px;
+    gap: 80px;
+    align-items: start;
+  }
+
+  .section-lbl {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    letter-spacing: 0.24em;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    margin-bottom: 22px;
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+  }
+  .section-lbl .badge { color: var(--text-faint); }
+
+  /* MEMO */
+  .memo { margin-bottom: 64px; }
+  .memo-body {
+    font-family: 'Instrument Sans', sans-serif;
+    font-size: 19px;
+    line-height: 1.6;
+    color: var(--text);
+    max-width: 68ch;
+    font-weight: 400;
+    letter-spacing: -0.005em;
+  }
+  .memo-body::first-letter {
+    font-family: 'Instrument Serif', serif;
+    font-style: italic;
+    font-size: 60px;
+    line-height: 0.85;
+    float: left;
+    margin: 8px 14px -4px 0;
+    color: var(--text-soft);
+  }
+  .memo-meta {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 0.22em;
+    color: var(--text-faint);
+    text-transform: uppercase;
+    margin-top: 28px;
+    padding-top: 16px;
+    border-top: 1px solid var(--hairline);
+  }
+
+  /* OPTIONS */
+  .opts-section { margin-bottom: 80px; }
+  .opts {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    background: var(--hairline);
+    border-top: 1px solid var(--hairline);
+    border-bottom: 1px solid var(--hairline);
+  }
+  .opt {
+    background: var(--bg);
+    padding: 30px 32px 30px 28px;
+    cursor: pointer;
+    transition: background 200ms ease, border-color 200ms ease;
+    display: grid;
+    grid-template-columns: 32px 1fr 130px;
+    gap: 28px;
+    align-items: start;
+    border-left: 2px solid transparent;
+    position: relative;
+  }
+  .opt:hover { background: var(--bg-2); }
+  .opt.selected {
+    background: var(--bg-2);
+    border-left-color: var(--accent);
+  }
+
+  .opt-marker {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    color: var(--text-faint);
+    letter-spacing: 0.1em;
+    padding-top: 8px;
+  }
+  .opt.selected .opt-marker { color: var(--accent); }
+
+  .opt-title {
+    font-family: 'Instrument Serif', serif;
+    font-style: italic;
+    font-weight: 400;
+    font-size: 25px;
+    line-height: 1.25;
+    color: var(--text);
+    margin-bottom: 12px;
+    letter-spacing: -0.005em;
+  }
+  .opt.selected .opt-title { color: var(--text-bright); }
+
+  .opt-prose {
+    font-family: 'Instrument Sans', sans-serif;
+    font-size: 15px;
+    line-height: 1.62;
+    color: var(--text-soft);
+    max-width: 58ch;
+  }
+  .opt-tags {
+    margin-top: 18px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 20px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+  }
+  .opt-tags .cost { color: var(--warn-bright); }
+
+  .opt-meta-r {
+    text-align: right;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 0.18em;
+    color: var(--text-faint);
+    text-transform: uppercase;
+    padding-top: 8px;
+    line-height: 1.7;
+  }
+  .opt-meta-r .archetype { color: var(--text-dim); margin-bottom: 4px; }
+
+  /* INBOX */
+  .inbox { position: sticky; top: 40px; }
+  .inbox-list { display: flex; flex-direction: column; gap: 28px; }
+
+  .xmit {
+    padding-bottom: 24px;
+    border-bottom: 1px solid var(--hairline);
+  }
+  .xmit:last-child { border-bottom: none; }
+
+  .xmit-meta {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 12px;
+  }
+  .xmit-from {
+    font-family: 'Instrument Serif', serif;
+    font-style: italic;
+    font-size: 17px;
+    color: var(--text);
+  }
+  .xmit-time {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 0.18em;
+    color: var(--text-faint);
+    text-transform: uppercase;
+  }
+  .xmit p {
+    font-family: 'Instrument Sans', sans-serif;
+    font-size: 13px;
+    line-height: 1.68;
+    color: var(--text-dim);
+  }
+  .xmit.ops .xmit-from { color: var(--text-dim); }
+  .xmit.ops p { color: var(--text-faint); font-style: italic; }
+
+  /* ───────── AUTHORIZE BAR ───────── */
+  .authorize {
+    position: fixed;
+    bottom: 24px;
+    right: 56px;
+    z-index: 50;
+    display: flex;
+    gap: 18px;
+    align-items: center;
+    background: var(--bg);
+    padding: 14px 16px 14px 22px;
+    border: 1px solid var(--hairline-bright);
+    box-shadow: 0 28px 64px rgba(0,0,0,0.55), 0 0 0 1px rgba(0,0,0,0.4);
+  }
+  .authorize .meta {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 0.2em;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    line-height: 1.5;
+    text-align: right;
+  }
+  .authorize .meta .pick { color: var(--text-soft); }
+
+  .auth-btn {
+    background: var(--accent);
+    color: #1a0f0a;
+    padding: 14px 30px;
+    border: none;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: all 180ms ease;
+  }
+  .auth-btn:disabled {
+    background: var(--bg-3);
+    color: var(--text-faint);
+    cursor: not-allowed;
+  }
+  .auth-btn:not(:disabled):hover {
+    background: var(--accent-bright);
+    box-shadow: 0 0 32px rgba(196, 123, 84, 0.45);
+  }
+  .auth-btn:not(:disabled)::after { content: '  ▸'; }
+
+  /* live stamp bottom-left */
+  .live-stamp {
+    position: fixed;
+    bottom: 36px;
+    left: 56px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 0.22em;
+    color: var(--text-faint);
+    text-transform: uppercase;
+    z-index: 50;
+  }
+  .live-stamp .now { color: var(--text-dim); }
+
+  /* keyboard-hint floating in margins */
+  .kb-hint {
+    position: fixed;
+    bottom: 36px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 0.22em;
+    color: var(--text-faint);
+    text-transform: uppercase;
+    z-index: 50;
+  }
+  .kb-key {
+    display: inline-block;
+    padding: 2px 8px;
+    border: 1px solid var(--hairline-bright);
+    color: var(--text-dim);
+    margin: 0 2px;
+    font-size: 10px;
+    border-radius: 2px;
+  }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-l">
+    <span class="restrict">⌖ RESTRICTED</span>
+    <span>OP. LYNX-EXFIL</span>
+    <span>FILE 19-X</span>
+  </div>
+  <div class="topbar-r">
+    <span>HANDLER · NAT B.</span>
+    <span>UPLINK</span>
+    <span class="dot"></span>
+    <span>03:14 Z</span>
+  </div>
+</div>
+
+<div class="page">
+
+  <!-- HERO -->
+  <div class="hero">
+    <div class="hero-l">
+      <div class="eyebrow">Cycle 3 of 6 · Authorization Required</div>
+      <h1>Operation <em>Lynx-Exfil</em></h1>
+      <div class="h-sub">She has the papers. Now she has to leave.</div>
+    </div>
+    <div class="hero-r">
+      <div><span class="v">Day 3</span> of operational window</div>
+      <div><span class="v">2</span> assets active · <span class="v">0</span> lost</div>
+      <div><span class="v">Berlin sector</span> · cell South-7</div>
+    </div>
+  </div>
+
+  <!-- STATE -->
+  <div class="state">
+    <div class="state-cell urgent">
+      <div class="lbl">Cycles Remaining</div>
+      <div class="v">4<span class="max"> / 6</span></div>
+      <svg class="spark" viewBox="0 0 100 28" preserveAspectRatio="none">
+        <line class="axis" x1="0" y1="14" x2="100" y2="14" />
+        <path d="M 5 3 L 32 7 L 60 11 L 80 14" />
+        <circle cx="80" cy="14" r="2.6" />
+        <path d="M 80 14 L 96 22" stroke="var(--hairline-bright)" stroke-dasharray="2 2"/>
+      </svg>
+      <div class="delta warn">window narrowing</div>
+    </div>
+
+    <div class="state-cell">
+      <div class="lbl">Lynx · Cover</div>
+      <div class="v">6<span class="max"> / 10</span></div>
+      <svg class="spark" viewBox="0 0 100 28" preserveAspectRatio="none">
+        <line class="axis" x1="0" y1="14" x2="100" y2="14" />
+        <path d="M 5 5 L 32 6 L 60 9 L 80 13" />
+        <circle cx="80" cy="13" r="2.6" />
+      </svg>
+      <div class="delta">legend holding · slow decay</div>
+    </div>
+
+    <div class="state-cell">
+      <div class="lbl">Kestrel · Cover</div>
+      <div class="v">7<span class="max"> / 10</span></div>
+      <svg class="spark" viewBox="0 0 100 28" preserveAspectRatio="none">
+        <line class="axis" x1="0" y1="14" x2="100" y2="14" />
+        <path d="M 5 3 L 32 4 L 60 9 L 80 11" />
+        <circle cx="80" cy="11" r="2.6" />
+      </svg>
+      <div class="delta">market pickup cost · stable</div>
+    </div>
+
+    <div class="state-cell">
+      <div class="lbl">Extraction Stage</div>
+      <div class="v">2<span class="max"> / 3</span></div>
+      <svg class="spark" viewBox="0 0 100 28" preserveAspectRatio="none">
+        <line class="axis" x1="0" y1="14" x2="100" y2="14" />
+        <circle cx="14" cy="14" r="3.2" fill="var(--text-soft)"/>
+        <line x1="18" y1="14" x2="46" y2="14" stroke="var(--text-faint)" stroke-width="1.2"/>
+        <circle cx="50" cy="14" r="3.2" fill="var(--text-soft)"/>
+        <line x1="54" y1="14" x2="82" y2="14" stroke="var(--text-faint)" stroke-width="1.2"/>
+        <circle cx="86" cy="14" r="3.2" fill="none" stroke="var(--text-faint)" stroke-width="1.2"/>
+      </svg>
+      <div class="delta">papers in hand · exfil pending</div>
+    </div>
+  </div>
+
+  <div class="main">
+
+    <div>
+      <!-- MEMO -->
+      <div class="memo">
+        <div class="section-lbl">State of Play <span class="badge">/ ops desk · cycle open</span></div>
+        <div class="memo-body">
+          Papers are in hand. Kestrel completed the pickup at the river market without contact; the bag is at the eastern safehouse and clean. Lynx is moving but slow. The southern surveillance grid has not stood down — the photographs from forty-eight hours ago are working their way up. We have four cycles before counter-intel's window for an arrest closes against us; we have two before Lynx's existing legend stops holding. The route options at the eastern terminus are open. None of this lasts.
+        </div>
+        <div class="memo-meta">Operations Desk · synthesized 03:14:22 Z · cycle 3 open</div>
+      </div>
+
+      <!-- OPTIONS -->
+      <div class="opts-section">
+        <div class="section-lbl">Options <span class="badge">/ 4 candidates drafted</span></div>
+        <div class="opts">
+
+          <div class="opt" data-n="1">
+            <div class="opt-marker">i</div>
+            <div>
+              <div class="opt-title">Move Lynx to the tertiary safehouse alone.</div>
+              <div class="opt-prose">Lynx walks to the tertiary safehouse on her own. Two hours through three districts. We are not putting another body on the street with her — anyone with her doubles her signature. She will arrive thinned but in position for the train.</div>
+              <div class="opt-tags">
+                <span>Stage holds</span>
+                <span class="cost">Lynx −1 cover</span>
+              </div>
+            </div>
+            <div class="opt-meta-r">
+              <div class="archetype">LYNX_MOVES_<br>TO_SAFEHOUSE</div>
+              <div>Lynx</div>
+            </div>
+          </div>
+
+          <div class="opt" data-n="2">
+            <div class="opt-marker">ii</div>
+            <div>
+              <div class="opt-title">Run the eastern train extraction now.</div>
+              <div class="opt-prose">We move on the eastern train route this cycle. Direct. She has the papers; the legend still holds; the surveillance has not closed. If we wait, none of those three remain true. The cost is sharp — she will be exposed for the duration of the route.</div>
+              <div class="opt-tags">
+                <span>Stage → 3</span>
+                <span class="cost">Lynx −3 to −4 cover</span>
+              </div>
+            </div>
+            <div class="opt-meta-r">
+              <div class="archetype">RUN_EXFIL</div>
+              <div>Lynx</div>
+            </div>
+          </div>
+
+          <div class="opt" data-n="3">
+            <div class="opt-marker">iii</div>
+            <div>
+              <div class="opt-title">Kestrel creates a diversion in District 7.</div>
+              <div class="opt-prose">Kestrel walks a noisy pattern through District 7 to draw counter-intel attention away from Lynx's lanes. Kestrel takes the exposure; Lynx gets a clean cycle. Heavy on Kestrel: she will lose meaningful cover. Stage does not advance.</div>
+              <div class="opt-tags">
+                <span>Stage holds</span>
+                <span class="cost">Kestrel −3 · Lynx +1</span>
+              </div>
+            </div>
+            <div class="opt-meta-r">
+              <div class="archetype">DIVERSION_<br>BY_AGENT</div>
+              <div>Kestrel</div>
+            </div>
+          </div>
+
+          <div class="opt" data-n="4">
+            <div class="opt-marker">iv</div>
+            <div>
+              <div class="opt-title">Hold position. Read the room.</div>
+              <div class="opt-prose">We do nothing this cycle. Lynx stays put. Kestrel stays put. We let the surveillance pattern speak. The cost is time — and the world tightens around them. Stage does not advance; cover decays passively as the sweep continues.</div>
+              <div class="opt-tags">
+                <span>Stage holds</span>
+                <span class="cost">Passive decay · both agents</span>
+              </div>
+            </div>
+            <div class="opt-meta-r">
+              <div class="archetype">HOLD</div>
+              <div>—</div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+
+    <!-- INBOX -->
+    <aside class="inbox">
+      <div class="section-lbl">Dispatches <span class="badge">/ last 2</span></div>
+      <div class="inbox-list">
+        <div class="xmit">
+          <div class="xmit-meta">
+            <div class="xmit-from">Kestrel</div>
+            <div class="xmit-time">C2 · 02:48 Z</div>
+          </div>
+          <p>The market was loud, which is what we wanted. Made the pickup at the second flower stall on the river side. Do not know who the previous owner was. The bag is heavier than it should be — papers, but also something flat and metal, which I have not opened and will not. Back at the eastern safehouse. Was followed for three blocks by a man in a grey jacket who lost interest at the bridge. Do not think he was ours. Do not think he was theirs either.</p>
+        </div>
+        <div class="xmit ops">
+          <div class="xmit-meta">
+            <div class="xmit-from">Operations</div>
+            <div class="xmit-time">C1 · 02:12 Z</div>
+          </div>
+          <p>Sleeper Redfield activated for the document pickup phase. Told only what he needs — a single drop, no follow-up. He will not see Kestrel. He will not know who took the bag.</p>
+        </div>
+      </div>
+    </aside>
+
+  </div>
+</div>
+
+<div class="live-stamp">
+  <span class="now">Tick</span> 03:14:22 Z · awaiting handler authorization
+</div>
+
+<div class="kb-hint">
+  <span class="kb-key">1</span><span class="kb-key">2</span><span class="kb-key">3</span><span class="kb-key">4</span>&nbsp; select &nbsp;·&nbsp; <span class="kb-key">↵</span>&nbsp; authorize
+</div>
+
+<div class="authorize">
+  <div class="meta">
+    Selection<br>
+    <span class="pick" id="picked">— none</span>
+  </div>
+  <button class="auth-btn" id="auth" disabled>Authorize</button>
+</div>
+
+<script>
+  const options = document.querySelectorAll('.opt');
+  const picked = document.getElementById('picked');
+  const auth = document.getElementById('auth');
+
+  const titles = {
+    '1': 'Lynx → safehouse',
+    '2': 'Run exfil · now',
+    '3': 'Kestrel · diversion',
+    '4': 'Hold'
+  };
+
+  function select(n) {
+    options.forEach(o => o.classList.remove('selected'));
+    const opt = document.querySelector(`.opt[data-n="${n}"]`);
+    if (opt) {
+      opt.classList.add('selected');
+      picked.textContent = `${n} · ${titles[n]}`;
+      auth.disabled = false;
+    }
+  }
+
+  options.forEach(opt => {
+    opt.addEventListener('click', () => select(opt.dataset.n));
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if (['1','2','3','4'].includes(e.key)) select(e.key);
+    if (e.key === 'Enter' && !auth.disabled) {
+      auth.style.background = 'var(--live)';
+      auth.style.color = '#0a1207';
+      auth.textContent = 'Authorized';
+    }
+  });
+</script>
+</body>
+</html>

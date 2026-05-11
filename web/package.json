@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "dev:all": "concurrently -k --kill-others-on-fail -n sidecar,web -c blue,green \"cd ../npc_service && uv run python -m npc_service\" \"vite\"",
+    "dev:all": "concurrently -k --kill-others-on-fail -n sidecar,web -c blue,green \"cd ../handler && uv run python -m handler\" \"vite\"",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "typecheck": "tsc -b --noEmit"

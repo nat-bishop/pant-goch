@@ -1,0 +1,1779 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Option D, concrete &mdash; engine + two story variants</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,500;9..144,600;9..144,700;9..144,800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #f4f1ea;
+    --surface: #fefcf7;
+    --surface-2: #faf6ec;
+    --surface-sunk: #ebe6db;
+    --border: #d8d2c5;
+    --border-strong: #b8b0a0;
+    --hairline: #e2dccf;
+    --text: #1f1d1a;
+    --text-2: #6b665e;
+    --text-3: #948e83;
+    --text-faint: #b8b0a0;
+    --accent: #8a3324;
+    --accent-2: #6b1f1f;
+    --accent-soft: #c9a487;
+    --accent-bg: #f0e2d0;
+    --code-bg: #232118;
+    --code-text: #e5e0d4;
+    --code-comment: #7a7460;
+    --code-key: #d4a87c;
+    --code-string: #a8c995;
+    --code-accent: #e4a374;
+    --code-num: #c98780;
+    --good: #5a7a4a;
+    --warn: #c19042;
+    --bad: #a84a3a;
+    --removed: #a84a3a;
+    --added: #5a7a4a;
+
+    /* Variant: institutional (Frankenstein) */
+    --inst-bg: #e8eced;
+    --inst-surface: #f6f8f8;
+    --inst-card: #ffffff;
+    --inst-border: #c8cfd1;
+    --inst-text: #232a2c;
+    --inst-text-2: #5b6669;
+    --inst-text-3: #8c9799;
+    --inst-accent: #2c5560;
+    --inst-accent-soft: #87a5ad;
+    --inst-warn: #8c5a3c;
+
+    /* Variant: pilgrim */
+    --pil-bg: #efe4cf;
+    --pil-surface: #f9efd9;
+    --pil-card: #fdf5e0;
+    --pil-border: #c8b48d;
+    --pil-text: #2a2218;
+    --pil-text-2: #6e5f47;
+    --pil-text-3: #9c8a6c;
+    --pil-accent: #84421f;
+    --pil-accent-soft: #c08a5a;
+    --pil-warn: #7a5d1f;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { font-size: 16px; scroll-behavior: smooth; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Inter', -apple-system, sans-serif;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    background-image:
+      radial-gradient(circle at 10% 0%, rgba(138, 51, 36, 0.03) 0%, transparent 40%),
+      radial-gradient(circle at 90% 60%, rgba(58, 95, 90, 0.025) 0%, transparent 50%);
+  }
+
+  .page {
+    max-width: 1320px;
+    margin: 0 auto;
+    padding: 80px 56px 120px;
+  }
+
+  /* ==== Header ==== */
+  .doc-header {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: end;
+    gap: 32px;
+    padding-bottom: 28px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 72px;
+  }
+
+  .eyebrow {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 18px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .eyebrow::before {
+    content: '';
+    width: 24px; height: 1px;
+    background: var(--accent);
+    display: block;
+  }
+  .eyebrow span {
+    color: var(--text-3);
+    font-weight: 500;
+  }
+
+  h1 {
+    font-family: 'Fraunces', Georgia, serif;
+    font-weight: 500;
+    font-size: clamp(36px, 4.5vw, 56px);
+    line-height: 1.05;
+    letter-spacing: -0.02em;
+    color: var(--text);
+    max-width: 22ch;
+  }
+  h1 em {
+    font-style: italic;
+    font-weight: 400;
+    color: var(--accent);
+  }
+
+  .doc-meta {
+    text-align: right;
+    font-size: 12px;
+    color: var(--text-2);
+    line-height: 1.6;
+    font-variant-numeric: tabular-nums;
+  }
+  .doc-meta strong { color: var(--text); font-weight: 600; }
+
+  /* ==== Section headers ==== */
+  .section {
+    margin-bottom: 112px;
+  }
+  .section:last-of-type { margin-bottom: 0; }
+
+  .section-head {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 36px;
+    align-items: start;
+    padding-bottom: 32px;
+    margin-bottom: 48px;
+    border-bottom: 1px solid var(--hairline);
+  }
+  .section-num {
+    font-family: 'Fraunces', serif;
+    font-size: 64px;
+    font-weight: 300;
+    font-style: italic;
+    color: var(--accent);
+    line-height: 0.85;
+    letter-spacing: -0.04em;
+  }
+  .section-head h2 {
+    font-family: 'Fraunces', serif;
+    font-weight: 500;
+    font-size: 32px;
+    line-height: 1.1;
+    letter-spacing: -0.015em;
+    color: var(--text);
+    margin-bottom: 12px;
+    max-width: 28ch;
+  }
+  .section-head h2 em { font-style: italic; color: var(--accent); }
+  .section-head .lead {
+    font-size: 16px;
+    color: var(--text-2);
+    line-height: 1.6;
+    max-width: 64ch;
+  }
+
+  /* ==== Engine diff ==== */
+  .engine-diff {
+    display: grid;
+    grid-template-columns: 1fr 64px 1fr;
+    gap: 0;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+
+  .engine-col {
+    padding: 36px 36px 40px;
+  }
+  .engine-col.today {
+    background: var(--surface-2);
+    border-right: 1px solid var(--hairline);
+  }
+  .engine-col.new {
+    border-left: 1px solid var(--hairline);
+  }
+
+  .engine-col-head {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    margin-bottom: 28px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--hairline);
+  }
+  .engine-col-head .label {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--text-3);
+  }
+  .engine-col-head .title {
+    font-family: 'Fraunces', serif;
+    font-size: 22px;
+    font-style: italic;
+    font-weight: 500;
+    color: var(--text);
+  }
+  .engine-col.new .engine-col-head .title { color: var(--accent); }
+
+  .engine-arrow {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+  }
+  .engine-arrow svg { color: var(--accent); }
+
+  .engine-section {
+    margin-bottom: 24px;
+  }
+  .engine-section-label {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--text-3);
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .engine-section-label::before {
+    content: '';
+    width: 12px; height: 1px;
+    background: var(--text-3);
+  }
+
+  .engine-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    margin-bottom: 4px;
+    background: var(--surface);
+    border: 1px solid var(--hairline);
+    border-radius: 3px;
+    font-size: 13px;
+    color: var(--text);
+    font-family: 'JetBrains Mono', monospace;
+  }
+  .engine-col.today .engine-item { background: var(--surface); }
+
+  .engine-item.removed {
+    background: #f4dcd6;
+    border-color: #d49a8a;
+    color: var(--removed);
+    text-decoration: line-through;
+    text-decoration-color: #d49a8a;
+  }
+  .engine-item.added {
+    background: #dfe9d4;
+    border-color: #97b682;
+    color: var(--added);
+    font-weight: 600;
+  }
+  .engine-item.same { opacity: 0.7; }
+
+  .engine-item .badge {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    padding: 2px 6px;
+    border-radius: 100px;
+    text-transform: uppercase;
+    font-family: 'Inter';
+    margin-left: auto;
+  }
+  .engine-item.removed .badge { background: #d49a8a; color: white; }
+  .engine-item.added .badge { background: var(--added); color: white; }
+
+  .engine-item .desc {
+    color: var(--text-2);
+    font-family: 'Inter';
+    font-size: 11px;
+    margin-left: auto;
+    font-weight: 400;
+  }
+  .engine-item.added .desc { color: var(--added); opacity: 0.85; }
+  .engine-item.removed .desc { display: none; }
+
+  .engine-pitch {
+    margin-top: 56px;
+    padding: 32px 40px;
+    background: var(--accent-bg);
+    border-left: 3px solid var(--accent);
+    border-radius: 0 4px 4px 0;
+  }
+  .engine-pitch p {
+    font-family: 'Fraunces', serif;
+    font-size: 22px;
+    line-height: 1.4;
+    color: var(--text);
+    font-weight: 400;
+  }
+  .engine-pitch p em { color: var(--accent); font-style: italic; }
+
+  /* ==== Shift loop ==== */
+  .loop-canvas {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 48px;
+  }
+  .loop-canvas svg { width: 100%; height: auto; display: block; }
+
+  .loop-legend {
+    display: flex;
+    gap: 32px;
+    justify-content: center;
+    margin-top: 32px;
+    padding-top: 28px;
+    border-top: 1px solid var(--hairline);
+    flex-wrap: wrap;
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 12px;
+    color: var(--text-2);
+  }
+  .legend-dot {
+    width: 12px; height: 12px;
+    border-radius: 50%;
+  }
+  .legend-dot.authored { background: #3a5f5a; }
+  .legend-dot.llm { background: var(--accent); }
+  .legend-dot.player { background: #c19042; }
+  .legend-item strong { color: var(--text); font-weight: 600; }
+
+  /* ==== Variant gallery ==== */
+  .variants {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 32px;
+  }
+
+  .variant {
+    border-radius: 6px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+  }
+
+  .variant.institutional {
+    background: var(--inst-bg);
+  }
+  .variant.pilgrim {
+    background: var(--pil-bg);
+  }
+
+  .variant-head {
+    padding: 28px 32px 24px;
+    border-bottom: 1px solid var(--border);
+  }
+  .variant.institutional .variant-head {
+    background: var(--inst-surface);
+    border-bottom-color: var(--inst-border);
+  }
+  .variant.pilgrim .variant-head {
+    background: var(--pil-surface);
+    border-bottom-color: var(--pil-border);
+  }
+
+  .variant-eyebrow {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    margin-bottom: 10px;
+  }
+  .variant.institutional .variant-eyebrow { color: var(--inst-accent); }
+  .variant.pilgrim .variant-eyebrow { color: var(--pil-accent); }
+
+  .variant-title {
+    font-family: 'Fraunces', serif;
+    font-size: 26px;
+    font-weight: 500;
+    line-height: 1.15;
+    letter-spacing: -0.01em;
+    margin-bottom: 8px;
+  }
+  .variant.institutional .variant-title { color: var(--inst-text); }
+  .variant.pilgrim .variant-title { color: var(--pil-text); }
+  .variant-title em { font-style: italic; }
+  .variant.institutional .variant-title em { color: var(--inst-accent); }
+  .variant.pilgrim .variant-title em { color: var(--pil-accent); }
+
+  .variant-sub {
+    font-size: 13px;
+    line-height: 1.55;
+    max-width: 50ch;
+  }
+  .variant.institutional .variant-sub { color: var(--inst-text-2); }
+  .variant.pilgrim .variant-sub { color: var(--pil-text-2); }
+
+  /* world shape mini diagram */
+  .world-shape {
+    padding: 24px 32px;
+    border-bottom: 1px solid var(--border);
+  }
+  .variant.institutional .world-shape { border-bottom-color: var(--inst-border); }
+  .variant.pilgrim .world-shape { border-bottom-color: var(--pil-border); }
+  .world-shape svg { width: 100%; height: 120px; }
+  .world-shape-caption {
+    margin-top: 10px;
+    font-size: 11px;
+    font-style: italic;
+    line-height: 1.5;
+  }
+  .variant.institutional .world-shape-caption { color: var(--inst-text-3); }
+  .variant.pilgrim .world-shape-caption { color: var(--pil-text-3); }
+
+  /* ==== Mockup screens ==== */
+  .mockups {
+    padding: 24px;
+    display: grid;
+    gap: 24px;
+  }
+
+  .mockup {
+    border-radius: 4px;
+    overflow: hidden;
+    box-shadow: 0 4px 14px rgba(0,0,0,0.08), 0 1px 2px rgba(0,0,0,0.05);
+    border: 1px solid;
+  }
+  .variant.institutional .mockup { border-color: var(--inst-border); background: var(--inst-card); }
+  .variant.pilgrim .mockup { border-color: var(--pil-border); background: var(--pil-card); }
+
+  .mockup-chrome {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 14px;
+    border-bottom: 1px solid;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 0.05em;
+  }
+  .variant.institutional .mockup-chrome {
+    background: #d8dee0;
+    border-bottom-color: var(--inst-border);
+    color: var(--inst-text-3);
+  }
+  .variant.pilgrim .mockup-chrome {
+    background: #e3d3ab;
+    border-bottom-color: var(--pil-border);
+    color: var(--pil-text-3);
+  }
+  .chrome-dots {
+    display: flex;
+    gap: 4px;
+  }
+  .chrome-dots span {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: rgba(0,0,0,0.18);
+  }
+  .chrome-title {
+    flex: 1;
+    text-align: center;
+    font-weight: 600;
+  }
+  .chrome-meta {
+    color: rgba(0,0,0,0.45);
+  }
+
+  .mockup-body {
+    padding: 20px 22px 22px;
+    min-height: 280px;
+    position: relative;
+  }
+
+  .mockup-stage-label {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    padding: 4px 10px;
+    border-radius: 2px;
+    margin-bottom: 16px;
+    display: inline-block;
+  }
+  .variant.institutional .mockup-stage-label {
+    background: var(--inst-accent);
+    color: white;
+  }
+  .variant.pilgrim .mockup-stage-label {
+    background: var(--pil-accent);
+    color: white;
+  }
+
+  /* Header inside mockup */
+  .mockup-day-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 18px;
+    padding-bottom: 12px;
+    border-bottom: 1px dashed;
+  }
+  .variant.institutional .mockup-day-header { border-bottom-color: var(--inst-border); }
+  .variant.pilgrim .mockup-day-header { border-bottom-color: var(--pil-border); }
+
+  .mockup-day-title {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+  }
+  .variant.institutional .mockup-day-title { color: var(--inst-text-3); }
+  .variant.pilgrim .mockup-day-title { color: var(--pil-text-3); }
+  .mockup-day-title strong {
+    color: var(--text);
+    font-weight: 700;
+  }
+  .variant.institutional .mockup-day-title strong { color: var(--inst-text); }
+  .variant.pilgrim .mockup-day-title strong { color: var(--pil-text); }
+
+  .mockup-tokens {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11px;
+  }
+  .variant.institutional .mockup-tokens { color: var(--inst-text-2); }
+  .variant.pilgrim .mockup-tokens { color: var(--pil-text-2); }
+  .token-pip {
+    width: 12px; height: 12px;
+    border-radius: 50%;
+  }
+  .variant.institutional .token-pip.full { background: var(--inst-accent); }
+  .variant.institutional .token-pip.empty {
+    background: transparent;
+    border: 1.5px dashed var(--inst-accent-soft);
+  }
+  .variant.pilgrim .token-pip.full { background: var(--pil-accent); }
+  .variant.pilgrim .token-pip.empty {
+    background: transparent;
+    border: 1.5px dashed var(--pil-accent-soft);
+  }
+
+  /* Opportunity cards */
+  .opp-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+
+  .opp-card {
+    padding: 12px 14px;
+    border-radius: 3px;
+    font-size: 12px;
+    line-height: 1.5;
+    cursor: pointer;
+    transition: transform 0.15s ease;
+    border: 1px solid;
+  }
+  .variant.institutional .opp-card {
+    background: white;
+    border-color: var(--inst-border);
+  }
+  .variant.pilgrim .opp-card {
+    background: var(--pil-surface);
+    border-color: var(--pil-border);
+  }
+  .opp-card:hover { transform: translateY(-1px); }
+
+  .opp-card.focused {
+    box-shadow: 0 0 0 2px;
+  }
+  .variant.institutional .opp-card.focused {
+    box-shadow: 0 0 0 2px var(--inst-accent);
+  }
+  .variant.pilgrim .opp-card.focused {
+    box-shadow: 0 0 0 2px var(--pil-accent);
+  }
+
+  .opp-title {
+    font-family: 'Fraunces', serif;
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1.3;
+    margin-bottom: 6px;
+  }
+  .variant.institutional .opp-title { color: var(--inst-text); }
+  .variant.pilgrim .opp-title { color: var(--pil-text); }
+
+  .opp-flavor {
+    font-style: italic;
+    line-height: 1.5;
+    margin-bottom: 10px;
+    font-size: 11px;
+  }
+  .variant.institutional .opp-flavor { color: var(--inst-text-2); }
+  .variant.pilgrim .opp-flavor { color: var(--pil-text-2); }
+
+  .opp-meta {
+    display: flex;
+    justify-content: space-between;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+  }
+  .variant.institutional .opp-meta { color: var(--inst-text-3); }
+  .variant.pilgrim .opp-meta { color: var(--pil-text-3); }
+
+  .opp-cost {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .opp-cost-pip {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+  }
+  .variant.institutional .opp-cost-pip { background: var(--inst-accent); }
+  .variant.pilgrim .opp-cost-pip { background: var(--pil-accent); }
+
+  .opp-tag {
+    font-weight: 600;
+  }
+  .opp-tag.llm {
+    color: var(--accent);
+  }
+
+  /* Locked opportunity */
+  .opp-card.locked {
+    opacity: 0.55;
+  }
+  .opp-card.locked .opp-title { color: var(--text-3); }
+
+  /* Mini-scene mockup */
+  .scene-body {
+    padding: 6px 0;
+  }
+  .scene-prose {
+    font-family: 'Fraunces', serif;
+    font-size: 14px;
+    line-height: 1.6;
+    margin-bottom: 18px;
+  }
+  .variant.institutional .scene-prose { color: var(--inst-text); }
+  .variant.pilgrim .scene-prose { color: var(--pil-text); }
+  .scene-prose .narr {
+    font-style: italic;
+  }
+  .variant.institutional .scene-prose .narr { color: var(--inst-text-2); }
+  .variant.pilgrim .scene-prose .narr { color: var(--pil-text-2); }
+
+  .scene-prompt {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    margin: 16px 0 10px;
+  }
+  .variant.institutional .scene-prompt { color: var(--inst-text-3); }
+  .variant.pilgrim .scene-prompt { color: var(--pil-text-3); }
+
+  .scene-choices {
+    display: grid;
+    gap: 6px;
+  }
+  .scene-choice {
+    padding: 10px 14px;
+    border-radius: 2px;
+    border: 1px solid;
+    font-size: 12px;
+    line-height: 1.5;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .variant.institutional .scene-choice {
+    background: white;
+    border-color: var(--inst-border);
+    color: var(--inst-text);
+  }
+  .variant.pilgrim .scene-choice {
+    background: var(--pil-surface);
+    border-color: var(--pil-border);
+    color: var(--pil-text);
+  }
+  .scene-choice-marker {
+    font-family: 'Fraunces', serif;
+    font-style: italic;
+    font-size: 14px;
+    font-weight: 500;
+    width: 18px;
+    text-align: center;
+  }
+  .variant.institutional .scene-choice-marker { color: var(--inst-accent); }
+  .variant.pilgrim .scene-choice-marker { color: var(--pil-accent); }
+
+  .scene-choice-effect {
+    margin-left: auto;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px;
+    letter-spacing: 0.05em;
+    padding: 2px 6px;
+    border-radius: 100px;
+    font-weight: 600;
+  }
+  .variant.institutional .scene-choice-effect {
+    background: rgba(44, 85, 96, 0.1);
+    color: var(--inst-accent);
+  }
+  .variant.pilgrim .scene-choice-effect {
+    background: rgba(132, 66, 31, 0.1);
+    color: var(--pil-accent);
+  }
+
+  /* Shift end mockup */
+  .shift-end {
+    padding: 12px 4px;
+  }
+  .shift-end-title {
+    font-family: 'Fraunces', serif;
+    font-size: 24px;
+    font-style: italic;
+    font-weight: 500;
+    margin-bottom: 14px;
+  }
+  .variant.institutional .shift-end-title { color: var(--inst-text); }
+  .variant.pilgrim .shift-end-title { color: var(--pil-text); }
+
+  .shift-end-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 8px 0;
+    border-bottom: 1px dashed;
+    font-size: 12px;
+  }
+  .variant.institutional .shift-end-row { border-bottom-color: var(--inst-border); color: var(--inst-text-2); }
+  .variant.pilgrim .shift-end-row { border-bottom-color: var(--pil-border); color: var(--pil-text-2); }
+  .shift-end-row:last-of-type { border-bottom: none; }
+  .shift-end-row strong {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .variant.institutional .shift-end-row strong { color: var(--inst-text-3); }
+  .variant.pilgrim .shift-end-row strong { color: var(--pil-text-3); }
+
+  .shift-end-quality {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .shift-end-quality.up { color: var(--good); }
+  .shift-end-quality.down { color: var(--bad); }
+
+  .shift-end-next {
+    margin-top: 20px;
+    padding: 14px 18px;
+    border-radius: 3px;
+    text-align: center;
+    font-family: 'Fraunces', serif;
+    font-size: 14px;
+    font-style: italic;
+    font-weight: 500;
+    cursor: pointer;
+  }
+  .variant.institutional .shift-end-next {
+    background: var(--inst-accent);
+    color: white;
+  }
+  .variant.pilgrim .shift-end-next {
+    background: var(--pil-accent);
+    color: white;
+  }
+
+  /* ==== LLM schema ==== */
+  .schemas {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 24px;
+  }
+
+  .schema {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .schema-head {
+    padding: 20px 28px;
+    background: var(--surface-2);
+    border-bottom: 1px solid var(--border);
+  }
+  .schema-eyebrow {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 6px;
+  }
+  .schema-title {
+    font-family: 'Fraunces', serif;
+    font-size: 22px;
+    font-weight: 500;
+    font-style: italic;
+    color: var(--text);
+    margin-bottom: 6px;
+    letter-spacing: -0.01em;
+  }
+  .schema-sub {
+    font-size: 13px;
+    color: var(--text-2);
+    line-height: 1.5;
+    max-width: 50ch;
+  }
+
+  .schema-body {
+    padding: 24px 28px 28px;
+  }
+  .schema-body h5 {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--text-3);
+    margin: 18px 0 10px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .schema-body h5:first-child { margin-top: 0; }
+  .schema-body h5::before {
+    content: '';
+    width: 12px; height: 1px;
+    background: var(--text-3);
+  }
+
+  /* Code blocks */
+  .code {
+    background: var(--code-bg);
+    color: var(--code-text);
+    border-radius: 4px;
+    padding: 16px 18px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    line-height: 1.65;
+    overflow-x: auto;
+    white-space: pre;
+  }
+  .code .c { color: var(--code-comment); font-style: italic; }
+  .code .k { color: var(--code-key); }
+  .code .s { color: var(--code-string); }
+  .code .a { color: var(--code-accent); }
+  .code .n { color: var(--code-num); }
+
+  /* ==== Anti-AI-Dungeon checklist ==== */
+  .checklist {
+    display: grid;
+    gap: 16px;
+  }
+  .checklist-item {
+    display: grid;
+    grid-template-columns: 56px 1fr 1fr;
+    gap: 28px;
+    align-items: center;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 24px 28px;
+  }
+  .checklist-num {
+    font-family: 'Fraunces', serif;
+    font-size: 36px;
+    font-weight: 300;
+    font-style: italic;
+    color: var(--accent-soft);
+    line-height: 1;
+  }
+  .checklist-rule {
+    font-family: 'Fraunces', serif;
+    font-size: 17px;
+    line-height: 1.45;
+    color: var(--text);
+    font-weight: 400;
+  }
+  .checklist-rule em { font-style: italic; color: var(--accent); }
+  .checklist-impl {
+    font-size: 12px;
+    color: var(--text-2);
+    line-height: 1.55;
+    padding-left: 16px;
+    border-left: 2px solid var(--accent-soft);
+  }
+  .checklist-impl code {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: var(--text);
+    background: var(--surface-sunk);
+    padding: 1px 5px;
+    border-radius: 2px;
+  }
+
+  /* ==== Authoring sample ==== */
+  .yaml-pair {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+  }
+  .yaml-card {
+    background: var(--code-bg);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .yaml-head {
+    padding: 14px 20px;
+    background: rgba(255,255,255,0.04);
+    border-bottom: 1px solid rgba(255,255,255,0.08);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .yaml-head .label {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--code-accent);
+  }
+  .yaml-head .filename {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: var(--code-comment);
+  }
+  .yaml-card pre.code {
+    border-radius: 0;
+    padding: 18px 20px 22px;
+  }
+
+  /* ==== Footer ==== */
+  footer {
+    margin-top: 80px;
+    padding-top: 32px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+    font-size: 12px;
+    color: var(--text-3);
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  @media (max-width: 1100px) {
+    .variants { grid-template-columns: 1fr; }
+    .schemas { grid-template-columns: 1fr; }
+    .yaml-pair { grid-template-columns: 1fr; }
+  }
+  @media (max-width: 720px) {
+    .engine-diff { grid-template-columns: 1fr; }
+    .engine-arrow { display: none; }
+    .checklist-item { grid-template-columns: 1fr; }
+    .page { padding: 48px 24px 80px; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <!-- ===== HEADER ===== -->
+  <header class="doc-header">
+    <div>
+      <div class="eyebrow">Option D &middot; concrete <span>&middot; engine + two story variants</span></div>
+      <h1>What changes for the <em>engine</em>, what the <em>player</em> sees.</h1>
+    </div>
+    <div class="doc-meta">
+      <strong>Companion artifact</strong><br>
+      Option D concretion · v0.1<br>
+      2 story variants &middot; 6 mockups
+    </div>
+  </header>
+
+  <!-- ===== SECTION 1: ENGINE DIFF ===== -->
+  <section class="section">
+    <div class="section-head">
+      <div class="section-num">01</div>
+      <div>
+        <h2>What changes in the <em>engine</em>.</h2>
+        <p class="lead">Selection-only input collapses three LLM agents into one new one. The deterministic spine is mostly unchanged: same predicates, same state-write paths, same drift suite. The LLM's role shifts from <em>interpreting player input</em> to <em>generating constrained opportunities</em>.</p>
+      </div>
+    </div>
+
+    <div class="engine-diff">
+      <!-- TODAY column -->
+      <div class="engine-col today">
+        <div class="engine-col-head">
+          <div class="label">Today</div>
+          <div class="title">free text + 6 agents</div>
+        </div>
+
+        <div class="engine-section">
+          <div class="engine-section-label">Player verb</div>
+          <div class="engine-item">compose <span class="desc">free-form reply</span></div>
+        </div>
+
+        <div class="engine-section">
+          <div class="engine-section-label">LLM agents</div>
+          <div class="engine-item">chat <span class="desc">renders prose</span></div>
+          <div class="engine-item">classifier <span class="desc">verdict from reply</span></div>
+          <div class="engine-item">extractor <span class="desc">harvests canon</span></div>
+          <div class="engine-item">fact-checker <span class="desc">validates must_include</span></div>
+          <div class="engine-item">director <span class="desc">picks among &ge;2 eligible</span></div>
+          <div class="engine-item">summary <span class="desc">history compaction</span></div>
+        </div>
+
+        <div class="engine-section">
+          <div class="engine-section-label">State-write paths</div>
+          <div class="engine-item">apply_literal_effects</div>
+          <div class="engine-item">apply_classify_effect</div>
+          <div class="engine-item">apply_canon_extraction</div>
+        </div>
+
+        <div class="engine-section">
+          <div class="engine-section-label">Tick triggers</div>
+          <div class="engine-item">/send <span class="desc">player reply</span></div>
+        </div>
+      </div>
+
+      <!-- Arrow column -->
+      <div class="engine-arrow">
+        <svg width="32" height="32" viewBox="0 0 32 32" fill="none">
+          <path d="M6 16 L26 16 M20 10 L26 16 L20 22" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </div>
+
+      <!-- NEW column -->
+      <div class="engine-col new">
+        <div class="engine-col-head">
+          <div class="label">New</div>
+          <div class="title">selection + 3 agents</div>
+        </div>
+
+        <div class="engine-section">
+          <div class="engine-section-label">Player verbs</div>
+          <div class="engine-item added">allocate <span class="badge">new</span></div>
+          <div class="engine-item added">select <span class="badge">new</span></div>
+        </div>
+
+        <div class="engine-section">
+          <div class="engine-section-label">LLM agents</div>
+          <div class="engine-item added">tableau-gen <span class="badge">new</span></div>
+          <div class="engine-item">scene-render <span class="desc">renders prose only</span></div>
+          <div class="engine-item removed">classifier</div>
+          <div class="engine-item removed">extractor</div>
+          <div class="engine-item removed">fact-checker</div>
+          <div class="engine-item">director <span class="desc">picks among ties (minor)</span></div>
+          <div class="engine-item">summary</div>
+        </div>
+
+        <div class="engine-section">
+          <div class="engine-section-label">State-write paths</div>
+          <div class="engine-item">apply_literal_effects <span class="desc">same; powers choice effects</span></div>
+          <div class="engine-item removed">apply_classify_effect</div>
+          <div class="engine-item removed">apply_canon_extraction</div>
+        </div>
+
+        <div class="engine-section">
+          <div class="engine-section-label">Tick triggers</div>
+          <div class="engine-item added">shift_start <span class="badge">new</span></div>
+          <div class="engine-item added">choice_committed <span class="badge">new</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="engine-pitch">
+      <p>The LLM stops <em>reading</em> player input and starts <em>writing</em> structured opportunities. Canon &amp; verdict are no longer inferred &mdash; they're authored as effects on chosen options. The engine becomes <em>simpler, not more complex</em>.</p>
+    </div>
+  </section>
+
+
+  <!-- ===== SECTION 2: SHIFT LOOP ===== -->
+  <section class="section">
+    <div class="section-head">
+      <div class="section-num">02</div>
+      <div>
+        <h2>The <em>shift loop</em>, universal.</h2>
+        <p class="lead">One pattern, regardless of story. A shift opens; the tableau-gen LLM proposes a hand of opportunities; the player allocates tokens; chosen opportunities resolve as mini-scenes with 2&ndash;3 authored choice nodes; effects fire; the shift ends; state advances.</p>
+      </div>
+    </div>
+
+    <div class="loop-canvas">
+      <svg viewBox="0 0 1200 380" xmlns="http://www.w3.org/2000/svg">
+        <!-- Stage 1: shift opens -->
+        <g transform="translate(0, 60)">
+          <rect width="180" height="100" rx="6" fill="#fefcf7" stroke="#3a5f5a" stroke-width="2"/>
+          <text x="14" y="22" font-family="JetBrains Mono" font-size="9" fill="#3a5f5a" letter-spacing="1.2">STAGE 01</text>
+          <text x="14" y="46" font-family="Fraunces" font-size="18" font-style="italic" fill="#1f1d1a">shift opens</text>
+          <text x="14" y="68" font-family="Inter" font-size="11" fill="#6b665e">engine emits</text>
+          <text x="14" y="84" font-family="Inter" font-size="11" fill="#6b665e">state snapshot</text>
+        </g>
+
+        <!-- Arrow 1 -->
+        <g transform="translate(180, 100)">
+          <line x1="0" y1="10" x2="40" y2="10" stroke="#b8b0a0" stroke-width="1.5"/>
+          <polygon points="36,5 44,10 36,15" fill="#b8b0a0"/>
+        </g>
+
+        <!-- Stage 2: tableau gen -->
+        <g transform="translate(224, 60)">
+          <rect width="200" height="100" rx="6" fill="#fefcf7" stroke="#8a3324" stroke-width="2"/>
+          <text x="14" y="22" font-family="JetBrains Mono" font-size="9" fill="#8a3324" letter-spacing="1.2">STAGE 02 &middot; LLM</text>
+          <text x="14" y="46" font-family="Fraunces" font-size="18" font-style="italic" fill="#1f1d1a">tableau-gen</text>
+          <text x="14" y="68" font-family="Inter" font-size="11" fill="#6b665e">picks N templates,</text>
+          <text x="14" y="84" font-family="Inter" font-size="11" fill="#6b665e">writes flavor text</text>
+        </g>
+
+        <!-- Arrow 2 -->
+        <g transform="translate(424, 100)">
+          <line x1="0" y1="10" x2="40" y2="10" stroke="#b8b0a0" stroke-width="1.5"/>
+          <polygon points="36,5 44,10 36,15" fill="#b8b0a0"/>
+        </g>
+
+        <!-- Stage 3: player allocates -->
+        <g transform="translate(468, 60)">
+          <rect width="200" height="100" rx="6" fill="#fefcf7" stroke="#c19042" stroke-width="2"/>
+          <text x="14" y="22" font-family="JetBrains Mono" font-size="9" fill="#c19042" letter-spacing="1.2">STAGE 03 &middot; PLAYER</text>
+          <text x="14" y="46" font-family="Fraunces" font-size="18" font-style="italic" fill="#1f1d1a">allocate token</text>
+          <text x="14" y="68" font-family="Inter" font-size="11" fill="#6b665e">picks 1 of N</text>
+          <text x="14" y="84" font-family="Inter" font-size="11" fill="#6b665e">opportunities</text>
+        </g>
+
+        <!-- Arrow 3 -->
+        <g transform="translate(668, 100)">
+          <line x1="0" y1="10" x2="40" y2="10" stroke="#b8b0a0" stroke-width="1.5"/>
+          <polygon points="36,5 44,10 36,15" fill="#b8b0a0"/>
+        </g>
+
+        <!-- Stage 4: scene fires -->
+        <g transform="translate(712, 60)">
+          <rect width="200" height="100" rx="6" fill="#fefcf7" stroke="#8a3324" stroke-width="2"/>
+          <text x="14" y="22" font-family="JetBrains Mono" font-size="9" fill="#8a3324" letter-spacing="1.2">STAGE 04 &middot; LLM</text>
+          <text x="14" y="46" font-family="Fraunces" font-size="18" font-style="italic" fill="#1f1d1a">scene-render</text>
+          <text x="14" y="68" font-family="Inter" font-size="11" fill="#6b665e">authored beat fires,</text>
+          <text x="14" y="84" font-family="Inter" font-size="11" fill="#6b665e">LLM writes prose</text>
+        </g>
+
+        <!-- Arrow 4 -->
+        <g transform="translate(912, 100)">
+          <line x1="0" y1="10" x2="40" y2="10" stroke="#b8b0a0" stroke-width="1.5"/>
+          <polygon points="36,5 44,10 36,15" fill="#b8b0a0"/>
+        </g>
+
+        <!-- Stage 5: player picks follow-ups -->
+        <g transform="translate(956, 60)">
+          <rect width="220" height="100" rx="6" fill="#fefcf7" stroke="#c19042" stroke-width="2"/>
+          <text x="14" y="22" font-family="JetBrains Mono" font-size="9" fill="#c19042" letter-spacing="1.2">STAGE 05 &middot; PLAYER</text>
+          <text x="14" y="46" font-family="Fraunces" font-size="18" font-style="italic" fill="#1f1d1a">pick follow-up</text>
+          <text x="14" y="68" font-family="Inter" font-size="11" fill="#6b665e">2&ndash;3 authored choices</text>
+          <text x="14" y="84" font-family="Inter" font-size="11" fill="#6b665e">w/ effects</text>
+        </g>
+
+        <!-- Down arrows / loop -->
+        <g transform="translate(1066, 160)">
+          <line x1="0" y1="0" x2="0" y2="40" stroke="#b8b0a0" stroke-width="1.5"/>
+          <polygon points="-5,36 0,44 5,36" fill="#b8b0a0"/>
+        </g>
+
+        <!-- Stage 6: apply effects -->
+        <g transform="translate(936, 220)">
+          <rect width="240" height="80" rx="6" fill="#fefcf7" stroke="#3a5f5a" stroke-width="2"/>
+          <text x="14" y="22" font-family="JetBrains Mono" font-size="9" fill="#3a5f5a" letter-spacing="1.2">STAGE 06 &middot; ENGINE</text>
+          <text x="14" y="46" font-family="Fraunces" font-size="18" font-style="italic" fill="#1f1d1a">apply effects</text>
+          <text x="14" y="66" font-family="Inter" font-size="11" fill="#6b665e">authored, deterministic</text>
+        </g>
+
+        <!-- Loop arrow back to top -->
+        <g transform="translate(0, 0)">
+          <line x1="936" y1="260" x2="90" y2="260" stroke="#3a5f5a" stroke-width="1.5" stroke-dasharray="4,4"/>
+          <line x1="90" y1="260" x2="90" y2="170" stroke="#3a5f5a" stroke-width="1.5" stroke-dasharray="4,4"/>
+          <polygon points="85,170 90,162 95,170" fill="#3a5f5a"/>
+          <text x="500" y="278" font-family="JetBrains Mono" font-size="10" fill="#3a5f5a" letter-spacing="0.5">if tokens remain &rarr; back to tableau · if not &rarr; shift ends, next shift's state-snapshot</text>
+        </g>
+
+        <!-- Bottom annotation -->
+        <line x1="0" y1="320" x2="1200" y2="320" stroke="#d8d2c5" stroke-dasharray="2,3"/>
+        <text x="0" y="345" font-family="Inter" font-size="11" fill="#6b665e" font-style="italic">
+          Three actors: <tspan fill="#3a5f5a" font-weight="600">engine</tspan> (deterministic, owns state) &middot;
+          <tspan fill="#8a3324" font-weight="600">LLM</tspan> (constrained, writes prose only) &middot;
+          <tspan fill="#c19042" font-weight="600">player</tspan> (selects, never types).
+        </text>
+        <text x="0" y="365" font-family="Inter" font-size="11" fill="#6b665e" font-style="italic">
+          The LLM never writes state. Selection metadata + authored effects do.
+        </text>
+      </svg>
+
+      <div class="loop-legend">
+        <div class="legend-item"><span class="legend-dot authored"></span><strong>Engine</strong> &middot; deterministic, owns all state</div>
+        <div class="legend-item"><span class="legend-dot llm"></span><strong>LLM</strong> &middot; constrained generators, prose only</div>
+        <div class="legend-item"><span class="legend-dot player"></span><strong>Player</strong> &middot; selection input, no typing</div>
+      </div>
+    </div>
+  </section>
+
+
+  <!-- ===== SECTION 3: TWO VARIANTS (mockup gallery) ===== -->
+  <section class="section">
+    <div class="section-head">
+      <div class="section-num">03</div>
+      <div>
+        <h2>What the <em>player sees</em> &mdash; two stories, one engine.</h2>
+        <p class="lead">The mockups below run the same loop with two different stories. Left: the current <em>Continuity Program</em> world, dropped into D as a static institutional tableau. Right: a new <em>Auditor's Tour</em> pilgrim frame. Engine logic is identical; only the world shape, authored content, and presentation differ.</p>
+      </div>
+    </div>
+
+    <div class="variants">
+
+      <!-- ============================================ -->
+      <!-- VARIANT: INSTITUTIONAL / FRANKENSTEIN          -->
+      <!-- ============================================ -->
+      <div class="variant institutional">
+        <div class="variant-head">
+          <div class="variant-eyebrow">Variant A &middot; static institutional</div>
+          <div class="variant-title">The <em>Continuity Program</em></div>
+          <div class="variant-sub">Existing scenario ported into D. No map &mdash; the player is held in the building. The "world" is the day's opportunities at the facility; tone is Severance-flat / corporate-fluorescent. Aria, Marcus, and the Office remain the cast; the Frankenstein parallel survives at the choice-shape level.</div>
+        </div>
+
+        <!-- World shape -->
+        <div class="world-shape">
+          <svg viewBox="0 0 320 120" xmlns="http://www.w3.org/2000/svg">
+            <rect x="20" y="30" width="280" height="70" rx="4" fill="#f6f8f8" stroke="#c8cfd1"/>
+            <text x="32" y="48" font-family="JetBrains Mono" font-size="9" fill="#8c9799" letter-spacing="1.2">FACILITY &middot; HALCYON / WING C</text>
+            <rect x="32" y="58" width="56" height="32" rx="2" fill="#ffffff" stroke="#c8cfd1"/>
+            <text x="60" y="78" text-anchor="middle" font-family="Fraunces" font-size="9" fill="#232a2c" font-style="italic">desk</text>
+            <rect x="96" y="58" width="56" height="32" rx="2" fill="#ffffff" stroke="#c8cfd1"/>
+            <text x="124" y="78" text-anchor="middle" font-family="Fraunces" font-size="9" fill="#232a2c" font-style="italic">lounge</text>
+            <rect x="160" y="58" width="56" height="32" rx="2" fill="#ffffff" stroke="#c8cfd1"/>
+            <text x="188" y="78" text-anchor="middle" font-family="Fraunces" font-size="9" fill="#232a2c" font-style="italic">cal. suite</text>
+            <rect x="224" y="58" width="60" height="32" rx="2" fill="#ffffff" stroke="#c8cfd1"/>
+            <text x="254" y="78" text-anchor="middle" font-family="Fraunces" font-size="9" fill="#232a2c" font-style="italic">office</text>
+            <text x="20" y="20" font-family="JetBrains Mono" font-size="9" fill="#2c5560" letter-spacing="1.2">WORLD SHAPE &middot; FROZEN TABLEAU</text>
+          </svg>
+          <div class="world-shape-caption">Locations exist as flavor on opportunity cards, but the player never <em>moves</em>. Sequence is engine-managed. Cards reference rooms; rooms don't gate anything.</div>
+        </div>
+
+        <!-- Mockups -->
+        <div class="mockups">
+
+          <!-- Mockup A1: shift opens -->
+          <div class="mockup">
+            <div class="mockup-chrome">
+              <div class="chrome-dots"><span></span><span></span><span></span></div>
+              <div class="chrome-title">halcyon &middot; counterpart interface</div>
+              <div class="chrome-meta">v.2.4</div>
+            </div>
+            <div class="mockup-body">
+              <span class="mockup-stage-label">Shift opens &middot; tableau visible</span>
+              <div class="mockup-day-header">
+                <div class="mockup-day-title">Day <strong>07</strong> &middot; Wing C &middot; Active</div>
+                <div class="mockup-tokens">
+                  <span class="token-pip full"></span>
+                  <span class="token-pip full"></span>
+                  <span class="token-pip full"></span>
+                  <span>3 tokens</span>
+                </div>
+              </div>
+
+              <div class="opp-grid">
+                <div class="opp-card">
+                  <div class="opp-title">Aria queued a calibration session</div>
+                  <div class="opp-flavor">"Her last entry note says: <em>you won't recognize what comes back</em>."</div>
+                  <div class="opp-meta">
+                    <span class="opp-cost"><span class="opp-cost-pip"></span> 1 token</span>
+                    <span class="opp-tag llm">LLM flavor</span>
+                  </div>
+                </div>
+                <div class="opp-card">
+                  <div class="opp-title">The Office sent revised protocol</div>
+                  <div class="opp-flavor">"Page 4 now has a new field, unlabeled."</div>
+                  <div class="opp-meta">
+                    <span class="opp-cost"><span class="opp-cost-pip"></span> 1 token</span>
+                    <span class="opp-tag llm">LLM flavor</span>
+                  </div>
+                </div>
+                <div class="opp-card">
+                  <div class="opp-title">Marcus in the lounge</div>
+                  <div class="opp-flavor">"His coffee has been cooling for nineteen minutes."</div>
+                  <div class="opp-meta">
+                    <span class="opp-cost"><span class="opp-cost-pip"></span> 1 token</span>
+                    <span class="opp-tag llm">LLM flavor</span>
+                  </div>
+                </div>
+                <div class="opp-card locked">
+                  <div class="opp-title">Review yesterday's transcript</div>
+                  <div class="opp-flavor">Locked until tomorrow's first shift.</div>
+                  <div class="opp-meta">
+                    <span class="opp-cost"><span class="opp-cost-pip"></span> 1 token</span>
+                    <span class="opp-tag">locked</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Mockup A2: mini-scene -->
+          <div class="mockup">
+            <div class="mockup-chrome">
+              <div class="chrome-dots"><span></span><span></span><span></span></div>
+              <div class="chrome-title">calibration suite &middot; session in progress</div>
+              <div class="chrome-meta">14:07</div>
+            </div>
+            <div class="mockup-body">
+              <span class="mockup-stage-label">Mini-scene &middot; choice node 1 of 2</span>
+              <div class="scene-body">
+                <div class="scene-prose">
+                  <span class="narr">You sit. The chair is the same one. The light is wrong today &mdash; the fluorescent overhead is dimmer than yesterday, and there is a stripe of sodium-orange under the door that wasn't there before.</span>
+                  <br><br>
+                  Aria's voice begins before you've consented to begin. <em>"You came in two minutes early. I marked it. Tell me what you want me to do with that."</em>
+                </div>
+                <div class="scene-prompt">Respond</div>
+                <div class="scene-choices">
+                  <div class="scene-choice">
+                    <span class="scene-choice-marker">i</span>
+                    <span>"I didn't agree to start. Wait until the clock."</span>
+                    <span class="scene-choice-effect">defiance +1</span>
+                  </div>
+                  <div class="scene-choice">
+                    <span class="scene-choice-marker">ii</span>
+                    <span>Stay silent and let her speak.</span>
+                    <span class="scene-choice-effect">deference +1</span>
+                  </div>
+                  <div class="scene-choice">
+                    <span class="scene-choice-marker">iii</span>
+                    <span>"What do you mean by 'recognize'?"</span>
+                    <span class="scene-choice-effect">curiosity +1</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Mockup A3: shift end -->
+          <div class="mockup">
+            <div class="mockup-chrome">
+              <div class="chrome-dots"><span></span><span></span><span></span></div>
+              <div class="chrome-title">end of shift &middot; day 7 closed</div>
+              <div class="chrome-meta">17:30</div>
+            </div>
+            <div class="mockup-body">
+              <span class="mockup-stage-label">Shift end &middot; resolution</span>
+              <div class="shift-end">
+                <div class="shift-end-title">The day ends.</div>
+                <div class="shift-end-row"><span>2 of 3 tokens spent</span><strong>summary</strong></div>
+                <div class="shift-end-row"><span>defiance</span><span class="shift-end-quality up">+1 &rarr; 0.42</span></div>
+                <div class="shift-end-row"><span>curiosity</span><span class="shift-end-quality up">+1 &rarr; 0.30</span></div>
+                <div class="shift-end-row"><span>aria_trust</span><span class="shift-end-quality down">&minus;1 &rarr; 0.28</span></div>
+                <div class="shift-end-row"><span>office_compliance</span><span class="shift-end-quality up">+1 &rarr; 0.60</span></div>
+                <div class="shift-end-next">Begin Day 8 &nbsp;&rarr;</div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+
+      <!-- ============================================ -->
+      <!-- VARIANT: PILGRIM / AUDITOR'S TOUR              -->
+      <!-- ============================================ -->
+      <div class="variant pilgrim">
+        <div class="variant-head">
+          <div class="variant-eyebrow">Variant B &middot; pilgrim &middot; waypoint route</div>
+          <div class="variant-title">The <em>Auditor's Tour</em></div>
+          <div class="variant-sub">A new fictional frame matched to pilgrim. The player is a corporate envoy sent to visit a chain of Halcyon outposts &mdash; each developed its own micro-culture in isolation. Daily shifts at one waypoint; advance to the next when the audit closes. Same engine; spatial movement is the framing, not a verb.</div>
+        </div>
+
+        <!-- World shape -->
+        <div class="world-shape">
+          <svg viewBox="0 0 320 120" xmlns="http://www.w3.org/2000/svg">
+            <!-- Route line -->
+            <path d="M 30 80 Q 80 40, 130 65 T 230 60 Q 270 70, 290 50" stroke="#c08a5a" stroke-width="2" fill="none" stroke-dasharray="3,3" opacity="0.7"/>
+            <!-- Waypoints -->
+            <circle cx="30" cy="80" r="6" fill="#84421f"/>
+            <text x="30" y="100" text-anchor="middle" font-family="Fraunces" font-size="9" fill="#6e5f47" font-style="italic">orig</text>
+            <circle cx="90" cy="50" r="6" fill="#84421f"/>
+            <text x="90" y="40" text-anchor="middle" font-family="Fraunces" font-size="9" fill="#6e5f47" font-style="italic">vesperbrook</text>
+            <circle cx="150" cy="65" r="6" fill="#84421f"/>
+            <text x="150" y="85" text-anchor="middle" font-family="Fraunces" font-size="9" fill="#6e5f47" font-style="italic">holloway</text>
+            <circle cx="210" cy="58" r="9" fill="#fdf5e0" stroke="#84421f" stroke-width="2.5"/>
+            <circle cx="210" cy="58" r="3" fill="#84421f"/>
+            <text x="210" y="40" text-anchor="middle" font-family="Fraunces" font-size="9" font-weight="600" fill="#84421f">&middot; you are here &middot;</text>
+            <circle cx="260" cy="62" r="6" fill="#fdf5e0" stroke="#c08a5a" stroke-width="1.5" stroke-dasharray="2,2"/>
+            <text x="260" y="82" text-anchor="middle" font-family="Fraunces" font-size="9" fill="#9c8a6c" font-style="italic">next</text>
+            <circle cx="295" cy="48" r="6" fill="#fdf5e0" stroke="#c08a5a" stroke-width="1.5" stroke-dasharray="2,2"/>
+            <text x="295" y="34" text-anchor="middle" font-family="Fraunces" font-size="9" fill="#9c8a6c" font-style="italic">terminus</text>
+            <text x="20" y="20" font-family="JetBrains Mono" font-size="9" fill="#84421f" letter-spacing="1.2">WORLD SHAPE &middot; WAYPOINT ROUTE</text>
+          </svg>
+          <div class="world-shape-caption">Frozen route, dynamic content. Each waypoint is N shifts of LLM-generated opportunities. Audit closes &rarr; advance. No backtracking; no branching in v1.</div>
+        </div>
+
+        <div class="mockups">
+
+          <!-- Mockup B1: shift opens at waypoint -->
+          <div class="mockup">
+            <div class="mockup-chrome">
+              <div class="chrome-dots"><span></span><span></span><span></span></div>
+              <div class="chrome-title">field journal &middot; audit in progress</div>
+              <div class="chrome-meta">vol. iii</div>
+            </div>
+            <div class="mockup-body">
+              <span class="mockup-stage-label">Shift opens &middot; tableau visible</span>
+              <div class="mockup-day-header">
+                <div class="mockup-day-title">Day <strong>14</strong> &middot; Holloway Annex &middot; Day 3 of 4</div>
+                <div class="mockup-tokens">
+                  <span class="token-pip full"></span>
+                  <span class="token-pip full"></span>
+                  <span class="token-pip full"></span>
+                  <span>3 tokens</span>
+                </div>
+              </div>
+
+              <div class="opp-grid">
+                <div class="opp-card">
+                  <div class="opp-title">The village elder asked to see you</div>
+                  <div class="opp-flavor">"At noon. She has a question she won't write down."</div>
+                  <div class="opp-meta">
+                    <span class="opp-cost"><span class="opp-cost-pip"></span> 1 token</span>
+                    <span class="opp-tag llm">LLM flavor</span>
+                  </div>
+                </div>
+                <div class="opp-card">
+                  <div class="opp-title">Three letters from the Office</div>
+                  <div class="opp-flavor">"One is sealed. Two are not. Read them in the order the seal suggests."</div>
+                  <div class="opp-meta">
+                    <span class="opp-cost"><span class="opp-cost-pip"></span> 1 token</span>
+                    <span class="opp-tag llm">LLM flavor</span>
+                  </div>
+                </div>
+                <div class="opp-card">
+                  <div class="opp-title">The woman at the well</div>
+                  <div class="opp-flavor">"She will tell you what happened here if you stay long enough to be useful."</div>
+                  <div class="opp-meta">
+                    <span class="opp-cost"><span class="opp-cost-pip"></span> 2 tokens</span>
+                    <span class="opp-tag llm">LLM flavor</span>
+                  </div>
+                </div>
+                <div class="opp-card">
+                  <div class="opp-title">File today's report</div>
+                  <div class="opp-flavor">"The form is unchanged from yesterday. The Office may not be."</div>
+                  <div class="opp-meta">
+                    <span class="opp-cost"><span class="opp-cost-pip"></span> 1 token</span>
+                    <span class="opp-tag">end-shift</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Mockup B2: mini-scene -->
+          <div class="mockup">
+            <div class="mockup-chrome">
+              <div class="chrome-dots"><span></span><span></span><span></span></div>
+              <div class="chrome-title">field journal &middot; with the elder</div>
+              <div class="chrome-meta">12:04</div>
+            </div>
+            <div class="mockup-body">
+              <span class="mockup-stage-label">Mini-scene &middot; choice node 1 of 2</span>
+              <div class="scene-body">
+                <div class="scene-prose">
+                  <span class="narr">She receives you in the smaller of the two rooms. There is a chair for you that is older than the chair for her, which seems deliberate. Tea has been steeping too long.</span>
+                  <br><br>
+                  <em>"They sent another like you eleven years ago,"</em> she says. <em>"He filed a clean report. I would like to know whether you intend to do the same."</em>
+                </div>
+                <div class="scene-prompt">Respond</div>
+                <div class="scene-choices">
+                  <div class="scene-choice">
+                    <span class="scene-choice-marker">i</span>
+                    <span>"I file what I see. I haven't seen everything yet."</span>
+                    <span class="scene-choice-effect">candor +1</span>
+                  </div>
+                  <div class="scene-choice">
+                    <span class="scene-choice-marker">ii</span>
+                    <span>"What was wrong with the clean report?"</span>
+                    <span class="scene-choice-effect">curiosity +1</span>
+                  </div>
+                  <div class="scene-choice">
+                    <span class="scene-choice-marker">iii</span>
+                    <span>Wait. Let her finish her tea.</span>
+                    <span class="scene-choice-effect">patience +1</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Mockup B3: shift end / travel -->
+          <div class="mockup">
+            <div class="mockup-chrome">
+              <div class="chrome-dots"><span></span><span></span><span></span></div>
+              <div class="chrome-title">field journal &middot; closing day</div>
+              <div class="chrome-meta">dusk</div>
+            </div>
+            <div class="mockup-body">
+              <span class="mockup-stage-label">Shift end &middot; waypoint advances</span>
+              <div class="shift-end">
+                <div class="shift-end-title">Day 14 closes.</div>
+                <div class="shift-end-row"><span>3 of 3 tokens spent</span><strong>summary</strong></div>
+                <div class="shift-end-row"><span>candor</span><span class="shift-end-quality up">+1 &rarr; 0.55</span></div>
+                <div class="shift-end-row"><span>local_trust</span><span class="shift-end-quality up">+1 &rarr; 0.40</span></div>
+                <div class="shift-end-row"><span>office_compliance</span><span class="shift-end-quality down">&minus;1 &rarr; 0.45</span></div>
+                <div class="shift-end-row"><span>holloway_audit_clock</span><span class="shift-end-quality up">3 of 4 days</span></div>
+                <div class="shift-end-next">Continue at Holloway, Day 15 &nbsp;&rarr;</div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+
+  <!-- ===== SECTION 4: LLM SCHEMAS ===== -->
+  <section class="section">
+    <div class="section-head">
+      <div class="section-num">04</div>
+      <div>
+        <h2>What the LLM is allowed to <em>generate</em>.</h2>
+        <p class="lead">Two narrow jobs, both schema-constrained. The LLM never invents structure &mdash; it picks from authored templates and fills authored slots. Every output flows through validation before reaching the player.</p>
+      </div>
+    </div>
+
+    <div class="schemas">
+
+      <div class="schema">
+        <div class="schema-head">
+          <div class="schema-eyebrow">Agent &middot; LLM job 1</div>
+          <div class="schema-title">tableau-gen</div>
+          <div class="schema-sub">Each shift opens. Engine passes <code>state + eligible_templates</code>. LLM picks N templates and writes flavor text. Never invents a new template.</div>
+        </div>
+        <div class="schema-body">
+          <h5>Input</h5>
+<pre class="code">{
+  <span class="k">"shift_index"</span>: <span class="n">14</span>,
+  <span class="k">"waypoint"</span>: <span class="s">"holloway_annex"</span>,
+  <span class="k">"qualities"</span>: { <span class="k">candor</span>: <span class="n">0.54</span>, <span class="k">trust</span>: <span class="n">0.39</span>, ... },
+  <span class="k">"recent_choices"</span>: [<span class="s">"answered_directly"</span>, ...],
+  <span class="k">"eligible_templates"</span>: [
+    <span class="s">"elder_summons"</span>,        <span class="c"># predicate-gated</span>
+    <span class="s">"office_dispatch"</span>,
+    <span class="s">"well_observer"</span>,
+    <span class="s">"file_report"</span>,
+    ...
+  ],
+  <span class="k">"slots"</span>: <span class="n">4</span>
+}</pre>
+
+          <h5>Output</h5>
+<pre class="code">[
+  {
+    <span class="k">"template_id"</span>: <span class="s">"elder_summons"</span>,        <span class="c"># must be in eligible_templates</span>
+    <span class="k">"flavor"</span>: <span class="s">"She has a question she won't</span>
+              <span class="s">write down."</span>,                 <span class="c"># &le;120 chars</span>
+    <span class="k">"cost"</span>: <span class="n">1</span>
+  },
+  { <span class="k">"template_id"</span>: <span class="s">"office_dispatch"</span>, ... },
+  { <span class="k">"template_id"</span>: <span class="s">"well_observer"</span>, ... },
+  { <span class="k">"template_id"</span>: <span class="s">"file_report"</span>, ... }
+]</pre>
+
+          <h5>Validation (engine-side)</h5>
+<pre class="code"><span class="c"># Rejected if any output:</span>
+<span class="c">#   - template_id not in eligible_templates</span>
+<span class="c">#   - flavor exceeds max length / contains state writes</span>
+<span class="c">#   - duplicate templates</span>
+<span class="c">#   - cost differs from template definition</span>
+<span class="c"># On rejection: retry once, then fall back to authored defaults</span></pre>
+        </div>
+      </div>
+
+
+      <div class="schema">
+        <div class="schema-head">
+          <div class="schema-eyebrow">Agent &middot; LLM job 2</div>
+          <div class="schema-title">scene-render</div>
+          <div class="schema-sub">Fires when player commits a token. Engine passes the authored beat + state. LLM renders prose. Choices, effects, and node graph are <em>authored</em>, not generated.</div>
+        </div>
+        <div class="schema-body">
+          <h5>Input</h5>
+<pre class="code">{
+  <span class="k">"beat_id"</span>: <span class="s">"elder_summons"</span>,
+  <span class="k">"scene_node"</span>: <span class="s">"opening"</span>,
+  <span class="k">"node_template"</span>: {
+    <span class="k">"prose_seed"</span>: <span class="s">"Elder receives player in</span>
+                    <span class="s">smaller room. Tea steeped</span>
+                    <span class="s">too long..."</span>,
+    <span class="k">"npc_lines"</span>: [
+      <span class="s">"They sent another like you</span>
+       <span class="s">eleven years ago..."</span>
+    ],
+    <span class="k">"tone"</span>: <span class="s">"watchful, faintly hostile"</span>,
+    <span class="k">"choices"</span>: [...]              <span class="c"># authored, passed for context</span>
+  },
+  <span class="k">"player_canon"</span>: { <span class="k">name</span>: <span class="s">"Marcus"</span>, ... },
+  <span class="k">"recent_arc"</span>: [...]
+}</pre>
+
+          <h5>Output</h5>
+<pre class="code">{
+  <span class="k">"prose"</span>: <span class="s">"She receives you in the smaller of</span>
+            <span class="s">the two rooms. There is a chair for</span>
+            <span class="s">you that is older than the chair</span>
+            <span class="s">for her, which seems deliberate..."</span>
+  <span class="c"># That's it. No choices, no effects, no canon.</span>
+}</pre>
+
+          <h5>Validation (engine-side)</h5>
+<pre class="code"><span class="c"># Rejected if any output:</span>
+<span class="c">#   - exceeds max length</span>
+<span class="c">#   - contradicts must_include / must_not facts</span>
+<span class="c">#   - missing required tone / register markers</span>
+<span class="c">#   - attempts choice generation (sanitized away)</span>
+<span class="c"># Choices come from the authored beat, NOT the LLM.</span></pre>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+
+  <!-- ===== SECTION 5: ANTI-AI-DUNGEON ===== -->
+  <section class="section">
+    <div class="section-head">
+      <div class="section-num">05</div>
+      <div>
+        <h2>How this avoids the <em>AI Dungeon</em> trap.</h2>
+        <p class="lead">AI Dungeon's failure mode is the LLM authoring world structure. Here, the LLM only fills holes the engine punches. Five checkpoints, each enforced by a specific piece of the architecture.</p>
+      </div>
+    </div>
+
+    <div class="checklist">
+
+      <div class="checklist-item">
+        <div class="checklist-num">i</div>
+        <div class="checklist-rule">The LLM <em>fills slots in an authored schema</em>, never authors free-form.</div>
+        <div class="checklist-impl">Tableau-gen output validated against <code>eligible_templates</code>; scene-render output is prose only &mdash; choices come from the authored beat. LLM cannot introduce new templates, new choices, or new effects.</div>
+      </div>
+
+      <div class="checklist-item">
+        <div class="checklist-num">ii</div>
+        <div class="checklist-rule">All <em>state writes are authored</em> and gated through one function.</div>
+        <div class="checklist-impl"><code>apply_literal_effects</code> remains the only mutation path. Choice metadata carries the effect; LLM output never reaches state. Drift suite already validates this; selection input strengthens it.</div>
+      </div>
+
+      <div class="checklist-item">
+        <div class="checklist-num">iii</div>
+        <div class="checklist-rule">The engine <em>owns pacing and arc shape</em>, not the LLM.</div>
+        <div class="checklist-impl">Shifts start/end deterministically. Waypoints advance on <code>audit_clock_quality</code> thresholds. Terminals are still authored one-shot beats. The LLM cannot extend a session or skip a beat.</div>
+      </div>
+
+      <div class="checklist-item">
+        <div class="checklist-num">iv</div>
+        <div class="checklist-rule">Validation is <em>defense-in-depth</em>, not one prompt.</div>
+        <div class="checklist-impl">Schema validation, length limits, must-include facts, retry-once-then-fallback, and the encoder/engine drift suite. Multiple independent guards &mdash; same approach as today's fact-checker, scaled across more outputs.</div>
+      </div>
+
+      <div class="checklist-item">
+        <div class="checklist-num">v</div>
+        <div class="checklist-rule">Player <em>verbs are constrained</em> &mdash; no free text means no improvisation chasing.</div>
+        <div class="checklist-impl">Selection &amp; allocation only. The LLM never has to interpret an unbounded player input; it only has to fill flavor slots conditioned on known-vocabulary state. Whole categories of AI-Dungeon-style failure are unreachable.</div>
+      </div>
+
+    </div>
+  </section>
+
+
+  <!-- ===== SECTION 6: AUTHORING YAML ===== -->
+  <section class="section">
+    <div class="section-head">
+      <div class="section-num">06</div>
+      <div>
+        <h2>Authoring shape &mdash; <em>opportunities</em> + <em>beats with choice nodes</em>.</h2>
+        <p class="lead">Two new authoring units. Opportunity templates declare what can surface in a tableau. Beats expand to carry their choice graph (nodes + authored effects). Existing predicates, qualities, and effect ops are untouched.</p>
+      </div>
+    </div>
+
+    <div class="yaml-pair">
+
+      <div class="yaml-card">
+        <div class="yaml-head">
+          <div class="label">Opportunity template</div>
+          <div class="filename">scenario.yaml &middot; opportunities[]</div>
+        </div>
+<pre class="code">- <span class="k">id</span>: <span class="s">elder_summons</span>
+  <span class="k">title</span>: <span class="s">"The village elder asked to see you"</span>
+  <span class="k">cost</span>: <span class="n">1</span>
+  <span class="k">waypoint</span>: <span class="s">holloway_annex</span>
+  <span class="k">surface_when</span>:
+    - <span class="a">QualityGte</span>:
+        <span class="k">key</span>: <span class="s">local_trust</span>
+        <span class="k">v</span>: <span class="n">0.2</span>
+    - <span class="a">Not_</span>:
+        <span class="a">BeatFired</span>: <span class="s">elder_summons_scene</span>
+  <span class="k">triggers</span>: <span class="s">elder_summons_scene</span>
+  <span class="k">flavor_hint</span>: <span class="s">"unanswerable question, written down once"</span>
+  <span class="c"># LLM fills 'flavor' at tableau-gen time, conditioned on</span>
+  <span class="c"># state. Engine validates against schema + length.</span></pre>
+      </div>
+
+      <div class="yaml-card">
+        <div class="yaml-head">
+          <div class="label">Beat with choice nodes</div>
+          <div class="filename">scenario.yaml &middot; beats[]</div>
+        </div>
+<pre class="code">- <span class="k">id</span>: <span class="s">elder_summons_scene</span>
+  <span class="k">kind</span>: <span class="s">mini_scene</span>
+  <span class="k">npc</span>: <span class="s">village_elder</span>
+  <span class="k">nodes</span>:
+    - <span class="k">id</span>: <span class="s">opening</span>
+      <span class="k">prose_seed</span>: <span class="s">"Elder receives player..."</span>
+      <span class="k">choices</span>:
+        - <span class="k">label</span>: <span class="s">"I file what I see..."</span>
+          <span class="k">effects</span>:
+            - {<span class="k">key</span>: <span class="s">candor</span>, <span class="k">op</span>: <span class="s">add</span>, <span class="k">v</span>: <span class="n">0.1</span>}
+          <span class="k">next</span>: <span class="s">closing_candor</span>
+        - <span class="k">label</span>: <span class="s">"What was wrong with..."</span>
+          <span class="k">effects</span>:
+            - {<span class="k">key</span>: <span class="s">curiosity</span>, <span class="k">op</span>: <span class="s">add</span>, <span class="k">v</span>: <span class="n">0.1</span>}
+          <span class="k">next</span>: <span class="s">closing_curiosity</span>
+        - <span class="k">label</span>: <span class="s">"Wait. Let her finish..."</span>
+          <span class="k">effects</span>:
+            - {<span class="k">key</span>: <span class="s">patience</span>, <span class="k">op</span>: <span class="s">add</span>, <span class="k">v</span>: <span class="n">0.1</span>}
+          <span class="k">next</span>: <span class="s">closing_patience</span>
+    - <span class="k">id</span>: <span class="s">closing_candor</span>
+      <span class="k">prose_seed</span>: <span class="s">"She nods once. The tea finally..."</span>
+      <span class="k">terminal</span>: <span class="s">true</span></pre>
+      </div>
+
+    </div>
+  </section>
+
+
+  <footer>
+    <span>storylet-engine &middot; D-concrete &middot; v0.1</span>
+    <span>2 variants &middot; 6 mockups &middot; 1 engine</span>
+  </footer>
+
+</div>
+</body>
+</html>

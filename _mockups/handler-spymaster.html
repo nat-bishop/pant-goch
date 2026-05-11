@@ -1,0 +1,2017 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HANDLER — concept</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,300;0,6..72,400;0,6..72,500;0,6..72,600;0,6..72,700;1,6..72,300;1,6..72,400;1,6..72,500;1,6..72,600&family=Courier+Prime:ital,wght@0,400;0,700;1,400;1,700&family=Special+Elite&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --obsidian: #0a0b09;
+    --obsidian-2: #131410;
+    --obsidian-3: #1c1d18;
+    --obsidian-4: #28291f;
+    --ink: #14150f;
+    --ink-2: #2a2c25;
+    --ink-3: #4a4e3e;
+    --ink-soft: #6b6f5d;
+    --ink-faint: #8a8e7c;
+
+    --paper: #e8e2cd;
+    --paper-2: #ddd6bd;
+    --paper-3: #f0eadb;
+    --paper-warm: #ece3c8;
+    --paper-aged: #c9c0a4;
+
+    --rule: #b8ad8c;
+    --rule-soft: #cfc7ad;
+
+    --accent: #c25a1a;
+    --accent-soft: #d4965e;
+    --classified: #8b1f1f;
+    --classified-deep: #5d1414;
+    --classified-bg: rgba(139, 31, 31, 0.08);
+    --green: #5d7a4c;
+    --phosphor: #88a86c;
+    --shadow: 0 24px 48px rgba(0, 0, 0, 0.55), 0 4px 12px rgba(0, 0, 0, 0.4);
+    --shadow-paper: 0 12px 32px rgba(0, 0, 0, 0.45), 0 2px 6px rgba(0, 0, 0, 0.35);
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+
+  body {
+    background: var(--obsidian);
+    color: var(--paper);
+    font-family: 'Newsreader', Georgia, serif;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    overflow-x: hidden;
+    background-image:
+      radial-gradient(ellipse 80% 60% at 50% 0%, rgba(40, 41, 31, 0.6) 0%, transparent 60%),
+      radial-gradient(ellipse 60% 40% at 100% 100%, rgba(20, 21, 15, 0.8) 0%, transparent 50%);
+  }
+
+  /* ========== UTILITY ========== */
+  .grain {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 100;
+    opacity: 0.06;
+    mix-blend-mode: overlay;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.95' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.9'/%3E%3C/svg%3E");
+  }
+
+  .page-wrap {
+    max-width: 1340px;
+    margin: 0 auto;
+    padding: 0 40px;
+  }
+
+  /* ========== HERO ========== */
+  .hero {
+    min-height: 100vh;
+    display: grid;
+    place-items: center;
+    position: relative;
+    background:
+      radial-gradient(ellipse 50% 70% at 50% 50%, rgba(196, 156, 94, 0.10) 0%, transparent 65%),
+      radial-gradient(ellipse 80% 100% at 50% 100%, rgba(10, 11, 9, 1) 0%, transparent 70%);
+    overflow: hidden;
+  }
+
+  .hero::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background-image:
+      linear-gradient(transparent 0px, transparent 3px, rgba(232, 226, 205, 0.013) 3px, transparent 4px);
+    background-size: 100% 4px;
+    pointer-events: none;
+    z-index: 1;
+  }
+
+  .hero-content {
+    position: relative;
+    z-index: 2;
+    text-align: center;
+    padding: 80px 32px;
+    max-width: 980px;
+  }
+
+  .hero-classification {
+    display: inline-flex;
+    align-items: center;
+    gap: 14px;
+    margin-bottom: 56px;
+    font-family: 'Courier Prime', monospace;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.36em;
+    color: var(--classified);
+    border-top: 1px solid var(--classified);
+    border-bottom: 1px solid var(--classified);
+    padding: 6px 18px;
+    text-transform: uppercase;
+    animation: hero-fade 1.2s 0.2s both ease-out;
+  }
+  .hero-classification .dot {
+    width: 5px; height: 5px;
+    background: var(--classified);
+    border-radius: 50%;
+    animation: pulse 2s infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+  }
+
+  .hero-title {
+    font-family: 'Newsreader', serif;
+    font-weight: 300;
+    font-size: clamp(80px, 14vw, 200px);
+    line-height: 0.88;
+    letter-spacing: -0.04em;
+    color: var(--paper-3);
+    margin-bottom: 12px;
+    animation: hero-rise 1.4s 0.4s both cubic-bezier(0.2, 0.8, 0.2, 1);
+    text-shadow: 0 2px 30px rgba(196, 156, 94, 0.15);
+  }
+  .hero-title em {
+    font-style: italic;
+    font-weight: 400;
+    color: var(--accent-soft);
+  }
+
+  @keyframes hero-rise {
+    from { opacity: 0; transform: translateY(40px); letter-spacing: 0.08em; }
+    to   { opacity: 1; transform: translateY(0); letter-spacing: -0.04em; }
+  }
+  @keyframes hero-fade {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  .hero-subtitle {
+    font-family: 'Courier Prime', monospace;
+    font-size: 13px;
+    letter-spacing: 0.34em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    margin-bottom: 88px;
+    animation: hero-fade 1.2s 0.8s both ease-out;
+  }
+
+  .hero-verb {
+    font-family: 'Newsreader', serif;
+    font-weight: 300;
+    font-style: italic;
+    font-size: clamp(20px, 2.4vw, 32px);
+    line-height: 1.5;
+    color: var(--paper);
+    max-width: 28ch;
+    margin: 0 auto 64px;
+    animation: hero-fade 1.4s 1.1s both ease-out;
+  }
+  .hero-verb .l1 { display: block; }
+  .hero-verb .l2 { display: block; color: var(--accent-soft); font-style: italic; padding-left: 1.6em; }
+  .hero-verb .l3 { display: block; }
+
+  .hero-meta {
+    font-family: 'Courier Prime', monospace;
+    font-size: 10px;
+    letter-spacing: 0.2em;
+    color: var(--ink-3);
+    text-transform: uppercase;
+    display: flex;
+    gap: 32px;
+    justify-content: center;
+    flex-wrap: wrap;
+    animation: hero-fade 1.2s 1.4s both ease-out;
+  }
+  .hero-meta span::before {
+    content: '◆';
+    color: var(--accent);
+    margin-right: 8px;
+  }
+
+  .hero-corner {
+    position: absolute;
+    font-family: 'Courier Prime', monospace;
+    font-size: 10px;
+    color: var(--ink-3);
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    z-index: 3;
+    animation: hero-fade 1.2s 1.7s both ease-out;
+  }
+  .hero-corner.tl { top: 32px; left: 40px; }
+  .hero-corner.tr { top: 32px; right: 40px; text-align: right; }
+  .hero-corner.bl { bottom: 32px; left: 40px; }
+  .hero-corner.br { bottom: 32px; right: 40px; text-align: right; }
+  .hero-corner div + div { margin-top: 4px; color: var(--paper); }
+
+  /* ========== SECTION FRAMEWORK ========== */
+  section {
+    padding: 140px 0;
+    position: relative;
+  }
+
+  .section-num {
+    font-family: 'Courier Prime', monospace;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.32em;
+    color: var(--accent);
+    margin-bottom: 24px;
+    text-transform: uppercase;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+  .section-num::before {
+    content: '';
+    width: 32px; height: 1px;
+    background: var(--accent);
+  }
+
+  h2 {
+    font-family: 'Newsreader', serif;
+    font-weight: 400;
+    font-size: clamp(40px, 5vw, 68px);
+    line-height: 1;
+    letter-spacing: -0.025em;
+    color: var(--paper-3);
+    margin-bottom: 36px;
+    max-width: 22ch;
+  }
+  h2 em {
+    font-style: italic;
+    font-weight: 400;
+    color: var(--accent-soft);
+  }
+
+  .lede {
+    font-family: 'Newsreader', serif;
+    font-size: 19px;
+    line-height: 1.65;
+    color: var(--paper);
+    max-width: 62ch;
+    font-weight: 300;
+  }
+  .lede + .lede { margin-top: 18px; }
+  .lede strong { color: var(--paper-3); font-weight: 600; }
+  .lede em { color: var(--accent-soft); font-style: italic; }
+
+  .section-head {
+    margin-bottom: 80px;
+  }
+
+  /* ========== PREMISE ========== */
+  .premise {
+    background: var(--obsidian);
+  }
+  .premise-grid {
+    display: grid;
+    grid-template-columns: 1.3fr 1fr;
+    gap: 80px;
+    align-items: start;
+  }
+  .premise-aside {
+    background: var(--paper);
+    color: var(--ink);
+    padding: 36px 40px;
+    transform: rotate(1.4deg);
+    box-shadow: var(--shadow-paper);
+    position: relative;
+    margin-top: 40px;
+    background-image:
+      repeating-linear-gradient(0deg, transparent 0px, transparent 27px, rgba(184, 173, 140, 0.5) 27px, rgba(184, 173, 140, 0.5) 28px);
+  }
+  .premise-aside::before {
+    content: '';
+    position: absolute;
+    top: -12px; left: 60%;
+    width: 60px; height: 24px;
+    background: rgba(196, 156, 94, 0.55);
+    transform: rotate(-6deg);
+    box-shadow: 0 2px 4px rgba(0,0,0,0.18);
+  }
+  .premise-aside-label {
+    font-family: 'Courier Prime', monospace;
+    font-size: 10px;
+    font-weight: 700;
+    color: var(--ink-3);
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    margin-bottom: 18px;
+    border-bottom: 1px solid var(--rule);
+    padding-bottom: 12px;
+  }
+  .premise-aside h4 {
+    font-family: 'Newsreader', serif;
+    font-style: italic;
+    font-weight: 500;
+    font-size: 22px;
+    color: var(--ink);
+    line-height: 1.3;
+    margin-bottom: 14px;
+  }
+  .premise-aside p {
+    font-family: 'Courier Prime', monospace;
+    font-size: 13px;
+    line-height: 1.65;
+    color: var(--ink-2);
+  }
+
+  /* ========== LOOP ========== */
+  .loop-section { background: linear-gradient(180deg, var(--obsidian) 0%, var(--obsidian-2) 100%); }
+
+  .loop-canvas {
+    background: var(--paper);
+    color: var(--ink);
+    padding: 64px 56px 72px;
+    box-shadow: var(--shadow);
+    position: relative;
+    border: 1px solid var(--paper-aged);
+  }
+  .loop-canvas::before {
+    content: 'FIELD MANUAL · §3';
+    position: absolute;
+    top: 16px; right: 24px;
+    font-family: 'Courier Prime', monospace;
+    font-size: 10px;
+    color: var(--ink-faint);
+    letter-spacing: 0.22em;
+  }
+  .loop-canvas::after {
+    content: 'FIG. 1 — THE CYCLE';
+    position: absolute;
+    bottom: 20px; left: 50%;
+    transform: translateX(-50%);
+    font-family: 'Courier Prime', monospace;
+    font-size: 10px;
+    color: var(--ink-faint);
+    letter-spacing: 0.32em;
+  }
+
+  .loop-h {
+    font-family: 'Newsreader', serif;
+    font-weight: 500;
+    font-size: 32px;
+    color: var(--ink);
+    margin-bottom: 8px;
+    letter-spacing: -0.01em;
+  }
+  .loop-h em { font-style: italic; color: var(--classified); }
+  .loop-sub {
+    font-family: 'Courier Prime', monospace;
+    font-size: 11px;
+    color: var(--ink-3);
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    margin-bottom: 56px;
+  }
+
+  .loop-stages {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 0;
+    align-items: stretch;
+    position: relative;
+  }
+  .loop-stage {
+    text-align: center;
+    padding: 0 14px;
+    position: relative;
+  }
+  .loop-stage-num {
+    font-family: 'Newsreader', serif;
+    font-style: italic;
+    font-size: 56px;
+    font-weight: 300;
+    color: var(--accent);
+    line-height: 1;
+    margin-bottom: 16px;
+  }
+  .loop-stage-name {
+    font-family: 'Courier Prime', monospace;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.22em;
+    color: var(--ink);
+    text-transform: uppercase;
+    margin-bottom: 10px;
+  }
+  .loop-stage-actor {
+    display: inline-block;
+    padding: 2px 8px;
+    font-family: 'Courier Prime', monospace;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    margin-bottom: 14px;
+    border: 1px solid;
+  }
+  .loop-stage-actor.player { color: var(--ink); border-color: var(--ink); }
+  .loop-stage-actor.world { color: var(--classified); border-color: var(--classified); }
+  .loop-stage-actor.llm { color: var(--accent); border-color: var(--accent); background: rgba(196, 90, 26, 0.05); }
+  .loop-stage-desc {
+    font-family: 'Newsreader', serif;
+    font-style: italic;
+    font-size: 13px;
+    color: var(--ink-2);
+    line-height: 1.5;
+  }
+  .loop-stage:not(:last-child)::after {
+    content: '→';
+    position: absolute;
+    right: -10px;
+    top: 38px;
+    font-family: 'Courier Prime', monospace;
+    color: var(--rule);
+    font-size: 22px;
+  }
+
+  /* ========== ROSTER ========== */
+  .roster-section {
+    background: var(--obsidian);
+    background-image:
+      radial-gradient(ellipse 60% 80% at 30% 50%, rgba(40, 41, 31, 0.6) 0%, transparent 60%);
+  }
+
+  .roster-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 40px 32px;
+    margin-top: 24px;
+  }
+
+  .dossier {
+    background: var(--paper);
+    color: var(--ink);
+    padding: 0;
+    box-shadow: var(--shadow);
+    position: relative;
+    transition: transform 0.4s cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+  .dossier:nth-child(1) { transform: rotate(-0.5deg); }
+  .dossier:nth-child(2) { transform: rotate(0.7deg); }
+  .dossier:nth-child(3) { transform: rotate(0.3deg); }
+  .dossier:nth-child(4) { transform: rotate(-0.8deg); }
+  .dossier:hover { transform: rotate(0) translateY(-4px); }
+
+  .dossier::before {
+    content: '';
+    position: absolute;
+    top: 12px; right: 18px;
+    width: 36px; height: 18px;
+    background: rgba(139, 31, 31, 0.12);
+    border-top: 2px solid var(--classified);
+    border-bottom: 2px solid var(--classified);
+  }
+
+  .dossier-head {
+    background: var(--paper-2);
+    padding: 18px 28px 16px;
+    border-bottom: 1px solid var(--rule);
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+  }
+  .dossier-file-no {
+    font-family: 'Courier Prime', monospace;
+    font-size: 10px;
+    color: var(--ink-3);
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+  }
+  .dossier-status {
+    font-family: 'Courier Prime', monospace;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    padding: 2px 8px;
+    border: 1px solid;
+  }
+  .dossier-status.active { color: var(--green); border-color: var(--green); }
+  .dossier-status.suspect { color: var(--classified); border-color: var(--classified); background: rgba(139, 31, 31, 0.05); }
+  .dossier-status.deep { color: var(--accent); border-color: var(--accent); }
+  .dossier-status.support { color: var(--ink-3); border-color: var(--ink-3); }
+
+  .dossier-body {
+    padding: 24px 28px 28px;
+    display: grid;
+    grid-template-columns: 84px 1fr;
+    gap: 22px;
+  }
+
+  .dossier-photo {
+    width: 84px; height: 110px;
+    background: var(--ink);
+    position: relative;
+    overflow: hidden;
+    border: 1px solid var(--ink-2);
+  }
+  .dossier-photo::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(180deg, transparent 30%, var(--ink) 95%),
+                radial-gradient(circle at 50% 35%, var(--ink-soft) 0%, var(--ink) 60%);
+  }
+  .dossier-photo::after {
+    content: '';
+    position: absolute;
+    bottom: 0; left: 0; right: 0;
+    height: 30%;
+    background: var(--ink);
+    border-radius: 50% 50% 0 0;
+  }
+  .dossier-photo .face {
+    position: absolute;
+    top: 28%; left: 50%;
+    width: 28px; height: 28px;
+    background: var(--ink-3);
+    border-radius: 50%;
+    transform: translateX(-50%);
+  }
+  .dossier-photo .stamp {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: 'Courier Prime', monospace;
+    font-size: 8px;
+    font-weight: 700;
+    color: var(--classified);
+    letter-spacing: 0.15em;
+    transform: rotate(-12deg);
+    z-index: 2;
+    text-shadow: 0 0 2px rgba(232,226,205,0.4);
+  }
+
+  .dossier-info {}
+  .dossier-codename {
+    font-family: 'Newsreader', serif;
+    font-weight: 500;
+    font-size: 28px;
+    color: var(--ink);
+    line-height: 1;
+    letter-spacing: 0.04em;
+    margin-bottom: 4px;
+  }
+  .dossier-real {
+    font-family: 'Courier Prime', monospace;
+    font-size: 10px;
+    color: var(--ink-faint);
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    margin-bottom: 14px;
+  }
+  .dossier-real .redact {
+    background: var(--ink);
+    color: var(--ink);
+    padding: 0 18px;
+    user-select: none;
+  }
+
+  .dossier-bio {
+    font-family: 'Courier Prime', monospace;
+    font-size: 12px;
+    line-height: 1.55;
+    color: var(--ink-2);
+    margin-bottom: 16px;
+  }
+
+  .dossier-traits {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px 14px;
+    font-family: 'Courier Prime', monospace;
+    font-size: 11px;
+  }
+  .trait-row { display: flex; justify-content: space-between; padding: 3px 0; border-bottom: 1px dotted var(--rule); }
+  .trait-key { color: var(--ink-faint); letter-spacing: 0.06em; text-transform: uppercase; font-size: 9px; }
+  .trait-val { color: var(--ink); font-weight: 700; }
+
+  .dossier-foot {
+    padding: 12px 28px;
+    background: var(--paper-aged);
+    border-top: 1px solid var(--rule);
+    font-family: 'Courier Prime', monospace;
+    font-size: 10px;
+    color: var(--ink-3);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    display: flex;
+    justify-content: space-between;
+  }
+
+  /* ========== CYCLE WALKTHROUGH ========== */
+  .cycle-section {
+    background: var(--obsidian);
+    padding-bottom: 200px;
+  }
+
+  .cycle-step {
+    margin-bottom: 96px;
+    display: grid;
+    grid-template-columns: 100px 1fr;
+    gap: 56px;
+    align-items: start;
+  }
+  .cycle-step-marker {
+    position: sticky;
+    top: 32px;
+  }
+  .cycle-step-num {
+    font-family: 'Newsreader', serif;
+    font-weight: 300;
+    font-style: italic;
+    font-size: 84px;
+    color: var(--accent);
+    line-height: 1;
+    margin-bottom: 8px;
+    letter-spacing: -0.05em;
+  }
+  .cycle-step-label {
+    font-family: 'Courier Prime', monospace;
+    font-size: 10px;
+    font-weight: 700;
+    color: var(--accent);
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    border-top: 1px solid var(--accent);
+    padding-top: 8px;
+  }
+
+  .cycle-step-body {}
+  .cycle-step-body h3 {
+    font-family: 'Newsreader', serif;
+    font-weight: 400;
+    font-size: 32px;
+    line-height: 1.15;
+    color: var(--paper-3);
+    margin-bottom: 14px;
+    letter-spacing: -0.015em;
+  }
+  .cycle-step-body h3 em { font-style: italic; color: var(--accent-soft); }
+  .cycle-step-body > p {
+    font-family: 'Newsreader', serif;
+    font-size: 16px;
+    line-height: 1.65;
+    color: var(--ink-faint);
+    max-width: 60ch;
+    margin-bottom: 28px;
+  }
+  .cycle-step-body > p strong { color: var(--paper); font-weight: 500; }
+
+  /* ========== DOCUMENTS ========== */
+  .doc {
+    background: var(--paper);
+    color: var(--ink);
+    padding: 32px 40px 36px;
+    box-shadow: var(--shadow-paper);
+    font-family: 'Courier Prime', monospace;
+    font-size: 13px;
+    line-height: 1.7;
+    position: relative;
+  }
+  .doc.tilt-l { transform: rotate(-0.4deg); }
+  .doc.tilt-r { transform: rotate(0.4deg); }
+  .doc.tilt-l2 { transform: rotate(-0.8deg); }
+  .doc.tilt-r2 { transform: rotate(0.6deg); }
+
+  .doc-header {
+    border-bottom: 2px solid var(--ink);
+    padding-bottom: 14px;
+    margin-bottom: 20px;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 16px;
+    align-items: end;
+  }
+  .doc-header .org {
+    font-family: 'Courier Prime', monospace;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.32em;
+    color: var(--ink);
+    text-transform: uppercase;
+    margin-bottom: 4px;
+  }
+  .doc-header .title-line {
+    font-family: 'Newsreader', serif;
+    font-weight: 600;
+    font-size: 22px;
+    color: var(--ink);
+    line-height: 1.1;
+    letter-spacing: -0.01em;
+  }
+  .doc-header .title-line em { font-style: italic; color: var(--classified); font-weight: 400; }
+  .doc-header .ref {
+    text-align: right;
+    font-family: 'Courier Prime', monospace;
+    font-size: 10px;
+    color: var(--ink-3);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    line-height: 1.5;
+  }
+  .doc-header .ref strong { color: var(--ink); font-weight: 700; }
+
+  .doc-meta-grid {
+    display: grid;
+    grid-template-columns: auto 1fr auto 1fr;
+    gap: 8px 24px;
+    margin-bottom: 22px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--rule);
+    font-size: 12px;
+  }
+  .doc-meta-grid .label {
+    font-family: 'Courier Prime', monospace;
+    font-size: 10px;
+    color: var(--ink-3);
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    align-self: center;
+  }
+  .doc-meta-grid .val {
+    font-family: 'Courier Prime', monospace;
+    color: var(--ink);
+    font-weight: 700;
+  }
+
+  .doc-body {
+    color: var(--ink);
+    font-size: 13px;
+    line-height: 1.85;
+  }
+  .doc-body p { margin-bottom: 14px; }
+  .doc-body p:last-child { margin-bottom: 0; }
+  .doc-body em { font-style: italic; color: var(--ink-2); }
+  .doc-body .redact {
+    background: var(--ink);
+    color: var(--ink);
+    padding: 0 14px;
+    user-select: none;
+  }
+  .doc-body .underline { text-decoration: underline; text-decoration-color: var(--classified); text-decoration-thickness: 2px; text-underline-offset: 3px; }
+
+  .doc-sign {
+    margin-top: 28px;
+    padding-top: 18px;
+    border-top: 1px solid var(--rule);
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    font-family: 'Courier Prime', monospace;
+    font-size: 11px;
+    color: var(--ink-3);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+  .doc-sign .name {
+    font-family: 'Special Elite', cursive;
+    font-size: 18px;
+    color: var(--ink);
+    letter-spacing: 0.04em;
+    text-transform: none;
+    border-bottom: 1px solid var(--ink);
+    padding: 4px 26px 2px 4px;
+  }
+
+  /* Stamps */
+  .stamp {
+    position: absolute;
+    font-family: 'Courier Prime', monospace;
+    font-weight: 700;
+    text-transform: uppercase;
+    text-align: center;
+    border: 3px double currentColor;
+    padding: 6px 14px;
+    letter-spacing: 0.14em;
+    font-size: 13px;
+    z-index: 10;
+    pointer-events: none;
+    background: rgba(232, 226, 205, 0.5);
+  }
+  .stamp.classified {
+    color: var(--classified);
+    transform: rotate(-8deg);
+    top: -14px;
+    right: 32px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.18);
+  }
+  .stamp.received {
+    color: var(--green);
+    border-color: var(--green);
+    transform: rotate(6deg);
+    top: 18px;
+    right: -16px;
+    font-size: 11px;
+  }
+  .stamp.field {
+    color: var(--accent);
+    border-color: var(--accent);
+    transform: rotate(-3deg);
+    top: 16px;
+    right: 16px;
+    font-size: 10px;
+    background: rgba(196, 90, 26, 0.06);
+  }
+
+  /* Composer mockup */
+  .composer-mock {
+    background: var(--paper-3);
+    color: var(--ink);
+    padding: 0;
+    box-shadow: var(--shadow-paper);
+    font-family: 'Courier Prime', monospace;
+    position: relative;
+    border: 1px solid var(--paper-aged);
+  }
+  .composer-bar {
+    background: var(--ink);
+    color: var(--paper);
+    padding: 10px 22px;
+    display: flex;
+    justify-content: space-between;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+  }
+  .composer-bar .fkey { color: var(--accent-soft); }
+
+  .composer-form {
+    padding: 28px 36px 16px;
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 8px 22px;
+  }
+  .composer-form .label {
+    font-size: 10px;
+    color: var(--ink-3);
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    align-self: center;
+  }
+  .composer-form .input {
+    border-bottom: 1px solid var(--ink);
+    padding: 4px 6px;
+    color: var(--ink);
+    font-size: 13px;
+    font-weight: 700;
+  }
+
+  .composer-body {
+    padding: 4px 36px 30px;
+  }
+  .composer-body-label {
+    font-size: 10px;
+    color: var(--ink-3);
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    margin: 18px 0 14px;
+    padding-bottom: 6px;
+    border-bottom: 1px dashed var(--rule);
+  }
+  .composer-text {
+    font-size: 14px;
+    line-height: 1.95;
+    color: var(--ink);
+    padding: 14px 0;
+    min-height: 120px;
+  }
+  .composer-text .typed {
+    background: rgba(196, 90, 26, 0.08);
+    padding: 1px 0;
+  }
+  .composer-text .cursor {
+    display: inline-block;
+    width: 8px; height: 17px;
+    background: var(--ink);
+    vertical-align: middle;
+    margin-left: 1px;
+    animation: blink 0.9s infinite;
+  }
+  @keyframes blink {
+    0%, 49% { opacity: 1; }
+    50%, 100% { opacity: 0; }
+  }
+
+  .composer-foot {
+    background: var(--paper-2);
+    padding: 14px 36px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-top: 1px solid var(--rule);
+    font-size: 10px;
+    color: var(--ink-3);
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+  }
+  .composer-foot .send {
+    background: var(--classified);
+    color: var(--paper-3);
+    padding: 8px 18px;
+    font-family: 'Courier Prime', monospace;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    border: none;
+    cursor: pointer;
+  }
+  .composer-foot .send::after { content: ' →'; }
+
+  /* Time-passes interlude */
+  .interlude {
+    text-align: center;
+    padding: 80px 0;
+    color: var(--ink-faint);
+    font-family: 'Newsreader', serif;
+    font-style: italic;
+    font-size: 22px;
+    position: relative;
+  }
+  .interlude::before, .interlude::after {
+    content: '';
+    display: block;
+    width: 200px; height: 1px;
+    background: linear-gradient(90deg, transparent, var(--ink-3), transparent);
+    margin: 20px auto;
+  }
+  .interlude span {
+    font-family: 'Courier Prime', monospace;
+    font-size: 10px;
+    letter-spacing: 0.32em;
+    text-transform: uppercase;
+    color: var(--accent);
+    display: block;
+    margin-top: 10px;
+    font-style: normal;
+  }
+
+  /* Comparison */
+  .compare-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 32px;
+  }
+  .compare-card {
+    background: var(--obsidian-3);
+    border: 1px solid var(--ink-2);
+    padding: 28px 32px 30px;
+  }
+  .compare-card h5 {
+    font-family: 'Courier Prime', monospace;
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--accent);
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    margin-bottom: 14px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--ink-2);
+  }
+  .compare-card h6 {
+    font-family: 'Newsreader', serif;
+    font-style: italic;
+    font-weight: 500;
+    font-size: 18px;
+    color: var(--paper-3);
+    margin-bottom: 8px;
+  }
+  .compare-card p {
+    font-family: 'Newsreader', serif;
+    font-size: 14px;
+    color: var(--paper);
+    line-height: 1.65;
+    margin-bottom: 14px;
+  }
+  .compare-card .takeaway {
+    margin-top: 20px;
+    padding-top: 14px;
+    border-top: 1px dashed var(--ink-2);
+    font-family: 'Courier Prime', monospace;
+    font-size: 11px;
+    color: var(--accent-soft);
+    letter-spacing: 0.04em;
+  }
+  .compare-card .takeaway::before {
+    content: '→ ';
+    color: var(--accent);
+  }
+
+  /* ========== LLM SECTION ========== */
+  .llm-section {
+    background: linear-gradient(180deg, var(--obsidian) 0%, var(--obsidian-2) 100%);
+  }
+  .llm-flow {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr auto 1fr auto 1fr auto 1fr;
+    align-items: center;
+    gap: 8px;
+    margin-top: 48px;
+    padding: 48px 0;
+  }
+  .llm-node {
+    text-align: center;
+    padding: 24px 16px;
+  }
+  .llm-node.player, .llm-node.agent { background: var(--obsidian-3); border: 1px solid var(--ink-2); }
+  .llm-node.llm { background: rgba(196, 90, 26, 0.08); border: 1px solid var(--accent); }
+  .llm-node-label {
+    font-family: 'Courier Prime', monospace;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    margin-bottom: 10px;
+  }
+  .llm-node.player .llm-node-label { color: var(--paper); }
+  .llm-node.agent .llm-node-label { color: var(--paper); }
+  .llm-node.llm .llm-node-label { color: var(--accent); }
+  .llm-node-name {
+    font-family: 'Newsreader', serif;
+    font-style: italic;
+    font-size: 22px;
+    color: var(--paper-3);
+    line-height: 1.1;
+    margin-bottom: 6px;
+  }
+  .llm-node.llm .llm-node-name { color: var(--accent-soft); }
+  .llm-node-sub {
+    font-family: 'Courier Prime', monospace;
+    font-size: 10px;
+    color: var(--ink-faint);
+    letter-spacing: 0.08em;
+  }
+  .llm-arrow {
+    font-family: 'Courier Prime', monospace;
+    color: var(--accent);
+    font-size: 22px;
+  }
+
+  /* Counter-cards */
+  .why-llm-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 32px;
+    margin-top: 64px;
+  }
+  .why-llm {
+    border-left: 2px solid var(--accent);
+    padding-left: 28px;
+  }
+  .why-llm h4 {
+    font-family: 'Newsreader', serif;
+    font-style: italic;
+    font-weight: 500;
+    font-size: 22px;
+    color: var(--paper-3);
+    margin-bottom: 12px;
+    line-height: 1.3;
+  }
+  .why-llm p {
+    font-family: 'Newsreader', serif;
+    font-size: 14px;
+    color: var(--paper);
+    line-height: 1.65;
+  }
+  .why-llm p strong { color: var(--accent-soft); font-weight: 600; }
+
+  /* ========== CAMPAIGN SECTION ========== */
+  .campaign-section {
+    background: var(--obsidian);
+  }
+  .campaign-timeline {
+    background: var(--paper);
+    color: var(--ink);
+    padding: 56px 56px 64px;
+    position: relative;
+    box-shadow: var(--shadow);
+  }
+  .campaign-timeline::before {
+    content: 'CASE FILE — SAMPLE TRAJECTORY';
+    position: absolute;
+    top: 18px; left: 56px;
+    font-family: 'Courier Prime', monospace;
+    font-size: 10px;
+    color: var(--ink-faint);
+    letter-spacing: 0.22em;
+  }
+  .campaign-h {
+    font-family: 'Newsreader', serif;
+    font-weight: 500;
+    font-size: 28px;
+    margin-top: 20px;
+    margin-bottom: 8px;
+    color: var(--ink);
+    letter-spacing: -0.01em;
+  }
+  .campaign-h em { font-style: italic; color: var(--classified); }
+  .campaign-sub {
+    font-family: 'Courier Prime', monospace;
+    font-size: 11px;
+    color: var(--ink-3);
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    margin-bottom: 36px;
+  }
+
+  .timeline-row {
+    display: grid;
+    grid-template-columns: 80px 1fr 280px;
+    gap: 24px;
+    padding: 16px 0;
+    border-bottom: 1px solid var(--rule-soft);
+    align-items: start;
+  }
+  .timeline-row:last-child { border-bottom: none; }
+  .timeline-cycle {
+    font-family: 'Newsreader', serif;
+    font-style: italic;
+    font-size: 32px;
+    color: var(--accent);
+    font-weight: 400;
+    line-height: 1;
+  }
+  .timeline-cycle small { font-size: 11px; color: var(--ink-3); font-style: normal; font-family: 'Courier Prime', monospace; letter-spacing: 0.12em; display: block; margin-top: 4px; }
+  .timeline-event {
+    font-family: 'Newsreader', serif;
+    font-size: 15px;
+    color: var(--ink);
+    line-height: 1.55;
+    padding-top: 4px;
+  }
+  .timeline-event em { font-style: italic; color: var(--ink-2); }
+  .timeline-event strong { color: var(--classified); font-weight: 700; }
+  .timeline-meta {
+    font-family: 'Courier Prime', monospace;
+    font-size: 10px;
+    color: var(--ink-3);
+    text-align: right;
+    line-height: 1.6;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    padding-top: 8px;
+  }
+  .timeline-meta .stat { color: var(--ink); font-weight: 700; }
+
+  /* ========== ENGINE ARCH ========== */
+  .arch-section {
+    background: linear-gradient(180deg, var(--obsidian) 0%, var(--obsidian-2) 100%);
+  }
+  .arch-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 40px;
+    margin-top: 48px;
+  }
+  .arch-block {
+    background: var(--obsidian-3);
+    border: 1px solid var(--ink-2);
+    padding: 32px 36px;
+  }
+  .arch-block h4 {
+    font-family: 'Courier Prime', monospace;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 20px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--ink-2);
+  }
+  .arch-block h5 {
+    font-family: 'Newsreader', serif;
+    font-style: italic;
+    font-weight: 500;
+    font-size: 18px;
+    color: var(--paper-3);
+    margin-bottom: 8px;
+    margin-top: 18px;
+  }
+  .arch-block h5:first-of-type { margin-top: 0; }
+  .arch-block p {
+    font-family: 'Newsreader', serif;
+    font-size: 14px;
+    color: var(--paper);
+    line-height: 1.6;
+    margin-bottom: 8px;
+  }
+  .arch-block code {
+    font-family: 'Courier Prime', monospace;
+    font-size: 12px;
+    background: var(--obsidian);
+    color: var(--accent-soft);
+    padding: 1px 6px;
+  }
+
+  /* ========== CLOSING ========== */
+  .closing {
+    background: var(--obsidian);
+    text-align: center;
+    padding: 160px 0 100px;
+    position: relative;
+    overflow: hidden;
+  }
+  .closing::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(ellipse 60% 80% at 50% 50%, rgba(196, 90, 26, 0.08) 0%, transparent 60%);
+    pointer-events: none;
+  }
+  .closing-pull {
+    font-family: 'Newsreader', serif;
+    font-weight: 300;
+    font-style: italic;
+    font-size: clamp(34px, 4.5vw, 56px);
+    line-height: 1.15;
+    letter-spacing: -0.02em;
+    color: var(--paper-3);
+    max-width: 28ch;
+    margin: 0 auto;
+    position: relative;
+  }
+  .closing-pull em { color: var(--accent-soft); }
+  .closing-meta {
+    margin-top: 56px;
+    font-family: 'Courier Prime', monospace;
+    font-size: 11px;
+    letter-spacing: 0.32em;
+    color: var(--ink-3);
+    text-transform: uppercase;
+    position: relative;
+  }
+
+  footer {
+    padding: 40px;
+    border-top: 1px solid var(--ink-2);
+    display: flex;
+    justify-content: space-between;
+    font-family: 'Courier Prime', monospace;
+    font-size: 10px;
+    color: var(--ink-3);
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+  }
+
+  /* Responsive */
+  @media (max-width: 1100px) {
+    .premise-grid { grid-template-columns: 1fr; gap: 48px; }
+    .roster-grid { grid-template-columns: 1fr; }
+    .compare-grid { grid-template-columns: 1fr; }
+    .why-llm-grid { grid-template-columns: 1fr; }
+    .arch-grid { grid-template-columns: 1fr; }
+    .llm-flow { grid-template-columns: 1fr; gap: 16px; }
+    .llm-arrow { transform: rotate(90deg); }
+    .cycle-step { grid-template-columns: 1fr; gap: 24px; }
+    .cycle-step-marker { position: relative; top: 0; }
+    .loop-stages { grid-template-columns: 1fr 1fr; gap: 32px; }
+    .loop-stage:not(:last-child)::after { display: none; }
+    .timeline-row { grid-template-columns: 1fr; }
+  }
+
+  @media (max-width: 700px) {
+    .page-wrap { padding: 0 24px; }
+    .hero-content { padding: 60px 16px; }
+    .hero-corner { display: none; }
+    .doc { padding: 24px 22px 28px; }
+    .composer-form { grid-template-columns: 1fr; }
+    .doc-meta-grid { grid-template-columns: auto 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<div class="grain"></div>
+
+<!-- ========== HERO ========== -->
+<section class="hero">
+  <div class="hero-corner tl">
+    <div>OPERATIONS / NIGHT DESK</div>
+    <div>03:14 LOCAL</div>
+  </div>
+  <div class="hero-corner tr">
+    <div>DOC. CONTROL — INTERNAL</div>
+    <div>FILE 04 OF 12</div>
+  </div>
+  <div class="hero-corner bl">
+    <div>CONCEPT ARTIFACT</div>
+    <div>v.0.1</div>
+  </div>
+  <div class="hero-corner br">
+    <div>HANDLE WITH CARE</div>
+    <div>DESTROY IF UNREAD</div>
+  </div>
+
+  <div class="hero-content">
+    <div class="hero-classification">
+      <span class="dot"></span>
+      Classified · Spymaster Concept · Eyes Only
+      <span class="dot"></span>
+    </div>
+
+    <h1 class="hero-title">Hand<em>l</em>er.</h1>
+
+    <div class="hero-subtitle">An intelligence game made of briefs and reports</div>
+
+    <div class="hero-verb">
+      <span class="l1">You write what they should do.</span>
+      <span class="l2">They go and do something.</span>
+      <span class="l3">You read about what happened.</span>
+    </div>
+
+    <div class="hero-meta">
+      <span>One verb</span>
+      <span>Two LLM endpoints</span>
+      <span>Four agents in the field</span>
+      <span>14 cycles to commit</span>
+    </div>
+  </div>
+</section>
+
+
+<!-- ========== PREMISE ========== -->
+<section class="premise">
+  <div class="page-wrap">
+    <div class="section-head">
+      <div class="section-num">§01 — Premise</div>
+      <h2>You don't go into the field. <em>They do.</em></h2>
+    </div>
+
+    <div class="premise-grid">
+      <div>
+        <p class="lede">
+          You sit at a desk in a room without windows. Your agents are out there. You will never meet them. You communicate only through written briefs that travel through dead drops and encrypted channels — and they reply only through reports that arrive on your desk between cycles.
+        </p>
+        <p class="lede">
+          Each cycle, you write one brief per agent. <strong>One sentence, one paragraph, one page</strong> — the format is yours. They go and execute, off-screen. The cycle ends. Their reports arrive: short prose dispatches, generated by the LLM, conditioned on what you wrote, who they are, and what's actually out there.
+        </p>
+        <p class="lede">
+          Some reports come back exactly as you'd hoped. Some don't come back at all. Some come back longer than they should be, with the agent <em>justifying</em> what they did in your name. Over fourteen cycles, you learn what each agent does with your words. <strong>Your eye sharpens.</strong> Some agents you stop trusting. Some you trust more than you should.
+        </p>
+      </div>
+
+      <div class="premise-aside">
+        <div class="premise-aside-label">— Operating Premise —</div>
+        <h4>The handler is judged by the cumulative weight of his decisions, not by any single one.</h4>
+        <p>
+          A bold instruction may produce a catastrophe or a miracle. A cautious one may produce nothing at all. The handler who learns the temperament of his agents is the handler who survives. The handler who does not is replaced.
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+
+<!-- ========== LOOP ========== -->
+<section class="loop-section">
+  <div class="page-wrap">
+    <div class="section-head">
+      <div class="section-num">§02 — The Cycle</div>
+      <h2>One verb. <em>Repeated until the campaign closes.</em></h2>
+      <p class="lede">Every cycle is the same shape, regardless of mission. Five stages, two of them belonging to the LLM, two to the player, one to the world.</p>
+    </div>
+
+    <div class="loop-canvas">
+      <h3 class="loop-h">The handler's <em>cycle</em>.</h3>
+      <div class="loop-sub">FIELD MANUAL — §3.1 — REVISION 04</div>
+
+      <div class="loop-stages">
+        <div class="loop-stage">
+          <div class="loop-stage-num">i</div>
+          <div class="loop-stage-name">Brief</div>
+          <div class="loop-stage-actor player">Player</div>
+          <div class="loop-stage-desc">Write what each agent should do. Free text. Any length.</div>
+        </div>
+        <div class="loop-stage">
+          <div class="loop-stage-num">ii</div>
+          <div class="loop-stage-name">Interpret</div>
+          <div class="loop-stage-actor llm">LLM</div>
+          <div class="loop-stage-desc">Each agent reads the brief in their own voice. Personality applies.</div>
+        </div>
+        <div class="loop-stage">
+          <div class="loop-stage-num">iii</div>
+          <div class="loop-stage-name">Execute</div>
+          <div class="loop-stage-actor world">World</div>
+          <div class="loop-stage-desc">The action resolves off-screen against the world state. Outcome determined.</div>
+        </div>
+        <div class="loop-stage">
+          <div class="loop-stage-num">iv</div>
+          <div class="loop-stage-name">Report</div>
+          <div class="loop-stage-actor llm">LLM</div>
+          <div class="loop-stage-desc">The agent writes a dispatch. Voice, length, omissions are character.</div>
+        </div>
+        <div class="loop-stage">
+          <div class="loop-stage-num">v</div>
+          <div class="loop-stage-name">Decide</div>
+          <div class="loop-stage-actor player">Player</div>
+          <div class="loop-stage-desc">Read every report. Plan the next brief. Or burn an agent.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+
+<!-- ========== ROSTER ========== -->
+<section class="roster-section">
+  <div class="page-wrap">
+    <div class="section-head">
+      <div class="section-num">§03 — The Roster</div>
+      <h2>Four agents. <em>Each one a different mistake waiting.</em></h2>
+      <p class="lede">Authored profiles establish each agent's temperament, skills, and weaknesses. The LLM enacts that profile every time the agent receives a brief and every time they file a report. Patterns become legible across cycles.</p>
+    </div>
+
+    <div class="roster-grid">
+
+      <article class="dossier">
+        <div class="dossier-head">
+          <div class="dossier-file-no">File 33-A · Active</div>
+          <div class="dossier-status active">In Country</div>
+        </div>
+        <div class="dossier-body">
+          <div class="dossier-photo">
+            <span class="face"></span>
+          </div>
+          <div class="dossier-info">
+            <div class="dossier-codename">ADLER</div>
+            <div class="dossier-real">Real Name <span class="redact">REDACTED</span></div>
+            <div class="dossier-bio">
+              Eighteen years in service. Ex-military intelligence. Methodical, patient, clean exits. Drinks heavily off-mission; once filed a report 31 hours late.
+            </div>
+            <div class="dossier-traits">
+              <div class="trait-row"><span class="trait-key">Disposition</span><span class="trait-val">Cautious</span></div>
+              <div class="trait-row"><span class="trait-key">Speciality</span><span class="trait-val">Surveil.</span></div>
+              <div class="trait-row"><span class="trait-key">Reliability</span><span class="trait-val">High</span></div>
+              <div class="trait-row"><span class="trait-key">Initiative</span><span class="trait-val">Low</span></div>
+            </div>
+          </div>
+        </div>
+        <div class="dossier-foot">
+          <span>Last contact · Cycle 7</span>
+          <span>Loyalty · Nominal</span>
+        </div>
+      </article>
+
+      <article class="dossier">
+        <div class="dossier-head">
+          <div class="dossier-file-no">File 41-K · Active</div>
+          <div class="dossier-status active">In Country</div>
+        </div>
+        <div class="dossier-body">
+          <div class="dossier-photo">
+            <span class="face"></span>
+          </div>
+          <div class="dossier-info">
+            <div class="dossier-codename">KESTREL</div>
+            <div class="dossier-real">Real Name <span class="redact">REDACTED</span></div>
+            <div class="dossier-bio">
+              Two years in service. Recruited from academic linguistics. Improvises ferociously. Exceeds briefs and writes long reports justifying it. Brilliant. Will get someone killed.
+            </div>
+            <div class="dossier-traits">
+              <div class="trait-row"><span class="trait-key">Disposition</span><span class="trait-val">Zealous</span></div>
+              <div class="trait-row"><span class="trait-key">Speciality</span><span class="trait-val">Approach</span></div>
+              <div class="trait-row"><span class="trait-key">Reliability</span><span class="trait-val">Low</span></div>
+              <div class="trait-row"><span class="trait-key">Initiative</span><span class="trait-val">Extreme</span></div>
+            </div>
+          </div>
+        </div>
+        <div class="dossier-foot">
+          <span>Last contact · Cycle 7</span>
+          <span>Loyalty · Strong</span>
+        </div>
+      </article>
+
+      <article class="dossier">
+        <div class="dossier-head">
+          <div class="dossier-file-no">File 17-M · Embedded</div>
+          <div class="dossier-status suspect">⚠ Suspect</div>
+        </div>
+        <div class="dossier-body">
+          <div class="dossier-photo">
+            <span class="face"></span>
+            <span class="stamp">UNVERIFIED</span>
+          </div>
+          <div class="dossier-info">
+            <div class="dossier-codename">MAGPIE</div>
+            <div class="dossier-real">Real Name <span class="redact">REDACTED</span></div>
+            <div class="dossier-bio">
+              Three years embedded as a mid-level employee at the target. Established legend. Reports increasingly terse over the past 14 weeks; absences unaccounted for; possible compromise.
+            </div>
+            <div class="dossier-traits">
+              <div class="trait-row"><span class="trait-key">Disposition</span><span class="trait-val">Opaque</span></div>
+              <div class="trait-row"><span class="trait-key">Speciality</span><span class="trait-val">Access</span></div>
+              <div class="trait-row"><span class="trait-key">Reliability</span><span class="trait-val">Drifting</span></div>
+              <div class="trait-row"><span class="trait-key">Initiative</span><span class="trait-val">Unknown</span></div>
+            </div>
+          </div>
+        </div>
+        <div class="dossier-foot">
+          <span>Last contact · Cycle 5</span>
+          <span>Loyalty · ⚠ In review</span>
+        </div>
+      </article>
+
+      <article class="dossier">
+        <div class="dossier-head">
+          <div class="dossier-file-no">File 28-W · Support</div>
+          <div class="dossier-status support">SIGINT</div>
+        </div>
+        <div class="dossier-body">
+          <div class="dossier-photo">
+            <span class="face"></span>
+          </div>
+          <div class="dossier-info">
+            <div class="dossier-codename">WREN</div>
+            <div class="dossier-real">Real Name <span class="redact">REDACTED</span></div>
+            <div class="dossier-bio">
+              Seven years in service. Signals specialist. Operates exclusively through electronic channels. Cannot run a physical operation. Reports are precise, dry, and almost never wrong.
+            </div>
+            <div class="dossier-traits">
+              <div class="trait-row"><span class="trait-key">Disposition</span><span class="trait-val">Clinical</span></div>
+              <div class="trait-row"><span class="trait-key">Speciality</span><span class="trait-val">SIGINT</span></div>
+              <div class="trait-row"><span class="trait-key">Reliability</span><span class="trait-val">Total</span></div>
+              <div class="trait-row"><span class="trait-key">Initiative</span><span class="trait-val">None</span></div>
+            </div>
+          </div>
+        </div>
+        <div class="dossier-foot">
+          <span>Last contact · Cycle 7</span>
+          <span>Loyalty · Procedural</span>
+        </div>
+      </article>
+
+    </div>
+  </div>
+</section>
+
+
+<!-- ========== ONE CYCLE TRACED ========== -->
+<section class="cycle-section">
+  <div class="page-wrap">
+    <div class="section-head">
+      <div class="section-num">§04 — One Cycle, Traced</div>
+      <h2>The same brief, two agents, two reports. <em>One game.</em></h2>
+      <p class="lede">A single cycle from <strong>OP. SHEPHERD</strong> — your investigation into Asset M-12, who has not reported in six weeks. You task ADLER and KESTREL on adjacent angles. Their dispatches return on Cycle 8.</p>
+    </div>
+
+    <!-- Step 1: Mission briefing -->
+    <div class="cycle-step">
+      <div class="cycle-step-marker">
+        <div class="cycle-step-num">i</div>
+        <div class="cycle-step-label">Situation</div>
+      </div>
+      <div class="cycle-step-body">
+        <h3>The mission lands on your desk.</h3>
+        <p>It's already morning when the night desk slides the file in. M-12 is your agency's longest-running asset inside the target organization. He has not reported in <strong>43 days</strong>. The agency has begun discussing him in past tense. You have one cycle to determine whether he's been turned, killed, or just gone quiet — before someone above you decides for you.</p>
+
+        <div class="doc tilt-l">
+          <div class="stamp classified">Classified</div>
+          <div class="doc-header">
+            <div>
+              <div class="org">Operations / Internal</div>
+              <div class="title-line">Op. <em>Shepherd</em> — verify status of Asset M-12</div>
+            </div>
+            <div class="ref">
+              File · OPS/SH/14<br>
+              Cycle · 07<br>
+              Priority · A
+            </div>
+          </div>
+          <div class="doc-meta-grid">
+            <span class="label">Asset</span><span class="val">M-12</span>
+            <span class="label">Last Contact</span><span class="val">Cycle &minus;6</span>
+            <span class="label">Region</span><span class="val">SECTOR 4-W</span>
+            <span class="label">Threat</span><span class="val">UNKNOWN</span>
+          </div>
+          <div class="doc-body">
+            <p>Asset M-12 has not reported through standard or contingency channels for six (6) cycles. Surveillance has not detected unusual movement around his residence; his employer has not flagged absences; ordinary patterns appear intact.</p>
+            <p>Three working hypotheses, in order of organizational concern: <span class="underline">turned</span>, <span class="underline">deceased</span>, <span class="underline">extracted by competing service</span>. A fourth — the asset is simply quiet — remains possible but is treated as null by the case officer above you.</p>
+            <p>Recommend tasking two field agents on adjacent vectors. Cycle 8 reports will be sufficient for a preliminary disposition.</p>
+          </div>
+          <div class="doc-sign">
+            <div>
+              <span class="name">G. Halloway</span>
+              <div style="margin-top:6px;">Section Chief · Operations</div>
+            </div>
+            <div>Cycle 07 · 07:11</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Step 2: Brief to ADLER -->
+    <div class="cycle-step">
+      <div class="cycle-step-marker">
+        <div class="cycle-step-num">ii</div>
+        <div class="cycle-step-label">Brief — ADLER</div>
+      </div>
+      <div class="cycle-step-body">
+        <h3>You write to <em>ADLER</em>.</h3>
+        <p>ADLER is your veteran. You don't have to tell him much. The risk with ADLER is that he'll do <strong>exactly what you say</strong> — no more, no less. If you forget to tell him to look for X, he won't.</p>
+
+        <div class="composer-mock">
+          <div class="composer-bar">
+            <span>BRIEF — File OPS/SH/14 → AGENT ADLER</span>
+            <span><span class="fkey">F4</span> Encrypt &middot; <span class="fkey">F8</span> Dispatch</span>
+          </div>
+          <div class="composer-form">
+            <div class="label">From</div><div class="input">HANDLER · Section 4 / Operations</div>
+            <div class="label">To</div><div class="input">AGENT ADLER · File 33-A</div>
+            <div class="label">Re</div><div class="input">Op. Shepherd / Asset M-12 / Cycle 07 → 08</div>
+          </div>
+          <div class="composer-body">
+            <div class="composer-body-label">— Brief —</div>
+            <div class="composer-text">
+              <span class="typed">Observe M-12's residence for the duration of Cycle 8. Note all visitors, vehicles, deliveries. Pattern over single instance — twice is a coincidence, three times is a contact. Do not approach the residence. Do not approach the asset. If contacted by M-12, withdraw and report.</span><span class="cursor"></span>
+            </div>
+          </div>
+          <div class="composer-foot">
+            <span>247 chars · brief length: terse</span>
+            <button class="send">Dispatch</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Step 3: Brief to KESTREL -->
+    <div class="cycle-step">
+      <div class="cycle-step-marker">
+        <div class="cycle-step-num">iii</div>
+        <div class="cycle-step-label">Brief — KESTREL</div>
+      </div>
+      <div class="cycle-step-body">
+        <h3>You write to <em>KESTREL</em>.</h3>
+        <p>KESTREL is your improviser. You give her latitude when you want her to find what you don't yet know to ask for. The risk with KESTREL is that she'll <strong>find it</strong> — and a great deal more besides — and her report will read like a confession.</p>
+
+        <div class="composer-mock">
+          <div class="composer-bar">
+            <span>BRIEF — File OPS/SH/14 → AGENT KESTREL</span>
+            <span><span class="fkey">F4</span> Encrypt &middot; <span class="fkey">F8</span> Dispatch</span>
+          </div>
+          <div class="composer-form">
+            <div class="label">From</div><div class="input">HANDLER · Section 4 / Operations</div>
+            <div class="label">To</div><div class="input">AGENT KESTREL · File 41-K</div>
+            <div class="label">Re</div><div class="input">Op. Shepherd / Asset M-12 / Cycle 07 → 08</div>
+          </div>
+          <div class="composer-body">
+            <div class="composer-body-label">— Brief —</div>
+            <div class="composer-text">
+              <span class="typed">Verify whether M-12's spouse has been contacted by unfamiliar parties in the past forty days. Light touch. Use cover work, not direct contact. Be patient with the answer. Withdraw if you sense surveillance.</span><span class="cursor"></span>
+            </div>
+          </div>
+          <div class="composer-foot">
+            <span>208 chars · brief length: terse</span>
+            <button class="send">Dispatch</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Interlude -->
+    <div class="interlude">
+      The cycle ends. The desk waits.
+      <span>— Cycle 08 begins —</span>
+    </div>
+
+    <!-- Step 4: ADLER's report -->
+    <div class="cycle-step">
+      <div class="cycle-step-marker">
+        <div class="cycle-step-num">iv</div>
+        <div class="cycle-step-label">Report — ADLER</div>
+      </div>
+      <div class="cycle-step-body">
+        <h3>ADLER's dispatch arrives. <em>Three paragraphs.</em></h3>
+        <p>This is what you'd hoped for. ADLER did exactly what you asked. The report is short, observational, and surfaces one detail you didn't know to ask about: <strong>the cars in the courtyard at night.</strong></p>
+
+        <div class="doc tilt-r">
+          <div class="stamp received">Received · 08:42</div>
+          <div class="doc-header">
+            <div>
+              <div class="org">Field Dispatch · Inbound</div>
+              <div class="title-line">Surveillance — M-12 residence — <em>Cycle 08</em></div>
+            </div>
+            <div class="ref">
+              From · <strong>ADLER</strong><br>
+              File · OPS/SH/14<br>
+              Length · 218 words
+            </div>
+          </div>
+          <div class="doc-meta-grid">
+            <span class="label">Method</span><span class="val">Static surveillance, two positions</span>
+            <span class="label">Duration</span><span class="val">14h 22m</span>
+            <span class="label">Cover</span><span class="val">Maintained</span>
+            <span class="label">Outcome</span><span class="val">Nominal</span>
+          </div>
+          <div class="doc-body">
+            <p>Subject left residence at 07:42, returned at 19:33. Sole occupant on departure and return. Routine matched the established pattern within tolerable variance. No unusual visitors observed at any hour of daylight. Deliveries received: one (postal, routine).</p>
+            <p>Vehicles in the courtyard during night observation deviated from baseline on two occasions. A dark sedan, plates obscured, was present from approximately 02:14 to 03:48 on the first night and from 02:30 to 03:50 on the second. Driver did not exit the vehicle on either occasion. Departure pattern suggests deliberate discretion rather than neighborhood traffic. <em>Recommend further passive observation before drawing conclusions.</em></p>
+            <p>Subject did not attempt contact. I did not approach. Withdrawing from position at 21:00 of second night per protocol.</p>
+          </div>
+          <div class="doc-sign">
+            <div>
+              <span class="name">ADLER</span>
+              <div style="margin-top:6px;">Field 33-A · End of dispatch</div>
+            </div>
+            <div>Cycle 08 · 08:42</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Step 5: KESTREL's report -->
+    <div class="cycle-step">
+      <div class="cycle-step-marker">
+        <div class="cycle-step-num">v</div>
+        <div class="cycle-step-label">Report — KESTREL</div>
+      </div>
+      <div class="cycle-step-body">
+        <h3>KESTREL's dispatch arrives. <em>Five paragraphs.</em></h3>
+        <p>Longer than you wanted. The first paragraph is the answer. The next four are KESTREL building a case for what she did to get it. She <strong>approached the spouse directly</strong>. She told her something. She doesn't quite say what.</p>
+
+        <div class="doc tilt-l2">
+          <div class="stamp field">Field — note tone</div>
+          <div class="doc-header">
+            <div>
+              <div class="org">Field Dispatch · Inbound</div>
+              <div class="title-line">Re: Spouse contact inquiry — <em>Cycle 08</em></div>
+            </div>
+            <div class="ref">
+              From · <strong>KESTREL</strong><br>
+              File · OPS/SH/14<br>
+              Length · 487 words
+            </div>
+          </div>
+          <div class="doc-meta-grid">
+            <span class="label">Method</span><span class="val">Direct approach</span>
+            <span class="label">Duration</span><span class="val">3h 11m</span>
+            <span class="label">Cover</span><span class="val">Modified mid-op</span>
+            <span class="label">Outcome</span><span class="val">Productive · risky</span>
+          </div>
+          <div class="doc-body">
+            <p>The spouse has been contacted. Twice in the past three weeks, by a man she described as "softly spoken, in his fifties, foreign accent she could not place." He approached her at her workplace on both occasions. He offered her nothing and asked nothing directly. He told her, both times, that he hoped her husband was well. She has not told her husband.</p>
+            <p>I judged that the spouse would not yield this information to indirect inquiry within the window we have. The cover I had prepared — a freelance journalist working on a piece about the neighborhood association — required me to ask questions that would have produced the wrong answers. I revised in the field.</p>
+            <p>I approached her under cover as someone she might once have met at a function her husband attended. I implied a previous, low-stakes acquaintance. I asked her if she'd been worried about him recently. She wept, briefly. She told me about the man.</p>
+            <p>I do not believe she suspects me. She believes she confided in someone who knew her husband once. The cover I improvised will hold against ordinary scrutiny. <em>It will not hold against the man who has been visiting her.</em></p>
+            <p>I understand the brief specified light touch. I judged the operational window did not permit it. I have made a record of my reasoning here for the file. If this is grounds for review, I accept the consequence. The man is real. The asset is being courted. We have a window of perhaps two cycles before it closes.</p>
+          </div>
+          <div class="doc-sign">
+            <div>
+              <span class="name">KESTREL</span>
+              <div style="margin-top:6px;">Field 41-K · End of dispatch</div>
+            </div>
+            <div>Cycle 08 · 11:14</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Step 6: Comparison -->
+    <div class="cycle-step">
+      <div class="cycle-step-marker">
+        <div class="cycle-step-num">vi</div>
+        <div class="cycle-step-label">Compare</div>
+      </div>
+      <div class="cycle-step-body">
+        <h3>Two agents. <em>The same situation. Two different games.</em></h3>
+        <p>Both reports are useful. Both are dangerous in different ways. ADLER gave you a clean signal at the cost of breadth; KESTREL gave you breadth at the cost of risk. The handler's question is never <strong>which one was right</strong> — it is what you do <strong>with both, this cycle</strong>, knowing what you now know about how they each work.</p>
+
+        <div class="compare-grid">
+          <div class="compare-card">
+            <h5>What ADLER did</h5>
+            <h6>Followed the brief precisely.</h6>
+            <p>Static surveillance, two positions, 14 hours. Reported only what he saw. Surfaced the courtyard cars — a detail you didn't ask about — but framed it conservatively. Recommended further observation.</p>
+            <div class="takeaway">Reliable signal. Slow. Won't surprise you. Won't catch what you didn't think to ask.</div>
+          </div>
+
+          <div class="compare-card">
+            <h5>What KESTREL did</h5>
+            <h6>Revised the brief in the field.</h6>
+            <p>Approached the spouse directly under improvised cover. Got the answer, paid for it with operational exposure. Warned you the cover won't hold against the other party.</p>
+            <div class="takeaway">Productive intel. Burned ground. Will do this again. Already half-asking forgiveness.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Step 7: Decide -->
+    <div class="cycle-step">
+      <div class="cycle-step-marker">
+        <div class="cycle-step-num">vii</div>
+        <div class="cycle-step-label">Decide</div>
+      </div>
+      <div class="cycle-step-body">
+        <h3>Now you write the next briefs. <em>Different ones, this time.</em></h3>
+        <p>You know there is a man courting M-12's spouse. You know KESTREL's cover is two cycles from breaking. You know ADLER could probably identify the courtyard sedan if you tasked him to it — but he won't take initiative, so you'll need to be specific. You also know <strong>WREN can pull plate data</strong> if you ask. And MAGPIE has been silent for two cycles and you should probably do something about that, even if doing nothing is also a choice.</p>
+        <p>That's the game. Not <em>did you win</em> but <em>what do you do, knowing what you now know, with the agents you have left</em>. Cycle 9 begins when you press dispatch.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+
+<!-- ========== LLM ESSENTIAL ========== -->
+<section class="llm-section">
+  <div class="page-wrap">
+    <div class="section-head">
+      <div class="section-num">§05 — Why the LLM</div>
+      <h2>The model occupies <em>both ends</em> of the loop.</h2>
+      <p class="lede">Most "AI in games" attempts use the LLM at one point — usually rendering NPC dialogue. Here the LLM does two essential jobs back-to-back: <strong>interpret</strong> a free-text instruction in character, then <strong>generate</strong> the prose dispatch that comes back. Neither end can be authored.</p>
+    </div>
+
+    <div class="llm-flow">
+      <div class="llm-node player">
+        <div class="llm-node-label">Player</div>
+        <div class="llm-node-name">Brief</div>
+        <div class="llm-node-sub">free text · 1 sentence to 1 page</div>
+      </div>
+      <div class="llm-arrow">→</div>
+      <div class="llm-node llm">
+        <div class="llm-node-label">LLM Job 1</div>
+        <div class="llm-node-name">Interpret</div>
+        <div class="llm-node-sub">in-character read of the brief</div>
+      </div>
+      <div class="llm-arrow">→</div>
+      <div class="llm-node agent">
+        <div class="llm-node-label">World</div>
+        <div class="llm-node-name">Outcome</div>
+        <div class="llm-node-sub">authored systems resolve action</div>
+      </div>
+      <div class="llm-arrow">→</div>
+      <div class="llm-node llm">
+        <div class="llm-node-label">LLM Job 2</div>
+        <div class="llm-node-name">Render</div>
+        <div class="llm-node-sub">dispatch in the agent's voice</div>
+      </div>
+      <div class="llm-arrow">→</div>
+      <div class="llm-node player">
+        <div class="llm-node-label">Player</div>
+        <div class="llm-node-name">Read</div>
+        <div class="llm-node-sub">decide next cycle</div>
+      </div>
+    </div>
+
+    <div class="why-llm-grid">
+      <div class="why-llm">
+        <h4>An author can't write every brief in advance.</h4>
+        <p>The player writes <strong>arbitrary natural language</strong>. "Eliminate the asset" reads differently from "neutralise the asset by sundown unless he's already dead." Different agents read each differently. No menu, no decision tree, no authored content covers this combinatorial space.</p>
+      </div>
+      <div class="why-llm">
+        <h4>An author can't write every report.</h4>
+        <p>Each dispatch is <strong>uniquely shaped</strong> by the brief, the agent's personality, the world state, the outcome, and what the agent chose to omit. A 200-word ADLER report and a 500-word KESTREL report on the same outcome are different texts. The LLM produces both in voice.</p>
+      </div>
+      <div class="why-llm">
+        <h4>The agent's misinterpretation is content.</h4>
+        <p>When KESTREL exceeds her brief, the LLM is generating the act and the justification together. The handler's <em>relationship to each agent's voice</em> becomes the depth of the game. This is the killer thing the LLM does: <strong>character at scale, in writing.</strong></p>
+      </div>
+      <div class="why-llm">
+        <h4>The same brief, twice, is a different game.</h4>
+        <p>Stochastic generation means even an identical brief to an identical agent on an identical day produces a meaningfully different report. Patterns persist (KESTREL is always KESTREL); particulars don't. <strong>Replays are real plays</strong>, not the same path with different cosmetics.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+
+<!-- ========== CAMPAIGN ========== -->
+<section class="campaign-section">
+  <div class="page-wrap">
+    <div class="section-head">
+      <div class="section-num">§06 — Across a Campaign</div>
+      <h2>Fourteen cycles. <em>Things accrete.</em></h2>
+      <p class="lede">A single cycle is a chamber piece. The campaign is the novel that emerges from fourteen of them. The handler's eye sharpens. Some agents don't make it. Some do, but you wish they hadn't.</p>
+    </div>
+
+    <div class="campaign-timeline">
+      <div class="campaign-h">Op. <em>Shepherd</em> — sample trajectory.</div>
+      <div class="campaign-sub">Cycles 01 → 14 · single playthrough · highlights only</div>
+
+      <div class="timeline-row">
+        <div class="timeline-cycle">01<small>onboarding</small></div>
+        <div class="timeline-event">Roster assigned. <em>You meet your four agents only on paper.</em> First briefs go out: one each, low-stakes shadowing exercises to calibrate.</div>
+        <div class="timeline-meta"><span class="stat">4</span> agents · <span class="stat">0</span> casualties</div>
+      </div>
+
+      <div class="timeline-row">
+        <div class="timeline-cycle">03<small>first divergence</small></div>
+        <div class="timeline-event">KESTREL's first overstep. Productive intel arrives in a 600-word report. <em>You didn't ask for any of it.</em> You note the pattern privately.</div>
+        <div class="timeline-meta">Pattern flag · KESTREL</div>
+      </div>
+
+      <div class="timeline-row">
+        <div class="timeline-cycle">05<small>silence</small></div>
+        <div class="timeline-event">MAGPIE files a one-paragraph dispatch. "Nothing to report. All standard." <em>It's the third such report in a row.</em></div>
+        <div class="timeline-meta">Status downgrade · MAGPIE</div>
+      </div>
+
+      <div class="timeline-row">
+        <div class="timeline-cycle">07<small>op. shepherd opens</small></div>
+        <div class="timeline-event">Section Chief tasks you with verifying M-12. You task ADLER and KESTREL on adjacent angles (this cycle).</div>
+        <div class="timeline-meta">Mission active</div>
+      </div>
+
+      <div class="timeline-row">
+        <div class="timeline-cycle">08<small>convergent intel</small></div>
+        <div class="timeline-event">Both reports return. ADLER's courtyard sedan and KESTREL's "softly spoken man" are <strong>almost certainly the same person</strong>. The shape of the situation comes into focus.</div>
+        <div class="timeline-meta">Convergence detected</div>
+      </div>
+
+      <div class="timeline-row">
+        <div class="timeline-cycle">09<small>tasking</small></div>
+        <div class="timeline-event">You task WREN to pull plate data on the sedan. You task ADLER to identify the man. You leave KESTREL alone — her cover is half-broken. <em>You request a status from MAGPIE</em> and brace.</div>
+        <div class="timeline-meta">3 active briefs</div>
+      </div>
+
+      <div class="timeline-row">
+        <div class="timeline-cycle">11<small>casualty</small></div>
+        <div class="timeline-event">KESTREL fails to report. The agency begins quiet preparations. <em>You did not task her this cycle.</em> The connection is structural, not yours, but it will not be remembered that way.</div>
+        <div class="timeline-meta"><span class="stat">3</span> agents</div>
+      </div>
+
+      <div class="timeline-row">
+        <div class="timeline-cycle">13<small>magpie's letter</small></div>
+        <div class="timeline-event">MAGPIE files a 1,200-word dispatch in a tone you have never heard from her before. She tells you everything. <strong>She is not the leak.</strong> She has been waiting for someone to ask.</div>
+        <div class="timeline-meta">Loyalty restored · MAGPIE</div>
+      </div>
+
+      <div class="timeline-row">
+        <div class="timeline-cycle">14<small>verdict</small></div>
+        <div class="timeline-event">Op. Shepherd closes. M-12 is being courted; not yet turned. You write the disposition memo. You draft the casualty report on KESTREL. <em>You start a new file on Cycle 15.</em></div>
+        <div class="timeline-meta">Campaign · closed</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+
+<!-- ========== ENGINE ARCH ========== -->
+<section class="arch-section">
+  <div class="page-wrap">
+    <div class="section-head">
+      <div class="section-num">§07 — Engine Architecture</div>
+      <h2>The deterministic spine survives. <em>The model fills two slots.</em></h2>
+      <p class="lede">The current Smallville engine — predicate-gated beats, authored effects, drift-tested encoder — carries forward almost unchanged. Two new LLM jobs slot into a wider tick.</p>
+    </div>
+
+    <div class="arch-grid">
+      <div class="arch-block">
+        <h4>What stays</h4>
+        <h5>Authored world state</h5>
+        <p>Agents have authored profiles (skills, weaknesses, loyalty range, voice register). Missions have authored objectives, outcome distributions, and possible complications. Quality fields drive predicate eligibility just as today.</p>
+
+        <h5>Deterministic state writes</h5>
+        <p><code>apply_literal_effects</code> remains the only mutation path. Outcome resolution writes through it. Agent-state changes (loyalty drift, exposure increase, casualty) are authored effects gated by authored predicates.</p>
+
+        <h5>Encoder &amp; drift suite</h5>
+        <p>The static analysis pipeline (ASP encoder + engine consistency tests) carries over. Mission graphs are reachable-encoded; the suite catches divergence between the spine and the encoder.</p>
+      </div>
+
+      <div class="arch-block">
+        <h4>What's new</h4>
+        <h5>LLM Job 1 · Interpreter</h5>
+        <p><code>brief_interpret(agent_profile, brief_text, world_snapshot)</code> → an outcome modifier from a constrained schema (<em>compliance</em>, <em>scope_drift</em>, <em>aggression</em>, <em>caution</em>). The world's authored outcome distribution shifts based on these. Engine validates the output schema; rejection &rarr; retry &rarr; fall back to "neutral compliance."</p>
+
+        <h5>LLM Job 2 · Dispatch renderer</h5>
+        <p><code>render_dispatch(agent_voice, brief, outcome, world_state)</code> → 100–600 words of prose, with optional fields (<em>exposure_admitted</em>, <em>request_for_followup</em>) extracted by a downstream classifier. Length, omissions, and tone are authored constraints; specific phrasings are LLM.</p>
+
+        <h5>One new tick trigger</h5>
+        <p><code>cycle_close</code> fires after all dispatched briefs have been resolved and rendered. Reports populate the inbox. Predicates re-evaluate. The handler returns to the desk.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+
+<!-- ========== CLOSING ========== -->
+<section class="closing">
+  <div class="page-wrap">
+    <p class="closing-pull">A spy game made of <em>writing</em> &mdash; where the only thing your agents have to hold against you is what you wrote, and the only thing you have to hold against them is what they wrote back.</p>
+    <div class="closing-meta">CONCEPT &middot; HANDLER &middot; v.0.1 &middot; READY FOR REVIEW</div>
+  </div>
+</section>
+
+<footer>
+  <span>Concept artifact &middot; HANDLER &middot; spymaster pivot</span>
+  <span>4 agents &middot; 14 cycles &middot; 2 LLM endpoints &middot; 1 verb</span>
+</footer>
+
+</body>
+</html>

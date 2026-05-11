@@ -1,0 +1,455 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HANDLER — Field Notebook (concept v.0.3-N)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Caveat:wght@400;500;600;700&family=Kalam:wght@300;400;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --desk: #2a1e14;
+    --paper: #ece1c8;
+    --paper-shade: #d4c9ad;
+    --rule-blue: rgba(120, 130, 180, 0.22);
+    --pencil: #3a3128;
+    --pencil-soft: #5a4f40;
+    --pencil-faint: #7a6f5c;
+    --red-pen: #88241c;
+    --blue-pen: #1f3a6a;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html, body {
+    background: var(--desk);
+    color: var(--pencil);
+    font-family: 'Kalam', cursive;
+    font-weight: 400;
+    line-height: 1.55;
+    min-height: 100vh;
+    padding: 40px 20px 80px;
+  }
+
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    background:
+      radial-gradient(ellipse 50% 70% at 70% 0%, rgba(180, 130, 60, 0.10) 0%, transparent 60%),
+      repeating-linear-gradient(
+        92deg,
+        rgba(0,0,0,0.025) 0px, rgba(0,0,0,0.025) 2px,
+        transparent 2px, transparent 11px
+      );
+  }
+
+  .nbook {
+    max-width: 800px;
+    margin: 0 auto;
+    background: var(--paper);
+    color: var(--pencil);
+    padding: 56px 60px 70px 100px;
+    position: relative;
+    box-shadow: 0 30px 60px rgba(0,0,0,0.55), 0 6px 16px rgba(0,0,0,0.4);
+    background-image:
+      url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.42'/%3E%3C/svg%3E"),
+      repeating-linear-gradient(
+        to bottom,
+        transparent 0,
+        transparent 27px,
+        var(--rule-blue) 27px,
+        var(--rule-blue) 28px
+      );
+    background-blend-mode: multiply, normal;
+  }
+
+  /* Margin red rule line */
+  .nbook::before {
+    content: '';
+    position: absolute;
+    left: 72px; top: 0; bottom: 0;
+    width: 1.5px;
+    background: rgba(136, 36, 28, 0.4);
+  }
+
+  /* Hole punches */
+  .nbook::after {
+    content: '';
+    position: absolute;
+    left: 32px; top: 80px; bottom: 80px;
+    width: 14px;
+    background-image: radial-gradient(circle at center, rgba(0,0,0,0.22) 6px, transparent 7px);
+    background-size: 14px 200px;
+    background-repeat: repeat-y;
+  }
+
+  .hdr {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: end;
+    margin-bottom: 14px;
+    padding-bottom: 6px;
+    border-bottom: 1.5px dashed var(--pencil-faint);
+  }
+
+  .hdr-title {
+    font-family: 'Caveat', cursive;
+    font-weight: 600;
+    font-size: 46px;
+    line-height: 1;
+    color: var(--pencil);
+    transform: rotate(-0.6deg);
+  }
+  .hdr-title em {
+    font-family: 'Caveat', cursive;
+    font-style: normal;
+    color: var(--red-pen);
+    font-weight: 700;
+  }
+  .hdr-date {
+    font-family: 'Kalam', cursive;
+    font-weight: 700;
+    font-size: 17px;
+    color: var(--pencil-soft);
+    transform: rotate(1deg);
+    text-align: right;
+    line-height: 1.4;
+  }
+
+  .sect { margin-top: 26px; }
+
+  .sect-h {
+    font-family: 'Caveat', cursive;
+    font-weight: 600;
+    font-size: 30px;
+    color: var(--pencil);
+    margin-bottom: 6px;
+    transform: rotate(-0.5deg);
+    display: inline-block;
+    position: relative;
+    padding-bottom: 4px;
+  }
+  .sect-h::after {
+    content: '';
+    position: absolute;
+    left: 0; right: -10px; bottom: -2px;
+    height: 5px;
+    background-image: linear-gradient(
+      to bottom,
+      var(--pencil-soft) 0, var(--pencil-soft) 1.5px,
+      transparent 1.5px, transparent 3px,
+      var(--pencil-soft) 3px, var(--pencil-soft) 4.5px
+    );
+  }
+
+  /* State table */
+  .state {
+    margin: 8px 0;
+    font-family: 'Kalam', cursive;
+    font-size: 17px;
+    line-height: 28px;
+  }
+  .state-row {
+    display: grid;
+    grid-template-columns: 200px auto 1fr;
+    column-gap: 12px;
+    align-items: baseline;
+    color: var(--pencil);
+  }
+  .state-row .lbl { font-weight: 400; }
+  .state-row .val { font-weight: 700; }
+  .state-row .val.warn { color: var(--red-pen); }
+  .state-row .note {
+    font-family: 'Caveat', cursive;
+    color: var(--pencil-soft);
+    font-size: 18px;
+  }
+
+  /* SoP — handwritten paragraph */
+  .sop {
+    font-family: 'Kalam', cursive;
+    font-size: 17px;
+    line-height: 28px;
+    color: var(--pencil);
+    margin: 8px 0 14px;
+  }
+  .sop .pen {
+    color: var(--red-pen);
+    font-weight: 700;
+  }
+
+  /* Options */
+  .opts { margin-top: 6px; }
+  .opt {
+    display: grid;
+    grid-template-columns: 56px 1fr;
+    gap: 10px;
+    padding: 10px 14px 10px 4px;
+    margin: 4px -14px;
+    cursor: pointer;
+    position: relative;
+    transition: background 120ms ease;
+  }
+  .opt:hover { background: rgba(136, 36, 28, 0.05); }
+
+  .opt-num {
+    font-family: 'Caveat', cursive;
+    font-weight: 700;
+    font-size: 32px;
+    color: var(--pencil);
+    text-align: center;
+    line-height: 1;
+    padding-top: 6px;
+    position: relative;
+  }
+  .opt-circle {
+    position: absolute;
+    top: -4px; left: -4px;
+    width: 64px; height: 48px;
+    opacity: 0;
+    transition: opacity 150ms ease;
+    pointer-events: none;
+  }
+  .opt.selected .opt-circle { opacity: 1; }
+  .opt.selected .opt-num { color: var(--red-pen); }
+
+  .opt-title {
+    font-family: 'Kalam', cursive;
+    font-weight: 700;
+    font-size: 18px;
+    color: var(--pencil);
+    margin-bottom: 4px;
+    line-height: 1.45;
+  }
+  .opt-prose {
+    font-family: 'Kalam', cursive;
+    font-size: 16px;
+    line-height: 26px;
+    color: var(--pencil-soft);
+  }
+  .opt-cost {
+    font-family: 'Caveat', cursive;
+    font-size: 19px;
+    color: var(--red-pen);
+    margin-top: 4px;
+    transform: rotate(-0.6deg);
+    display: inline-block;
+    font-weight: 500;
+  }
+
+  /* Prior dispatches */
+  .xmit {
+    border-left: 3px solid var(--pencil-faint);
+    padding-left: 14px;
+    margin-bottom: 12px;
+    font-family: 'Kalam', cursive;
+  }
+  .xmit-meta {
+    font-size: 14px;
+    color: var(--pencil-faint);
+    font-weight: 700;
+    margin-bottom: 3px;
+  }
+  .xmit-meta .ag { color: var(--pencil-soft); }
+  .xmit p {
+    font-size: 15px;
+    line-height: 23px;
+    color: var(--pencil-soft);
+    font-style: italic;
+  }
+
+  /* Authorize */
+  .auth {
+    margin-top: 28px;
+    padding-top: 14px;
+    border-top: 2px solid var(--pencil-soft);
+    display: flex;
+    align-items: center;
+    gap: 22px;
+    font-family: 'Caveat', cursive;
+  }
+  .auth-lbl { font-size: 26px; color: var(--pencil); font-weight: 600; }
+  .auth-pick {
+    flex: 1;
+    font-size: 22px;
+    color: var(--red-pen);
+    font-weight: 600;
+    border-bottom: 1.5px solid var(--pencil-faint);
+    padding-bottom: 2px;
+    min-height: 30px;
+  }
+  .auth-btn {
+    background: transparent;
+    border: 2px solid var(--red-pen);
+    padding: 8px 24px;
+    font-family: 'Caveat', cursive;
+    font-weight: 600;
+    font-size: 22px;
+    color: var(--red-pen);
+    cursor: pointer;
+    transform: rotate(-1.2deg);
+  }
+  .auth-btn:hover { background: var(--red-pen); color: var(--paper); }
+  .auth-btn:disabled { color: var(--pencil-faint); border-color: var(--pencil-faint); cursor: not-allowed; }
+  .auth-btn:disabled:hover { background: transparent; color: var(--pencil-faint); }
+
+  .footer-scribble {
+    margin-top: 24px;
+    padding-top: 10px;
+    font-family: 'Caveat', cursive;
+    font-size: 19px;
+    color: var(--pencil-soft);
+    display: flex;
+    justify-content: space-between;
+    transform: rotate(-0.4deg);
+  }
+
+  /* Margin note */
+  .marg-note {
+    position: absolute;
+    left: -54px;
+    top: 30%;
+    font-family: 'Caveat', cursive;
+    font-size: 17px;
+    color: var(--red-pen);
+    transform: rotate(-90deg);
+    transform-origin: top right;
+    white-space: nowrap;
+    width: 200px;
+    text-align: right;
+  }
+</style>
+</head>
+<body>
+
+<div class="nbook">
+
+  <div class="hdr">
+    <div class="hdr-title">Op. <em>Lynx</em> — exfil</div>
+    <div class="hdr-date">Tues. — C3 / 6<br>0314 Z</div>
+  </div>
+
+  <div class="sect">
+    <div class="sect-h">Where we are —</div>
+    <div class="state">
+      <div class="state-row"><span class="lbl">Lynx — cover</span><span class="val">6 / 10</span><span class="note">legend holding, slow burn</span></div>
+      <div class="state-row"><span class="lbl">Kestrel — cover</span><span class="val">7 / 10</span><span class="note">market pickup cost her one</span></div>
+      <div class="state-row"><span class="lbl">Extraction</span><span class="val">stage 2 / 3</span><span class="note">papers in hand</span></div>
+      <div class="state-row"><span class="lbl">Cycles left</span><span class="val warn">4 / 6</span><span class="note">window narrowing</span></div>
+    </div>
+  </div>
+
+  <div class="sect">
+    <div class="sect-h">Today —</div>
+    <div class="sop">
+      Papers are in hand. Kestrel got the bag at the river market clean — no contact, no tail past the bridge. Lynx is moving but slow. Southern surveillance hasn't stood down; the photographs from <span class="pen">forty-eight hours ago</span> are working their way up. Four cycles before the arrest window closes on us, <span class="pen">two</span> before Lynx's legend stops holding. Eastern terminus is open. None of this lasts.
+    </div>
+  </div>
+
+  <div class="sect">
+    <div class="sect-h">Options today —</div>
+    <div class="opts">
+
+      <div class="opt" data-n="1">
+        <div class="opt-num">1.
+          <svg class="opt-circle" viewBox="0 0 64 48"><ellipse cx="32" cy="24" rx="26" ry="19" stroke="#88241c" stroke-width="2.2" fill="none" stroke-linecap="round" transform="rotate(-5 32 24)"/></svg>
+        </div>
+        <div>
+          <div class="opt-title">Move Lynx to the safehouse — alone.</div>
+          <div class="opt-prose">Two hours through three districts. Any escort doubles her signature. She arrives thin but in position for the train.</div>
+          <div class="opt-cost">cost — Lynx −1 · stage holds</div>
+        </div>
+      </div>
+
+      <div class="opt" data-n="2">
+        <div class="opt-num">2.
+          <svg class="opt-circle" viewBox="0 0 64 48"><ellipse cx="32" cy="24" rx="26" ry="19" stroke="#88241c" stroke-width="2.2" fill="none" stroke-linecap="round" transform="rotate(-5 32 24)"/></svg>
+        </div>
+        <div>
+          <div class="opt-title">Run the eastern train. Now.</div>
+          <div class="opt-prose">She has the papers. Legend still holds. Surveillance hasn't closed. If we wait — none of those three remain true. Sharp cost. She'll be exposed for the duration.</div>
+          <div class="opt-cost">cost — Lynx −3 to −4 · stage → 3</div>
+        </div>
+      </div>
+
+      <div class="opt" data-n="3">
+        <div class="opt-num">3.
+          <svg class="opt-circle" viewBox="0 0 64 48"><ellipse cx="32" cy="24" rx="26" ry="19" stroke="#88241c" stroke-width="2.2" fill="none" stroke-linecap="round" transform="rotate(-5 32 24)"/></svg>
+        </div>
+        <div>
+          <div class="opt-title">Kestrel — diversion, District 7.</div>
+          <div class="opt-prose">Noisy pattern through D7 to pull counter-intel off Lynx's lanes. K. takes the exposure; Lynx gets a clean cycle. Heavy on Kestrel.</div>
+          <div class="opt-cost">cost — Kestrel −3 · Lynx +1</div>
+        </div>
+      </div>
+
+      <div class="opt" data-n="4">
+        <div class="opt-num">4.
+          <svg class="opt-circle" viewBox="0 0 64 48"><ellipse cx="32" cy="24" rx="26" ry="19" stroke="#88241c" stroke-width="2.2" fill="none" stroke-linecap="round" transform="rotate(-5 32 24)"/></svg>
+        </div>
+        <div>
+          <div class="opt-title">Hold. Read the room.</div>
+          <div class="opt-prose">Do nothing. Both stay put. Let the sweep pattern speak. Stage holds; cover decays passively as the world tightens.</div>
+          <div class="opt-cost">cost — passive decay, both</div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <div class="auth">
+    <span class="auth-lbl">Authorize —</span>
+    <span class="auth-pick" id="picked"></span>
+    <button class="auth-btn" id="authBtn" disabled>commit ✓</button>
+  </div>
+
+  <div class="sect">
+    <div class="sect-h">Yesterday's wire —</div>
+    <div class="xmit">
+      <div class="xmit-meta">C2 — <span class="ag">Kestrel</span> — 0248Z</div>
+      <p>Market was loud, which is what we wanted. Pickup at the second flower stall, river side. Don't know the previous owner. Bag heavier than it should be — papers, but also something flat and metal I haven't opened and won't. Followed three blocks by a man in a grey jacket. Lost interest at the bridge. Don't think he was ours. Don't think he was theirs either.</p>
+    </div>
+    <div class="xmit">
+      <div class="xmit-meta">C1 — <span class="ag">Ops</span> — 0212Z</div>
+      <p>Sleeper Redfield activated. Told only what he needed. He didn't see Kestrel. He doesn't know who took the bag.</p>
+    </div>
+  </div>
+
+  <div class="footer-scribble">
+    <span>— N.B., handler</span>
+    <span>cont'd next page →</span>
+  </div>
+
+</div>
+
+<script>
+  const options = document.querySelectorAll('.opt');
+  const picked = document.getElementById('picked');
+  const authBtn = document.getElementById('authBtn');
+  const titles = {
+    '1': 'Lynx → safehouse',
+    '2': 'Run exfil — now',
+    '3': 'Kestrel — diversion',
+    '4': 'Hold'
+  };
+
+  function select(n) {
+    options.forEach(o => o.classList.remove('selected'));
+    const opt = document.querySelector(`.opt[data-n="${n}"]`);
+    if (opt) {
+      opt.classList.add('selected');
+      picked.textContent = titles[n];
+      authBtn.disabled = false;
+    }
+  }
+
+  options.forEach(opt => opt.addEventListener('click', () => select(opt.dataset.n)));
+  document.addEventListener('keydown', (e) => {
+    if (['1','2','3','4'].includes(e.key)) select(e.key);
+  });
+</script>
+</body>
+</html>

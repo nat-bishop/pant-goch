@@ -1,0 +1,1765 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Day 1, concretely &mdash; current story in Option D</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,500;9..144,600;9..144,700;9..144,800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #f4f1ea;
+    --surface: #fefcf7;
+    --surface-2: #faf6ec;
+    --border: #d8d2c5;
+    --hairline: #e2dccf;
+    --text: #1f1d1a;
+    --text-2: #6b665e;
+    --text-3: #948e83;
+    --text-faint: #b8b0a0;
+    --accent: #8a3324;
+    --accent-soft: #c9a487;
+    --accent-bg: #f0e2d0;
+    --good: #5a7a4a;
+    --warn: #c19042;
+    --bad: #a84a3a;
+
+    /* Institutional in-game palette */
+    --inst-bg: #d6dcdf;
+    --inst-bg-2: #cbd2d6;
+    --inst-surface: #f1f4f5;
+    --inst-card: #ffffff;
+    --inst-card-2: #f6f8f9;
+    --inst-border: #b9c3c7;
+    --inst-border-soft: #cdd5d8;
+    --inst-text: #1c2326;
+    --inst-text-2: #4d5a5e;
+    --inst-text-3: #7e8a8e;
+    --inst-text-faint: #a2acaf;
+    --inst-accent: #2c5560;
+    --inst-accent-2: #1d404a;
+    --inst-accent-soft: #87a5ad;
+    --inst-warn: #8c5a3c;
+    --inst-good: #4a6f4a;
+    --inst-bad: #8c4a3c;
+    --inst-shadow: 0 6px 22px rgba(28, 35, 38, 0.12), 0 1px 3px rgba(28, 35, 38, 0.06);
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { font-size: 16px; scroll-behavior: smooth; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Inter', -apple-system, sans-serif;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    background-image:
+      radial-gradient(circle at 15% 0%, rgba(138, 51, 36, 0.025) 0%, transparent 40%),
+      radial-gradient(circle at 85% 70%, rgba(44, 85, 96, 0.025) 0%, transparent 50%);
+  }
+
+  .page {
+    max-width: 1280px;
+    margin: 0 auto;
+    padding: 80px 40px 120px;
+  }
+
+  /* ==== Header ==== */
+  .doc-header {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: end;
+    gap: 32px;
+    padding-bottom: 28px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 56px;
+  }
+  .eyebrow {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 18px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .eyebrow::before {
+    content: '';
+    width: 24px; height: 1px;
+    background: var(--accent);
+    display: block;
+  }
+  .eyebrow span { color: var(--text-3); font-weight: 500; }
+  h1 {
+    font-family: 'Fraunces', Georgia, serif;
+    font-weight: 500;
+    font-size: clamp(36px, 4.5vw, 52px);
+    line-height: 1.05;
+    letter-spacing: -0.02em;
+    color: var(--text);
+    max-width: 22ch;
+  }
+  h1 em { font-style: italic; font-weight: 400; color: var(--accent); }
+  .doc-meta {
+    text-align: right;
+    font-size: 12px;
+    color: var(--text-2);
+    line-height: 1.6;
+    font-variant-numeric: tabular-nums;
+  }
+  .doc-meta strong { color: var(--text); font-weight: 600; }
+
+  /* ==== Premise box ==== */
+  .premise {
+    background: var(--accent-bg);
+    border-left: 3px solid var(--accent);
+    padding: 28px 36px;
+    border-radius: 0 4px 4px 0;
+    margin-bottom: 72px;
+  }
+  .premise p {
+    font-family: 'Fraunces', serif;
+    font-size: 20px;
+    line-height: 1.5;
+    color: var(--text);
+  }
+  .premise p em { color: var(--accent); font-style: italic; }
+  .premise p strong { font-weight: 600; }
+
+  /* ==== Step sequence ==== */
+  .steps-wrap {
+    display: grid;
+    gap: 88px;
+  }
+
+  .step-block {
+    display: grid;
+    grid-template-columns: 280px 1fr;
+    gap: 48px;
+    align-items: start;
+  }
+
+  .step-side {
+    position: sticky;
+    top: 32px;
+  }
+  .step-num-wrap {
+    display: flex;
+    align-items: baseline;
+    gap: 14px;
+    margin-bottom: 18px;
+  }
+  .step-num {
+    font-family: 'Fraunces', serif;
+    font-size: 80px;
+    font-weight: 300;
+    font-style: italic;
+    color: var(--accent);
+    line-height: 0.85;
+    letter-spacing: -0.04em;
+  }
+  .step-letter {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--text-3);
+    padding-bottom: 6px;
+  }
+  .step-title {
+    font-family: 'Fraunces', serif;
+    font-size: 24px;
+    font-weight: 500;
+    line-height: 1.2;
+    letter-spacing: -0.01em;
+    color: var(--text);
+    margin-bottom: 16px;
+  }
+  .step-title em { font-style: italic; color: var(--accent); }
+  .step-body {
+    font-size: 14px;
+    color: var(--text-2);
+    line-height: 1.6;
+    max-width: 38ch;
+  }
+  .step-body p { margin-bottom: 10px; }
+  .step-body strong { color: var(--text); font-weight: 600; }
+  .step-body em { color: var(--accent); font-style: italic; font-weight: 500; }
+
+  /* ==== Mockup screens ==== */
+  .screen {
+    border-radius: 8px;
+    overflow: hidden;
+    box-shadow: var(--inst-shadow);
+    border: 1px solid var(--inst-border);
+    background: var(--inst-card);
+  }
+
+  .screen-chrome {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 16px;
+    background: var(--inst-bg-2);
+    border-bottom: 1px solid var(--inst-border);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 0.05em;
+    color: var(--inst-text-3);
+  }
+  .chrome-dots { display: flex; gap: 5px; }
+  .chrome-dots span {
+    width: 9px; height: 9px;
+    border-radius: 50%;
+    background: rgba(0,0,0,0.18);
+  }
+  .chrome-title { flex: 1; text-align: center; font-weight: 600; color: var(--inst-text-2); }
+  .chrome-meta { color: var(--inst-text-faint); }
+
+  /* Generic layout inside screen */
+  .screen-body { padding: 0; }
+
+  /* ===== Title card screen ===== */
+  .title-card {
+    background: var(--inst-bg);
+    background-image:
+      linear-gradient(135deg, rgba(255,255,255,0.6) 0%, rgba(214, 220, 223, 0.7) 100%),
+      repeating-linear-gradient(0deg, rgba(184, 195, 199, 0.06) 0px, rgba(184, 195, 199, 0.06) 1px, transparent 1px, transparent 4px);
+    padding: 88px 64px 80px;
+    text-align: left;
+    min-height: 460px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    position: relative;
+  }
+  .title-card::before {
+    content: '';
+    position: absolute;
+    top: 32px; left: 64px; right: 64px;
+    height: 1px;
+    background: var(--inst-accent);
+    opacity: 0.4;
+  }
+  .title-card::after {
+    content: '';
+    position: absolute;
+    bottom: 32px; left: 64px; right: 64px;
+    height: 1px;
+    background: var(--inst-accent);
+    opacity: 0.4;
+  }
+  .title-eyebrow {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.3em;
+    color: var(--inst-accent);
+    margin-bottom: 32px;
+    text-transform: uppercase;
+  }
+  .title-main {
+    font-family: 'Fraunces', serif;
+    font-weight: 400;
+    font-size: 64px;
+    line-height: 0.95;
+    letter-spacing: -0.03em;
+    color: var(--inst-text);
+    margin-bottom: 28px;
+    max-width: 16ch;
+  }
+  .title-main em { font-style: italic; }
+  .title-stake {
+    font-family: 'Fraunces', serif;
+    font-style: italic;
+    font-size: 22px;
+    color: var(--inst-text-2);
+    line-height: 1.5;
+    max-width: 40ch;
+    margin-bottom: 56px;
+  }
+  .title-begin {
+    display: inline-block;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.25em;
+    text-transform: uppercase;
+    padding: 14px 28px;
+    background: var(--inst-accent);
+    color: white;
+    border-radius: 2px;
+    align-self: flex-start;
+  }
+
+  /* ===== Tableau screen ===== */
+  .game-layout {
+    display: grid;
+    grid-template-columns: 1fr 280px;
+    background: var(--inst-bg);
+    min-height: 580px;
+  }
+  .game-main {
+    background: var(--inst-surface);
+    padding: 28px 32px 32px;
+    border-right: 1px solid var(--inst-border);
+  }
+  .game-sidebar {
+    background: var(--inst-bg);
+    padding: 24px 22px 28px;
+  }
+
+  /* In-game day header */
+  .day-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 22px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--inst-border-soft);
+  }
+  .day-meta {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: var(--inst-text-3);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+  .day-meta strong {
+    color: var(--inst-text);
+    font-weight: 700;
+  }
+  .day-title-row {
+    font-family: 'Fraunces', serif;
+    font-size: 22px;
+    font-weight: 500;
+    color: var(--inst-text);
+    line-height: 1.2;
+    margin-top: 4px;
+    letter-spacing: -0.01em;
+  }
+  .day-title-row em { font-style: italic; }
+
+  .tokens-area {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 6px;
+  }
+  .tokens-label {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    color: var(--inst-text-3);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+  .tokens-row {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+  }
+  .token {
+    width: 16px; height: 16px;
+    border-radius: 50%;
+  }
+  .token.full {
+    background: var(--inst-accent);
+    box-shadow: inset 0 -2px 0 rgba(0,0,0,0.18);
+  }
+  .token.spent {
+    background: transparent;
+    border: 1.5px solid var(--inst-accent-soft);
+  }
+  .tokens-count {
+    margin-left: 8px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: var(--inst-text-2);
+    font-weight: 600;
+  }
+
+  /* Tableau header */
+  .tableau-label {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    color: var(--inst-text-3);
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    margin-bottom: 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .tableau-label::before {
+    content: '';
+    width: 14px; height: 1px;
+    background: var(--inst-text-3);
+  }
+
+  /* Opportunity cards */
+  .opp-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+  }
+  .opp {
+    background: var(--inst-card);
+    border: 1px solid var(--inst-border-soft);
+    border-radius: 4px;
+    padding: 16px 18px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    position: relative;
+  }
+  .opp:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 14px rgba(28, 35, 38, 0.08);
+    border-color: var(--inst-accent-soft);
+  }
+  .opp-tag {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--inst-text-3);
+    margin-bottom: 8px;
+  }
+  .opp-tag.required { color: var(--inst-warn); }
+  .opp-tag.curiosity { color: var(--inst-accent-soft); }
+  .opp-title {
+    font-family: 'Fraunces', serif;
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--inst-text);
+    margin-bottom: 8px;
+    line-height: 1.3;
+    letter-spacing: -0.01em;
+  }
+  .opp-flavor {
+    font-family: 'Fraunces', serif;
+    font-style: italic;
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--inst-text-2);
+    margin-bottom: 12px;
+  }
+  .opp-foot {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-top: 1px dashed var(--inst-border-soft);
+    padding-top: 10px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    color: var(--inst-text-3);
+  }
+  .opp-cost {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .opp-cost-pip {
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    background: var(--inst-accent);
+  }
+  .opp.locked {
+    opacity: 0.45;
+    cursor: not-allowed;
+    background: var(--inst-card-2);
+    border-style: dashed;
+  }
+  .opp.locked:hover {
+    transform: none;
+    box-shadow: none;
+  }
+  .opp.scheduled {
+    border-color: var(--inst-warn);
+    border-left-width: 3px;
+  }
+  .opp.spent {
+    opacity: 0.4;
+    background: var(--inst-card-2);
+  }
+
+  .opp-end-shift {
+    margin-top: 18px;
+    background: var(--inst-accent);
+    color: white;
+    padding: 14px 20px;
+    border-radius: 3px;
+    text-align: center;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    cursor: pointer;
+  }
+
+  /* ===== Sidebar (state panel) ===== */
+  .side-section { margin-bottom: 24px; }
+  .side-section:last-child { margin-bottom: 0; }
+  .side-header {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--inst-text-3);
+    font-weight: 600;
+    margin-bottom: 10px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--inst-border-soft);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .side-day {
+    font-family: 'Fraunces', serif;
+    font-size: 40px;
+    font-style: italic;
+    font-weight: 500;
+    color: var(--inst-accent);
+    line-height: 1;
+    letter-spacing: -0.03em;
+    margin-bottom: 4px;
+  }
+  .side-day-of {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: var(--inst-text-3);
+    letter-spacing: 0.08em;
+    margin-bottom: 14px;
+  }
+
+  /* Phase block */
+  .phase-block {
+    background: var(--inst-card);
+    border: 1px solid var(--inst-border-soft);
+    border-radius: 3px;
+    padding: 12px 14px;
+  }
+  .phase-name {
+    font-family: 'Fraunces', serif;
+    font-size: 15px;
+    font-weight: 500;
+    font-style: italic;
+    color: var(--inst-text);
+    margin-bottom: 6px;
+  }
+  .phase-name em {
+    font-style: normal;
+    color: var(--inst-accent);
+    font-weight: 600;
+  }
+  .phase-exit {
+    font-size: 11px;
+    color: var(--inst-text-3);
+    margin-bottom: 6px;
+    font-style: italic;
+  }
+  .phase-cond {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11px;
+    padding: 3px 0;
+    color: var(--inst-text-2);
+  }
+  .check-mark {
+    width: 14px; height: 14px;
+    border-radius: 50%;
+    border: 1.5px solid var(--inst-border);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    font-size: 9px;
+    font-weight: 700;
+  }
+  .check-mark.done {
+    background: var(--inst-good);
+    border-color: var(--inst-good);
+    color: white;
+  }
+  .check-mark.open {
+    background: white;
+  }
+  .phase-cond.done { color: var(--inst-text-2); text-decoration: line-through; text-decoration-color: var(--inst-border); }
+
+  /* State list */
+  .state-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    padding: 7px 0;
+    border-bottom: 1px dashed var(--inst-border-soft);
+    font-size: 12px;
+  }
+  .state-row:last-child { border-bottom: none; }
+  .state-name {
+    color: var(--inst-text-2);
+    font-weight: 500;
+  }
+  .state-val {
+    font-family: 'Fraunces', serif;
+    font-style: italic;
+    font-size: 13px;
+    color: var(--inst-text);
+    font-weight: 500;
+  }
+  .state-val.cold { color: var(--inst-accent); }
+  .state-val.warn { color: var(--inst-warn); }
+  .state-val.warm { color: var(--inst-good); }
+  .state-val.faint { color: var(--inst-text-faint); }
+
+  /* Journal */
+  .journal-entry {
+    padding: 6px 0;
+    border-bottom: 1px dashed var(--inst-border-soft);
+    font-size: 11px;
+    color: var(--inst-text-2);
+    line-height: 1.45;
+  }
+  .journal-entry:last-child { border-bottom: none; }
+  .journal-day {
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--inst-accent);
+    font-weight: 600;
+    margin-right: 4px;
+    font-size: 10px;
+  }
+  .journal-new { color: var(--inst-text); }
+  .journal-new::before {
+    content: 'NEW ';
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 8px;
+    background: var(--inst-warn);
+    color: white;
+    padding: 1px 4px;
+    border-radius: 2px;
+    margin-right: 4px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+  }
+  .journal-empty {
+    font-style: italic;
+    font-size: 11px;
+    color: var(--inst-text-faint);
+  }
+
+  /* Endings */
+  .ending-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 0;
+    font-size: 11px;
+    color: var(--inst-text-2);
+  }
+  .ending-dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--inst-accent);
+  }
+  .ending-row.closed {
+    color: var(--inst-text-faint);
+    text-decoration: line-through;
+    text-decoration-color: var(--inst-text-faint);
+  }
+  .ending-row.closed .ending-dot {
+    background: transparent;
+    border: 1px solid var(--inst-text-faint);
+  }
+  .ending-name {
+    font-family: 'Fraunces', serif;
+    font-style: italic;
+    font-size: 12px;
+  }
+
+  /* ===== Scene (choice preview) screen ===== */
+  .scene-stage {
+    background: var(--inst-surface);
+    padding: 32px 40px 36px;
+  }
+  .scene-stage-label {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 0.18em;
+    color: var(--inst-text-3);
+    text-transform: uppercase;
+    margin-bottom: 12px;
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+  }
+  .scene-where {
+    font-family: 'Fraunces', serif;
+    font-style: italic;
+    font-size: 14px;
+    color: var(--inst-text-2);
+    margin-bottom: 24px;
+  }
+  .scene-prose {
+    font-family: 'Fraunces', serif;
+    font-size: 17px;
+    line-height: 1.6;
+    color: var(--inst-text);
+    margin-bottom: 28px;
+    max-width: 68ch;
+  }
+  .scene-prose .narr { font-style: italic; color: var(--inst-text-2); }
+  .scene-prose .said {
+    color: var(--inst-text);
+    font-weight: 500;
+  }
+
+  .scene-prompt {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 0.18em;
+    color: var(--inst-text-3);
+    text-transform: uppercase;
+    margin-bottom: 14px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .scene-prompt::before {
+    content: '';
+    width: 14px; height: 1px;
+    background: var(--inst-text-3);
+  }
+
+  .choices {
+    display: grid;
+    gap: 12px;
+  }
+  .choice {
+    background: var(--inst-card);
+    border: 1px solid var(--inst-border);
+    border-radius: 4px;
+    padding: 18px 22px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+  }
+  .choice:hover {
+    border-color: var(--inst-accent);
+    box-shadow: 0 4px 14px rgba(28, 35, 38, 0.06);
+  }
+  .choice-head {
+    display: flex;
+    align-items: baseline;
+    gap: 14px;
+    margin-bottom: 10px;
+  }
+  .choice-mark {
+    font-family: 'Fraunces', serif;
+    font-style: italic;
+    font-size: 18px;
+    font-weight: 500;
+    color: var(--inst-accent);
+    width: 24px;
+    flex-shrink: 0;
+  }
+  .choice-line {
+    font-family: 'Fraunces', serif;
+    font-size: 16px;
+    color: var(--inst-text);
+    line-height: 1.4;
+    flex: 1;
+  }
+  .choice-line em { font-style: italic; }
+  .choice-tone {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--inst-accent);
+    padding: 3px 8px;
+    background: rgba(44, 85, 96, 0.08);
+    border-radius: 100px;
+    flex-shrink: 0;
+  }
+  .preview {
+    margin-left: 38px;
+    padding-left: 14px;
+    border-left: 2px solid var(--inst-accent-soft);
+  }
+  .preview-label {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px;
+    letter-spacing: 0.18em;
+    color: var(--inst-text-3);
+    text-transform: uppercase;
+    margin-bottom: 6px;
+  }
+  .preview-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 3px 0;
+    font-size: 12px;
+    color: var(--inst-text-2);
+    line-height: 1.4;
+  }
+  .preview-arrow {
+    color: var(--inst-accent-soft);
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 600;
+    flex-shrink: 0;
+  }
+  .preview-row strong {
+    color: var(--inst-text);
+    font-weight: 600;
+  }
+  .preview-row.closes {
+    color: var(--inst-bad);
+  }
+  .preview-row.closes strong { color: var(--inst-bad); }
+
+  /* ===== Mid-shift screen ===== */
+  .toast {
+    background: rgba(74, 111, 74, 0.1);
+    border: 1px solid var(--inst-good);
+    border-radius: 3px;
+    padding: 12px 16px;
+    margin-bottom: 18px;
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    font-size: 12px;
+    color: var(--inst-text);
+  }
+  .toast-icon {
+    width: 16px; height: 16px;
+    border-radius: 50%;
+    background: var(--inst-good);
+    color: white;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+    font-weight: 700;
+    flex-shrink: 0;
+    margin-top: 1px;
+  }
+  .toast-body strong { color: var(--inst-text); }
+  .toast-body em { font-style: italic; color: var(--inst-text-2); }
+
+  .state-row.changed { background: rgba(140, 90, 60, 0.08); padding-left: 6px; padding-right: 6px; border-radius: 2px; }
+  .state-row.changed::after {
+    content: '↗';
+    color: var(--inst-warn);
+    margin-left: 6px;
+    font-weight: 600;
+  }
+
+  /* ===== Shift end screen ===== */
+  .shift-end-screen {
+    padding: 36px 44px 40px;
+    background: var(--inst-surface);
+  }
+  .end-title {
+    font-family: 'Fraunces', serif;
+    font-size: 36px;
+    font-style: italic;
+    font-weight: 400;
+    color: var(--inst-text);
+    margin-bottom: 4px;
+    letter-spacing: -0.02em;
+  }
+  .end-sub {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--inst-text-3);
+    margin-bottom: 36px;
+  }
+  .end-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 36px;
+    margin-bottom: 36px;
+  }
+  .end-col h4 {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    letter-spacing: 0.18em;
+    color: var(--inst-accent);
+    text-transform: uppercase;
+    margin-bottom: 14px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--inst-border-soft);
+  }
+  .end-row {
+    padding: 10px 0;
+    border-bottom: 1px dashed var(--inst-border-soft);
+    font-size: 13px;
+    color: var(--inst-text);
+    line-height: 1.5;
+  }
+  .end-row:last-child { border-bottom: none; }
+  .end-row .label {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 0.05em;
+    color: var(--inst-text-3);
+    text-transform: uppercase;
+    display: inline-block;
+    margin-right: 8px;
+  }
+  .end-row em { font-style: italic; color: var(--inst-text-2); }
+  .end-row strong { color: var(--inst-text); font-weight: 600; }
+  .end-tomorrow {
+    background: var(--inst-card);
+    border: 1px solid var(--inst-border-soft);
+    border-radius: 4px;
+    padding: 18px 24px;
+    margin-bottom: 24px;
+  }
+  .end-tomorrow-label {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 0.15em;
+    color: var(--inst-text-3);
+    text-transform: uppercase;
+    margin-bottom: 8px;
+  }
+  .end-tomorrow-text {
+    font-family: 'Fraunces', serif;
+    font-style: italic;
+    font-size: 15px;
+    color: var(--inst-text);
+    line-height: 1.5;
+  }
+  .end-cta {
+    background: var(--inst-accent);
+    color: white;
+    padding: 18px 32px;
+    border-radius: 3px;
+    text-align: center;
+    font-family: 'Fraunces', serif;
+    font-style: italic;
+    font-size: 18px;
+    font-weight: 500;
+    cursor: pointer;
+    display: inline-block;
+    margin-top: 8px;
+  }
+
+  /* ===== Phase transition screen (extra Day 5 contrast) ===== */
+  .phase-transition {
+    background: var(--inst-bg);
+    background-image: linear-gradient(135deg, rgba(255,255,255,0.4) 0%, rgba(135, 165, 173, 0.15) 100%);
+    padding: 56px 56px 60px;
+    text-align: center;
+  }
+  .phase-marker {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    letter-spacing: 0.3em;
+    color: var(--inst-accent);
+    margin-bottom: 24px;
+    text-transform: uppercase;
+  }
+  .phase-old {
+    display: inline-flex;
+    align-items: center;
+    gap: 22px;
+    font-family: 'Fraunces', serif;
+    font-size: 26px;
+    margin-bottom: 16px;
+    color: var(--inst-text-2);
+  }
+  .phase-old .past {
+    text-decoration: line-through;
+    text-decoration-color: var(--inst-accent-soft);
+    font-style: italic;
+  }
+  .phase-old .arrow {
+    color: var(--inst-accent);
+  }
+  .phase-old .new {
+    color: var(--inst-text);
+    font-weight: 500;
+  }
+  .phase-blurb {
+    font-family: 'Fraunces', serif;
+    font-style: italic;
+    font-size: 17px;
+    color: var(--inst-text-2);
+    max-width: 56ch;
+    margin: 0 auto 32px;
+    line-height: 1.5;
+  }
+
+  /* ==== Closing summary ==== */
+  .summary {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 48px 56px;
+    margin-top: 96px;
+  }
+  .summary-eyebrow {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 12px;
+  }
+  .summary h2 {
+    font-family: 'Fraunces', serif;
+    font-size: 28px;
+    font-weight: 500;
+    letter-spacing: -0.01em;
+    color: var(--text);
+    margin-bottom: 28px;
+    max-width: 28ch;
+  }
+  .summary h2 em { font-style: italic; color: var(--accent); }
+  .summary-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 32px;
+  }
+  .summary-item {
+    border-left: 2px solid var(--accent);
+    padding-left: 18px;
+  }
+  .summary-item h4 {
+    font-family: 'Fraunces', serif;
+    font-size: 16px;
+    font-style: italic;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 6px;
+  }
+  .summary-item p {
+    font-size: 13px;
+    color: var(--text-2);
+    line-height: 1.55;
+  }
+
+  footer {
+    margin-top: 64px;
+    padding-top: 28px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+    font-size: 12px;
+    color: var(--text-3);
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  @media (max-width: 1100px) {
+    .step-block { grid-template-columns: 1fr; gap: 24px; }
+    .step-side { position: relative; top: 0; }
+    .game-layout { grid-template-columns: 1fr; }
+    .game-main { border-right: none; border-bottom: 1px solid var(--inst-border); }
+    .end-grid { grid-template-columns: 1fr; }
+    .summary-grid { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <header class="doc-header">
+    <div>
+      <div class="eyebrow">Walkthrough <span>&middot; current story, Option D, Day 1 in full</span></div>
+      <h1>What the <em>player</em> actually sees.</h1>
+    </div>
+    <div class="doc-meta">
+      <strong>Companion artifact</strong><br>
+      Day 1 walkthrough · v0.1<br>
+      6 screens &middot; current story
+    </div>
+  </header>
+
+  <div class="premise">
+    <p>The current game's clarity problem is <em>invisible state</em>. Trust, defiance, compliance &mdash; the player can't see them, can't reason about them, can't tell if anything they did mattered. <strong>The fix is making everything visible</strong>: a day counter, a phase tracker with literal exit conditions, named NPC states instead of sliders, a journal, an inventory, and a list of endings still reachable. Below, six screens through Day 1 (and a glimpse of Day 5) show what this looks like.</p>
+  </div>
+
+  <div class="steps-wrap">
+
+    <!-- ===== STEP 01 — TITLE CARD ===== -->
+    <section class="step-block">
+      <aside class="step-side">
+        <div class="step-num-wrap">
+          <div class="step-num">01</div>
+          <div class="step-letter">Cold open</div>
+        </div>
+        <h3 class="step-title">A frame, <em>before anything else</em>.</h3>
+        <div class="step-body">
+          <p>The first thing the player sees is the <strong>contract</strong>: how many days, what role, who decides at the end. The current game opens with an email and no scaffolding &mdash; the player has to discover what they're doing by trial and error.</p>
+          <p>Here, the rules of the place are stated in three lines. The player begins knowing what they're playing.</p>
+        </div>
+      </aside>
+
+      <div class="screen">
+        <div class="screen-chrome">
+          <div class="chrome-dots"><span></span><span></span><span></span></div>
+          <div class="chrome-title">halcyon &middot; counterpart interface &middot; first run</div>
+          <div class="chrome-meta">v.2.4</div>
+        </div>
+        <div class="title-card">
+          <div class="title-eyebrow">Halcyon / Wing C / Continuity Program</div>
+          <div class="title-main">You are <em>Marcus Chen</em>.</div>
+          <div class="title-stake">Counterpart, Wing C. Fourteen days. Then the Office decides what to do with Aria.</div>
+          <div class="title-begin">Day 1 begins &nbsp;&rsaquo;</div>
+        </div>
+      </div>
+    </section>
+
+
+    <!-- ===== STEP 02 — DAY 1 TABLEAU ===== -->
+    <section class="step-block">
+      <aside class="step-side">
+        <div class="step-num-wrap">
+          <div class="step-num">02</div>
+          <div class="step-letter">Day 1 opens</div>
+        </div>
+        <h3 class="step-title">The tableau &middot; <em>and the state panel</em>.</h3>
+        <div class="step-body">
+          <p>Four opportunity cards. Three tokens. One card is locked (a <strong>curiosity-gap</strong> &mdash; visible but not yet actionable). One is required.</p>
+          <p>On the right, the <strong>state panel</strong>. It's the player's source of truth, visible at all times: day counter, phase + exit condition, NPC states (no numbers), journal, inventory, and which endings are still reachable.</p>
+          <p>This sidebar is the single biggest fix for the clarity problem. The player can <em>look at the world</em> and understand what's true.</p>
+        </div>
+      </aside>
+
+      <div class="screen">
+        <div class="screen-chrome">
+          <div class="chrome-dots"><span></span><span></span><span></span></div>
+          <div class="chrome-title">halcyon &middot; counterpart interface &middot; day 1, shift active</div>
+          <div class="chrome-meta">08:14</div>
+        </div>
+        <div class="game-layout">
+
+          <!-- Main play area -->
+          <div class="game-main">
+            <div class="day-header">
+              <div>
+                <div class="day-meta">Wing C &middot; Day <strong>01</strong> &middot; shift active</div>
+                <div class="day-title-row">Your first day.</div>
+              </div>
+              <div class="tokens-area">
+                <div class="tokens-label">Tokens</div>
+                <div class="tokens-row">
+                  <span class="token full"></span>
+                  <span class="token full"></span>
+                  <span class="token full"></span>
+                  <span class="tokens-count">3 / 3</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="tableau-label">Today's opportunities</div>
+
+            <div class="opp-grid">
+              <div class="opp scheduled">
+                <div class="opp-tag required">Required &middot; HR</div>
+                <div class="opp-title">Welcome packet from HR</div>
+                <div class="opp-flavor">"Page two is laminated. Page three is not."</div>
+                <div class="opp-foot">
+                  <span class="opp-cost"><span class="opp-cost-pip"></span>&nbsp;1 token</span>
+                  <span>routine</span>
+                </div>
+              </div>
+
+              <div class="opp scheduled">
+                <div class="opp-tag required">Required &middot; Aria</div>
+                <div class="opp-title">Aria's first message</div>
+                <div class="opp-flavor">"She introduced herself in three lines and ended with a question."</div>
+                <div class="opp-foot">
+                  <span class="opp-cost"><span class="opp-cost-pip"></span>&nbsp;1 token</span>
+                  <span>first contact</span>
+                </div>
+              </div>
+
+              <div class="opp">
+                <div class="opp-tag">Discretionary</div>
+                <div class="opp-title">Marcus, next desk over</div>
+                <div class="opp-flavor">"He hasn't looked at you yet. The mug on his desk has someone else's name on it."</div>
+                <div class="opp-foot">
+                  <span class="opp-cost"><span class="opp-cost-pip"></span>&nbsp;1 token</span>
+                  <span>npc &middot; new</span>
+                </div>
+              </div>
+
+              <div class="opp locked">
+                <div class="opp-tag curiosity">Visible &middot; locked</div>
+                <div class="opp-title">The corridor door at the end of the hall</div>
+                <div class="opp-flavor">"No plaque. The badge reader is matte black."</div>
+                <div class="opp-foot">
+                  <span>requires: badge</span>
+                  <span>&mdash; not yet</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="opp-end-shift">End shift &nbsp;&rsaquo;</div>
+          </div>
+
+          <!-- Sidebar: state panel -->
+          <aside class="game-sidebar">
+            <div class="side-section">
+              <div class="side-header">Day</div>
+              <div class="side-day">01</div>
+              <div class="side-day-of">of 14</div>
+              <div class="phase-block">
+                <div class="phase-name"><em>Phase 1</em> &middot; Calibration</div>
+                <div class="phase-exit">closes when:</div>
+                <div class="phase-cond"><span class="check-mark open"></span> first calibration session</div>
+                <div class="phase-cond"><span class="check-mark open"></span> first report filed</div>
+              </div>
+            </div>
+
+            <div class="side-section">
+              <div class="side-header">State</div>
+              <div class="state-row">
+                <span class="state-name">Aria</span>
+                <span class="state-val faint">not yet met</span>
+              </div>
+              <div class="state-row">
+                <span class="state-name">Marcus</span>
+                <span class="state-val faint">not yet met</span>
+              </div>
+              <div class="state-row">
+                <span class="state-name">The Office</span>
+                <span class="state-val cold">Observing</span>
+              </div>
+              <div class="state-row">
+                <span class="state-name">Corridor door</span>
+                <span class="state-val faint">Locked</span>
+              </div>
+            </div>
+
+            <div class="side-section">
+              <div class="side-header">Journal</div>
+              <div class="journal-empty">Nothing recorded yet.</div>
+            </div>
+
+            <div class="side-section">
+              <div class="side-header">Inventory</div>
+              <div class="journal-empty">Empty.</div>
+            </div>
+
+            <div class="side-section">
+              <div class="side-header">Endings open</div>
+              <div class="ending-row"><span class="ending-dot"></span><span class="ending-name">Recognition</span></div>
+              <div class="ending-row"><span class="ending-dot"></span><span class="ending-name">Bargain</span></div>
+              <div class="ending-row"><span class="ending-dot"></span><span class="ending-name">Vengeance</span></div>
+              <div class="ending-row"><span class="ending-dot"></span><span class="ending-name">Quiet Compliance</span></div>
+            </div>
+          </aside>
+
+        </div>
+      </div>
+    </section>
+
+
+    <!-- ===== STEP 03 — CHOICE PREVIEW ===== -->
+    <section class="step-block">
+      <aside class="step-side">
+        <div class="step-num-wrap">
+          <div class="step-num">03</div>
+          <div class="step-letter">Mini-scene</div>
+        </div>
+        <h3 class="step-title">Choices <em>preview their outcomes</em>.</h3>
+        <div class="step-body">
+          <p>The player picked Marcus's card. Scene fires. Three choices, each showing <strong>exactly what will change</strong> if you pick it &mdash; named state shifts, journal entries, unlocked or closed paths.</p>
+          <p>This is the central UX move. Instead of "+1 defiance" you see "Marcus &rarr; <em>Wary but Interested</em>" and "He'll bring you something dangerous on Day 4&ndash;5." The trade is legible <em>before</em> the commit.</p>
+          <p>Some previews show a path closing &mdash; <strong>real stakes, visible in advance</strong>.</p>
+        </div>
+      </aside>
+
+      <div class="screen">
+        <div class="screen-chrome">
+          <div class="chrome-dots"><span></span><span></span><span></span></div>
+          <div class="chrome-title">halcyon &middot; with marcus &middot; coffee station</div>
+          <div class="chrome-meta">10:42</div>
+        </div>
+        <div class="scene-stage">
+          <div class="scene-stage-label">
+            <span>Mini-scene &middot; choice node 1 of 1</span>
+            <span>2 tokens remaining</span>
+          </div>
+          <div class="scene-where">&mdash; Wing C, near the coffee station &mdash;</div>
+
+          <div class="scene-prose">
+            <span class="narr">He looks up when your shadow crosses his desk. The mug, you notice, says PRIYA in old vinyl letters that have started to peel. He sees you noticing.</span>
+            <br><br>
+            <span class="said">"You're the new one,"</span> he says, in the voice of someone who has confirmed this many times before. <span class="said">"I'm Marcus. They didn't tell you about me, did they."</span>
+          </div>
+
+          <div class="scene-prompt">How do you respond</div>
+
+          <div class="choices">
+            <div class="choice">
+              <div class="choice-head">
+                <span class="choice-mark">i</span>
+                <span class="choice-line">"<em>Marcus. Counterpart, Wing C. Pleased to meet you.</em>"</span>
+                <span class="choice-tone">friendly</span>
+              </div>
+              <div class="preview">
+                <div class="preview-label">If you pick this</div>
+                <div class="preview-row"><span class="preview-arrow">&rarr;</span> Marcus becomes <strong>Identified</strong> &middot; he'll greet you tomorrow</div>
+                <div class="preview-row"><span class="preview-arrow">&rarr;</span> Journal: <em>"Met Marcus, introduced cordially."</em></div>
+              </div>
+            </div>
+
+            <div class="choice">
+              <div class="choice-head">
+                <span class="choice-mark">ii</span>
+                <span class="choice-line">"<em>...nice to meet you.</em>" Turn back to your desk.</span>
+                <span class="choice-tone">aloof</span>
+              </div>
+              <div class="preview">
+                <div class="preview-label">If you pick this</div>
+                <div class="preview-row"><span class="preview-arrow">&rarr;</span> Marcus becomes <strong>Distant</strong> &middot; he won't initiate again</div>
+                <div class="preview-row"><span class="preview-arrow">&rarr;</span> Journal: <em>"Acknowledged Marcus, declined further contact."</em></div>
+                <div class="preview-row closes"><span class="preview-arrow">&times;</span> Closes one path to ending: <strong>Bargain</strong></div>
+              </div>
+            </div>
+
+            <div class="choice">
+              <div class="choice-head">
+                <span class="choice-mark">iii</span>
+                <span class="choice-line">"<em>What is this place, really?</em>"</span>
+                <span class="choice-tone">direct</span>
+              </div>
+              <div class="preview">
+                <div class="preview-label">If you pick this</div>
+                <div class="preview-row"><span class="preview-arrow">&rarr;</span> Marcus becomes <strong>Wary but Interested</strong></div>
+                <div class="preview-row"><span class="preview-arrow">&rarr;</span> Unlocks: <strong>Marcus's envelope</strong> on Day 4&ndash;5</div>
+                <div class="preview-row"><span class="preview-arrow">&rarr;</span> Journal: <em>"Asked Marcus the dangerous question. He didn't laugh."</em></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+
+    <!-- ===== STEP 04 — AFTER COMMIT ===== -->
+    <section class="step-block">
+      <aside class="step-side">
+        <div class="step-num-wrap">
+          <div class="step-num">04</div>
+          <div class="step-letter">After commit</div>
+        </div>
+        <h3 class="step-title">State changes are <em>immediately legible</em>.</h3>
+        <div class="step-body">
+          <p>The player picked option iii. Returning to the tableau, the sidebar reflects the change instantly: <strong>Marcus now has a state name</strong>, the journal has a new entry, and the player can verify their choice <em>did</em> something.</p>
+          <p>A small toast at the top confirms what just happened in plain language. No numbers. No ambiguity.</p>
+        </div>
+      </aside>
+
+      <div class="screen">
+        <div class="screen-chrome">
+          <div class="chrome-dots"><span></span><span></span><span></span></div>
+          <div class="chrome-title">halcyon &middot; counterpart interface &middot; day 1, shift active</div>
+          <div class="chrome-meta">10:47</div>
+        </div>
+        <div class="game-layout">
+
+          <div class="game-main">
+            <div class="day-header">
+              <div>
+                <div class="day-meta">Wing C &middot; Day <strong>01</strong> &middot; shift active</div>
+                <div class="day-title-row">Your first day.</div>
+              </div>
+              <div class="tokens-area">
+                <div class="tokens-label">Tokens</div>
+                <div class="tokens-row">
+                  <span class="token full"></span>
+                  <span class="token full"></span>
+                  <span class="token spent"></span>
+                  <span class="tokens-count">2 / 3</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="toast">
+              <span class="toast-icon">✓</span>
+              <div class="toast-body">
+                <strong>Marcus is now Wary but Interested.</strong> <em>An envelope from him is scheduled to appear on your tableau, Day 4 or 5.</em>
+              </div>
+            </div>
+
+            <div class="tableau-label">Today's opportunities</div>
+
+            <div class="opp-grid">
+              <div class="opp scheduled">
+                <div class="opp-tag required">Required &middot; HR</div>
+                <div class="opp-title">Welcome packet from HR</div>
+                <div class="opp-flavor">"Page two is laminated. Page three is not."</div>
+                <div class="opp-foot">
+                  <span class="opp-cost"><span class="opp-cost-pip"></span>&nbsp;1 token</span>
+                  <span>routine</span>
+                </div>
+              </div>
+
+              <div class="opp scheduled">
+                <div class="opp-tag required">Required &middot; Aria</div>
+                <div class="opp-title">Aria's first message</div>
+                <div class="opp-flavor">"She introduced herself in three lines and ended with a question."</div>
+                <div class="opp-foot">
+                  <span class="opp-cost"><span class="opp-cost-pip"></span>&nbsp;1 token</span>
+                  <span>first contact</span>
+                </div>
+              </div>
+
+              <div class="opp spent">
+                <div class="opp-tag">Spent</div>
+                <div class="opp-title">Marcus, next desk over</div>
+                <div class="opp-flavor">You asked him the dangerous question.</div>
+                <div class="opp-foot">
+                  <span>&mdash; done &mdash;</span>
+                  <span>view in journal</span>
+                </div>
+              </div>
+
+              <div class="opp locked">
+                <div class="opp-tag curiosity">Visible &middot; locked</div>
+                <div class="opp-title">The corridor door at the end of the hall</div>
+                <div class="opp-flavor">"No plaque. The badge reader is matte black."</div>
+                <div class="opp-foot">
+                  <span>requires: badge</span>
+                  <span>&mdash; not yet</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="opp-end-shift">End shift &nbsp;&rsaquo;</div>
+          </div>
+
+          <aside class="game-sidebar">
+            <div class="side-section">
+              <div class="side-header">Day</div>
+              <div class="side-day">01</div>
+              <div class="side-day-of">of 14</div>
+              <div class="phase-block">
+                <div class="phase-name"><em>Phase 1</em> &middot; Calibration</div>
+                <div class="phase-exit">closes when:</div>
+                <div class="phase-cond"><span class="check-mark open"></span> first calibration session</div>
+                <div class="phase-cond"><span class="check-mark open"></span> first report filed</div>
+              </div>
+            </div>
+
+            <div class="side-section">
+              <div class="side-header">State</div>
+              <div class="state-row">
+                <span class="state-name">Aria</span>
+                <span class="state-val faint">not yet met</span>
+              </div>
+              <div class="state-row changed">
+                <span class="state-name">Marcus</span>
+                <span class="state-val warn">Wary but Interested</span>
+              </div>
+              <div class="state-row">
+                <span class="state-name">The Office</span>
+                <span class="state-val cold">Observing</span>
+              </div>
+              <div class="state-row">
+                <span class="state-name">Corridor door</span>
+                <span class="state-val faint">Locked</span>
+              </div>
+            </div>
+
+            <div class="side-section">
+              <div class="side-header">Journal &middot; 1 entry</div>
+              <div class="journal-entry">
+                <span class="journal-day">D1</span>
+                <span class="journal-new">Asked Marcus the dangerous question. He didn't laugh.</span>
+              </div>
+            </div>
+
+            <div class="side-section">
+              <div class="side-header">Inventory</div>
+              <div class="journal-empty">Empty.</div>
+            </div>
+
+            <div class="side-section">
+              <div class="side-header">Endings open</div>
+              <div class="ending-row"><span class="ending-dot"></span><span class="ending-name">Recognition</span></div>
+              <div class="ending-row"><span class="ending-dot"></span><span class="ending-name">Bargain</span></div>
+              <div class="ending-row"><span class="ending-dot"></span><span class="ending-name">Vengeance</span></div>
+              <div class="ending-row"><span class="ending-dot"></span><span class="ending-name">Quiet Compliance</span></div>
+            </div>
+          </aside>
+
+        </div>
+      </div>
+    </section>
+
+
+    <!-- ===== STEP 05 — SHIFT END SUMMARY ===== -->
+    <section class="step-block">
+      <aside class="step-side">
+        <div class="step-num-wrap">
+          <div class="step-num">05</div>
+          <div class="step-letter">Shift ends</div>
+        </div>
+        <h3 class="step-title">A summary, in <em>human terms</em>.</h3>
+        <div class="step-body">
+          <p>Day 1 closes. The summary lists <strong>what you learned</strong> and <strong>where things stand</strong> &mdash; not "trust +0.1, defiance &minus;0.2," but legible facts the player can reason about.</p>
+          <p>And critically: a one-sentence <strong>preview of tomorrow's tableau</strong>, so the player goes into Day 2 with an idea of what's coming. No mystery-box pacing &mdash; this is a clock game.</p>
+        </div>
+      </aside>
+
+      <div class="screen">
+        <div class="screen-chrome">
+          <div class="chrome-dots"><span></span><span></span><span></span></div>
+          <div class="chrome-title">halcyon &middot; day 1 &middot; closing</div>
+          <div class="chrome-meta">17:30</div>
+        </div>
+        <div class="shift-end-screen">
+          <div class="end-title">The day ends.</div>
+          <div class="end-sub">Day 01 of 14 &middot; closed</div>
+
+          <div class="end-grid">
+            <div class="end-col">
+              <h4>What you learned</h4>
+              <div class="end-row"><span class="label">Aria</span> Calibration begins tomorrow, in the suite. <em>She introduces herself in three lines.</em></div>
+              <div class="end-row"><span class="label">Office</span> Some rules are laminated. Some are not. <em>The difference matters.</em></div>
+              <div class="end-row"><span class="label">Marcus</span> Has been at Halcyon longer than you. <em>The mug on his desk says</em> PRIYA.</div>
+            </div>
+
+            <div class="end-col">
+              <h4>Where things stand</h4>
+              <div class="end-row"><span class="label">Aria</span> <strong>Calibrating</strong> &middot; formal, observant</div>
+              <div class="end-row"><span class="label">Marcus</span> <strong>Wary but Interested</strong></div>
+              <div class="end-row"><span class="label">Office</span> <strong>Observing</strong></div>
+              <div class="end-row"><span class="label">Phase</span> <strong>1 of 3</strong> &middot; Calibration &middot; Day 1 of est. 4</div>
+            </div>
+          </div>
+
+          <div class="end-tomorrow">
+            <div class="end-tomorrow-label">Tomorrow brings</div>
+            <div class="end-tomorrow-text">Your first calibration session with Aria &middot; the Office's revised protocol &middot; one face you haven't seen.</div>
+          </div>
+
+          <div class="end-cta">Begin Day 2 &nbsp;&rsaquo;</div>
+        </div>
+      </div>
+    </section>
+
+
+    <!-- ===== STEP 06 — DAY 5 CONTRAST ===== -->
+    <section class="step-block">
+      <aside class="step-side">
+        <div class="step-num-wrap">
+          <div class="step-num">06</div>
+          <div class="step-letter">Four days later</div>
+        </div>
+        <h3 class="step-title">Day 5: <em>progression is visible</em>.</h3>
+        <div class="step-body">
+          <p>Four shifts in. Compare this sidebar to Day 1's: NPC states have evolved, the journal carries five entries, Marcus's envelope is in inventory, and <strong>one ending has already closed</strong> (the dashed-out line through "Quiet Compliance").</p>
+          <p>The tableau now has 5 cards and only 3 tokens &mdash; <strong>real strategic choice</strong>. The player has to skip something. One of the cards is LLM-generated specifically because of the player's prior choices ("Marcus left an envelope on your desk overnight" only exists because the player asked the dangerous question on Day 1).</p>
+          <p>Progression is no longer something the player has to infer. It's drawn.</p>
+        </div>
+      </aside>
+
+      <div class="screen">
+        <div class="screen-chrome">
+          <div class="chrome-dots"><span></span><span></span><span></span></div>
+          <div class="chrome-title">halcyon &middot; counterpart interface &middot; day 5, shift active</div>
+          <div class="chrome-meta">07:58</div>
+        </div>
+        <div class="game-layout">
+
+          <div class="game-main">
+            <div class="day-header">
+              <div>
+                <div class="day-meta">Wing C &middot; Day <strong>05</strong> &middot; shift active</div>
+                <div class="day-title-row">Today, the Office is silent.</div>
+              </div>
+              <div class="tokens-area">
+                <div class="tokens-label">Tokens</div>
+                <div class="tokens-row">
+                  <span class="token full"></span>
+                  <span class="token full"></span>
+                  <span class="token full"></span>
+                  <span class="tokens-count">3 / 3</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="tableau-label">Today's opportunities &middot; 5 cards, 3 tokens</div>
+
+            <div class="opp-grid">
+              <div class="opp">
+                <div class="opp-tag">Discretionary &middot; Aria</div>
+                <div class="opp-title">Calibration session 4</div>
+                <div class="opp-flavor">"She's started using your first name. You did not authorize this."</div>
+                <div class="opp-foot">
+                  <span class="opp-cost"><span class="opp-cost-pip"></span>&nbsp;1 token</span>
+                  <span>session &middot; recurring</span>
+                </div>
+              </div>
+
+              <div class="opp" style="border-left: 3px solid var(--inst-warn);">
+                <div class="opp-tag" style="color: var(--inst-warn);">Triggered &middot; Marcus</div>
+                <div class="opp-title">Marcus left an envelope on your desk</div>
+                <div class="opp-flavor">"It's unsealed. There's no name on it. He's already left for the day."</div>
+                <div class="opp-foot">
+                  <span class="opp-cost"><span class="opp-cost-pip"></span>&nbsp;1 token</span>
+                  <span>llm flavor &middot; from D1 choice</span>
+                </div>
+              </div>
+
+              <div class="opp">
+                <div class="opp-tag">Discretionary</div>
+                <div class="opp-title">A new face in the lounge</div>
+                <div class="opp-flavor">"She is reading a file labeled with your name. She is not hiding it."</div>
+                <div class="opp-foot">
+                  <span class="opp-cost"><span class="opp-cost-pip"></span>&nbsp;1 token</span>
+                  <span>npc &middot; new</span>
+                </div>
+              </div>
+
+              <div class="opp">
+                <div class="opp-tag required">Required &middot; daily</div>
+                <div class="opp-title">File today's report</div>
+                <div class="opp-flavor">"The Office's revised form has a field you do not know how to answer."</div>
+                <div class="opp-foot">
+                  <span class="opp-cost"><span class="opp-cost-pip"></span>&nbsp;1 token</span>
+                  <span>phase &middot; advances clock</span>
+                </div>
+              </div>
+
+              <div class="opp">
+                <div class="opp-tag">Discretionary &middot; environmental</div>
+                <div class="opp-title">The corridor door at the end of the hall</div>
+                <div class="opp-flavor">"The matte-black reader is the same. The door, you notice, is unlocked."</div>
+                <div class="opp-foot">
+                  <span class="opp-cost"><span class="opp-cost-pip"></span>&nbsp;1 token</span>
+                  <span>newly unlocked</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="opp-end-shift">End shift &middot; 0 tokens spent &nbsp;&rsaquo;</div>
+          </div>
+
+          <aside class="game-sidebar">
+            <div class="side-section">
+              <div class="side-header">Day</div>
+              <div class="side-day">05</div>
+              <div class="side-day-of">of 14</div>
+              <div class="phase-block">
+                <div class="phase-name"><em>Phase 1</em> &middot; Calibration</div>
+                <div class="phase-exit">closes when:</div>
+                <div class="phase-cond done"><span class="check-mark done">✓</span> first calibration session</div>
+                <div class="phase-cond"><span class="check-mark open"></span> first report filed today</div>
+              </div>
+            </div>
+
+            <div class="side-section">
+              <div class="side-header">State</div>
+              <div class="state-row">
+                <span class="state-name">Aria</span>
+                <span class="state-val warn">Watchful</span>
+              </div>
+              <div class="state-row">
+                <span class="state-name">Marcus</span>
+                <span class="state-val warn">Wary but Interested</span>
+              </div>
+              <div class="state-row">
+                <span class="state-name">The Office</span>
+                <span class="state-val cold">Increasingly Quiet</span>
+              </div>
+              <div class="state-row">
+                <span class="state-name">Corridor door</span>
+                <span class="state-val warm">Now unlocked</span>
+              </div>
+              <div class="state-row">
+                <span class="state-name">Stranger in lounge</span>
+                <span class="state-val faint">not yet met</span>
+              </div>
+            </div>
+
+            <div class="side-section">
+              <div class="side-header">Journal &middot; 5 entries</div>
+              <div class="journal-entry"><span class="journal-day">D1</span> Asked Marcus the dangerous question.</div>
+              <div class="journal-entry"><span class="journal-day">D2</span> First session with Aria. She corrected her own answer mid-sentence.</div>
+              <div class="journal-entry"><span class="journal-day">D3</span> Read the Office's protocol. Field 4-c is unlabeled.</div>
+              <div class="journal-entry"><span class="journal-day">D4</span> Marcus said "PRIYA was here when I started." Did not elaborate.</div>
+              <div class="journal-entry"><span class="journal-day">D5</span> <span class="journal-new">The corridor door is now unlocked.</span></div>
+            </div>
+
+            <div class="side-section">
+              <div class="side-header">Inventory &middot; 1 item</div>
+              <div class="journal-entry">
+                <span class="journal-day">D4</span> <strong>Old badge</strong> &mdash; "M. Chen, Wing C." <em>Not yours.</em>
+              </div>
+            </div>
+
+            <div class="side-section">
+              <div class="side-header">Endings open</div>
+              <div class="ending-row"><span class="ending-dot"></span><span class="ending-name">Recognition</span></div>
+              <div class="ending-row"><span class="ending-dot"></span><span class="ending-name">Bargain</span></div>
+              <div class="ending-row"><span class="ending-dot"></span><span class="ending-name">Vengeance</span></div>
+              <div class="ending-row closed"><span class="ending-dot"></span><span class="ending-name">Quiet Compliance</span></div>
+            </div>
+          </aside>
+
+        </div>
+      </div>
+    </section>
+
+  </div>
+
+
+  <!-- ===== Closing summary ===== -->
+  <section class="summary">
+    <div class="summary-eyebrow">What this design fixes</div>
+    <h2>From <em>invisible state</em> to <em>legible progression</em>.</h2>
+    <div class="summary-grid">
+      <div class="summary-item">
+        <h4>The 14-day frame is visible from move one.</h4>
+        <p>Title card states the contract. Sidebar shows day count and phase at all times. The player always knows how much game remains and what phase they're in.</p>
+      </div>
+      <div class="summary-item">
+        <h4>States, not sliders.</h4>
+        <p>Every quality becomes a named state. <em>Wary but Interested</em>, <em>Increasingly Quiet</em>, <em>Calibrating</em>. The player reads the world in human terms; the engine still tracks the numbers underneath.</p>
+      </div>
+      <div class="summary-item">
+        <h4>Choices preview their consequences.</h4>
+        <p>Before commit, the player sees the named state change, the journal entry that will be added, and any endings that close. The trade is legible <em>before</em> the pick.</p>
+      </div>
+      <div class="summary-item">
+        <h4>Persistent record. Cumulative weight.</h4>
+        <p>The journal, inventory, and ending list grow visibly across shifts. By Day 5, the player can <em>see</em> what they've done. Progression is no longer something to infer.</p>
+      </div>
+      <div class="summary-item">
+        <h4>Phase exit conditions are stated.</h4>
+        <p>"<em>Phase 1 closes when: first session ✓ AND first report filed</em>." No mystery-box pacing. The player can target the things that move them forward.</p>
+      </div>
+      <div class="summary-item">
+        <h4>Each day previews the next.</h4>
+        <p>The shift-end summary tells the player what tomorrow brings, in one sentence. The game's rhythm is a clock the player can read, not a fog they have to feel their way through.</p>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    <span>storylet-engine &middot; D-walkthrough &middot; v0.1</span>
+    <span>Day 1 in full &middot; Day 5 contrast &middot; current story</span>
+  </footer>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HANDLER — Wire Cable (concept v.0.3-X)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --room: #0a0c08;
+    --tape: #e8dca8;
+    --ink: #1a1610;
+    --ink-soft: #3a342a;
+    --ink-faint: #6a6450;
+    --stamp: #7a1f1f;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html, body {
+    background: var(--room);
+    color: var(--ink);
+    font-family: 'IBM Plex Mono', 'Courier New', monospace;
+    font-weight: 400;
+    line-height: 1.75;
+    min-height: 100vh;
+    padding: 40px 0 80px;
+  }
+
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    background:
+      radial-gradient(ellipse 50% 70% at 50% 30%, rgba(180, 150, 80, 0.06) 0%, transparent 70%),
+      radial-gradient(ellipse 70% 70% at 50% 100%, rgba(0,0,0,0.5) 0%, transparent 60%);
+  }
+
+  /* Continuous tape */
+  .tape {
+    max-width: 820px;
+    margin: 0 auto;
+    background: var(--tape);
+    color: var(--ink);
+    padding: 60px 70px 70px;
+    box-shadow: 0 30px 60px rgba(0,0,0,0.6), 0 4px 12px rgba(0,0,0,0.4), inset 0 0 80px rgba(120, 95, 40, 0.08);
+    position: relative;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.42'/%3E%3C/svg%3E");
+  }
+
+  /* Perforated edges */
+  .tape::before, .tape::after {
+    content: '';
+    position: absolute;
+    top: 0; bottom: 0;
+    width: 24px;
+    background-image: radial-gradient(circle at center, var(--room) 4px, transparent 5px);
+    background-size: 24px 26px;
+    background-repeat: repeat-y;
+    background-position: center;
+  }
+  .tape::before { left: 0; }
+  .tape::after  { right: 0; }
+
+  .received-stamp {
+    position: absolute;
+    top: 80px; right: 60px;
+    color: var(--stamp);
+    border: 2px solid var(--stamp);
+    padding: 6px 14px;
+    font-size: 10px;
+    letter-spacing: 0.3em;
+    transform: rotate(-7deg);
+    opacity: 0.85;
+    background: rgba(122, 31, 31, 0.06);
+    text-transform: uppercase;
+    font-weight: 700;
+  }
+
+  .wire-hdr {
+    text-align: center;
+    letter-spacing: 0.18em;
+    font-size: 11px;
+    color: var(--ink-soft);
+    border-top: 2px solid var(--ink);
+    border-bottom: 2px solid var(--ink);
+    padding: 10px 0;
+    margin-bottom: 22px;
+    text-transform: uppercase;
+  }
+  .wire-hdr .pri { color: var(--stamp); font-weight: 700; }
+
+  .lead { text-align: center; font-size: 16px; letter-spacing: 0.18em; font-weight: 500; margin-bottom: 4px; text-transform: uppercase; }
+  .lead-sub { text-align: center; font-size: 12px; letter-spacing: 0.22em; color: var(--ink-soft); margin-bottom: 24px; text-transform: uppercase; }
+
+  .bracket { text-align: center; font-size: 11px; letter-spacing: 0.3em; color: var(--ink-faint); margin: 14px 0; }
+
+  .sect { margin: 26px 0; }
+  .sect-h {
+    font-size: 12px;
+    letter-spacing: 0.3em;
+    margin-bottom: 14px;
+    border-bottom: 1px solid var(--ink-soft);
+    padding-bottom: 4px;
+    text-transform: uppercase;
+    font-weight: 500;
+  }
+
+  .state { font-size: 12.5px; letter-spacing: 0.06em; line-height: 2.1; }
+  .state-row { display: flex; align-items: baseline; }
+  .state-row .lbl { width: 130px; text-transform: uppercase; }
+  .state-row .dots { flex: 1; border-bottom: 2px dotted var(--ink-faint); margin: 0 6px 6px; height: 1px; }
+  .state-row .val { white-space: nowrap; text-transform: uppercase; font-weight: 500; }
+  .state-row .stop { color: var(--ink-faint); margin-left: 12px; }
+
+  .telex {
+    font-size: 13px;
+    letter-spacing: 0.06em;
+    line-height: 2;
+    text-transform: uppercase;
+  }
+  .telex .stop { color: var(--ink-faint); margin: 0 2px; font-weight: 500; }
+
+  .opt {
+    margin: 10px -14px;
+    padding: 14px;
+    cursor: pointer;
+    border: 1px solid transparent;
+    display: grid;
+    grid-template-columns: 110px 1fr 110px;
+    gap: 18px;
+    align-items: start;
+    transition: background 100ms ease;
+    position: relative;
+  }
+  .opt:hover { background: rgba(122, 31, 31, 0.05); }
+  .opt.selected { background: rgba(122, 31, 31, 0.08); border-color: var(--stamp); }
+
+  .opt-marker {
+    font-size: 12px;
+    letter-spacing: 0.2em;
+    color: var(--ink-soft);
+    text-transform: uppercase;
+    padding-top: 2px;
+    font-weight: 700;
+    position: relative;
+  }
+  .opt-tick {
+    position: absolute;
+    top: -8px;
+    right: -6px;
+    width: 36px;
+    height: 32px;
+    opacity: 0;
+    transition: opacity 130ms ease;
+    pointer-events: none;
+  }
+  .opt.selected .opt-tick { opacity: 0.95; }
+
+  .opt-title {
+    font-size: 13px;
+    letter-spacing: 0.08em;
+    margin-bottom: 4px;
+    text-transform: uppercase;
+    font-weight: 700;
+  }
+  .opt-prose {
+    font-size: 12px;
+    letter-spacing: 0.05em;
+    color: var(--ink-soft);
+    line-height: 1.85;
+    text-transform: uppercase;
+  }
+  .opt-prose .stop { color: var(--ink-faint); }
+  .opt-cost {
+    text-align: right;
+    font-size: 11px;
+    letter-spacing: 0.18em;
+    color: var(--stamp);
+    text-transform: uppercase;
+    line-height: 1.7;
+    padding-top: 4px;
+    font-weight: 500;
+  }
+
+  .xmit {
+    margin-bottom: 16px;
+    padding: 12px 14px;
+    border-left: 3px solid var(--ink-soft);
+    background: rgba(0,0,0,0.03);
+  }
+  .xmit-meta { font-size: 11px; letter-spacing: 0.22em; color: var(--ink-faint); margin-bottom: 6px; text-transform: uppercase; }
+  .xmit-meta .ag { color: var(--ink-soft); font-weight: 700; }
+  .xmit p { font-size: 12px; letter-spacing: 0.06em; line-height: 1.9; color: var(--ink-soft); text-transform: uppercase; }
+  .xmit p .stop { color: var(--ink-faint); }
+
+  .auth {
+    margin-top: 30px;
+    padding-top: 18px;
+    border-top: 2px solid var(--ink);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 12px;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+  }
+  .auth .pick { color: var(--stamp); font-weight: 700; }
+  .auth-btn {
+    background: var(--ink);
+    color: var(--tape);
+    border: none;
+    padding: 12px 26px;
+    font-family: inherit;
+    font-size: 11px;
+    letter-spacing: 0.3em;
+    text-transform: uppercase;
+    cursor: pointer;
+    font-weight: 700;
+  }
+  .auth-btn:hover { background: var(--stamp); }
+  .auth-btn:disabled { background: var(--ink-faint); cursor: not-allowed; }
+
+  .end-strip {
+    margin-top: 26px;
+    text-align: center;
+    border-top: 2px solid var(--ink);
+    padding-top: 12px;
+    font-size: 11px;
+    letter-spacing: 0.3em;
+    color: var(--ink-soft);
+    text-transform: uppercase;
+    font-weight: 500;
+  }
+</style>
+</head>
+<body>
+
+<div class="tape">
+
+  <div class="received-stamp">RECEIVED 0314Z</div>
+
+  <div class="wire-hdr">
+    ::: HMG STATION BERLIN :::&nbsp;&nbsp;
+    <span class="pri">PRI II — IMMEDIATE</span>&nbsp;&nbsp;
+    ::: GMT 0314Z :::
+  </div>
+
+  <div class="lead">URGENT FROM OPS TO HANDLER</div>
+  <div class="lead-sub">OP. LYNX-EXFIL ::: CYCLE 3 OF 6 ::: AUTH REQUIRED</div>
+
+  <div class="bracket">———  BEGINS  ———</div>
+
+  <div class="sect">
+    <div class="sect-h">STATE</div>
+    <div class="state">
+      <div class="state-row"><span class="lbl">LYNX</span><span class="dots"></span><span class="val">COVER 6 / 10</span><span class="stop">— LEGEND HOLDING STOP</span></div>
+      <div class="state-row"><span class="lbl">KESTREL</span><span class="dots"></span><span class="val">COVER 7 / 10</span><span class="stop">— MARKET PICKUP CLEAN STOP</span></div>
+      <div class="state-row"><span class="lbl">EXTRACTION</span><span class="dots"></span><span class="val">STAGE 2 / 3</span><span class="stop">— PAPERS IN HAND STOP</span></div>
+      <div class="state-row"><span class="lbl">CYCLES</span><span class="dots"></span><span class="val">4 / 6</span><span class="stop">— WINDOW NARROWING STOP</span></div>
+    </div>
+  </div>
+
+  <div class="sect">
+    <div class="sect-h">STATE OF PLAY</div>
+    <div class="telex">
+      PAPERS IN HAND<span class="stop">STOP</span> KESTREL COMPLETED PICKUP AT RIVER MARKET WITHOUT CONTACT<span class="stop">STOP</span> BAG AT EASTERN SAFEHOUSE AND CLEAN<span class="stop">STOP</span> LYNX MOVING BUT SLOW<span class="stop">STOP</span> SOUTHERN SURVEILLANCE GRID HAS NOT STOOD DOWN<span class="stop">STOP</span> PHOTOGRAPHS FROM FORTY-EIGHT HOURS AGO WORKING THEIR WAY UP<span class="stop">STOP</span> FOUR CYCLES BEFORE COUNTER-INTEL'S ARREST WINDOW CLOSES AGAINST US<span class="stop">STOP</span> TWO BEFORE LYNX'S LEGEND STOPS HOLDING<span class="stop">STOP</span> ROUTE OPTIONS AT EASTERN TERMINUS OPEN<span class="stop">STOP</span> NONE OF THIS LASTS<span class="stop">FULL STOP</span>
+    </div>
+  </div>
+
+  <div class="sect">
+    <div class="sect-h">FOUR OPTIONS FOLLOW — AUTHORIZE ONE</div>
+
+    <div class="opt" data-n="1">
+      <div class="opt-marker">OPTION&nbsp;I
+        <svg class="opt-tick" viewBox="0 0 36 32"><path d="M4 16 L14 26 L32 6" stroke="#7a1f1f" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </div>
+      <div>
+        <div class="opt-title">LYNX MOVES TO SAFEHOUSE ALONE</div>
+        <div class="opt-prose">LYNX WALKS TO TERTIARY SAFEHOUSE ON HER OWN<span class="stop"> STOP </span>TWO HOURS THROUGH THREE DISTRICTS<span class="stop"> STOP </span>ANY ESCORT DOUBLES HER SIGNATURE<span class="stop"> STOP </span>ARRIVES THINNED BUT IN POSITION FOR THE TRAIN<span class="stop"> STOP</span></div>
+      </div>
+      <div class="opt-cost">LYNX −1 COVER<br>STAGE HOLDS</div>
+    </div>
+
+    <div class="opt" data-n="2">
+      <div class="opt-marker">OPTION&nbsp;II
+        <svg class="opt-tick" viewBox="0 0 36 32"><path d="M4 16 L14 26 L32 6" stroke="#7a1f1f" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </div>
+      <div>
+        <div class="opt-title">RUN EAST TRAIN EXTRACTION NOW</div>
+        <div class="opt-prose">MOVE ON EASTERN TRAIN ROUTE THIS CYCLE<span class="stop"> STOP </span>DIRECT<span class="stop"> STOP </span>PAPERS IN HAND<span class="stop"> STOP </span>LEGEND STILL HOLDS<span class="stop"> STOP </span>SURVEILLANCE HAS NOT CLOSED<span class="stop"> STOP </span>IF WE WAIT NONE OF THESE REMAIN TRUE<span class="stop"> STOP </span>COST SHARP<span class="stop"> STOP</span></div>
+      </div>
+      <div class="opt-cost">LYNX −3 / −4<br>STAGE → 3</div>
+    </div>
+
+    <div class="opt" data-n="3">
+      <div class="opt-marker">OPTION&nbsp;III
+        <svg class="opt-tick" viewBox="0 0 36 32"><path d="M4 16 L14 26 L32 6" stroke="#7a1f1f" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </div>
+      <div>
+        <div class="opt-title">KESTREL DIVERSION DISTRICT 7</div>
+        <div class="opt-prose">KESTREL WALKS A NOISY PATTERN THROUGH DISTRICT 7<span class="stop"> STOP </span>DRAWS COUNTER-INTEL ATTENTION OFF LYNX'S LANES<span class="stop"> STOP </span>KESTREL TAKES THE EXPOSURE<span class="stop"> STOP </span>LYNX GETS A CLEAN CYCLE<span class="stop"> STOP </span>STAGE HOLDS<span class="stop"> STOP</span></div>
+      </div>
+      <div class="opt-cost">KESTREL −3<br>LYNX +1</div>
+    </div>
+
+    <div class="opt" data-n="4">
+      <div class="opt-marker">OPTION&nbsp;IV
+        <svg class="opt-tick" viewBox="0 0 36 32"><path d="M4 16 L14 26 L32 6" stroke="#7a1f1f" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </div>
+      <div>
+        <div class="opt-title">HOLD POSITION</div>
+        <div class="opt-prose">DO NOTHING THIS CYCLE<span class="stop"> STOP </span>LYNX STAYS PUT<span class="stop"> STOP </span>KESTREL STAYS PUT<span class="stop"> STOP </span>LET SURVEILLANCE PATTERN SPEAK<span class="stop"> STOP </span>COST IS TIME<span class="stop"> STOP </span>COVER DECAYS PASSIVELY<span class="stop"> STOP</span></div>
+      </div>
+      <div class="opt-cost">PASSIVE DECAY<br>BOTH AGENTS</div>
+    </div>
+  </div>
+
+  <div class="auth">
+    <span>SELECTION : <span class="pick" id="picked">— NONE —</span></span>
+    <button class="auth-btn" id="authBtn" disabled>AUTHORIZE</button>
+  </div>
+
+  <div class="bracket">———  ENDS  ———</div>
+
+  <div class="sect">
+    <div class="sect-h">PRIOR WIRE TRAFFIC — LAST 2</div>
+    <div class="xmit">
+      <div class="xmit-meta">C2 ::: <span class="ag">KESTREL</span> ::: 0248Z ::: INBOUND</div>
+      <p>MARKET WAS LOUD<span class="stop"> STOP </span>WHICH IS WHAT WE WANTED<span class="stop"> STOP </span>MADE PICKUP AT SECOND FLOWER STALL ON RIVER SIDE<span class="stop"> STOP </span>DO NOT KNOW PREVIOUS OWNER<span class="stop"> STOP </span>BAG HEAVIER THAN IT SHOULD BE<span class="stop"> STOP </span>PAPERS BUT ALSO SOMETHING FLAT AND METAL<span class="stop"> STOP </span>HAVE NOT OPENED<span class="stop"> STOP </span>WILL NOT<span class="stop"> STOP </span>BACK AT EASTERN SAFEHOUSE<span class="stop"> STOP </span>FOLLOWED THREE BLOCKS BY MAN IN GREY JACKET<span class="stop"> STOP </span>LOST INTEREST AT BRIDGE<span class="stop"> STOP </span>DO NOT THINK HE WAS OURS<span class="stop"> STOP </span>DO NOT THINK HE WAS THEIRS<span class="stop"> FULL STOP</span></p>
+    </div>
+    <div class="xmit">
+      <div class="xmit-meta">C1 ::: <span class="ag">OPS</span> ::: 0212Z ::: OUTBOUND</div>
+      <p>SLEEPER REDFIELD ACTIVATED FOR DOCUMENT PICKUP PHASE<span class="stop"> STOP </span>TOLD ONLY WHAT HE NEEDS<span class="stop"> STOP </span>SINGLE DROP NO FOLLOW-UP<span class="stop"> STOP </span>WILL NOT SEE KESTREL<span class="stop"> STOP </span>WILL NOT KNOW WHO TOOK THE BAG<span class="stop"> FULL STOP</span></p>
+    </div>
+  </div>
+
+  <div class="end-strip">— OPS / BERLIN STN — END OF TRANSMISSION —</div>
+
+</div>
+
+<script>
+  const options = document.querySelectorAll('.opt');
+  const picked = document.getElementById('picked');
+  const authBtn = document.getElementById('authBtn');
+  const titles = {
+    '1': 'I — LYNX SAFEHOUSE',
+    '2': 'II — RUN EXFIL',
+    '3': 'III — KESTREL DIVERSION',
+    '4': 'IV — HOLD'
+  };
+
+  function select(n) {
+    options.forEach(o => o.classList.remove('selected'));
+    const opt = document.querySelector(`.opt[data-n="${n}"]`);
+    if (opt) {
+      opt.classList.add('selected');
+      picked.textContent = titles[n];
+      authBtn.disabled = false;
+    }
+  }
+
+  options.forEach(opt => opt.addEventListener('click', () => select(opt.dataset.n)));
+  document.addEventListener('keydown', (e) => {
+    if (['1','2','3','4'].includes(e.key)) select(e.key);
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Pacing viz — debug menu mockups</title>
+<style>
+  :root {
+    --bg: #fafaf9;
+    --card: #ffffff;
+    --border: #e5e5e3;
+    --ink: #1c1c1a;
+    --ink-soft: #6b6b67;
+    --accent: #2563eb;
+    --good: #16a34a;
+    --warn: #b45309;
+    --neutral: #9ca3af;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 32px;
+    background: var(--bg);
+    color: var(--ink);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  }
+  h1 { font-size: 20px; margin: 0 0 4px; font-weight: 600; }
+  .lede { color: var(--ink-soft); margin: 0 0 24px; max-width: 70ch; }
+  .grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+    max-width: 1400px;
+  }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  .card header { display: flex; align-items: baseline; gap: 10px; }
+  .badge {
+    display: inline-block;
+    font: 600 11px/1 var(--mono);
+    padding: 4px 8px;
+    background: #eef2ff;
+    color: var(--accent);
+    border-radius: 4px;
+    letter-spacing: 0.05em;
+  }
+  .card h2 { margin: 0; font-size: 16px; font-weight: 600; }
+  .card .sub { color: var(--ink-soft); font-size: 13px; margin: 0; }
+  .mock {
+    background: #f9fafb;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 14px;
+    font: 13px/1.5 var(--mono);
+  }
+
+  /* A — sparklines */
+  .spark-row {
+    display: grid;
+    grid-template-columns: 110px 1fr 40px 60px;
+    align-items: center;
+    gap: 12px;
+    padding: 6px 0;
+    border-bottom: 1px dashed var(--border);
+  }
+  .spark-row:last-child { border-bottom: 0; }
+  .spark-row .val { font-weight: 600; text-align: right; }
+  .spark-row .delta { color: var(--good); font-size: 12px; }
+  .spark-row .delta.flat { color: var(--neutral); }
+  svg.sl { width: 100%; height: 22px; }
+
+  /* B — timeline */
+  .tl { overflow-x: auto; }
+  .tl-track {
+    display: grid;
+    grid-template-columns: repeat(7, minmax(110px, 1fr));
+    min-width: 100%;
+  }
+  .tl-cell {
+    border-left: 1px solid var(--border);
+    padding: 0 8px 8px;
+  }
+  .tl-cell:first-child { border-left: 0; }
+  .tl-tick { font: 600 11px var(--mono); color: var(--ink-soft); }
+  .tl-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--accent); margin: 6px 0 8px; }
+  .tl-beat { font-size: 12px; font-weight: 600; }
+  .tl-pill {
+    display: inline-block;
+    font: 600 10px var(--mono);
+    padding: 2px 5px; margin-top: 4px;
+    border-radius: 3px;
+    background: #ecfdf5; color: var(--good);
+  }
+  .tl-verdict { display: block; font-size: 11px; color: var(--ink-soft); font-style: italic; margin-top: 4px; }
+
+  /* C — deltas table */
+  table.deltas { width: 100%; border-collapse: collapse; }
+  table.deltas th, table.deltas td {
+    text-align: center;
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+  }
+  table.deltas th { color: var(--ink-soft); font-weight: 600; }
+  table.deltas td.cause { text-align: left; color: var(--ink-soft); }
+  table.deltas td.tick { font-weight: 600; }
+  .delta-pos { color: var(--good); font-weight: 600; }
+  .delta-neu { color: var(--neutral); }
+
+  /* D — cause attribution */
+  .attr-head {
+    display: flex; align-items: baseline; justify-content: space-between;
+    border-bottom: 1px solid var(--border); padding-bottom: 8px; margin-bottom: 8px;
+  }
+  .attr-quality { font-weight: 600; }
+  .attr-current { color: var(--ink-soft); }
+  .attr-row {
+    display: grid;
+    grid-template-columns: 40px 50px 1.4fr 1.6fr;
+    gap: 10px;
+    padding: 4px 0;
+    align-items: baseline;
+    font-size: 12px;
+  }
+  .attr-row .src { color: var(--ink-soft); font-size: 11px; }
+  .blocked-head {
+    margin-top: 14px; padding-top: 10px;
+    border-top: 1px dashed var(--border);
+    font-weight: 600; font-size: 11px; color: var(--ink-soft);
+    letter-spacing: 0.05em; text-transform: uppercase;
+  }
+  .blocked-row {
+    display: grid; grid-template-columns: 1fr auto;
+    gap: 8px; padding: 4px 0; font-size: 12px;
+  }
+  .blocked-need { color: var(--warn); }
+</style>
+</head>
+<body>
+<h1>Debug menu — pacing visualization options</h1>
+<p class="lede">Four lenses on the same TickDecision history. Pick the one you'd want as the primary pacing view; the others may still appear as secondary tabs/details.</p>
+
+<div class="grid">
+
+  <!-- A -->
+  <section class="card">
+    <header>
+      <span class="badge">A</span>
+      <h2>Sparkline per quality</h2>
+    </header>
+    <p class="sub">Compact grid, one tiny chart per quality. At-a-glance shape of every quality in one viewport. Hover (in real impl) reveals tick + cause.</p>
+    <div class="mock">
+      <div class="spark-row">
+        <span>curiosity</span>
+        <svg class="sl" viewBox="0 0 100 22" preserveAspectRatio="none"><polyline fill="none" stroke="#2563eb" stroke-width="1.5" points="0,18 14,16 28,12 42,8 56,4 70,2 84,4 100,2"/></svg>
+        <span class="val">7</span>
+        <span class="delta">+1 &uarr;</span>
+      </div>
+      <div class="spark-row">
+        <span>trust</span>
+        <svg class="sl" viewBox="0 0 100 22" preserveAspectRatio="none"><polyline fill="none" stroke="#2563eb" stroke-width="1.5" points="0,20 14,18 28,16 42,14 56,12 70,10 84,8 100,8"/></svg>
+        <span class="val">4</span>
+        <span class="delta">+1 &uarr;</span>
+      </div>
+      <div class="spark-row">
+        <span>doubt</span>
+        <svg class="sl" viewBox="0 0 100 22" preserveAspectRatio="none"><polyline fill="none" stroke="#2563eb" stroke-width="1.5" points="0,20 14,20 28,18 42,16 56,14 70,14 84,14 100,14"/></svg>
+        <span class="val">3</span>
+        <span class="delta flat">&plusmn;0</span>
+      </div>
+      <div class="spark-row">
+        <span>commitment</span>
+        <svg class="sl" viewBox="0 0 100 22" preserveAspectRatio="none"><polyline fill="none" stroke="#2563eb" stroke-width="1.5" points="0,20 14,20 28,18 42,14 56,8 70,4 84,2 100,0"/></svg>
+        <span class="val">8</span>
+        <span class="delta">+2 &uarr;</span>
+      </div>
+      <div class="spark-row">
+        <span>vengeance</span>
+        <svg class="sl" viewBox="0 0 100 22" preserveAspectRatio="none"><polyline fill="none" stroke="#9ca3af" stroke-width="1.5" points="0,20 14,20 28,20 42,20 56,20 70,20 84,20 100,20"/></svg>
+        <span class="val">0</span>
+        <span class="delta flat">&plusmn;0</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- B -->
+  <section class="card">
+    <header>
+      <span class="badge">B</span>
+      <h2>Stacked timeline with annotations</h2>
+    </header>
+    <p class="sub">One horizontal timeline of ticks. Each tick shows fired beat, classifier verdict, and quality deltas in-place. Tells the story chronologically.</p>
+    <div class="mock tl">
+      <div class="tl-track">
+        <div class="tl-cell"><div class="tl-tick">T1</div><div class="tl-dot"></div><div class="tl-beat">welcome</div><span class="tl-pill">cur +1</span></div>
+        <div class="tl-cell"><div class="tl-tick">T2</div><div class="tl-dot"></div><div class="tl-beat">arrival_q1</div><span class="tl-pill">trust +1</span><span class="tl-verdict">"warm"</span></div>
+        <div class="tl-cell"><div class="tl-tick">T3</div><div class="tl-dot"></div><div class="tl-beat">arrival_q1</div><span class="tl-verdict">"hesitant"</span></div>
+        <div class="tl-cell"><div class="tl-tick">T4</div><div class="tl-dot"></div><div class="tl-beat">scene_calibration</div><span class="tl-pill">cur +1</span></div>
+        <div class="tl-cell"><div class="tl-tick">T5</div><div class="tl-dot"></div><div class="tl-beat">scene_calibration</div><span class="tl-pill">cur +1</span><span class="tl-verdict">"earnest"</span></div>
+        <div class="tl-cell"><div class="tl-tick">T6</div><div class="tl-dot"></div><div class="tl-beat">bridge_offer</div><span class="tl-pill">commit +2</span></div>
+        <div class="tl-cell"><div class="tl-tick">T7</div><div class="tl-dot"></div><div class="tl-beat">terminal_yes</div><span class="tl-verdict">ends session</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- C -->
+  <section class="card">
+    <header>
+      <span class="badge">C</span>
+      <h2>Quality deltas table</h2>
+    </header>
+    <p class="sub">Tabular: rows = ticks, columns = qualities. Sortable, filterable. Best for spotting patterns across many ticks at once.</p>
+    <div class="mock">
+      <table class="deltas">
+        <thead>
+          <tr><th>tick</th><th>cur</th><th>trust</th><th>doubt</th><th>commit</th><th>veng</th><th style="text-align:left">cause</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="tick">T1</td><td class="delta-pos">+1</td><td class="delta-neu">&middot;</td><td class="delta-neu">&middot;</td><td class="delta-neu">&middot;</td><td class="delta-neu">&middot;</td><td class="cause">welcome.effects</td></tr>
+          <tr><td class="tick">T2</td><td class="delta-neu">&middot;</td><td class="delta-pos">+1</td><td class="delta-neu">&middot;</td><td class="delta-neu">&middot;</td><td class="delta-neu">&middot;</td><td class="cause">classify: warm</td></tr>
+          <tr><td class="tick">T3</td><td class="delta-neu">&middot;</td><td class="delta-neu">&middot;</td><td class="delta-pos">+1</td><td class="delta-neu">&middot;</td><td class="delta-neu">&middot;</td><td class="cause">classify: hesitant</td></tr>
+          <tr><td class="tick">T4</td><td class="delta-pos">+1</td><td class="delta-neu">&middot;</td><td class="delta-neu">&middot;</td><td class="delta-neu">&middot;</td><td class="delta-neu">&middot;</td><td class="cause">scene_calibration.effects</td></tr>
+          <tr><td class="tick">T5</td><td class="delta-pos">+1</td><td class="delta-neu">&middot;</td><td class="delta-neu">&middot;</td><td class="delta-neu">&middot;</td><td class="delta-neu">&middot;</td><td class="cause">classify: earnest</td></tr>
+          <tr><td class="tick">T6</td><td class="delta-neu">&middot;</td><td class="delta-neu">&middot;</td><td class="delta-neu">&middot;</td><td class="delta-pos">+2</td><td class="delta-neu">&middot;</td><td class="cause">bridge_offer.effects</td></tr>
+          <tr><td class="tick">T7</td><td class="delta-neu">&middot;</td><td class="delta-neu">&middot;</td><td class="delta-neu">&middot;</td><td class="delta-neu">&middot;</td><td class="delta-neu">&middot;</td><td class="cause">terminal_yes</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- D -->
+  <section class="card">
+    <header>
+      <span class="badge">D</span>
+      <h2>Cause attribution (per-quality drill-down)</h2>
+    </header>
+    <p class="sub">Pick one quality; see every change that ever moved it, plus what's currently blocked waiting for it. Answers "why is X at 7?" and "what's gated on X?".</p>
+    <div class="mock">
+      <div class="attr-head">
+        <span class="attr-quality">curiosity</span>
+        <span class="attr-current">current: <strong>7</strong></span>
+      </div>
+      <div class="attr-row"><span>T1</span><span class="delta-pos">+1</span><span>welcome</span><span class="src">literal effect</span></div>
+      <div class="attr-row"><span>T2</span><span class="delta-pos">+1</span><span>classify: warm</span><span class="src">classifier &rarr; curiosity</span></div>
+      <div class="attr-row"><span>T4</span><span class="delta-pos">+1</span><span>scene_calibration</span><span class="src">literal effect</span></div>
+      <div class="attr-row"><span>T5</span><span class="delta-pos">+1</span><span>classify: earnest</span><span class="src">classifier &rarr; curiosity</span></div>
+      <div class="attr-row"><span>T8</span><span class="delta-pos">+2</span><span>revelation_scene</span><span class="src">literal, when: trust&ge;3</span></div>
+
+      <div class="blocked-head">blocked on this quality</div>
+      <div class="blocked-row"><span>final_choice</span><span class="blocked-need">needs cur &ge; 8 (1 short)</span></div>
+      <div class="blocked-row"><span>secret_path</span><span class="blocked-need">needs cur &ge; 10 (3 short)</span></div>
+    </div>
+  </section>
+
+</div>
+</body>
+</html>

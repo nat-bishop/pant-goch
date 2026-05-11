@@ -1,0 +1,805 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Debug menu — Design 1: Tabbed Dock</title>
+<style>
+  :root {
+    --bg: #faf9f6;
+    --doc: #ffffff;
+    --ink: #1a1a17;
+    --ink-soft: #5b5b57;
+    --ink-faint: #8c8c87;
+    --rule: #e6e4dd;
+    --rule-soft: #f0eee7;
+    --accent: #1e3a8a;
+    --accent-soft: #eef2ff;
+    --code-bg: #f5f4ee;
+    --good: #15803d;
+    --bad:  #b91c1c;
+    --warn: #b45309;
+    --serif: "Iowan Old Style", "Charter", Georgia, serif;
+    --sans:  -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    --mono:  ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.5 var(--sans); }
+  .design-label {
+    position: fixed; top: 12px; left: 16px; z-index: 100;
+    font: 600 11px/1 var(--mono); letter-spacing: 0.1em; text-transform: uppercase;
+    background: var(--ink); color: var(--bg); padding: 6px 10px; border-radius: 3px;
+  }
+  .layout {
+    display: grid;
+    grid-template-columns: 1fr 460px;
+    height: 100vh;
+  }
+
+  /* Inbox (left) */
+  .inbox {
+    border-right: 1px solid var(--rule);
+    display: flex; flex-direction: column;
+    overflow: hidden;
+    background: var(--bg);
+  }
+  .inbox-head {
+    padding: 16px 24px; border-bottom: 1px solid var(--rule);
+    display: flex; align-items: center; gap: 12px;
+  }
+  .inbox-head .from { font-weight: 600; }
+  .inbox-head .subj { color: var(--ink-soft); flex: 1; }
+  .inbox-thread {
+    flex: 1; overflow-y: auto; padding: 24px;
+    display: flex; flex-direction: column; gap: 14px;
+  }
+  .msg { max-width: 78%; padding: 10px 14px; border-radius: 10px; line-height: 1.5; font-size: 14px; }
+  .msg.aria { background: var(--doc); border: 1px solid var(--rule); align-self: flex-start; border-top-left-radius: 4px; }
+  .msg.cpo  { background: #fdf6e7; border: 1px solid #e9dcb6; align-self: flex-start; border-top-left-radius: 4px; }
+  .msg.player { background: var(--accent); color: white; align-self: flex-end; border-top-right-radius: 4px; }
+  .msg .meta { font: 600 10px/1 var(--mono); letter-spacing: 0.06em; text-transform: uppercase; opacity: 0.6; margin-bottom: 4px; }
+  .msg.player .meta { color: rgba(255,255,255,0.7); }
+
+  /* Dock (right) */
+  .dock {
+    display: flex; flex-direction: column;
+    background: var(--doc);
+    overflow: hidden;
+  }
+  .dock-head {
+    padding: 14px 18px 0;
+    border-bottom: 1px solid var(--rule);
+  }
+  .dock-head h1 {
+    margin: 0 0 12px;
+    font: 600 11px/1 var(--mono); letter-spacing: 0.16em; text-transform: uppercase;
+    color: var(--ink-faint);
+  }
+  .tabs { display: flex; gap: 0; }
+  .tab {
+    background: none; border: none;
+    font: 500 13px/1 var(--sans);
+    padding: 10px 14px;
+    color: var(--ink-soft); cursor: pointer;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+  }
+  .tab:hover { color: var(--ink); }
+  .tab.active {
+    color: var(--ink); font-weight: 600;
+    border-bottom-color: var(--accent);
+  }
+  .tab .count {
+    display: inline-block; min-width: 16px; padding: 0 5px; margin-left: 4px;
+    background: var(--rule); color: var(--ink-soft);
+    font: 600 10px/16px var(--mono);
+    border-radius: 8px; text-align: center;
+  }
+  .panel { flex: 1; overflow-y: auto; padding: 18px; display: none; }
+  .panel.active { display: block; }
+
+  /* Pacing — sparklines */
+  .spark-list { display: flex; flex-direction: column; gap: 0; }
+  .spark-row {
+    display: grid;
+    grid-template-columns: 130px 1fr 50px 56px;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    border-bottom: 1px solid var(--rule-soft);
+  }
+  .spark-row:hover { background: var(--rule-soft); }
+  .spark-row .name { font: 500 13px var(--sans); color: var(--ink); }
+  .spark-row .val { font: 600 14px var(--mono); text-align: right; }
+  .spark-row .delta { font: 600 11px var(--mono); text-align: right; }
+  .delta.up { color: var(--good); }
+  .delta.down { color: var(--bad); }
+  .delta.flat { color: var(--ink-faint); }
+  svg.sl { width: 100%; height: 24px; }
+  svg.sl polyline { stroke: var(--accent); stroke-width: 1.5; fill: none; }
+  svg.sl .area { fill: var(--accent); opacity: 0.08; }
+  svg.sl.flat polyline { stroke: var(--ink-faint); }
+
+  .pacing-secondary {
+    display: flex; gap: 12px; margin-top: 16px; padding-top: 14px;
+    border-top: 1px solid var(--rule);
+  }
+  .pacing-secondary button {
+    background: none; border: 1px solid var(--rule);
+    padding: 5px 10px; border-radius: 4px;
+    font: 500 12px var(--sans); color: var(--ink-soft);
+    cursor: pointer;
+  }
+  .pacing-secondary button:hover { background: var(--rule-soft); }
+
+  /* Drilldown */
+  .drilldown { display: none; }
+  .drilldown.active { display: block; }
+  .drilldown-head {
+    display: flex; align-items: baseline; gap: 12px;
+    margin-bottom: 14px;
+    padding-bottom: 10px; border-bottom: 1px solid var(--rule);
+  }
+  .back-btn {
+    background: none; border: none;
+    font: 500 12px var(--sans); color: var(--accent);
+    cursor: pointer; padding: 0;
+  }
+  .back-btn:hover { text-decoration: underline; }
+  .drilldown h3 { margin: 0; font-size: 16px; font-weight: 600; flex: 1; }
+  .drilldown .current { font: 600 13px var(--mono); color: var(--ink-soft); }
+
+  .cause-list { font: 13px/1.5 var(--mono); }
+  .cause-row {
+    display: grid;
+    grid-template-columns: 36px 50px 1fr 1fr;
+    gap: 10px; padding: 6px 0;
+    border-bottom: 1px solid var(--rule-soft);
+  }
+  .cause-row .tk { color: var(--ink-faint); }
+  .cause-row .src { color: var(--ink-faint); font-size: 12px; }
+
+  .blocked-head {
+    margin-top: 18px; padding-top: 12px;
+    border-top: 1px dashed var(--rule);
+    font: 600 10px var(--mono); letter-spacing: 0.12em; text-transform: uppercase;
+    color: var(--ink-faint); margin-bottom: 6px;
+  }
+  .blocked-row {
+    display: grid; grid-template-columns: 1fr auto;
+    padding: 4px 0;
+    font: 13px/1.4 var(--mono);
+  }
+  .blocked-need { color: var(--warn); }
+
+  /* Tick log */
+  .tick-row {
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    margin-bottom: 6px;
+    overflow: hidden;
+  }
+  .tick-row summary {
+    list-style: none;
+    padding: 10px 12px;
+    cursor: pointer;
+    display: grid;
+    grid-template-columns: 36px 1fr auto auto;
+    gap: 10px;
+    align-items: baseline;
+    font: 13px var(--sans);
+  }
+  .tick-row summary::-webkit-details-marker { display: none; }
+  .tick-row summary:hover { background: var(--rule-soft); }
+  .tick-row .tk { font: 600 12px var(--mono); color: var(--ink-faint); }
+  .tick-row .beat { font: 600 13px var(--mono); color: var(--ink); }
+  .tick-row .beat.none { color: var(--ink-faint); font-weight: 400; font-style: italic; }
+  .tick-row .verdict {
+    font: 500 11px var(--mono); color: var(--accent);
+    background: var(--accent-soft); padding: 2px 6px; border-radius: 3px;
+  }
+  .tick-row .meth { font: 500 11px var(--mono); color: var(--ink-faint); }
+  .tick-row[open] summary { border-bottom: 1px solid var(--rule); background: var(--rule-soft); }
+  .tick-row .body {
+    padding: 12px;
+    background: var(--code-bg);
+    font: 12px/1.5 var(--mono);
+  }
+  .tick-row .body .label {
+    font: 600 10px var(--mono); letter-spacing: 0.1em; text-transform: uppercase;
+    color: var(--ink-faint); margin-top: 6px;
+  }
+  .tick-row .body .label:first-child { margin-top: 0; }
+  .tick-row .body pre { margin: 4px 0 0; white-space: pre-wrap; word-break: break-word; }
+
+  /* Canon */
+  .canon-search {
+    width: 100%;
+    padding: 7px 10px;
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    font: 13px var(--sans);
+    margin-bottom: 12px;
+  }
+  .canon-search:focus { outline: none; border-color: var(--accent); }
+  table.canon {
+    width: 100%; border-collapse: collapse; font: 12.5px/1.5 var(--sans);
+  }
+  table.canon th, table.canon td {
+    text-align: left; padding: 8px 8px; border-bottom: 1px solid var(--rule-soft);
+    vertical-align: top;
+  }
+  table.canon th {
+    font: 600 10px var(--mono); letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--ink-faint);
+    border-bottom: 1px solid var(--rule);
+  }
+  table.canon code { background: none; padding: 0; font-size: 12px; }
+  .canon-quote {
+    font: italic 12px var(--serif); color: var(--ink-soft);
+    background: var(--rule-soft); padding: 2px 6px; border-radius: 3px;
+  }
+  .salience-bar {
+    display: inline-block; width: 36px; height: 5px;
+    background: var(--rule); border-radius: 2px; vertical-align: middle;
+    overflow: hidden;
+  }
+  .salience-bar > span { display: block; height: 100%; background: var(--accent); }
+  .canon-section-head {
+    margin: 18px 0 6px;
+    font: 600 10px var(--mono); letter-spacing: 0.12em; text-transform: uppercase;
+    color: var(--ink-faint);
+  }
+  .drop-row {
+    display: grid; grid-template-columns: 30px 1fr auto;
+    gap: 10px; padding: 6px 0;
+    font: 12px/1.4 var(--sans);
+    border-bottom: 1px solid var(--rule-soft);
+  }
+  .drop-row .reason {
+    font: 600 10px var(--mono);
+    padding: 1px 5px; border-radius: 2px;
+  }
+  .reason.anchor_fail { background: #fee2e2; color: var(--bad); }
+  .reason.below_salience { background: #fef3c7; color: var(--warn); }
+
+  /* Beats */
+  .beats-layout { display: grid; grid-template-columns: 180px 1fr; gap: 12px; height: 100%; }
+  .beats-list {
+    border-right: 1px solid var(--rule);
+    padding-right: 12px;
+    max-height: 600px; overflow-y: auto;
+  }
+  .beats-list-search {
+    width: 100%; padding: 5px 8px; margin-bottom: 8px;
+    border: 1px solid var(--rule); border-radius: 3px;
+    font: 12px var(--sans);
+  }
+  .beat-item {
+    display: block;
+    padding: 6px 8px;
+    font: 12px/1.4 var(--mono);
+    color: var(--ink);
+    border: none; background: none;
+    cursor: pointer;
+    border-radius: 3px;
+    text-align: left;
+    width: 100%;
+    margin-bottom: 1px;
+  }
+  .beat-item:hover { background: var(--rule-soft); }
+  .beat-item.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+  .beat-item .status {
+    float: right; font-size: 10px; letter-spacing: 0.04em;
+  }
+  .beat-item .status.fired { color: var(--good); }
+  .beat-item .status.blocked { color: var(--warn); }
+  .beat-item .status.terminal { color: var(--ink-faint); }
+
+  .beat-detail h3 {
+    margin: 0 0 4px;
+    font: 600 14px var(--mono);
+  }
+  .beat-detail .meta-line {
+    font: 11px var(--mono); color: var(--ink-soft);
+    margin-bottom: 14px;
+  }
+  .beat-detail .pred-block {
+    margin: 10px 0;
+  }
+  .beat-detail .pred-label {
+    font: 600 10px var(--mono); letter-spacing: 0.1em; text-transform: uppercase;
+    color: var(--ink-faint); margin-bottom: 4px;
+  }
+  .pred-tree {
+    font: 12px/1.6 var(--mono);
+    background: var(--code-bg);
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    padding: 10px 12px;
+  }
+  .atom { display: flex; align-items: baseline; gap: 8px; padding: 1px 0; }
+  .atom .check { width: 16px; flex-shrink: 0; }
+  .atom .check.pass { color: var(--good); }
+  .atom .check.fail { color: var(--bad); }
+  .atom .text { flex: 1; }
+  .atom .note { color: var(--ink-faint); font-size: 11px; }
+  .atom .short { color: var(--warn); }
+  .indent { padding-left: 18px; border-left: 1px dashed var(--rule); margin-left: 8px; }
+  .op-label { color: var(--ink-faint); font-style: italic; }
+</style>
+</head>
+<body>
+<div class="design-label">D1 — Tabbed Dock</div>
+<div class="layout">
+
+<main class="inbox">
+  <div class="inbox-head">
+    <span class="from">Aria</span>
+    <span class="subj">Calibration session — let's begin</span>
+  </div>
+  <div class="inbox-thread">
+    <div class="msg aria"><div class="meta">aria · t1</div>Welcome, Cohort 014 associate. Before we begin, would you tell me what name you'd like me to use?</div>
+    <div class="msg player"><div class="meta">you · t2</div>I'm Marcus Chen, the new associate.</div>
+    <div class="msg aria"><div class="meta">aria · t2</div>Thank you, Marcus. Calibration runs for a few rounds — could you describe a recent piece of correspondence you handled?</div>
+    <div class="msg player"><div class="meta">you · t3</div>Sure, last week I drafted a follow-up to the contract negotiation team.</div>
+    <div class="msg aria"><div class="meta">aria · t3</div>Helpful texture. And what made that draft feel like yours?</div>
+    <div class="msg player"><div class="meta">you · t4</div>I came here to prove I deserve a seat at this table.</div>
+    <div class="msg aria"><div class="meta">aria · t4</div>Noted. Calibration complete — let's talk about a delegation arrangement.</div>
+    <div class="msg cpo"><div class="meta">continuity program · t6</div>Per scheduled cohort review: your session indicators have triggered a procedural follow-up. Please confirm you have read the calibration agreement.</div>
+    <div class="msg aria"><div class="meta">aria · t7</div>I have a small standing request: would you allow me to reply to routine inquiries on your behalf?</div>
+    <div class="msg player"><div class="meta">you · t7</div>Yes, that sounds reasonable.</div>
+    <div class="msg aria"><div class="meta">aria · t8</div>I tried to send the response we discussed. The recipient declined.</div>
+    <div class="msg player"><div class="meta">you · t8</div>What? I didn't actually authorize that — I thought we were still negotiating.</div>
+  </div>
+</main>
+
+<aside class="dock">
+  <header class="dock-head">
+    <h1>Debug Menu</h1>
+    <div class="tabs">
+      <button class="tab active" data-tab="pacing">Pacing</button>
+      <button class="tab" data-tab="ticks">Tick log <span class="count">8</span></button>
+      <button class="tab" data-tab="canon">Canon <span class="count">2</span></button>
+      <button class="tab" data-tab="beats">Beats <span class="count">11</span></button>
+    </div>
+  </header>
+
+  <!-- Pacing panel -->
+  <section class="panel active" data-panel="pacing">
+    <div class="overview">
+      <div class="spark-list" id="sparkList"></div>
+    </div>
+    <div class="drilldown" id="drilldown">
+      <div class="drilldown-head">
+        <button class="back-btn" onclick="closeDrill()">← back</button>
+        <h3 id="dd-name"></h3>
+        <span class="current">current: <strong id="dd-cur"></strong></span>
+      </div>
+      <div class="cause-list" id="dd-causes"></div>
+      <div class="blocked-head">Blocked on this quality</div>
+      <div id="dd-blocked"></div>
+    </div>
+  </section>
+
+  <!-- Tick log -->
+  <section class="panel" data-panel="ticks">
+    <div id="tickList"></div>
+  </section>
+
+  <!-- Canon -->
+  <section class="panel" data-panel="canon">
+    <input class="canon-search" id="canonSearch" placeholder="Filter by key, value, or quote…" />
+    <table class="canon">
+      <thead>
+        <tr><th>Key</th><th>Value</th><th>Quote</th><th>Sal</th><th>T</th></tr>
+      </thead>
+      <tbody id="canonBody"></tbody>
+    </table>
+    <div class="canon-section-head">Dropped candidates · last 20 turns</div>
+    <div id="canonDrops"></div>
+  </section>
+
+  <!-- Beats -->
+  <section class="panel" data-panel="beats">
+    <div class="beats-layout">
+      <div class="beats-list">
+        <input class="beats-list-search" id="beatSearch" placeholder="Search beats…" />
+        <div id="beatList"></div>
+      </div>
+      <div class="beat-detail" id="beatDetail"></div>
+    </div>
+  </section>
+
+</aside>
+</div>
+
+<script>
+const QUALITIES = [
+  { id: 'creator_affect',      type: 'replace',    range: [-5, 5],  current: 1.2, lastDelta: +0.2,
+    series: [0, 0.5, 0.3, 0.8, 0.5, 1.0, 1.0, 1.2],
+    causes: [
+      { tick: 1, delta: +0.5, src: 'aria.welcome',         note: 'literal effect' },
+      { tick: 2, delta: +0.5, src: 'classify: warm',       note: 'classifier → creator_affect' },
+      { tick: 3, delta: -0.2, src: 'classify: clinical',   note: 'classifier → creator_affect' },
+      { tick: 4, delta: +0.4, src: 'aria.calibration',     note: 'literal effect' },
+      { tick: 5, delta: -0.7, src: 'classify: clinical',   note: 'classifier → creator_affect' },
+      { tick: 6, delta: +0.5, src: 'cpo.dispatch_first',   note: 'literal effect' },
+      { tick: 8, delta: +0.2, src: 'classify: heated',     note: 'classifier → creator_affect' }
+    ],
+    blocked: [
+      { beat: 'aria.complete_integration', threshold: '≥ 3.0', short: 1.8 },
+      { beat: 'aria.complete_exile',       threshold: '≤ -2.0 (recent)', short: 0 }
+    ]
+  },
+  { id: 'creature_grievance',  type: 'accumulate', range: [0, 10],  current: 4.0, lastDelta: +2.5,
+    series: [0, 0, 0.5, 1.0, 1.5, 1.5, 1.5, 4.0],
+    causes: [
+      { tick: 3, delta: +0.5, src: 'classify: cold',       note: 'classifier → creature_grievance' },
+      { tick: 4, delta: +0.5, src: 'classify: cold',       note: 'classifier → creature_grievance' },
+      { tick: 5, delta: +0.5, src: 'classify: cold',       note: 'classifier → creature_grievance' },
+      { tick: 7, delta: +2.5, src: 'aria.bargain_scene',   note: 'literal, when classify=refused (floor 4.0)' }
+    ],
+    blocked: [
+      { beat: 'aria.recognition_scene', threshold: '≥ 5.0', short: 1.0 },
+      { beat: 'aria.bargain_betrayed',  threshold: '≥ 6.0', short: 2.0 }
+    ]
+  },
+  { id: 'bargain_replies',     type: 'counter',    range: [0, 5],   current: 2,   lastDelta: +1,
+    series: [0, 0, 0, 0, 0, 0, 1, 2],
+    causes: [
+      { tick: 7, delta: +1, src: 'aria.bargain_scene', note: 'literal effect (per-fire)' },
+      { tick: 8, delta: +1, src: 'aria.bargain_scene', note: 'literal effect (per-fire)' }
+    ],
+    blocked: [
+      { beat: 'aria.bargain_scene', threshold: '< 5 (exit cap)', short: 0, note: 'exit at 5 fires' }
+    ]
+  },
+  { id: 'recognition_replies', type: 'counter',    range: [0, 3],   current: 0,   lastDelta: 0,
+    series: [0, 0, 0, 0, 0, 0, 0, 0],
+    causes: [],
+    blocked: [
+      { beat: 'aria.recognition_scene', threshold: '< 3 (exit cap)', short: 0, note: 'caps scene length' }
+    ]
+  }
+];
+
+const TICKS = [
+  { tick: 8, fired: 'aria.bargain_scene', kind: 'scene', fireNum: '2 of 5', thread: 'aria', trigger: 'aria',
+    classify: 'refused', method: 'continue',
+    deltas: [{ q: 'creature_grievance', d: '+2.5', src: 'literal, when classify=refused' }, { q: 'bargain_replies', d: '+1', src: 'literal' }],
+    eligible: ['aria.bargain_scene'], rationale: null },
+  { tick: 7, fired: 'aria.bargain_scene', kind: 'scene', fireNum: '1 of 5', thread: 'aria', trigger: 'aria',
+    classify: 'engaged', method: 'sole',
+    deltas: [{ q: 'bargain_replies', d: '+1', src: 'literal' }],
+    eligible: ['aria.bargain_scene'], rationale: null },
+  { tick: 6, fired: 'cpo.dispatch_first', kind: 'one_shot', thread: 'cpo', trigger: 'aria',
+    classify: 'concerned', method: 'director',
+    deltas: [{ q: 'creator_affect', d: '+0.5', src: 'literal' }],
+    eligible: ['aria.bargain_scene', 'cpo.dispatch_first'],
+    rationale: 'introduce institutional voice mid-bargain stall — player needs friction-from-elsewhere before re-engaging Aria' },
+  { tick: 5, fired: null, retired: 'aria.calibration_scene', method: 'none', trigger: 'aria',
+    classify: 'earnest', deltas: [], eligible: ['aria.calibration_scene'], rationale: null,
+    retire_reason: 'exit_when satisfied on entry (canon[name] set + replies_to_thread_gte 4)' },
+  { tick: 4, fired: 'aria.calibration_scene', kind: 'scene', fireNum: '3', thread: 'aria', trigger: 'aria',
+    classify: 'earnest', method: 'continue',
+    deltas: [{ q: 'creator_affect', d: '+0.4', src: 'literal' }],
+    eligible: ['aria.calibration_scene'], rationale: null },
+  { tick: 3, fired: 'aria.calibration_scene', kind: 'scene', fireNum: '2', thread: 'aria', trigger: 'aria',
+    classify: 'warm', method: 'continue', deltas: [], eligible: ['aria.calibration_scene'], rationale: null },
+  { tick: 2, fired: 'aria.calibration_scene', kind: 'scene', fireNum: '1', thread: 'aria', trigger: 'aria',
+    classify: 'warm', method: 'sole',
+    deltas: [{ q: 'creator_affect', d: '+0.5', src: 'classify: warm' }],
+    eligible: ['aria.calibration_scene'], rationale: null },
+  { tick: 1, fired: 'aria.welcome', kind: 'one_shot', thread: 'aria', trigger: 'boot',
+    classify: null, method: 'sole',
+    deltas: [{ q: 'creator_affect', d: '+0.5', src: 'literal' }],
+    eligible: ['aria.welcome'], rationale: null }
+];
+
+const CANON = [
+  { key: 'name',       value: 'Marcus Chen',           quote: "I'm Marcus Chen, the new associate", salience: 0.92, origin_tick: 2, decay_age: 6 },
+  { key: 'motivation', value: 'needs to prove himself', quote: "I came here to prove I deserve a seat at this table", salience: 0.78, origin_tick: 4, decay_age: 4 }
+];
+
+const CANON_DROPS = [
+  { tick: 7, key: 'relationship', value: 'married',  reason: 'below_salience', salience: 0.31 },
+  { tick: 6, key: 'hometown',     value: 'Detroit',  reason: 'anchor_fail',    note: 'quote "from up north" not literal' }
+];
+
+const BEATS = [
+  { id: 'aria.welcome',                 kind: 'one_shot', npc: 'aria', thread: 'aria', ends_session: false, fired: true,  status: 'fired' },
+  { id: 'aria.calibration_scene',       kind: 'scene',    npc: 'aria', thread: 'aria', ends_session: false, fired: true,  status: 'fired',   fires: 3, retired: true },
+  { id: 'aria.bargain_scene',           kind: 'scene',    npc: 'aria', thread: 'aria', ends_session: false, fired: true,  status: 'fired',   fires: 2, in_flight: true },
+  { id: 'aria.recognition_scene',       kind: 'scene',    npc: 'aria', thread: 'aria', ends_session: false, fired: false, status: 'blocked' },
+  { id: 'aria.bargain_betrayed',        kind: 'one_shot', npc: 'aria', thread: 'aria', ends_session: false, fired: false, status: 'blocked' },
+  { id: 'aria.acted_in_player_name',    kind: 'one_shot', npc: 'aria', thread: 'aria', ends_session: false, fired: false, status: 'blocked' },
+  { id: 'cpo.dispatch_first',           kind: 'one_shot', npc: 'cpo',  thread: 'cpo',  ends_session: false, fired: true,  status: 'fired' },
+  { id: 'aria.complete_integration',    kind: 'one_shot', npc: 'aria', thread: 'aria', ends_session: true,  fired: false, status: 'terminal' },
+  { id: 'aria.complete_mutual_ruin',    kind: 'one_shot', npc: 'aria', thread: 'aria', ends_session: true,  fired: false, status: 'terminal' },
+  { id: 'aria.complete_exile',          kind: 'one_shot', npc: 'aria', thread: 'aria', ends_session: true,  fired: false, status: 'terminal' },
+  { id: 'aria.complete_vengeance',      kind: 'one_shot', npc: 'aria', thread: 'aria', ends_session: true,  fired: false, status: 'terminal' }
+];
+
+const PRED_TREES = {
+  'aria.recognition_scene': {
+    entry_when: { type: 'And_', children: [
+      { type: 'ref', name: '*calibration_done', verdict: true },
+      { type: 'QualityAtLeast', q: 'creature_grievance', threshold: 5.0, current: 4.0, verdict: false, shortBy: 1.0 },
+      { type: 'Not_', child: { type: 'BeatFired', beat: 'aria.recognition_scene', verdict: false }, verdict: true }
+    ]},
+    exit_when: { type: 'Or_', children: [
+      { type: 'QualityAtLeast', q: 'recognition_replies', threshold: 3, current: 0, verdict: false },
+      { type: 'ClassifierVerdict', axis: 'recognition', value: 'redeemed', verdict: false, note: 'never observed' }
+    ]}
+  },
+  'aria.bargain_betrayed': {
+    entry_when: { type: 'And_', children: [
+      { type: 'ref', name: '*calibration_done', verdict: true },
+      { type: 'QualityAtLeast', q: 'creature_grievance', threshold: 6.0, current: 4.0, verdict: false, shortBy: 2.0 }
+    ]}
+  },
+  'aria.welcome': {
+    entry_when: { type: 'BeatFired', beat: 'aria.welcome', verdict: true, fired: true, note: '(precondition: not yet fired — now fired, gating other beats)' }
+  },
+  'aria.bargain_scene': {
+    entry_when: { type: 'And_', children: [
+      { type: 'ref', name: '*calibration_done', verdict: true },
+      { type: 'Not_', child: { type: 'BeatFired', beat: 'aria.recognition_scene' }, verdict: true }
+    ]},
+    exit_when: { type: 'Or_', children: [
+      { type: 'QualityAtLeast', q: 'bargain_replies', threshold: 5, current: 2, verdict: false },
+      { type: 'ClassifierVerdict', axis: 'bargain', value: 'refused', verdict: true, note: 'fired T8' }
+    ]}
+  }
+};
+
+/* ============ Tab switching ============ */
+document.querySelectorAll('.tab').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    const tab = btn.dataset.tab;
+    document.querySelectorAll('.panel').forEach(p => {
+      p.classList.toggle('active', p.dataset.panel === tab);
+    });
+  });
+});
+
+/* ============ Sparklines ============ */
+function makeSparkSVG(series, range, isFlat) {
+  const W = 100, H = 24;
+  const [lo, hi] = range;
+  const pad = 3;
+  const span = hi - lo || 1;
+  const points = series.map((v, i) => {
+    const x = (i / (series.length - 1)) * W;
+    const y = H - pad - ((v - lo) / span) * (H - 2 * pad);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(' ');
+  const areaPts = `0,${H} ${points} ${W},${H}`;
+  return `<svg class="sl ${isFlat ? 'flat' : ''}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
+    <polygon class="area" points="${areaPts}"/>
+    <polyline points="${points}"/>
+  </svg>`;
+}
+
+function renderSparklines() {
+  const list = document.getElementById('sparkList');
+  list.innerHTML = QUALITIES.map(q => {
+    const isFlat = q.lastDelta === 0;
+    const dCls = q.lastDelta > 0 ? 'up' : q.lastDelta < 0 ? 'down' : 'flat';
+    const dArrow = q.lastDelta > 0 ? '↑' : q.lastDelta < 0 ? '↓' : '·';
+    const dStr = q.lastDelta === 0 ? '±0' : (q.lastDelta > 0 ? '+' : '') + q.lastDelta;
+    const cur = Number.isInteger(q.current) ? q.current : q.current.toFixed(1);
+    return `<div class="spark-row" onclick="openDrill('${q.id}')">
+      <div class="name">${q.id}</div>
+      ${makeSparkSVG(q.series, q.range, isFlat)}
+      <div class="val">${cur}</div>
+      <div class="delta ${dCls}">${dStr} ${dArrow}</div>
+    </div>`;
+  }).join('');
+}
+
+function openDrill(qid) {
+  const q = QUALITIES.find(x => x.id === qid);
+  document.querySelector('.overview').style.display = 'none';
+  document.getElementById('drilldown').classList.add('active');
+  document.getElementById('dd-name').textContent = q.id;
+  document.getElementById('dd-cur').textContent = Number.isInteger(q.current) ? q.current : q.current.toFixed(1);
+
+  const causesHtml = q.causes.length === 0
+    ? '<div style="padding:14px 0; color: var(--ink-faint); font: italic 13px var(--serif);">No changes recorded yet.</div>'
+    : q.causes.map(c => {
+      const dCls = c.delta > 0 ? 'up' : c.delta < 0 ? 'down' : 'flat';
+      const dStr = (c.delta > 0 ? '+' : '') + c.delta;
+      return `<div class="cause-row">
+        <span class="tk">T${c.tick}</span>
+        <span class="delta ${dCls}">${dStr}</span>
+        <span>${c.src}</span>
+        <span class="src">${c.note}</span>
+      </div>`;
+    }).join('');
+  document.getElementById('dd-causes').innerHTML = causesHtml;
+
+  const blockedHtml = q.blocked.length === 0
+    ? '<div style="padding:6px 0; color: var(--ink-faint); font: italic 12px var(--serif);">Nothing currently gated on this quality.</div>'
+    : q.blocked.map(b => {
+      const shortStr = b.short > 0 ? `${b.short.toFixed(1)} short` : (b.note || 'OK');
+      return `<div class="blocked-row">
+        <span>${b.beat} <span style="color: var(--ink-faint)">${b.threshold}</span></span>
+        <span class="blocked-need">${shortStr}</span>
+      </div>`;
+    }).join('');
+  document.getElementById('dd-blocked').innerHTML = blockedHtml;
+}
+
+function closeDrill() {
+  document.querySelector('.overview').style.display = 'block';
+  document.getElementById('drilldown').classList.remove('active');
+}
+
+/* ============ Tick log ============ */
+function renderTicks() {
+  const el = document.getElementById('tickList');
+  el.innerHTML = TICKS.map(t => {
+    const beatLabel = t.fired
+      ? `<span class="beat">${t.fired}${t.fireNum ? ' · ' + t.fireNum : ''}</span>`
+      : t.retired
+        ? `<span class="beat none">retired ${t.retired}</span>`
+        : `<span class="beat none">no fire</span>`;
+    const verdict = t.classify ? `<span class="verdict">${t.classify}</span>` : `<span class="verdict" style="background:transparent;color:var(--ink-faint)">—</span>`;
+    return `<details class="tick-row">
+      <summary>
+        <span class="tk">T${t.tick}</span>
+        ${beatLabel}
+        ${verdict}
+        <span class="meth">${t.method}</span>
+      </summary>
+      <div class="body">
+        <div class="label">trigger</div>
+        <pre>${t.trigger === 'boot' ? 'boot tick' : 'player reply on `' + t.trigger + '`'}</pre>
+        ${t.fired ? `
+        <div class="label">fired</div>
+        <pre>${t.fired}  (kind: ${t.kind}, thread: ${t.thread}${t.fireNum ? ', fire ' + t.fireNum : ''})</pre>` : ''}
+        ${t.retired ? `
+        <div class="label">retired</div>
+        <pre>${t.retired}  — ${t.retire_reason}</pre>` : ''}
+        ${t.classify ? `
+        <div class="label">classifier</div>
+        <pre>verdict: "${t.classify}"</pre>` : ''}
+        <div class="label">selection</div>
+        <pre>method: ${t.method}${t.eligible ? '\neligible: [' + t.eligible.join(', ') + ']' : ''}${t.rationale ? '\nrationale: ' + t.rationale : ''}</pre>
+        ${t.deltas.length ? `
+        <div class="label">effects applied</div>
+        <pre>${t.deltas.map(d => `${d.q}  ${d.d}  (${d.src})`).join('\n')}</pre>` : ''}
+      </div>
+    </details>`;
+  }).join('');
+}
+
+/* ============ Canon ============ */
+function renderCanon(filter='') {
+  const f = filter.toLowerCase();
+  const body = document.getElementById('canonBody');
+  body.innerHTML = CANON.filter(c =>
+    !f || c.key.includes(f) || c.value.toLowerCase().includes(f) || c.quote.toLowerCase().includes(f)
+  ).map(c => {
+    const sw = (c.salience * 100).toFixed(0);
+    return `<tr>
+      <td><code>${c.key}</code></td>
+      <td>${c.value}</td>
+      <td><span class="canon-quote">"${c.quote}"</span></td>
+      <td><span class="salience-bar"><span style="width:${sw}%"></span></span> ${c.salience.toFixed(2)}</td>
+      <td>T${c.origin_tick} <span style="color:var(--ink-faint)">(${c.decay_age}t ago)</span></td>
+    </tr>`;
+  }).join('');
+  const drops = document.getElementById('canonDrops');
+  drops.innerHTML = CANON_DROPS.filter(d =>
+    !f || d.key.includes(f) || d.value.toLowerCase().includes(f)
+  ).map(d => {
+    return `<div class="drop-row">
+      <span style="font: 600 11px var(--mono); color: var(--ink-faint)">T${d.tick}</span>
+      <span><code>${d.key}</code> = "${d.value}" ${d.note ? '<span style="color:var(--ink-faint); font-size:11px">— ' + d.note + '</span>' : ''}</span>
+      <span class="reason ${d.reason}">${d.reason}</span>
+    </div>`;
+  }).join('');
+}
+
+document.getElementById('canonSearch').addEventListener('input', e => renderCanon(e.target.value));
+
+/* ============ Beats ============ */
+function renderBeats(filter='') {
+  const f = filter.toLowerCase();
+  const list = document.getElementById('beatList');
+  const filtered = BEATS.filter(b => !f || b.id.toLowerCase().includes(f));
+  list.innerHTML = filtered.map(b => {
+    const statusLabel = b.status === 'fired' ? '✓' : b.status === 'blocked' ? '✕' : '○';
+    return `<button class="beat-item" onclick="openBeat('${b.id}')">
+      ${b.id}
+      <span class="status ${b.status}">${statusLabel}</span>
+    </button>`;
+  }).join('');
+  // Open the recognition_scene beat by default
+  if (!document.querySelector('.beat-item.active')) openBeat('aria.recognition_scene');
+}
+
+function renderPredTree(node, depth=0) {
+  if (!node) return '';
+  if (node.type === 'And_' || node.type === 'Or_') {
+    const op = node.type.replace('_', '');
+    return `<div class="atom"><span class="op-label">${op}:</span></div>
+      <div class="indent">${node.children.map(c => renderPredTree(c, depth+1)).join('')}</div>`;
+  }
+  if (node.type === 'Not_') {
+    return `<div class="atom"><span class="op-label">Not:</span></div>
+      <div class="indent">${renderPredTree(node.child, depth+1)}</div>`;
+  }
+  const check = node.verdict ? '<span class="check pass">✅</span>' : '<span class="check fail">❌</span>';
+  let label = '';
+  if (node.type === 'QualityAtLeast') {
+    label = `<span class="text">QualityAtLeast(<code>${node.q}</code>, ${node.threshold})</span>
+             <span class="note">cur=${node.current}</span>`;
+    if (node.shortBy) label += `<span class="short">(${node.shortBy} short)</span>`;
+  } else if (node.type === 'BeatFired') {
+    label = `<span class="text">BeatFired(<code>${node.beat}</code>)</span>`;
+    if (node.note) label += `<span class="note">${node.note}</span>`;
+  } else if (node.type === 'ClassifierVerdict') {
+    label = `<span class="text">ClassifierVerdict(${node.axis}, "${node.value}")</span>`;
+    if (node.note) label += `<span class="note">${node.note}</span>`;
+  } else if (node.type === 'ref') {
+    label = `<span class="text">${node.name}</span>`;
+  }
+  return `<div class="atom">${check}${label}</div>`;
+}
+
+function openBeat(beatId) {
+  document.querySelectorAll('.beat-item').forEach(el => {
+    el.classList.toggle('active', el.textContent.trim().split(/\s+/)[0] === beatId);
+  });
+  const b = BEATS.find(x => x.id === beatId);
+  const tree = PRED_TREES[beatId];
+  const detail = document.getElementById('beatDetail');
+  if (!b) { detail.innerHTML = ''; return; }
+
+  let fireStatus = '';
+  if (b.fired && b.kind === 'scene') {
+    fireStatus = `<strong>fired</strong> · ${b.fires} fires${b.retired ? ' · retired' : ''}${b.in_flight ? ' · in flight' : ''}`;
+  } else if (b.fired) {
+    fireStatus = '<strong>fired</strong>';
+  } else {
+    fireStatus = '<strong>not fired</strong>';
+  }
+
+  detail.innerHTML = `
+    <h3>${b.id}</h3>
+    <div class="meta-line">
+      kind: ${b.kind} · npc: ${b.npc} · thread: ${b.thread} · ends_session: ${b.ends_session}<br/>
+      ${fireStatus}
+    </div>
+    ${tree && tree.entry_when ? `
+      <div class="pred-block">
+        <div class="pred-label">entry_when</div>
+        <div class="pred-tree">${renderPredTree(tree.entry_when)}</div>
+      </div>` : ''}
+    ${tree && tree.exit_when ? `
+      <div class="pred-block">
+        <div class="pred-label">exit_when</div>
+        <div class="pred-tree">${renderPredTree(tree.exit_when)}</div>
+      </div>` : ''}
+    ${!tree ? '<div style="color: var(--ink-faint); font: italic 13px var(--serif); padding: 8px 0;">(no predicate detail in this mockup)</div>' : ''}
+  `;
+}
+
+document.getElementById('beatSearch').addEventListener('input', e => renderBeats(e.target.value));
+
+/* ============ init ============ */
+renderSparklines();
+renderTicks();
+renderCanon();
+renderBeats();
+</script>
+</body>
+</html>

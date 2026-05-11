@@ -38,6 +38,9 @@ Thumbs.db
 # Local-only Claude artifacts
 .claude/settings.local.json
 
+# Local-only Playwright MCP session artifacts (browser logs, page snapshots)
+.playwright-mcp/
+
 # Logfire project credentials (per-machine, contains write token)
 .logfire/
 
