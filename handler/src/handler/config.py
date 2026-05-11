@@ -8,7 +8,7 @@ handler/).
 
 Most of these fields are tuned once and forgotten — context size, slot count,
 ports, history-compaction tunings. Only a handful are actually toggled at
-runtime: `launch_llama` (the `make sidecar` workflow + tests), `scenario_path`
+runtime: `launch_llama` (the `make sidecar` workflow + tests), `mission_path`
 (test fixtures, playtester), `handler_logfire_console` (conftest sets false), and
 `session_save_path` (opt-in JSONL persistence). Pydantic-settings still owns
 the lot so they all share one typed parsing path and re-bind cleanly inside
@@ -166,16 +166,10 @@ class Settings(BaseSettings):
     eval_llama_total_ctx: int = 0
     eval_llama_extra_args: str = ""
 
-    scenario_path: Path | None = None
-
-    # ───────── history compaction ─────────
-    # When the chat-agent's message_history would exceed this share of llama_ctx,
-    # the oldest messages get summarised by a sibling agent and replaced with a
-    # single recap. Token budget is computed at boot from llama_ctx.
-    history_compact_frac: float = 0.8
-    # Most recent N messages always kept verbatim past the recap so the model
-    # sees the immediate exchange without paraphrase loss.
-    history_compact_keep_tail: int = 4
+    # Path to the mission YAML to load at lifespan boot. None → fall back to
+    # handler/missions/lynx_exfil.yaml relative to this file. Tests + the
+    # playtester set this to point at fixtures.
+    mission_path: Path | None = None
 
     # ───────── session persistence (off by default) ─────────
     # When set, every committed Event on the default session is appended as
