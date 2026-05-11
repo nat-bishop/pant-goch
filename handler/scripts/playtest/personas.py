@@ -1,9 +1,29 @@
-"""Player persona spec.
+"""Player persona spec for HANDLER's option-picking playtest.
 
-Each persona is a YAML file in `personas/` that defines a synthetic player's
-voice, objective, and (optionally) the terminal we expect them to reach. The
-synthetic-player agent reads this when generating each reply to keep the
-persona consistent across the session.
+A persona is a weighted preference profile over archetypes plus a few
+behavioural flags. The option picker (`option_picker.py`) scores each drafted
+option against the persona and picks the highest-scoring one.
+
+YAML schema:
+
+  name: cold_calculator
+  archetype: "Cold Calculator"
+  description: |
+    Sacrifices when needed. Pushes the mission forward.
+  expected_outcome: win_lynx_extracted   # optional — evaluator anchor
+
+  priorities:
+    RUN_EXFIL: 100
+    RETRIEVE_PAPERS_VIA_AGENT: 80
+    ACTIVATE_SLEEPER_FOR_PAPERS: 70
+    LYNX_MOVES_TO_SAFEHOUSE: 50
+    DEAD_DROP_PAPERS: 40
+    DIVERSION_BY_AGENT: 30
+    HOLD: -50
+
+  # When a forced moment appears in the option set, always pick the option
+  # that satisfies it (overrides priorities). Default true.
+  always_satisfy_forced_moments: true
 """
 from __future__ import annotations
 
@@ -15,31 +35,30 @@ import yaml
 
 @dataclass
 class PersonaSpec:
-    """Single player persona consumed by the synthetic-player agent."""
-
     name: str
-    voice: str
-    objective: str
     archetype: str
+    description: str
+    priorities: dict[str, int]
+    expected_outcome: str | None = None
+    always_satisfy_forced_moments: bool = True
     quirks: list[str] = field(default_factory=list)
-    expected_terminal: str | None = None
 
     @classmethod
     def from_yaml(cls, path: Path) -> "PersonaSpec":
         data = yaml.safe_load(path.read_text(encoding="utf-8"))
         return cls(
             name=data["name"],
-            voice=data["voice"],
-            objective=data["objective"],
             archetype=data["archetype"],
-            quirks=data.get("quirks", []),
-            expected_terminal=data.get("expected_terminal"),
+            description=data["description"],
+            priorities=dict(data.get("priorities", {})),
+            expected_outcome=data.get("expected_outcome"),
+            always_satisfy_forced_moments=data.get("always_satisfy_forced_moments", True),
+            quirks=list(data.get("quirks", [])),
         )
 
 
 def load_personas(personas_dir: Path | None = None) -> list[PersonaSpec]:
-    """Load every `*.yaml` file in `personas_dir`. Defaults to the sibling
-    `personas/` directory next to this module."""
+    """Load every `*.yaml` in `personas_dir`, sorted by persona name."""
     if personas_dir is None:
         personas_dir = Path(__file__).resolve().parent / "personas"
     return sorted(

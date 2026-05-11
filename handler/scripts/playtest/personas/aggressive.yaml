@@ -1,0 +1,20 @@
+name: aggressive
+archetype: "Aggressive"
+description: |
+  Always pushes the stage forward. Hates holding, dislikes safehouse
+  movement. Goes for the exfil the moment stage 2 is reached.
+
+expected_outcome: win_lynx_extracted
+always_satisfy_forced_moments: true
+
+priorities:
+  RUN_EXFIL: 120
+  RETRIEVE_PAPERS_VIA_AGENT: 90
+  ACTIVATE_SLEEPER_FOR_PAPERS: 80
+  DIVERSION_BY_AGENT: 50
+  DEAD_DROP_PAPERS: 30
+  LYNX_MOVES_TO_SAFEHOUSE: 20
+  HOLD: -100
+
+quirks:
+  - "When forced moment fires, takes it without hesitation."
