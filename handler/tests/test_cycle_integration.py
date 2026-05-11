@@ -185,7 +185,8 @@ def _parse_sse(stream):
 
 def test_full_cycle_to_terminal(stubbed_client: TestClient) -> None:
     """Start a session, ride the SSE stream, authorize each cycle's first
-    option, and assert the run resolves with a mission_resolved event."""
+    option, click `Continue` between cycles, and assert the run resolves
+    with a mission_resolved event."""
     r = stubbed_client.post("/mission/start")
     assert r.status_code == 200
     sid = r.json()["session_id"]
@@ -194,11 +195,9 @@ def test_full_cycle_to_terminal(stubbed_client: TestClient) -> None:
         assert stream.status_code == 200
         events = _parse_sse(stream)
 
-        # Cycle 1: pick option 0, then ride to either next cycle or terminal.
         seen_kinds: list[str] = []
         resolved_payload: dict | None = None
-        cycles_seen = 0
-        max_iters = 200  # bound on event count for a 4-cycle tiny mission
+        max_iters = 600  # bound on event count across all cycles of tiny mission
 
         for _ in range(max_iters):
             try:
@@ -206,18 +205,19 @@ def test_full_cycle_to_terminal(stubbed_client: TestClient) -> None:
             except StopIteration:
                 break
             kind = ev.get("event")
-            if not kind or kind == ":heartbeat":
+            if not kind:
                 continue
             seen_kinds.append(kind)
-            if kind == "cycle_opened":
-                cycles_seen += 1
             if kind == "awaiting_auth":
-                # Authorize index 0 (first option — by the stub's ordering,
-                # PUSH if it's in the catalog).
+                # Authorize index 0 — by the stub's ordering, PUSH first when
+                # available, ensuring deterministic progress toward `win`.
                 ar = stubbed_client.post(
                     f"/mission/{sid}/authorize", json={"option_index": 0}
                 )
                 assert ar.status_code == 200, ar.text
+            if kind == "awaiting_continue":
+                cr = stubbed_client.post(f"/mission/{sid}/continue")
+                assert cr.status_code == 200, cr.text
             if kind == "mission_resolved":
                 resolved_payload = ev
                 break
@@ -232,20 +232,13 @@ def test_full_cycle_to_terminal(stubbed_client: TestClient) -> None:
         assert isinstance(resolved_payload["agents_lost"], list)
         assert resolved_payload["terminal_beat"] in {"win", "timeout", "agent_lost"}
 
-        # Critical sequence assertions: at least one full cycle's events
-        # appeared in order before the resolve.
-        first_cycle_kinds = []
-        for k in seen_kinds:
-            first_cycle_kinds.append(k)
-            if k == "mission_resolved":
-                break
-        # cycle_opened must precede the first awaiting_auth.
-        assert first_cycle_kinds.index("cycle_opened") < first_cycle_kinds.index("awaiting_auth")
-        # awaiting_auth must precede effects_applied.
-        assert first_cycle_kinds.index("awaiting_auth") < first_cycle_kinds.index("effects_applied")
-        # The state endpoint reflects the terminal outcome.
-        s = stubbed_client.get(f"/mission/{sid}/state").json()
-        assert s["outcome"] is not None
+        # Sequence: cycle_opened → awaiting_auth → effects_applied → mission_resolved.
+        assert seen_kinds.index("cycle_opened") < seen_kinds.index("awaiting_auth")
+        assert seen_kinds.index("awaiting_auth") < seen_kinds.index("effects_applied")
+
+    # The state endpoint reflects the terminal outcome.
+    s = stubbed_client.get(f"/mission/{sid}/state").json()
+    assert s["outcome"] is not None
 
 
 def test_authorize_rejects_bad_index(stubbed_client: TestClient) -> None:
@@ -255,7 +248,6 @@ def test_authorize_rejects_bad_index(stubbed_client: TestClient) -> None:
 
     with stubbed_client.stream("GET", f"/mission/{sid}/stream") as stream:
         events = _parse_sse(stream)
-        # Drive forward until awaiting_auth.
         for _ in range(200):
             ev = next(events)
             if ev.get("event") == "awaiting_auth":
@@ -274,16 +266,10 @@ def test_authorize_rejects_bad_index(stubbed_client: TestClient) -> None:
         assert ar2.status_code == 200
 
 
-def test_authorize_409_before_awaiting(stubbed_client: TestClient) -> None:
-    """Right after /mission/start, the SoP is still streaming — the auth
-    future hasn't been created yet, so /authorize must 409."""
+def test_continue_409_without_pending(stubbed_client: TestClient) -> None:
+    """POST /continue right after /start must 409 — the cycle loop hasn't
+    finished cycle 1 yet, so no continuation is pending."""
     r = stubbed_client.post("/mission/start")
     sid = r.json()["session_id"]
-    # Don't open the SSE stream — the cycle loop is producing into the queue
-    # but no future is set yet because the stub SoP completes synchronously
-    # and the loop progresses to drafter on the next event loop step.
-    # Give it no time to advance:
-    ar = stubbed_client.post(f"/mission/{sid}/authorize", json={"option_index": 0})
-    # Either 409 (no pending auth yet) or 200 (auth raced to set the future).
-    # The contract is "must not crash"; we accept both as the only safe outcomes.
-    assert ar.status_code in {200, 409}
+    cr = stubbed_client.post(f"/mission/{sid}/continue")
+    assert cr.status_code == 409

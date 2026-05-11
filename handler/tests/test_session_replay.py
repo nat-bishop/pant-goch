@@ -55,7 +55,11 @@ def _emit_cycle_one(session, mission) -> None:
     streaming. Each event carries the delta produced by the spine functions, so
     fold() can reproduce state from the log alone.
     """
-    initial = session.state.model_copy()
+    # Snapshot the initial state. model_copy() is shallow — qualities is a
+    # dict and would alias with session.state.qualities, polluting replay.
+    # `cycle.start_mission` solves this by constructing a fresh State; here a
+    # deep copy is equivalent and clearer at the test boundary.
+    initial = session.state.model_copy(deep=True)
     session.apply(MissionStarted(mission_id=mission.id, initial_state=initial))
     session.apply(CycleOpened(cycle_index=1))
     opt = Option(
