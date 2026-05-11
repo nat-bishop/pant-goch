@@ -19,6 +19,12 @@ opening_prose: |
   city, two days into a separate reconnaissance op. You have six cycles to
   get LYNX out.
 
+setting: |
+  The city: tradecraft-heavy, surveillance-saturated. Counter-intelligence
+  runs the sweep out of the central directorate. The photographic exposure
+  on LYNX is the open file driving the tightening perimeter. The eastern
+  train line is the planned extraction corridor.
+
 agents:
   - id: LYNX
     codename: Lynx
@@ -28,6 +34,10 @@ agents:
       Two years deep cover. Speaks like she's already lost things she hasn't
       yet. Doesn't justify, doesn't decorate. Notices what changed, names it,
       moves on.
+    situation: |
+      Inside the city on partial cover. Forty-eight hours since the
+      compromising photograph. The sweep has not yet moved on her but the
+      directorate is reading the file. Her movement is constrained.
     starting_cover: 6
 
   - id: KESTREL
@@ -38,10 +48,26 @@ agents:
       Two years in service, improvises constantly. Talks herself through
       situations on paper. Justifies before it occurs to her that no one
       asked.
+    situation: |
+      Two days into a reconnaissance op in the same city, separate cover
+      identity, intact. She is positioned to draw attention or sacrifice
+      her lanes for LYNX if the operation demands it.
     starting_cover: 9
 
 initial_qualities:
   mission.extraction_stage: 0   # 0 unstarted, 1 papers, 2 location, 3 exfil
+
+# In-fiction descriptors used by the narrative state block. Every key in
+# `initial_qualities` MUST have an entry (the engine enforces this). Authors
+# may also override universal qualities (`agent[*].cover`, `mission.cycles_remaining`)
+# but LYNX-EXFIL keeps the built-in defaults for those.
+quality_descriptors:
+  mission.extraction_stage:
+    values:
+      "0": "the extraction papers have not yet been surfaced"
+      "1": "the extraction papers are being moved into hand"
+      "2": "the safe-house is confirmed; LYNX is positioned for exfil"
+      "3": "exfil is underway"
 
 outcomes:
   win_lynx_extracted: "LYNX safely extracted via the eastern train route."

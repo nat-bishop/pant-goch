@@ -83,6 +83,8 @@ class Settings(BaseSettings):
     # sequentially, never concurrently). Past benchmarks showed 128 slots
     # fragmented the KV pool and degraded effective batch — interactive
     # throughput improved ~2× moving from 128 to 4 on a 96 GB Blackwell.
+    # `make llama-playtest` overrides via env to `LLAMA_N_PARALLEL=16` to
+    # match the playtest harness's `--parallel 16` default.
     llama_n_parallel: int = 4
     # Gemma 4 reasoning mode. `off` (default): no `<think>` blocks; the three
     # agents return prose directly. `on`: restore Gemma 4 thinking. `auto`:
@@ -108,8 +110,9 @@ class Settings(BaseSettings):
     # slot gets `llama_total_ctx / n_parallel` tokens of context. Sizing rule:
     # `llama_total_ctx >= n_parallel × llama_ctx` so each slot has the full
     # per-session budget. Default 0 → fall back to `n_parallel × llama_ctx`
-    # automatically. The playtester sets `LLAMA_TOTAL_CTX=2097152` (2M = 64 ×
-    # 32k) explicitly so the value stays self-documenting at the call site.
+    # automatically. `make llama-playtest` sets `LLAMA_TOTAL_CTX=524288`
+    # (512k = 16 × 32k) explicitly so the value stays self-documenting at the
+    # call site.
     llama_total_ctx: int = 0
     # Escape hatch for any flag we haven't promoted to a typed Settings field.
     # Whitespace-split, appended verbatim to the llama-server command.

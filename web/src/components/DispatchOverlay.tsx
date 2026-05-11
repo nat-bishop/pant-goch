@@ -1,18 +1,33 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { displayActor } from "../api";
 import { nowZulu } from "../lib/time";
 import { useStore } from "../store";
 import { StreamingText } from "./StreamingText";
 
+// Hold the overlay back for this long after the player authorizes, so the
+// AUTHORIZED stamp's 280ms `stamp-in` animation lands and the eye has a beat
+// to register it before the scrim covers the paper.
+const AUTH_TO_DISPATCH_DELAY_MS = 700;
+
 export function DispatchOverlay() {
+  const cycleIndex = useStore((s) => s.cycle?.index ?? null);
+  const authorized = useStore((s) => s.cycle?.authorized ?? false);
   const acting = useStore((s) => s.cycle?.dispatch_acting ?? null);
   const words = useStore((s) => s.cycle?.dispatch_words);
   const dispatchComplete = useStore((s) => s.cycle?.dispatch_complete ?? false);
   const awaitingContinue = useStore((s) => s.cycle?.awaiting_continue ?? false);
   const continueCycle = useStore((s) => s.continueCycle);
   const time = useMemo(() => nowZulu(), [acting]);
+  const [stampSettled, setStampSettled] = useState(false);
 
-  if (acting === null || !words) return null;
+  useEffect(() => {
+    setStampSettled(false);
+    if (!authorized) return;
+    const t = setTimeout(() => setStampSettled(true), AUTH_TO_DISPATCH_DELAY_MS);
+    return () => clearTimeout(t);
+  }, [cycleIndex, authorized]);
+
+  if (acting === null || !words || !stampSettled) return null;
 
   return (
     <div className="dispatch-overlay" role="dialog" aria-label="incoming dispatch">

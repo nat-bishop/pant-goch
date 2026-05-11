@@ -89,7 +89,11 @@ logfire.configure(
     scrubbing=False,
 )
 logfire.instrument_pydantic_ai()
-logfire.instrument_pydantic()
+# record='failure' keeps the failure-only safety net (mission YAML, drafter
+# schema violations) without spamming a span for every field validation —
+# default 'all' floods stdout during streaming chat completions and was the
+# observed cause of a logfire-buffer blow-up that killed the sidecar mid-cycle.
+logfire.instrument_pydantic(record="failure")
 logfire.instrument_httpx(capture_all=True)
 logging.getLogger().addHandler(logfire.LogfireLoggingHandler())
 
@@ -497,7 +501,13 @@ class StateResponse(BaseModel):
 
 
 app = FastAPI(title="HANDLER", version=_service_version, lifespan=lifespan)
-logfire.instrument_fastapi(app, capture_headers=True)
+# Health probes (Docker/k8s/proxy) hit these constantly and 404 — exclude them
+# from tracing so the cloud isn't flooded with WARN spans for missing routes.
+logfire.instrument_fastapi(
+    app,
+    capture_headers=True,
+    excluded_urls=r"/healthz?$",
+)
 
 
 @app.get("/health")

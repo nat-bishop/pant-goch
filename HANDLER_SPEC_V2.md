@@ -342,9 +342,9 @@ Three LLM agents per cycle. Each is a separate call with a strict input/output c
 **Purpose:** synthesize the current situation into a forward-looking memo at cycle open.
 
 **Input:**
-- Full visible state (cycles, agent covers, mission progress)
+- Narrative state block (cycles, agent covers, mission progress — translated to in-fiction descriptors; never raw numerics)
 - Recent dispatches (last 2–3, for narrative continuity)
-- Mission metadata (mission name, framing)
+- Mission metadata (mission name, framing, setting, per-agent situation)
 
 **Output:** 1–3 paragraphs of prose in Operations Desk voice. Looks forward. Names the threat, the resources, what hasn't moved.
 
@@ -352,7 +352,7 @@ Three LLM agents per cycle. Each is a separate call with a strict input/output c
 - Voice: third-party intelligence handler, terse, declarative
 - No options proposed (that's the drafter's job)
 - No outcome prediction
-- May reference state numerically ("KESTREL's cover is at 7") or narratively ("KESTREL has been pushed close to the breaking point")
+- MUST reference state narratively, not numerically. No "cover at 7", no "six cycles remaining", no "extraction stage two". No game/system vocabulary ("cover level", "cycles remaining", "extraction stage", "operational security points"). The user-prompt CURRENT STATE block is pre-rendered into in-fiction descriptors via `Mission.quality_descriptors` (e.g. "LYNX: cover intact", "the extraction papers have not yet been surfaced", "the window is tightening"); the memo mirrors that register.
 
 ### 8.2 Drafter (Operations voice)
 

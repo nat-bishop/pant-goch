@@ -37,7 +37,13 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="HANDLER playtest harness")
     p.add_argument("--seeds", type=int, default=2, help="seeds per persona (default 2)")
     p.add_argument("--engine-url", default=DEFAULT_ENGINE_URL)
-    p.add_argument("--parallel", type=int, default=1, help="max concurrent sessions")
+    # Default 16 matches `make llama-playtest`'s `-np 16` slot count, so the
+    # harness can saturate the engine without queueing. Run `make llama` (`-np 4`)
+    # instead and you'll queue past slot 4.
+    p.add_argument(
+        "--parallel", type=int, default=16,
+        help="max concurrent sessions (default 16; pair with `make llama-playtest`)",
+    )
     p.add_argument("--out-dir", type=Path, default=None, help="dump dir (default _analysis/)")
     return p.parse_args()
 

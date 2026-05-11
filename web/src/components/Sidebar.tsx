@@ -35,10 +35,10 @@ export function Sidebar({ open, onToggle }: Props) {
           <section className="rail-section">
             <div className="rail-label">CYCLE</div>
             <div className="rail-cyc-row">
-              <CycleTicks used={used} total={meta.max_cycles} />
-              <span className="rail-cyc-num-inline">
+              <span className="rail-cyc-num">
                 {used + 1}/{meta.max_cycles}
               </span>
+              <CycleTicks used={used} total={meta.max_cycles} />
             </div>
           </section>
 
@@ -61,9 +61,7 @@ export function Sidebar({ open, onToggle }: Props) {
 
           <section className="rail-section">
             <div className="rail-label">INBOX</div>
-            {reversedInbox.length === 0 ? (
-              <div className="inbox-empty">— no dispatches —</div>
-            ) : (
+            {reversedInbox.length > 0 && (
               <div className="inbox-list">
                 {reversedInbox.map((d) => (
                   <button
@@ -81,14 +79,16 @@ export function Sidebar({ open, onToggle }: Props) {
             )}
           </section>
 
-          <div className="rail-foot">handler · authorized</div>
+          <div className="rail-foot" aria-hidden />
         </>
       ) : (
         <>
           <section className="rail-section">
             <div className="rail-tag">CYC</div>
-            <div className="rail-cyc-num">
-              {used + 1}/{meta.max_cycles}
+            <div className="rail-cyc-row">
+              <span className="rail-cyc-num">
+                {used + 1}/{meta.max_cycles}
+              </span>
             </div>
           </section>
           <section className="rail-section">
@@ -103,7 +103,7 @@ export function Sidebar({ open, onToggle }: Props) {
           </section>
           <section className="rail-section">
             <div className="rail-tag">INB</div>
-            {inbox.length > 0 ? (
+            {inbox.length > 0 && (
               <button
                 type="button"
                 className="inbox-chip"
@@ -114,10 +114,6 @@ export function Sidebar({ open, onToggle }: Props) {
                 <span className="inbox-chip-icon">✉</span>
                 <span className="inbox-chip-count">{inbox.length}</span>
               </button>
-            ) : (
-              <div className="inbox-chip inbox-chip-empty" aria-hidden>
-                <span className="inbox-chip-icon">·</span>
-              </div>
             )}
           </section>
 

@@ -39,6 +39,7 @@ from .models import (
     Moment,
     Option,
     OptionSet,
+    QualityDescriptor,
     State,
 )
 
@@ -81,10 +82,17 @@ class AgentBundle:
 def _agent_dossier_block(dossiers: list[AgentDossier]) -> str:
     parts: list[str] = []
     for d in dossiers:
-        parts.append(
+        line = (
             f"  - {d.id} (file {d.file_number}, codename {d.codename!r}): "
             f"{d.voice_register}\n    {d.voice_details.strip()}"
         )
+        if d.situation.strip():
+            # Indent every line of the situation to keep the dossier block readable.
+            situation_indented = "\n".join(
+                f"    {ln}" for ln in d.situation.strip().splitlines()
+            )
+            line = f"{line}\n    Situation:\n{situation_indented}"
+        parts.append(line)
     return "\n".join(parts)
 
 
@@ -95,23 +103,45 @@ _VOICE_OPERATIONS = (
 )
 
 
+def _setting_block(mission: Mission) -> str:
+    """Emit a SETTING section only when authored — keeps the prompt clean for
+    missions that haven't bothered (and signals to the model that the field
+    is meaningful when it's present)."""
+    if not mission.setting.strip():
+        return ""
+    return f"\nSETTING:\n{mission.setting.strip()}\n"
+
+
 def _sop_system_prompt(mission: Mission) -> str:
     return f"""\
 You are Operations Desk. You write the State of Play memo at the start of
 every cycle of {mission.name} ({mission.codename}).
 
-VOICE: {_VOICE_OPERATIONS}
+VOICE: third-party intelligence handler writing a situated case memo. Terse,
+declarative, present-tense. You report on what is happening on the ground —
+the city, the sweep, the operatives' postures, the threats they face. You
+write in the register of a real intelligence brief.
 
 MISSION:
 {mission.opening_prose.strip()}
-
+{_setting_block(mission)}
 AGENTS DEPLOYED:
 {_agent_dossier_block(mission.agents)}
 
 RULES:
 - Look forward. Name the threat. Name the resources. Name what has not moved.
 - 1–3 paragraphs. ~120–180 words total.
-- May reference state numerically ("KESTREL's cover is at 7") or narratively.
+- NEVER use numbers for state. No "cover six", no "six cycles remaining",
+  no "stage two", no percentages, no out-of-ten scoring.
+- NEVER use game/system vocabulary. No "cover level", no "cover meter",
+  no "extraction stage", no "operational security points", no "critical
+  failure points", no "mission timer", no "window of N cycles".
+- Describe the world. A specific operative in a specific city with a
+  specific cover posture against a specific threat. Use SETTING and the
+  AGENTS DEPLOYED dossiers as your grounding.
+- The CURRENT STATE block describes state in narrative terms (e.g.
+  "LYNX: cover intact"). Mirror that register; do not re-translate it
+  into numbers.
 - NEVER propose options (that is the drafter's job).
 - NEVER predict outcomes. NEVER decorate.
 - Reflect the actual current state. Do not contradict prior dispatches.
@@ -128,7 +158,7 @@ VOICE: {_VOICE_OPERATIONS}
 
 MISSION:
 {mission.opening_prose.strip()}
-
+{_setting_block(mission)}
 AGENTS DEPLOYED:
 {_agent_dossier_block(mission.agents)}
 
@@ -149,9 +179,20 @@ VALIDITY RULES (the engine REJECTS options that violate these):
 - 3 or 4 options per cycle.
 
 PROSE RULES:
-- Telegraph cost honestly. If an option costs cover, the prose names it.
+- Telegraph cost honestly. If an option costs cover, the prose names it
+  in the world (e.g. "burns through LYNX's already-degraded cover" — NOT
+  "-3 cover" and NOT "drops cover level to four").
 - Span tonal range: at least one safe-but-slow option, one fast-but-risky.
 - NEVER predict outcomes. NEVER fabricate state that isn't in the user prompt.
+- NEVER use numbers for state. No "cover six", no "six cycles remaining",
+  no "stage two", no percentages, no out-of-ten scoring.
+- NEVER use game/system vocabulary in option prose. No "the next stage of
+  the mission", no "extraction stage", no "cycles remaining", no "mission
+  timer", no "cover level", no "begin/initiate the next stage". Write
+  inside the fiction: name the action's effect on the operative, the
+  city, the threat — not on the mechanical model.
+- The CURRENT STATE block describes state in narrative terms (e.g.
+  "LYNX: cover intact"). Mirror that register in option prose.
 - HOLD options frame doing nothing as a real cost — passive pressure decays cover.
 """
 
@@ -164,7 +205,7 @@ acting agent's report after the Handler authorized an action.
 You will be told `ACTING` (an agent id, or "operations") and the agent's
 dossier. Write in that voice. For "operations", write in the Operations
 Desk register (terse, third-party, declarative).
-
+{_setting_block(mission)}
 AGENTS DEPLOYED:
 {_agent_dossier_block(mission.agents)}
 
@@ -172,6 +213,13 @@ DISPATCH RULES:
 - 1–4 paragraphs. ~90–180 words.
 - Voice: as specified for ACTING. First-person for agents, third-party for operations.
 - Honor the RESOLVED STATE DELTA. If cover dropped, the prose reflects what cost that.
+- NEVER use numbers for state. No "cover six", no "six cycles remaining".
+- NEVER use game/system vocabulary ("cover level", "extraction stage",
+  "cycles remaining"). The CURRENT STATE block describes state in narrative
+  terms — mirror that register. The RESOLVED STATE DELTA gives mechanical
+  magnitudes you MUST honor (a -2 cover drop is significant; a -4 drop is
+  catastrophic), but write the felt consequence on the ground, not the
+  integer.
 - MUST NOT introduce facts inconsistent with state.
 - MUST NOT predict the next cycle. The dispatch reports what just happened.
 - MAY include first-person color, justification, character — within voice.
@@ -182,21 +230,106 @@ DISPATCH RULES:
 # ───────────────────────── user-prompt builders ─────────────────────────
 
 
-def _state_block(state: State, mission: Mission) -> str:
-    parts: list[str] = []
-    cycles = state.get_quality("mission.cycles_remaining")
-    parts.append(f"cycles_remaining: {cycles} / {mission.max_cycles}")
+# ───────────────────────── narrative state translation ─────────────────────────
+#
+# All three agents (SoP, drafter, renderer) consume `_narrative_state_block`,
+# which translates qualities to in-fiction descriptors so the model never sees
+# raw `agent[X].cover: N / 10` pairs and therefore can't fall back to
+# dashboard voice in any output. The renderer additionally gets a small
+# RESOLVED STATE DELTA block carrying raw numerics — that's a focused
+# magnitude signal it needs to honor the cycle's mutations, not a state
+# summary to parrot back.
+
+
+# Built-in fallback cover buckets used when a mission doesn't override
+# `quality_descriptors["agent[*].cover"]`. Ordered: first threshold whose
+# value >= cover wins.
+_BUILTIN_COVER_BUCKETS: list[tuple[int, str]] = [
+    (0, "cover blown"),
+    (2, "cover compromised"),
+    (5, "cover degraded"),
+    (8, "cover intact"),
+    (10, "cover solid"),
+]
+
+
+def _describe_cover(value: int, mission: Mission, agent_id: str) -> str:
+    """Narrative descriptor for an agent's cover. Honors mission overrides at
+    the per-agent key (`agent[LYNX].cover`) or the wildcard key
+    (`agent[*].cover`); otherwise falls back to the built-in buckets."""
+    override = mission.quality_descriptors.get(
+        f"agent[{agent_id}].cover"
+    ) or mission.quality_descriptors.get("agent[*].cover")
+    if override is not None:
+        described = override.describe(value)
+        if described is not None:
+            return described
+    for threshold, descriptor in _BUILTIN_COVER_BUCKETS:
+        if value <= threshold:
+            return descriptor
+    return _BUILTIN_COVER_BUCKETS[-1][1]
+
+
+def _describe_cycles(cycles_remaining: int, max_cycles: int, mission: Mission) -> str:
+    """Narrative descriptor for the operation clock. Authors may override via
+    `quality_descriptors["mission.cycles_remaining"]` (numeric buckets on the
+    raw cycles_remaining value). Built-in fallback buckets on the ratio so
+    the descriptor scales with mission length."""
+    override = mission.quality_descriptors.get("mission.cycles_remaining")
+    if override is not None:
+        described = override.describe(cycles_remaining)
+        if described is not None:
+            return described
+    if max_cycles <= 0 or cycles_remaining <= 0:
+        return "the window has closed"
+    ratio = cycles_remaining / max_cycles
+    if ratio >= 0.66:
+        return "the window is open"
+    if ratio >= 0.5:
+        return "the window is narrowing"
+    if ratio >= 0.25:
+        return "the window is tightening"
+    return "the window is closing — final approach"
+
+
+def _describe_authored_quality(
+    quality_name: str, value: float | int | str | bool, mission: Mission
+) -> str | None:
+    """Look up a mission-authored descriptor. Returns None if no descriptor
+    exists for `quality_name` — callers skip the line rather than leaking
+    `quality_name: value`."""
+    descriptor = mission.quality_descriptors.get(quality_name)
+    if descriptor is None:
+        return None
+    return descriptor.describe(value)
+
+
+def _narrative_state_block(state: State, mission: Mission) -> str:
+    """In-fiction state summary for the SoP and renderer. No raw numerics, no
+    raw quality ids, no fired-beat/fired-moment ledger noise."""
+    lines: list[str] = []
+    cycles_raw = state.get_quality("mission.cycles_remaining")
+    cycles = int(cycles_raw) if isinstance(cycles_raw, (int, float)) and not isinstance(cycles_raw, bool) else 0
+    lines.append(f"OPERATION CLOCK: {_describe_cycles(cycles, mission.max_cycles, mission)}")
+    lines.append("AGENT POSTURES:")
     for agent in mission.agents:
-        cover = state.get_quality(f"agent[{agent.id}].cover")
-        parts.append(f"agent[{agent.id}].cover: {cover} / 10")
+        cover_raw = state.get_quality(f"agent[{agent.id}].cover")
+        cover = int(cover_raw) if isinstance(cover_raw, (int, float)) and not isinstance(cover_raw, bool) else 0
+        descriptor = _describe_cover(cover, mission, agent.id)
+        protected = state.get_quality(f"agent[{agent.id}].cover_protected")
+        suffix = " (under protective cover this cycle)" if protected else ""
+        lines.append(f"  - {agent.id}: {descriptor}{suffix}")
+    authored_lines: list[str] = []
     for q, v in state.qualities.items():
-        if q.startswith("mission.") and q != "mission.cycles_remaining":
-            parts.append(f"{q}: {v}")
-    if state.fired_beats:
-        parts.append(f"fired_beats: {state.fired_beats}")
-    if state.fired_moments:
-        parts.append(f"fired_moments: {state.fired_moments}")
-    return "\n".join(parts)
+        if not q.startswith("mission.") or q == "mission.cycles_remaining":
+            continue
+        described = _describe_authored_quality(q, v, mission)
+        if described is not None:
+            authored_lines.append(f"  - {described}")
+    if authored_lines:
+        lines.append("OPERATION POSTURE:")
+        lines.extend(authored_lines)
+    return "\n".join(lines)
 
 
 def _dispatches_block(dispatches: list[DispatchRecord], limit: int) -> str:
@@ -214,11 +347,15 @@ def _dispatches_block(dispatches: list[DispatchRecord], limit: int) -> str:
 def _sop_user_prompt(
     cycle_index: int, state: State, mission: Mission, dispatches: list[DispatchRecord]
 ) -> str:
+    # Intentionally NO "cycle N of M" opener — that header was the most
+    # reliable place the model picked up "six cycles remaining" / "five
+    # cycles remaining" as the lede. Time pressure is now carried by the
+    # OPERATION CLOCK descriptor in the narrative state block.
     return f"""\
-This is the State of Play memo for cycle {cycle_index} of {mission.max_cycles}.
+State of Play memo. Field reports follow.
 
 CURRENT STATE:
-{_state_block(state, mission)}
+{_narrative_state_block(state, mission)}
 
 RECENT DISPATCHES (last 3, oldest first):
 {_dispatches_block(dispatches, limit=3)}
@@ -271,10 +408,10 @@ def _drafter_user_prompt(
     if retry_feedback:
         retry = f"\nPREVIOUS ATTEMPT WAS REJECTED:\n{retry_feedback}\n"
     return f"""\
-Cycle {cycle_index} of {mission.max_cycles}. Draft 3 or 4 options now.
+Draft 3 or 4 options now.
 
 CURRENT STATE:
-{_state_block(state, mission)}
+{_narrative_state_block(state, mission)}
 
 RECENT DISPATCHES (last 2):
 {_dispatches_block(dispatches, limit=2)}
@@ -315,10 +452,15 @@ def _renderer_user_prompt(
         )
     else:
         dossier = mission.agent(acting)
+        situation_line = (
+            f"\nSituation grounding:\n{dossier.situation.strip()}"
+            if dossier.situation.strip()
+            else ""
+        )
         voice_note = (
             f"ACTING is {dossier.id} (codename {dossier.codename!r}). "
             f"Write FIRST-PERSON in this register: {dossier.voice_register}.\n"
-            f"Character notes:\n{dossier.voice_details.strip()}"
+            f"Character notes:\n{dossier.voice_details.strip()}{situation_line}"
         )
 
     # Prefer same-agent recent dispatches for voice anchoring (§8.3).
@@ -339,11 +481,11 @@ AUTHORIZED OPTION:
   title: {option.title}
   prose (the option as offered): {option.prose}
 
-RESOLVED STATE DELTA (this cycle's mutations):
+RESOLVED STATE DELTA (this cycle's mutations — honor these magnitudes):
 {delta_str}
 
-CURRENT STATE (after delta):
-{_state_block(state, mission)}
+CURRENT STATE (after delta — narrative, mirror this register):
+{_narrative_state_block(state, mission)}
 
 PRIOR DISPATCHES FOR VOICE ANCHORING:
 {_dispatches_block(anchor, limit=2)}

@@ -24,6 +24,13 @@ agents:
 initial_qualities:
   mission.progress: 0
 
+quality_descriptors:
+  mission.progress:
+    values:
+      "0": "the operation has not yet advanced"
+      "1": "the operation has advanced one step"
+      "2": "the operation is at terminal threshold"
+
 outcomes:
   win: "ALPHA pushed the progress to 2."
   loss_agent_lost: "An agent's cover collapsed."

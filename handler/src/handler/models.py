@@ -185,7 +185,68 @@ class AgentDossier(BaseModel):
     file_number: str = Field(default="")  # e.g. "19-X"
     voice_register: str = Field(default="")  # short character pitch
     voice_details: str = Field(default="")  # longer character notes for renderer
+    # In-fiction ground-level posture for this agent at mission start. Surfaced
+    # to every agent's system prompt so the SoP/renderer have specific anchors
+    # (the city, what the agent is holding, the threat pressing on them) rather
+    # than only the static opening_prose. Mid-mission drift is carried by
+    # recent dispatches, not by re-authoring this field.
+    situation: str = Field(default="")
     starting_cover: int = Field(ge=0, le=10)
+
+
+class QualityDescriptor(BaseModel):
+    """Maps a quality's numeric/string value to an in-fiction descriptor
+    used by the narrative state block. Use `buckets` for numeric qualities,
+    `values` for discrete enums. Exactly one MUST be non-empty.
+
+    Bucket lookup walks the list in authored order; the first bucket whose
+    `threshold` >= the actual value wins. Author bottom-up:
+        buckets:
+          - [0, "blown"]      # value 0
+          - [2, "compromised"]   # 1..2
+          - [5, "degraded"]      # 3..5
+          - [8, "intact"]        # 6..8
+          - [10, "solid"]        # 9..10
+
+    `values` is keyed by the literal value coerced to its string form. Authors
+    write `"0": "papers not yet surfaced"` etc.
+
+    `label` (optional) prefixes every descriptor — e.g. label="extraction"
+    yields "extraction: papers not yet surfaced".
+    """
+
+    buckets: list[tuple[float, str]] = Field(default_factory=list)
+    values: dict[str, str] = Field(default_factory=dict)
+    label: str = ""
+
+    @model_validator(mode="after")
+    def _exactly_one_form(self) -> "QualityDescriptor":
+        if not self.buckets and not self.values:
+            raise ValueError(
+                "QualityDescriptor: must set one of `buckets` or `values` (got neither)"
+            )
+        if self.buckets and self.values:
+            raise ValueError(
+                "QualityDescriptor: set EITHER `buckets` OR `values`, not both"
+            )
+        return self
+
+    def describe(self, value: float | int | str | bool) -> str | None:
+        """Look up the descriptor for `value`. Returns None if no bucket/value
+        matches (numeric value above all bucket thresholds, or string value
+        absent from the values map). Callers fall back to built-ins or skip.
+        """
+        body: str | None = None
+        if self.values:
+            body = self.values.get(str(value))
+        elif self.buckets and isinstance(value, (int, float)) and not isinstance(value, bool):
+            for threshold, descriptor in self.buckets:
+                if value <= threshold:
+                    body = descriptor
+                    break
+        if body is None:
+            return None
+        return f"{self.label}: {body}" if self.label else body
 
 
 class Archetype(BaseModel):
@@ -273,12 +334,22 @@ class Mission(BaseModel):
     name: str = Field(min_length=1)  # display name
     codename: str = ""  # e.g. "LYNX-EXFIL"
     opening_prose: str = ""  # shown on mission start
+    # World frame shown to the SoP/renderer system prompts as in-fiction
+    # grounding (the city, the sweep, the threat). Optional; falls back to
+    # opening_prose alone if unset.
+    setting: str = ""
     max_cycles: int = Field(gt=0)
     agents: list[AgentDossier] = Field(min_length=1)
     # Mission-authored initial qualities (e.g. extraction_stage=0). Universal
     # qualities (cycles_remaining, agent[*].cover) are auto-injected from
     # `max_cycles` and `agents` — not redundantly declared here.
     initial_qualities: dict[str, float | int | str] = Field(default_factory=dict)
+    # Quality name → narrative descriptor. REQUIRED for every key declared in
+    # `initial_qualities`; optional override for universal qualities
+    # (agent[*].cover, mission.cycles_remaining). The mission validator below
+    # enforces this so authors can't silently leak raw quality ids into the
+    # narrative state block.
+    quality_descriptors: dict[str, QualityDescriptor] = Field(default_factory=dict)
     archetypes: list[Archetype] = Field(min_length=1)
     moments: list[Moment] = Field(default_factory=list)
     beats: list[Beat] = Field(min_length=1)
@@ -305,6 +376,23 @@ class Mission(BaseModel):
                     f"Beat {beat.id!r}: outcome_key {beat.outcome_key!r} "
                     f"is not in mission.outcomes ({sorted(self.outcomes)})"
                 )
+        return self
+
+    @model_validator(mode="after")
+    def _quality_descriptors_cover_authored_qualities(self) -> "Mission":
+        """Every key in `initial_qualities` must have a `quality_descriptors`
+        entry. Universal qualities (cycles_remaining, agent[*].cover) have
+        built-in narrative descriptors and don't need authoring."""
+        missing = sorted(
+            q for q in self.initial_qualities if q not in self.quality_descriptors
+        )
+        if missing:
+            raise ValueError(
+                f"Mission {self.id!r}: quality_descriptors is missing entries "
+                f"for authored qualities {missing}. Every key in "
+                f"`initial_qualities` must have a narrative descriptor so the "
+                f"SoP/renderer state block doesn't leak raw quality ids."
+            )
         return self
 
     def archetype(self, id: str) -> Archetype:

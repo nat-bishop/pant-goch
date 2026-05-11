@@ -51,3 +51,45 @@ def test_top_level_must_be_mapping(tmp_path: Path) -> None:
     with pytest.raises(MissionLoadError) as exc:
         load_mission(bad)
     assert "mapping" in str(exc.value)
+
+
+def test_load_fails_on_missing_quality_descriptor(tmp_path: Path) -> None:
+    """Every key in `initial_qualities` must have a matching descriptor.
+    Forces authors to write in-fiction labels for mission-specific qualities
+    instead of letting raw `mission.foo: 0` leak into the narrative state block."""
+    bad = tmp_path / "missing_descriptor.yaml"
+    bad.write_text(
+        """\
+id: bad
+name: "Bad mission — undescribed quality"
+max_cycles: 3
+agents:
+  - id: A
+    codename: A
+    starting_cover: 5
+initial_qualities:
+  mission.undescribed: 0
+archetypes:
+  - id: X
+    when:
+      kind: quality_gte
+      quality: a
+      value: 0
+beats:
+  - id: end
+    terminal: true
+    outcome_key: w
+    priority: 0
+    when:
+      kind: quality_gte
+      quality: a
+      value: 99
+outcomes:
+  w: ""
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(MissionLoadError) as exc:
+        load_mission(bad)
+    assert "mission.undescribed" in str(exc.value)
+    assert "quality_descriptors" in str(exc.value)

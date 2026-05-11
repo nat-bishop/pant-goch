@@ -191,8 +191,8 @@ def resolve_config(settings: Settings | None = None) -> LlamaConfig:
     # gets `total_ctx / n_parallel` tokens. Default fallback computes
     # `n_parallel × llama_ctx` so every slot has the full per-session budget
     # without the caller having to remember the formula. Explicit
-    # `LLAMA_TOTAL_CTX` env override still wins (used by `make llama-playtest`
-    # to make the value self-documenting at the call site).
+    # `LLAMA_TOTAL_CTX` env override still wins (e.g. `make llama-playtest`
+    # sets it explicitly to make the value self-documenting at the call site).
     total_ctx = (
         s.llama_total_ctx if s.llama_total_ctx > 0
         else s.llama_n_parallel * s.llama_ctx

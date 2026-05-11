@@ -15,6 +15,7 @@ from handler.models import (
     Moment,
     Not_,
     Or_,
+    QualityDescriptor,
     QualityEquals,
     QualityGte,
     QualityGt,
@@ -186,6 +187,7 @@ def test_make_initial_state_injects_universal_qualities() -> None:
         ],
         outcomes={"win": ""},
         initial_qualities={"mission.stage": 0},
+        quality_descriptors={"mission.stage": QualityDescriptor(values={"0": "stage 0"})},
     )
     s = make_initial_state(m)
     assert s.get_quality("mission.cycles_remaining") == 4
