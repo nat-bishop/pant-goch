@@ -18,7 +18,8 @@ help:
 	@echo "  make run            Boot sidecar (spawns llama) + web dev server in parallel"
 	@echo "  make download-model      Fetch the Gemma 4 E4B Q8_0 GGUF (~8 GB)"
 	@echo "  make download-eval-model Fetch the Qwen 3.6 35B-A3B Q8_0 GGUF (~37 GB)"
-	@echo "  make llama               Run engine llama-server (Gemma on :8080)"
+	@echo "  make llama               Run engine llama-server (Gemma on :8080, 4 slots)"
+	@echo "  make llama-playtest      Run engine llama-server with 16 slots — pair with 'make playtest'"
 	@echo "  make llama-eval          Run eval llama-server (Qwen 35B-A3B on :8081)"
 	@echo "  make sidecar             Run Python sidecar, externally-managed llama (terminal 2)"
 	@echo "  make web                 Run Vite dev server (terminal 3)"
@@ -59,6 +60,14 @@ download-eval-model: $(EVAL_MODEL)
 llama: $(MODEL)
 	cd handler && uv run python -m handler.run_llama
 
+# Engine llama sized for the playtest harness (`--parallel 16`): 16 KV slots,
+# 16 × 32k = 512k total pool. The two env vars are set explicitly (not
+# auto-derived) so the slot/pool sizing is self-documenting at the call site —
+# matches the convention in config.py's `llama_total_ctx` comment.
+.PHONY: llama-playtest
+llama-playtest: $(MODEL)
+	cd handler && LLAMA_N_PARALLEL=16 LLAMA_TOTAL_CTX=524288 uv run python -m handler.run_llama
+
 # Eval llama, routed through the same launcher.py with `--role eval`. Used
 # by future LLM-judge phases of the playtest.
 .PHONY: llama-eval
@@ -83,9 +92,11 @@ test:
 mission-check:
 	cd handler && uv run python -c "from pathlib import Path; from handler.mission_loader import load_mission; [print(f'OK {p.name}: {load_mission(p).codename}') for p in sorted(Path('missions').glob('*.yaml'))]"
 
-# Playtest harness. Requires the sidecar to be running (boots its own llama
-# by default). Probes /health before starting. Programmatic evaluators only
-# for MVP — LLM judges come back when prose-quality scoring is worth it.
+# Playtest harness. Defaults to --parallel 16; pair with `make llama-playtest`
+# so the engine llama has 16 slots, otherwise sessions queue past the 4 slots
+# of `make llama` / `make run`. Probes /health before starting. Programmatic
+# evaluators only for MVP — LLM judges come back when prose-quality scoring is
+# worth it.
 .PHONY: playtest
 playtest:
 	cd handler && PYTHONIOENCODING=utf-8 uv run python -u -m scripts.playtest
@@ -99,6 +110,11 @@ clean:
 	rm -f logs/*.log
 	find . -type d -name __pycache__ -prune -exec rm -rf {} +
 
+# See scripts/kill-zombies.ps1 for why this is a two-pass kill (the prior
+# single-pass recipe missed multiprocessing-fork orphans that inherit
+# listening sockets, so it would print "killed" while the port was still
+# bound). The PowerShell lives in a .ps1 to avoid Make+bash+PowerShell
+# quoting hell. Exits non-zero if any port is still bound after the kill.
 .PHONY: kill-zombies
 kill-zombies:
-	@powershell -Command 'Get-NetTCPConnection -LocalPort 8000,8080,8081,5173,5174,5175,5176 -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $$_.OwningProcess -Force -ErrorAction SilentlyContinue }; Write-Host "killed any processes holding :8000/:8080/:8081/:5173-5176"'
+	@powershell -NoProfile -ExecutionPolicy Bypass -File scripts/kill-zombies.ps1
