@@ -108,16 +108,35 @@ AGENTS: AgentBundle | None = None
 
 @dataclass
 class SessionRuntime:
-    """Per-session live state: the engine session, the SSE queue, the auth
-    future the cycle loop is currently awaiting, the cycle task itself, and
-    a rolling buffer of past dispatches (for renderer voice anchoring)."""
+    """Per-session live state: the engine session, the SSE queue, the two
+    futures the cycle loop alternates between (auth = pause INSIDE a cycle
+    waiting for the player's pick; continue = pause BETWEEN cycles waiting
+    for the player to click through), the cycle task itself, and a rolling
+    buffer of past dispatches (for renderer voice anchoring)."""
 
     session: Session
     out_queue: asyncio.Queue[dict] = field(default_factory=asyncio.Queue)
     auth_future: asyncio.Future[Option] | None = None
+    continue_future: asyncio.Future[None] | None = None
     current_options: list[Option] | None = None
     cycle_task: asyncio.Task | None = None
     dispatches: list[DispatchRecord] = field(default_factory=list)
+
+    async def await_auth(self) -> Option:
+        """Block the cycle loop until POST /authorize resolves auth_future."""
+        self.auth_future = asyncio.get_event_loop().create_future()
+        try:
+            return await self.auth_future
+        finally:
+            self.auth_future = None
+
+    async def await_continue(self) -> None:
+        """Block the cycle loop until POST /continue resolves continue_future."""
+        self.continue_future = asyncio.get_event_loop().create_future()
+        try:
+            await self.continue_future
+        finally:
+            self.continue_future = None
 
 
 SESSIONS: dict[str, SessionRuntime] = {}
@@ -427,12 +446,6 @@ async def _run_session_loop(rt: SessionRuntime) -> None:
     cycle_index = 1
     try:
         while True:
-            async def _await_auth() -> Option:
-                rt.auth_future = asyncio.get_running_loop().create_future()
-                option = await rt.auth_future
-                rt.auth_future = None
-                return option
-
             active = await run_cycle(
                 rt.session,
                 cycle_index,
@@ -440,10 +453,16 @@ async def _run_session_loop(rt: SessionRuntime) -> None:
                 drafter=_build_drafter_callable(rt),
                 renderer=_build_renderer_callable(rt),
                 emit=rt.out_queue.put,
-                await_authorization=_await_auth,
+                await_authorization=rt.await_auth,
             )
             if not active:
                 break
+            # Gate the next cycle on the player clicking "Continue" — symmetric
+            # with the in-cycle auth gate. Without this, the engine would loop
+            # straight into cycle N+1's SoP while the player is still reading
+            # the dispatch they just authorized.
+            await rt.out_queue.put({"event": "awaiting_continue", "cycle": cycle_index})
+            await rt.await_continue()
             cycle_index += 1
     except asyncio.CancelledError:
         logfire.info("session loop cancelled", session_id=rt.session.id)
@@ -548,6 +567,15 @@ async def mission_authorize(session_id: str, req: AuthorizeRequest) -> dict:
     chosen = rt.current_options[req.option_index]
     rt.auth_future.set_result(chosen)
     return {"accepted": True, "option_index": req.option_index, "archetype": chosen.archetype}
+
+
+@app.post("/mission/{session_id}/continue")
+async def mission_continue(session_id: str) -> dict:
+    rt = _get_runtime(session_id)
+    if rt.continue_future is None or rt.continue_future.done():
+        raise HTTPException(409, "no continuation pending")
+    rt.continue_future.set_result(None)
+    return {"accepted": True}
 
 
 @app.get("/mission/{session_id}/state", response_model=StateResponse)

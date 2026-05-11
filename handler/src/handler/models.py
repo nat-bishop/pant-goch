@@ -29,7 +29,7 @@ consumers; new leaves work automatically.
 """
 from __future__ import annotations
 
-from typing import Annotated, Any, Iterable, Iterator, Literal, Union
+from typing import Annotated, Any, Iterable, Iterator, Literal, Union, assert_never
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -307,9 +307,6 @@ class Mission(BaseModel):
                 )
         return self
 
-    def agent_ids(self) -> list[str]:
-        return [a.id for a in self.agents]
-
     def archetype(self, id: str) -> Archetype:
         for a in self.archetypes:
             if a.id == id:
@@ -439,7 +436,7 @@ def substitute_predicate(pred: Predicate, agent_id: str) -> Predicate:
         return And_(of=[substitute_predicate(p, agent_id) for p in pred.of])
     if isinstance(pred, Or_):
         return Or_(of=[substitute_predicate(p, agent_id) for p in pred.of])
-    raise AssertionError(f"unhandled predicate kind: {type(pred).__name__}")
+    assert_never(pred)
 
 
 def substitute_effect(eff: Effect, agent_id: str) -> Effect:

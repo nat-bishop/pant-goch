@@ -85,23 +85,23 @@ def _apply_one(state: State, eff: Effect) -> tuple[str, Any, Any] | None:
     elif eff.op == "add":
         cur = float(before) if before is not None else 0.0
         after = cur + float(eff.value)
-        # Preserve int-ness for cleanly integer effects on integer-typed
-        # qualities (cover, cycles, extraction_stage). Mixed float / int
-        # qualities don't exist in MVP authoring.
-        if isinstance(before, int) and float(eff.value).is_integer():
-            after = int(after)
     elif eff.op == "max":
         cur = float(before) if before is not None else float("-inf")
         after = max(cur, float(eff.value))
-        if isinstance(before, int) and float(eff.value).is_integer():
-            after = int(after)
     elif eff.op == "min":
         cur = float(before) if before is not None else float("inf")
         after = min(cur, float(eff.value))
-        if isinstance(before, int) and float(eff.value).is_integer():
-            after = int(after)
     else:
-        raise AssertionError(f"unhandled op: {eff.op}")
+        assert_never(eff.op)
+    # Preserve int-ness for numeric ops on integer-typed qualities (cover,
+    # cycles, extraction_stage). Mixed float/int qualities don't exist in MVP.
+    if (
+        eff.op != "set"
+        and isinstance(before, int)
+        and isinstance(eff.value, (int, float))
+        and float(eff.value).is_integer()
+    ):
+        after = int(after)
     # Clamp cover qualities at 0/10 — cover is bounded.
     if eff.quality.endswith(".cover") and isinstance(after, (int, float)):
         after = max(0, min(10, int(after)))
@@ -240,6 +240,17 @@ def _beat_fired_already(state: State, beat: Beat, agent_id: str | None) -> bool:
     return f"{beat.id}:{agent_id}" in state.fired_per_agent
 
 
+def merge_delta_into(
+    target: dict[str, tuple[Any, Any]], source: dict[str, tuple[Any, Any]]
+) -> None:
+    """Merge `source` delta into `target` in place — first-seen `before` wins,
+    latest `after` wins. Used to fold per-fire deltas into a cycle aggregate
+    and to layer a moment's effects over an archetype's."""
+    for q, (b, a) in source.items():
+        existing = target.get(q)
+        target[q] = (existing[0] if existing else b, a)
+
+
 def fire_due_beats(
     state: State, mission: Mission, made_progress: bool
 ) -> tuple[list[tuple[Beat, str | None, dict[str, tuple[Any, Any]]]], dict[str, tuple[Any, Any]]]:
@@ -273,15 +284,13 @@ def fire_due_beats(
                 effects = [substitute_effect(e, agent.id) for e in beat.effects]
                 delta = _apply_many(state, effects)
                 state.fired_per_agent.append(f"{beat.id}:{agent.id}")
-                # also record in fired_beats for predicates that just want
-                # to see "did this beat fire at all"
+                # Also record in fired_beats — predicates that just ask "did
+                # this beat fire at all" don't care about the agent split.
                 state.fired_beats.append(beat.id)
                 if beat.terminal and beat.outcome_key is not None:
                     state.outcome = beat.outcome_key
                 fires.append((beat, agent.id, delta))
-                for q, (b, a) in delta.items():
-                    existing = aggregate.get(q)
-                    aggregate[q] = (existing[0] if existing else b, a)
+                merge_delta_into(aggregate, delta)
                 if beat.terminal:
                     break  # one terminal fire is enough
         else:
@@ -294,9 +303,7 @@ def fire_due_beats(
             if beat.terminal and beat.outcome_key is not None:
                 state.outcome = beat.outcome_key
             fires.append((beat, None, delta))
-            for q, (b, a) in delta.items():
-                existing = aggregate.get(q)
-                aggregate[q] = (existing[0] if existing else b, a)
+            merge_delta_into(aggregate, delta)
 
     return fires, aggregate
 

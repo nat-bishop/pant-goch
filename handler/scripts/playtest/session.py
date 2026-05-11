@@ -123,7 +123,6 @@ async def run_session(
 
             current: CycleTrace | None = None
             current_options_payload: list[dict[str, Any]] = []
-            awaiting_auth = False
 
             async with client.stream(
                 "GET", f"/mission/{session_id}/stream"
@@ -137,7 +136,6 @@ async def run_session(
                         current = CycleTrace(cycle_index=ev["cycle"])
                         record.cycles.append(current)
                         current_options_payload = []
-                        awaiting_auth = False
                     elif kind == "sop_word" and current is not None:
                         if not ev.get("is_last"):
                             current.sop_text += ev["word"]
@@ -180,7 +178,11 @@ async def run_session(
                             f"/mission/{session_id}/authorize",
                             json={"option_index": chosen_idx},
                         )
-                        awaiting_auth = False
+                    elif kind == "awaiting_continue":
+                        # Engine paused between cycles waiting for the player —
+                        # the playtest harness has no human, so click through
+                        # immediately.
+                        await client.post(f"/mission/{session_id}/continue")
                     elif kind == "effects_applied" and current is not None:
                         current.effects_delta = ev.get("delta", {})
                     elif kind == "beats_fired" and current is not None:

@@ -1,15 +1,17 @@
 import { useStore } from "../store";
 
 /** Authorize button + hint, below the paper. Disabled until a selection is
- * made; flips to "Continue to cycle N+1" once the dispatch completes. */
+ * made; flips to "Continue to cycle N+1" once the engine emits
+ * `awaiting_continue` (engine has paused between cycles). */
 export function Authorize() {
   const cycle = useStore((s) => s.cycle);
   const authorize = useStore((s) => s.authorize);
+  const continueCycle = useStore((s) => s.continueCycle);
 
   if (!cycle) return null;
 
   const canAuth = cycle.awaiting_auth && cycle.selected_option_index !== null && !cycle.authorized;
-  const dispatchReady = cycle.authorized && cycle.dispatch_complete;
+  const dispatchReady = cycle.awaiting_continue;
   const selectedTitle =
     cycle.selected_option_index !== null
       ? cycle.options[cycle.selected_option_index]?.title
@@ -17,7 +19,7 @@ export function Authorize() {
 
   let hint: React.ReactNode = "— select a course above —";
   let hintClass = "text-chrome-dim";
-  if (cycle.authorized && cycle.dispatch_complete) {
+  if (dispatchReady) {
     hint = (
       <>
         cycle complete <span className="text-stamp-soft ml-3.5">— continue when ready</span>
@@ -48,7 +50,7 @@ export function Authorize() {
         {hint}
       </div>
       <button
-        onClick={canAuth ? authorize : undefined}
+        onClick={canAuth ? authorize : dispatchReady ? continueCycle : undefined}
         disabled={!canAuth && !dispatchReady}
         className={`bg-transparent px-11 py-4 font-inherit text-xs uppercase font-bold tracking-[0.4em] transition-all duration-200 ${
           canAuth || dispatchReady

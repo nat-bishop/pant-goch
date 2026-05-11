@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { useStore } from "../store";
 
 /** Past dispatches surfaced as cards below the paper. Click a card to open
@@ -5,6 +6,7 @@ import { useStore } from "../store";
 export function Inbox() {
   const inbox = useStore((s) => s.inbox);
   const openModal = useStore((s) => s.openModal);
+  const reversed = useMemo(() => [...inbox].reverse(), [inbox]);
 
   if (inbox.length === 0) return null;
 
@@ -23,7 +25,7 @@ export function Inbox() {
         </span>
       </div>
       <div className="grid grid-cols-2 gap-4 max-w-[980px] mx-auto">
-        {[...inbox].reverse().map((d) => (
+        {reversed.map((d) => (
           <button
             key={`${d.cycle_index}-${d.acting}`}
             onClick={() => openModal(d.cycle_index)}

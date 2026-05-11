@@ -21,7 +21,7 @@ logs still deserialize.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Annotated, Any, Literal, Union
+from typing import Annotated, Any, Literal, Union, assert_never
 
 from pydantic import BaseModel, Field
 
@@ -185,4 +185,4 @@ def fold(state: State, event: Event) -> None:
     if isinstance(event, MissionResolved):
         state.outcome = event.resolution.outcome_key
         return
-    raise AssertionError(f"unhandled event kind: {type(event).__name__}")
+    assert_never(event)

@@ -20,7 +20,7 @@ export function OptionsList() {
         selectOption(Number(e.key) - 1);
       }
       if (e.key === "Escape" && cycle?.selected_option_index !== null) {
-        selectOption(cycle?.selected_option_index ?? null);
+        selectOption(null);
       }
       if (e.key === "Enter" && cycle?.awaiting_auth && cycle?.selected_option_index !== null) {
         authorize();

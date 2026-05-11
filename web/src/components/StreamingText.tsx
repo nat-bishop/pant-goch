@@ -21,7 +21,7 @@ export function StreamingText({ words, className, showCaret, complete }: Props) 
   // Reset flushed state when word list resets (new cycle).
   useEffect(() => {
     if (words.length === 0) setFlushed(false);
-  }, [words.length === 0]);
+  }, [words.length]);
 
   function flush() {
     if (flushed || complete) return;

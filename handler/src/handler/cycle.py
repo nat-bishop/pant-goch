@@ -50,6 +50,7 @@ from .spine import (
     apply_moment_effects,
     due_moments,
     fire_due_beats,
+    merge_delta_into,
     option_progresses_mission,
     tick_cycle_close,
     valid_archetype_combinations,
@@ -190,7 +191,7 @@ async def run_cycle(
             for m in forced:
                 if m.id == chosen.satisfies_moment:
                     mdelta = apply_moment_effects(state, m, chosen)
-                    delta = _merge_delta(delta, mdelta)
+                    merge_delta_into(delta, mdelta)
                     moment_id = m.id
                     break
         session.apply(EffectsApplied(cycle_index=cycle_index, delta=delta, moment_id=moment_id))
@@ -215,7 +216,7 @@ async def run_cycle(
         if terminal is not None:
             t_beat, _, _ = terminal
             # ── terminal dispatch (still rendered, in appropriate voice) ──
-            acting = _acting_for(chosen, state, mission)
+            acting = _acting_for(chosen)
             text = await renderer(session, cycle_index, chosen, delta, acting)
             session.apply(
                 DispatchRendered(
@@ -228,7 +229,7 @@ async def run_cycle(
             return False
 
         # ── iv. Dispatch ──
-        acting = _acting_for(chosen, state, mission)
+        acting = _acting_for(chosen)
         text = await renderer(session, cycle_index, chosen, delta, acting)
         session.apply(
             DispatchRendered(
@@ -269,17 +270,6 @@ async def run_cycle(
 # ───────────────────────── helpers ─────────────────────────
 
 
-def _merge_delta(a: dict, b: dict) -> dict:
-    """Merge two deltas — preserve first-seen `before`, latest `after`."""
-    out = dict(a)
-    for k, (b_before, b_after) in b.items():
-        if k in out:
-            out[k] = (out[k][0], b_after)
-        else:
-            out[k] = (b_before, b_after)
-    return out
-
-
 def _serialize_delta(delta: dict) -> dict:
     """For SSE payloads: collapse (before, after) tuples to a JSON-friendly shape."""
     return {q: {"before": b, "after": a} for q, (b, a) in delta.items()}
@@ -299,7 +289,7 @@ def _resolved_payload(resolution: MissionResolution) -> dict:
     }
 
 
-def _acting_for(option: Option, state: State, mission: Mission) -> str:
+def _acting_for(option: Option) -> str:
     """Decide whose voice renders the dispatch. Bound agents → that agent;
     HOLD and unbound archetypes → 'operations'. See HANDLER_SPEC_V2 §8.3."""
     if option.agent is not None:

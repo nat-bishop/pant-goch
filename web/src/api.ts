@@ -59,6 +59,13 @@ export async function authorize(
   await ensureOk(r, "authorize");
 }
 
+export async function continueCycle(session_id: string): Promise<void> {
+  const r = await fetch(`${API}/mission/${session_id}/continue`, {
+    method: "POST",
+  });
+  await ensureOk(r, "continue");
+}
+
 export interface StateResponse {
   session_id: string;
   cycle_index: number | null;
@@ -82,6 +89,7 @@ export type SseEvent =
   | { event: "option_word"; cycle: number; option_idx: number; idx: number; word: string; is_last?: boolean }
   | { event: "options_complete"; cycle: number; count: number; has_forced_moment: boolean; moment_id: string | null; engine_fallback: boolean }
   | { event: "awaiting_auth" }
+  | { event: "awaiting_continue"; cycle: number }
   | { event: "effects_applied"; delta: Delta }
   | { event: "beats_fired"; beats: string[]; delta: Delta }
   | { event: "dispatch_started"; cycle: number; acting: string; archetype: string }

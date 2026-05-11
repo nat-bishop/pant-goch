@@ -44,6 +44,9 @@ export interface CycleState {
   dispatch_archetype: string | null;
   dispatch_words: string[];
   dispatch_complete: boolean;
+  // True after the server emits `awaiting_continue` — engine is paused
+  // between cycles waiting for the player to click through.
+  awaiting_continue: boolean;
   // Latest cycle delta (effects + beats merged) — surfaced to the dispatch modal.
   delta: Delta;
   beats_fired: string[];
@@ -72,6 +75,7 @@ interface Store {
 
   startMission: () => Promise<void>;
   authorize: () => Promise<void>;
+  continueCycle: () => Promise<void>;
   selectOption: (idx: number | null) => void;
   openModal: (cycleIndex: number) => void;
   closeModal: () => void;
@@ -95,6 +99,7 @@ function newCycle(index: number): CycleState {
     dispatch_archetype: null,
     dispatch_words: [],
     dispatch_complete: false,
+    awaiting_continue: false,
     delta: {},
     beats_fired: [],
   };
@@ -159,6 +164,18 @@ export const useStore = create<Store>((set, get) => ({
       set({
         cycle: { ...cycle, authorized: true, awaiting_auth: false },
       });
+    } catch (e: any) {
+      set({ errorMessage: e.message ?? String(e) });
+    }
+  },
+
+  continueCycle: async () => {
+    const { session_id, cycle } = get();
+    if (!session_id || !cycle?.awaiting_continue) return;
+    try {
+      await api.continueCycle(session_id);
+      // No local state mutation — the server's `cycle_opened` for N+1 will
+      // replace `cycle` wholesale, clearing `awaiting_continue`.
     } catch (e: any) {
       set({ errorMessage: e.message ?? String(e) });
     }
@@ -251,6 +268,13 @@ export const useStore = create<Store>((set, get) => ({
         const c = get().cycle;
         if (!c) return;
         set({ cycle: { ...c, awaiting_auth: true } });
+        break;
+      }
+
+      case "awaiting_continue": {
+        const c = get().cycle;
+        if (!c || c.index !== ev.cycle) return;
+        set({ cycle: { ...c, awaiting_continue: true } });
         break;
       }
 
