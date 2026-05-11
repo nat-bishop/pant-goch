@@ -1,399 +1,132 @@
-// Thin HTTP + SSE wrapper over the FastAPI sidecar. Vite proxies /api → :8000
-// in dev (see vite.config.ts).
+// Thin HTTP + SSE wrapper over the HANDLER FastAPI sidecar. Vite proxies
+// /api → :8000 in dev (see vite.config.ts).
 
 const API = "/api";
 
 async function ensureOk(r: Response, op: string): Promise<void> {
   if (r.ok) return;
-  // Surface a friendly message to UI banners while keeping the raw status +
-  // response body in dev tools for debugging. Sidecar 5xx → "sidecar error";
-  // 4xx (bad request, session ended, unknown thread) → "request rejected".
   const detail = r.status >= 500 ? "sidecar error" : "request rejected";
   const body = await r.text().catch(() => "");
   console.warn(`${op} failed`, r.status, body);
   throw new Error(detail);
 }
 
-export interface Email {
+// ─── shared types ────────────────────────────────────────────────────────
+
+export interface AgentMeta {
   id: string;
-  from: string;
-  to: string;
-  sent_at: string;
-  is_read: boolean;
-  preview: string;
-  folder: string;
-  thread_id: string | null;
-  body?: string;
-  beat_id?: string | null;
+  codename: string;
+  file_number: string;
 }
 
-export interface InboxResponse {
-  folders: Record<string, Email[]>;
-  state: GameState;
-}
-
-export interface GameState {
-  ended: boolean;
-  end_reason: string | null;
-  unread_counts: Record<string, number>;
-  unread_counts_by_thread: Record<string, number>;
-}
-
-export interface ThreadResponse {
-  thread_id: string;
-  emails: Email[];
-}
-
-export interface NpcInfo {
-  id: string;
-  display_name: string;
-  email_address: string;
-  thread_id: string;
-  replies_enabled: boolean;
-}
-
-export interface ScenarioResponse {
+export interface OptionPayload {
+  archetype: string;
+  agent: string | null;
+  params: Record<string, string>;
   title: string;
-  premise: string;
-  npcs: NpcInfo[];
+  satisfies_moment: string | null;
 }
 
-export async function getScenario(): Promise<ScenarioResponse> {
-  const r = await fetch(`${API}/scenario`);
-  await ensureOk(r, "scenario");
-  return r.json();
+export type Quality = number | string | boolean;
+export type GameState = Record<string, Quality>;
+export type Delta = Record<string, { before: Quality | null; after: Quality }>;
+
+// ─── REST endpoints ──────────────────────────────────────────────────────
+
+export interface StartResponse {
+  session_id: string;
+  mission_id: string;
+  mission_name: string;
+  codename: string;
+  max_cycles: number;
 }
 
-export async function getInbox(): Promise<InboxResponse> {
-  const r = await fetch(`${API}/inbox`);
-  await ensureOk(r, "inbox");
-  return r.json();
+export async function startMission(): Promise<StartResponse> {
+  const r = await fetch(`${API}/mission/start`, { method: "POST" });
+  await ensureOk(r, "mission/start");
+  return (await r.json()) as StartResponse;
 }
 
-export async function getThread(threadId: string): Promise<ThreadResponse> {
-  const r = await fetch(`${API}/thread/${encodeURIComponent(threadId)}`);
-  await ensureOk(r, "thread");
-  return r.json();
-}
-
-export async function postOpen(emailId: string) {
-  const r = await fetch(`${API}/open`, {
+export async function authorize(
+  session_id: string,
+  option_index: number,
+): Promise<void> {
+  const r = await fetch(`${API}/mission/${session_id}/authorize`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email_id: emailId }),
+    body: JSON.stringify({ option_index }),
   });
-  await ensureOk(r, "open");
-  return r.json() as Promise<{ state: GameState; new_emails: Email[] }>;
+  await ensureOk(r, "authorize");
 }
 
-// SSE helpers ─────────────────────────────────────────────────────────
-
-// Predicate discriminated union — mirrors the Pydantic models. Used by the
-// debug panel's PredicateTree component to render blocked-beat preconditions
-// as an interactive tree. The tree shape exactly matches the backend's
-// `evaluate_predicate_with_trace` output: leaves at the bottom, Or_/Not_
-// in the middle, and matching shape in `PredicateTrace`.
-export type Predicate =
-  | { kind: "quality_gte"; quality: string; value: number }
-  | { kind: "quality_lt"; quality: string; value: number }
-  | { kind: "quality_equals"; quality: string; value: string | number }
-  | { kind: "player_replies_to_thread_gte"; thread: string; value: number }
-  | { kind: "beat_fired"; beat: string }
-  | {
-      kind: "recent_classifier_value";
-      quality: string;
-      values: string[];
-      window: number;
-      match: "any" | "all" | number;
-    }
-  | { kind: "not"; of: Predicate }
-  | { kind: "or"; of: Predicate[] }
-  | { kind: "player_canon_exists"; name: string };
-
-export interface PredicateTrace {
-  passed: boolean;
-  label: string;
-  children: PredicateTrace[];
-}
-
-export interface BeatEligibility {
-  beat_id: string;
-  status: "eligible" | "blocked" | "retired" | "deferred";
-  blocked_by: string | null;
-  is_scene: boolean;
-  predicate_tree: Predicate | null;
-  predicate_trace: PredicateTrace | null;
-}
-
-// Per-beat predicate evaluation against post-tick state. Differs from
-// BeatEligibility: covers EVERY scenario beat (including already-fired
-// one_shots and structurally-blocked terminals), with parallel trace lists
-// instead of just the first failing predicate. Drives the Beats inspector.
-export interface BeatEvaluation {
-  beat_id: string;
-  status: "fired" | "eligible" | "blocked";
-  is_scene: boolean;
-  entry_traces: PredicateTrace[];  // parallel to beat.preconditions
-  exit_traces: PredicateTrace[];   // parallel to beat.spec.exit_when; empty for one_shot
-}
-
-export interface QualityDelta {
-  quality: string;
-  before: number | string | null;
-  after: number | string;
-  source: string;
-}
-
-export interface CanonCandidate {
-  key: string;
-  summary: string;
-  literal_text_quote: string;
-  salience: number;
-  category: string;
-}
-
-export interface CanonDropRecord {
-  candidate: CanonCandidate;
-  reason: "anchor_fail" | "below_salience";
-}
-
-export interface FactCheckAttempt {
-  status: "passed" | "flagged";
-  missing_facts: string[];
-  violations: string[];
-}
-
-export interface FactCheckTrace {
-  attempts: FactCheckAttempt[];
-}
-
-export interface PlayerCanonEntry {
-  summary: string;
-  literal_text_quote: string;
-  salience: number;
-  category: string;
-  turn_of_origin: number;
-}
-
-export interface TickDecision {
-  in_response_to: string | null;
-  eligible: BeatEligibility[];
-  selection: "none" | "sole" | "director" | "continue";
-  chosen_beat_id: string | null;
-  chosen_rationale: string | null;
-  quality_deltas: QualityDelta[];
-  fired_beat_id: string | null;
-  scene_turn: number | null;
-  canon_writes: CanonCandidate[];
-  canon_drops: CanonDropRecord[];
-  player_canon: Record<string, PlayerCanonEntry>;
-  fact_check: FactCheckTrace | null;
-  classifier_history: Record<string, string[]>;
-  fired_beat_ids: string[];
-  beats_evaluation: BeatEvaluation[];
-}
-
-// /scenario_meta payload ─────────────────────────────────────────────
-
-export interface QualityMeta {
-  description: string;
-  type: "int" | "float" | "string";
-  min: number | null;
-  max: number | null;
-  default: number | string | null;
-  surface_to_chat: boolean;
-  allowed_values: string[];
-}
-
-export interface BeatMeta {
-  id: string;
-  npc: string;
-  thread: string;
-  is_scene: boolean;
-  ends_session: boolean;
-  pre_authored: boolean;
-  fact_checked: boolean;
-  summary: string;
-}
-
-export interface BeatGraphEdge {
-  from: string;
-  to: string;
-  kind: "structural" | "mutex";
-}
-
-export interface BeatGraphNode {
-  id: string;
-  thread: string;
-  npc: string;
-}
-
-export interface BeatGraph {
-  nodes: BeatGraphNode[];
-  edges: BeatGraphEdge[];
-}
-
-export interface ScenarioMeta {
-  qualities: Record<string, QualityMeta>;
-  beats: Record<string, BeatMeta>;
-  beat_graph: BeatGraph;
-}
-
-export async function getScenarioMeta(): Promise<ScenarioMeta> {
-  const r = await fetch(`${API}/scenario_meta`);
-  await ensureOk(r, "scenario_meta");
-  return r.json();
-}
-
-// /debug/scenario payload — DEV-only Beats inspector. Pairs with
-// TickDecision.beats_evaluation: this carries the structural shape, the
-// evaluation carries the verdicts. Frontend zips them per beat.
-
-export type EffectClassifyDirective = {
-  question: string;
-  allowed_values: string[];
-  map: Record<string, number> | null;
-};
-
-export interface DebugBeatEffect {
-  quality: string;
-  value: number | string | null;
-  classify: EffectClassifyDirective | null;
-  op: "set" | "add" | "max" | "min";
-  when: Predicate | null;
-}
-
-export interface DebugBeat {
-  id: string;
-  kind: "scene" | "one_shot";
-  npc: string;
-  thread: string;
-  ends_session: boolean;
-  preconditions: Predicate[];
-  exit_when: Predicate[];
-  effects: DebugBeatEffect[];
-}
-
-export interface DebugScenario {
-  beats: Record<string, DebugBeat>;
-}
-
-export async function getDebugScenario(): Promise<DebugScenario> {
-  const r = await fetch(`${API}/debug/scenario`);
-  await ensureOk(r, "debug_scenario");
-  return r.json();
-}
-
-// /debug/session/* payloads — DEV-only event-log timeline. The session
-// records every state change as an Event; the timeline scrubs read-only
-// snapshots reconstructed via fold(). `kind` is the discriminated-union
-// tag matching backend Event subclasses.
-export interface SessionEvent {
-  kind: string;
-  [k: string]: unknown;
-}
-
-export interface DebugSessionEvents {
+export interface StateResponse {
   session_id: string;
-  event_count: number;
-  events: SessionEvent[];
+  cycle_index: number | null;
+  state: GameState;
+  outcome: string | null;
 }
 
-export interface DebugSessionStateAt {
-  session_id: string;
-  index: number;
-  event_count: number;
-  state: {
-    ended: boolean;
-    end_reason: string | null;
-    qualities: Record<string, number | string>;
-    fired_beat_ids: string[];
-    player_canon: Record<string, {
-      summary: string;
-      literal_text_quote: string;
-      salience: number;
-      category: string;
-      turn_of_origin: number;
-    }>;
-    emails: Email[];
-    reply_count: number;
-    unread_counts: Record<string, number>;
-    unread_counts_by_thread: Record<string, number>;
-  };
+export async function fetchState(session_id: string): Promise<StateResponse> {
+  const r = await fetch(`${API}/mission/${session_id}/state`);
+  await ensureOk(r, "state");
+  return (await r.json()) as StateResponse;
 }
 
-export async function getDebugSessionEvents(): Promise<DebugSessionEvents> {
-  const r = await fetch(`${API}/debug/session/events`);
-  await ensureOk(r, "debug_session_events");
-  return r.json();
-}
-
-export async function getDebugSessionStateAt(index: number): Promise<DebugSessionStateAt> {
-  const r = await fetch(`${API}/debug/session/state_at?index=${index}`);
-  await ensureOk(r, "debug_session_state_at");
-  return r.json();
-}
+// ─── SSE event vocabulary (must match handler/main.py) ───────────────────
 
 export type SseEvent =
-  | { type: "send_recorded"; email: Email }
-  | { type: "new_email"; email: Email }
-  | { type: "tick_decision"; decision: TickDecision }
-  | { type: "state"; state: GameState }
-  | { type: "done" }
-  | { type: "error"; message: string };
+  | { event: "mission_started"; mission_id: string; mission_name: string; codename: string; max_cycles: number; agents: AgentMeta[]; state: GameState }
+  | { event: "cycle_opened"; cycle: number; state: GameState }
+  | { event: "sop_word"; cycle: number; idx: number; word: string; is_last?: boolean }
+  | { event: "option_started"; cycle: number; option_idx: number; archetype: string; agent: string | null; params: Record<string, string>; title: string; satisfies_moment: string | null }
+  | { event: "option_word"; cycle: number; option_idx: number; idx: number; word: string; is_last?: boolean }
+  | { event: "options_complete"; cycle: number; count: number; has_forced_moment: boolean; moment_id: string | null; engine_fallback: boolean }
+  | { event: "awaiting_auth" }
+  | { event: "effects_applied"; delta: Delta }
+  | { event: "beats_fired"; beats: string[]; delta: Delta }
+  | { event: "dispatch_started"; cycle: number; acting: string; archetype: string }
+  | { event: "dispatch_word"; cycle: number; idx: number; word: string; acting: string; is_last?: boolean }
+  | { event: "cycle_closed"; cycle: number; state: GameState }
+  | { event: "mission_resolved"; outcome: string; summary: string }
+  | { event: "session_closed" }
+  | { event: "error"; code: string };
 
-/** POST a JSON body and stream back parsed SSE events. */
-export async function* postJsonSse(
-  path: string,
-  body: unknown,
-): AsyncGenerator<SseEvent, void, void> {
-  const r = await fetch(`${API}${path}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
-    body: JSON.stringify(body),
-  });
-  await ensureOk(r, path);
-  if (!r.body) throw new Error("sidecar error");
-  yield* readSseStream(r.body);
+export function streamUrl(session_id: string): string {
+  return `${API}/mission/${session_id}/stream`;
 }
 
-async function* readSseStream(
-  body: ReadableStream<Uint8Array>,
+/** Consume an SSE response body into a typed event stream. The fetch returns
+ * a `text/event-stream` body; each `data: { ... }\n\n` block parses as one
+ * SseEvent. Comment lines (`: heartbeat`) are skipped. */
+export async function* readSseStream(
+  response: Response,
 ): AsyncGenerator<SseEvent, void, void> {
-  const reader = body.getReader();
+  if (!response.body) throw new Error("no SSE response body");
+  const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    let idx;
-    while ((idx = buffer.indexOf("\n\n")) >= 0) {
-      const block = buffer.slice(0, idx);
-      buffer = buffer.slice(idx + 2);
-      for (const line of block.split("\n")) {
-        if (line.startsWith("data: ")) {
-          try {
-            yield JSON.parse(line.slice(6)) as SseEvent;
-          } catch (e) {
-            // Don't tear the stream over a single malformed event, but make
-            // sure dev tools see it — silent JSON corruption was costing us
-            // hours of "why didn't the UI update?" debugging.
-            console.warn("unparseable SSE line", line, e);
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      while (true) {
+        const idx = buffer.indexOf("\n\n");
+        if (idx < 0) break;
+        const block = buffer.slice(0, idx);
+        buffer = buffer.slice(idx + 2);
+        for (const line of block.split("\n")) {
+          if (line.startsWith("data: ")) {
+            try {
+              yield JSON.parse(line.slice(6)) as SseEvent;
+            } catch (err) {
+              console.warn("malformed SSE payload", line, err);
+            }
           }
         }
       }
     }
+  } finally {
+    reader.releaseLock();
   }
-}
-
-export interface SendArgs {
-  in_reply_to: string | null;
-  recipient: string;
-  recipient_npc_id: string;
-  body: string;
-}
-
-export function streamSend(args: SendArgs) {
-  return postJsonSse("/send", args);
 }

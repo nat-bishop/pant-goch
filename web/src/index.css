@@ -3,93 +3,142 @@
 @tailwind utilities;
 
 :root {
-  --bg: #ffffff;
-  --bg-elevated: #fafafa;
-  --bg-sidebar: #ebe9e6;
-  --bg-bubble-them: #f0eff0;
-  --text: #242424;
-  --text-muted: #616161;
-  --text-on-accent: #ffffff;
-  --border: #e1dfdd;
-  --accent: #6264a7;
-  --accent-hover: #4f52b2;
-  --accent-glow: rgba(98, 100, 167, 0.22);
-  --presence-active: #6bb700;
-  --unread: #c4314b;
-  --meter-cool: #5b9bd5;
-  --meter-warn: #d4a017;
-  --meter-hot: #c5292a;
+  /* desk · cool institutional slate */
+  --desk:           #14171b;
+  --desk-2:         #1a1e23;
+  --desk-rule:      #262a31;
+  --desk-rule-soft: #1d2027;
+
+  /* paper · the document */
+  --paper:          #eee5cd;
+  --paper-shade:    #d8cfb4;
+  --paper-onion:    #e6e2d3;
+
+  /* paper ink */
+  --ink:            #1c1814;
+  --ink-soft:       #4a4438;
+  --ink-faint:      #837c6c;
+  --rule:           #b8af96;
+  --rule-soft:      #d6cdb0;
+
+  /* desk text · paper-tinted, desaturated */
+  --chrome-bright:  #e8e0c5;
+  --chrome:         #b0a994;
+  --chrome-dim:     #75705f;
+  --chrome-faint:   #43413b;
+
+  /* one accent · classified red */
+  --stamp:          #7a1f18;
+  --stamp-soft:     #9a3a32;
+
+  --shadow-paper:
+    0 1px 2px rgba(0, 0, 0, 0.30),
+    0 12px 28px rgba(0, 0, 0, 0.50),
+    0 40px 72px rgba(0, 0, 0, 0.40);
+
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
-.dark {
-  --bg: #242424;
-  --bg-elevated: #2d2d2d;
-  --bg-sidebar: #141414;
-  --bg-bubble-them: #333333;
-  --text: #f3f3f3;
-  --text-muted: #adadad;
-  --text-on-accent: #ffffff;
-  --border: #3a3a3a;
-  --accent: #7579d4;
-  --accent-hover: #898ee0;
-  --accent-glow: rgba(117, 121, 212, 0.28);
-  --presence-active: #92c353;
-  --unread: #e85d3a;
-  --meter-cool: #6cb4ff;
-  --meter-warn: #f0c040;
-  --meter-hot: #e85d3a;
+*,
+*::before,
+*::after {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
 }
 
 html,
 body,
 #root {
-  height: 100%;
+  min-height: 100vh;
 }
 
 body {
-  margin: 0;
-  background: var(--bg);
-  color: var(--text);
-  font-family:
-    "Inter Variable", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI",
-    Roboto, Arial, sans-serif;
-  font-feature-settings:
-    "cv02", "cv03", "cv04", "cv11";
-  font-size: 14px;
-  line-height: 1.5;
+  background: var(--desk);
+  color: var(--chrome);
+  font-family: "Courier Prime", "Courier New", monospace;
+  font-weight: 400;
   -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  transition:
-    background-color 200ms ease,
-    color 200ms ease;
+  text-rendering: optimizeLegibility;
+  background-image:
+    radial-gradient(ellipse 55% 55% at 50% 30%, rgba(200, 180, 120, 0.05) 0%, transparent 70%),
+    radial-gradient(ellipse 90% 60% at 50% 110%, rgba(0, 0, 0, 0.6) 0%, transparent 60%);
+  display: flex;
+  flex-direction: column;
 }
 
-/* Custom scrollbar — themed via vars */
+#root {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+/* overlays — applied per-frame via App.tsx */
+.grain {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 50;
+  opacity: 0.04;
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.9'/%3E%3C/svg%3E");
+}
+.vignette {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 49;
+  background: radial-gradient(
+    ellipse 100% 80% at 50% 50%,
+    transparent 55%,
+    rgba(0, 0, 0, 0.55) 100%
+  );
+}
+
+/* Scrollbar */
 * {
   scrollbar-width: thin;
-  scrollbar-color: color-mix(in srgb, var(--text-muted) 35%, transparent)
-    transparent;
+  scrollbar-color: color-mix(in srgb, var(--chrome-faint) 70%, transparent) transparent;
 }
 *::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
-*::-webkit-scrollbar-track {
-  background: transparent;
-}
 *::-webkit-scrollbar-thumb {
-  background-color: color-mix(in srgb, var(--text-muted) 30%, transparent);
+  background-color: color-mix(in srgb, var(--chrome-faint) 60%, transparent);
   border-radius: 4px;
 }
-*::-webkit-scrollbar-thumb:hover {
-  background-color: color-mix(in srgb, var(--text-muted) 60%, transparent);
+
+/* Focus rings */
+*:focus-visible {
+  outline: 2px solid var(--stamp);
+  outline-offset: 2px;
 }
 
-/* Focus rings — accessible, themed */
-*:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-  border-radius: 2px;
+/* Per-word reveal keyframe used by <StreamingText />. Each new word span
+   starts at opacity 0 and fades in over ~80ms. Backend already paces the
+   word arrival rate ≥80ms, so this just smooths the visual edge. */
+@keyframes word-in {
+  from {
+    opacity: 0;
+    transform: translateY(2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Paper rise — used when the cycle paper enters / a new dispatch lands. */
+@keyframes paper-rise {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 /* Honor reduced-motion */
