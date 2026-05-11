@@ -1,57 +1,63 @@
+import { isWinOutcome } from "../api";
 import { useStore } from "../store";
+import { CaveatBanner } from "./CaveatBanner";
 
-/** Terminal outcome overlay — shown once `outcome` is set. Provides a
- * Restart button that triggers a fresh mission. */
 export function OutcomeCard() {
   const outcome = useStore((s) => s.outcome);
   const meta = useStore((s) => s.mission_meta);
+  const reset = useStore((s) => s.reset);
+  const startMission = useStore((s) => s.startMission);
 
   if (!outcome || !meta) return null;
 
-  const win = outcome.outcome_key.startsWith("win_");
-  const cyclesUsed = outcome.cycles_used;
-  const lostAgents = outcome.agents_lost;
-  const liveAgents = outcome.agents_alive;
+  const win = isWinOutcome(outcome.outcome_key);
+  const stamp = win ? "Mission Complete" : "Mission Failed";
+
+  function restart() {
+    reset();
+    void startMission();
+  }
 
   return (
-    <div
-      className="fixed inset-0 z-40 flex items-center justify-center px-6 py-12 overflow-y-auto"
-      style={{ background: "rgba(5, 6, 4, 0.92)", backdropFilter: "blur(4px)" }}
-    >
-      <article
-        className="bg-paper text-ink w-full max-w-[640px] p-20 shadow-[0_40px_72px_rgba(0,0,0,0.45)] relative animate-paper-rise"
-      >
-        <div className="text-[10px] uppercase tracking-[0.34em] text-stamp mb-3 flex items-center gap-3">
-          <span className="inline-block w-6 h-px bg-stamp" />
-          Mission resolved
+    <div className="scrim heavy">
+      <article className="paper-sheet outcome-card">
+        <CaveatBanner tail="CASE CLOSED" />
+
+        <div className="paper-doctype">
+          <span>OUTCOME</span>
+          <span className="paper-doctype-meta">Op. {meta.codename}</span>
         </div>
-        <h2 className="text-2xl font-bold tracking-[0.16em] text-ink mb-2">
+        <div className="paper-rule64" />
+
+        <span className="stamp stamp-large">{stamp}</span>
+
+        <h2 className="outcome-title">
           Op. {meta.codename} —{" "}
-          <span className={win ? "text-ink" : "text-stamp"}>
+          <span className={`outcome-title-result ${win ? "" : "fail"}`}>
             {win ? "SUCCESS" : "FAILURE"}
           </span>
         </h2>
-        <div
-          className="border-b border-ink mb-7"
-          style={{ width: 92, borderBottomWidth: 1.5 }}
-        />
 
-        <div className="text-sm leading-[1.95] text-ink mb-9 whitespace-pre-wrap">
-          {outcome.summary}
-        </div>
+        <div className="outcome-summary">{outcome.summary}</div>
 
-        <div className="grid grid-cols-2 gap-6 text-[11px] uppercase tracking-[0.18em] text-ink-soft mb-9">
-          <Stat label="Cycles used" value={`${cyclesUsed} / ${outcome.cycles_max}`} />
-          <Stat label="Agents lost" value={lostAgents.join(", ") || "none"} />
-          <Stat label="Agents alive" value={liveAgents.join(", ") || "none"} />
+        <div className="outcome-stats">
+          <Stat
+            label="Cycles used"
+            value={`${outcome.cycles_used} / ${outcome.cycles_max}`}
+          />
+          <Stat
+            label="Agents lost"
+            value={outcome.agents_lost.join(", ") || "none"}
+          />
+          <Stat
+            label="Agents alive"
+            value={outcome.agents_alive.join(", ") || "none"}
+          />
           <Stat label="Outcome key" value={outcome.outcome_key} />
         </div>
 
-        <div className="flex gap-4">
-          <button
-            onClick={() => window.location.reload()}
-            className="bg-transparent px-7 py-3 font-inherit text-xs uppercase font-bold tracking-[0.32em] border-[1.5px] border-ink text-ink cursor-pointer hover:bg-ink hover:text-paper transition-all duration-200"
-          >
+        <div className="outcome-actions">
+          <button type="button" className="paper-btn" onClick={restart}>
             Restart mission
           </button>
         </div>
@@ -63,8 +69,8 @@ export function OutcomeCard() {
 function Stat({ label, value }: { label: string; value: string }) {
   return (
     <div>
-      <div className="text-[9.5px] tracking-[0.24em] text-ink-faint mb-1">{label}</div>
-      <div className="text-ink tracking-[0.1em]">{value}</div>
+      <div className="outcome-stat-label">{label}</div>
+      <div className="outcome-stat-value">{value}</div>
     </div>
   );
 }

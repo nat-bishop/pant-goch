@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type { AgentMeta, Delta, GameState, SseEvent } from "./api";
+import { OPERATIONS_ACTOR } from "./api";
 import * as api from "./api";
 
 // ─── domain shapes ───────────────────────────────────────────────────────
@@ -140,6 +141,7 @@ export const useStore = create<Store>((set, get) => ({
       outcome: null,
       errorMessage: null,
       modalDispatchIndex: null,
+      bootStarted: false,
     }),
 
   startMission: async () => {
@@ -321,7 +323,7 @@ export const useStore = create<Store>((set, get) => ({
           const text = c.dispatch_words.join("");
           const entry: DispatchEntry = {
             cycle_index: c.index,
-            acting: c.dispatch_acting ?? "operations",
+            acting: c.dispatch_acting ?? OPERATIONS_ACTOR,
             archetype: c.dispatch_archetype ?? "?",
             text,
             delta: c.delta,

@@ -13,6 +13,18 @@ async function ensureOk(r: Response, op: string): Promise<void> {
 
 // ─── shared types ────────────────────────────────────────────────────────
 
+/** Sentinel `acting` value used when a dispatch comes from Operations rather
+ * than a field agent. Matches the server's payload string. */
+export const OPERATIONS_ACTOR = "operations";
+
+export function displayActor(acting: string): string {
+  return acting === OPERATIONS_ACTOR ? "OPS" : acting;
+}
+
+export function isWinOutcome(outcomeKey: string): boolean {
+  return outcomeKey.startsWith("win_");
+}
+
 export interface AgentMeta {
   id: string;
   codename: string;

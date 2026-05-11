@@ -6,9 +6,10 @@ export default {
   theme: {
     extend: {
       fontFamily: {
-        // Default sans IS the typewriter. Mockup uses Courier Prime everywhere.
+        // Desk chrome stays typewriter; paper bodies use Newsreader serif.
         sans: ['"Courier Prime"', '"Courier New"', "monospace"],
         mono: ['"Courier Prime"', '"Courier New"', "monospace"],
+        serif: ['Newsreader', '"Iowan Old Style"', 'Georgia', 'serif'],
       },
       colors: {
         desk: "var(--desk)",
@@ -18,6 +19,7 @@ export default {
         paper: "var(--paper)",
         "paper-shade": "var(--paper-shade)",
         "paper-onion": "var(--paper-onion)",
+        "paper-warm": "var(--paper-warm)",
         ink: "var(--ink)",
         "ink-soft": "var(--ink-soft)",
         "ink-faint": "var(--ink-faint)",

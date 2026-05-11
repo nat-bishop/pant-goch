@@ -1,115 +1,143 @@
+import { useEffect, useState } from "react";
+import { nowZulu } from "../lib/time";
 import { useStore } from "../store";
+import { CaveatBanner } from "./CaveatBanner";
 import { OptionsList } from "./OptionsList";
 import { StreamingText } from "./StreamingText";
 
-/** The document on the desk — classification, MINUTE heading, memo header,
- * State of Play body, options divider, options list, paper footer. The
- * .has-selection / .authorized state classes are applied to drive the
- * focus-dim treatment per the mockup. */
+type AuthPhase = "wait" | "ready" | "authorized" | "continue";
+
+const BUTTON_LABEL: Record<AuthPhase, string> = {
+  wait: "Authorize ▸",
+  ready: "Authorize ▸",
+  authorized: "Authorized ✓",
+  continue: "Continue ▸",
+};
+
 export function Paper() {
   const meta = useStore((s) => s.mission_meta);
   const cycle = useStore((s) => s.cycle);
+  const authorize = useStore((s) => s.authorize);
+  const continueCycle = useStore((s) => s.continueCycle);
+  const [optsVisible, setOptsVisible] = useState(false);
+  const [stampTimestamp, setStampTimestamp] = useState<string>("");
+
+  // 480ms idle after the SoP completes — matches the design's stage 2→3
+  // transition so the player reads State of Play before the options appear.
+  useEffect(() => {
+    if (!cycle) {
+      setOptsVisible(false);
+      return;
+    }
+    if (cycle.sop_complete) {
+      const t = setTimeout(() => setOptsVisible(true), 480);
+      return () => clearTimeout(t);
+    }
+    setOptsVisible(false);
+  }, [cycle?.index, cycle?.sop_complete]);
 
   if (!cycle || !meta) {
     return (
-      <article className="bg-paper text-ink w-full max-w-[820px] p-20 shadow-[0_40px_72px_rgba(0,0,0,0.4)] relative animate-paper-rise">
-        <div className="text-ink-faint italic">Waiting for cycle…</div>
+      <article className="paper-sheet">
+        <CaveatBanner />
+        <div className="paper-waiting">Waiting for cycle…</div>
       </article>
     );
   }
 
-  const hasSelection = cycle.selected_option_index !== null;
-  const authorized = cycle.authorized;
-  const cycleLabel = String(cycle.index).padStart(2, "0");
+  const file =
+    meta.agents[0]?.file_number ? `PF.${meta.agents[0].file_number}` : "PF.??-?";
+  const headerTimestamp = nowZulu();
+
+  const canAuth =
+    cycle.awaiting_auth &&
+    cycle.selected_option_index !== null &&
+    !cycle.authorized;
+  const phase: AuthPhase = cycle.awaiting_continue
+    ? "continue"
+    : cycle.authorized
+      ? "authorized"
+      : canAuth
+        ? "ready"
+        : "wait";
+  const onClick =
+    phase === "ready"
+      ? () => {
+          setStampTimestamp(nowZulu());
+          void authorize();
+        }
+      : phase === "continue"
+        ? () => void continueCycle()
+        : undefined;
+
+  const showFootHint =
+    !cycle.sop_complete ||
+    (cycle.dispatch_acting !== null && !cycle.dispatch_complete);
 
   return (
     <article
-      className="bg-paper text-ink w-full max-w-[820px] px-24 py-20 shadow-[0_1px_2px_rgba(0,0,0,0.3),0_12px_28px_rgba(0,0,0,0.5),0_40px_72px_rgba(0,0,0,0.4)] relative animate-paper-rise"
-      aria-label={`cycle ${cycle.index} minute`}
-      style={{
-        backgroundImage:
-          "radial-gradient(ellipse 100% 100% at 50% 50%, transparent 75%, rgba(150, 130, 80, 0.10) 100%)",
-      }}
-      data-has-selection={hasSelection}
-      data-authorized={authorized}
+      className="paper-sheet"
+      aria-label={`cycle ${cycle.index} brief`}
+      data-has-selection={cycle.selected_option_index !== null}
+      data-authorized={cycle.authorized}
     >
-      <span
-        className="absolute top-9 right-14 text-stamp text-[10.5px] font-bold uppercase tracking-[0.3em] py-1.5 px-3.5 opacity-85"
-        style={{
-          border: "2px double var(--stamp)",
-          background: "rgba(122, 31, 24, 0.04)",
-          transform: "rotate(-2deg)",
-        }}
-      >
-        TOP SECRET
-      </span>
+      <CaveatBanner />
 
-      <div className="text-[13px] font-bold tracking-[0.42em] text-ink mb-1">
-        MINUTE
-      </div>
-      <div
-        className="border-b border-ink mb-8"
-        style={{ width: 92, borderBottomWidth: 1.5 }}
-      />
-
-      <div className="mb-9 text-[12.5px] leading-[1.95] text-ink">
-        <MemoRow label="TO" value="Handler" />
-        <MemoRow label="FROM" value="Operations Desk" />
-        <MemoRow label="RE" value={`Cycle ${cycleLabel} — authorization required`} />
-      </div>
-
-      <div
-        className="text-[14.5px] leading-[2.05] text-ink mb-12 transition-opacity duration-300"
-        style={{
-          maxWidth: "60ch",
-          opacity: hasSelection ? 0.35 : 1,
-        }}
-      >
-        <StreamingText
-          words={cycle.sop_words}
-          showCaret={!cycle.sop_complete}
-          complete={cycle.sop_complete}
-        />
-      </div>
-
-      <div
-        className="grid grid-cols-[1fr_auto_1fr] gap-5 items-center mb-7 transition-opacity duration-300"
-        style={{ opacity: hasSelection ? 0.45 : 1 }}
-      >
-        <div className="h-px bg-rule" />
-        <span className="text-[11px] uppercase tracking-[0.34em] text-stamp whitespace-nowrap font-bold">
-          — courses of action —
+      <div className="paper-doctype">
+        <span>BRIEF</span>
+        <span className="paper-doctype-meta">
+          Op. {meta.codename} · {headerTimestamp}
         </span>
-        <div className="h-px bg-rule" />
+      </div>
+      <div className="paper-rule64" />
+
+      <div className="status-divider" />
+
+      <div className="sop-block">
+        <div className="sop-label">STATE OF PLAY</div>
+        <div className="sop-body">
+          <StreamingText
+            words={cycle.sop_words}
+            showCaret={!cycle.sop_complete}
+            complete={cycle.sop_complete}
+          />
+        </div>
       </div>
 
-      <OptionsList />
+      <div className={`opts-block ${optsVisible ? "in" : ""}`}>
+        <div className="opts-label">FOR AUTHORIZATION</div>
+        <OptionsList visible={optsVisible} />
 
-      <div
-        className="mt-11 pt-4 border-t border-rule-soft border-dashed flex justify-between items-baseline text-[10.5px] uppercase tracking-[0.22em] text-ink-soft"
-      >
+        <div className="auth">
+          <div className="auth-line">
+            <span className="paper-lbl">AUTHORIZED</span>
+            <span className="auth-rule">
+              {cycle.authorized && (
+                <span className="stamp stamp-auth">
+                  AUTHORIZED · {stampTimestamp || nowZulu()} · N.B.
+                </span>
+              )}
+            </span>
+          </div>
+          <button
+            type="button"
+            className="paper-btn"
+            disabled={onClick === undefined}
+            onClick={onClick}
+          >
+            {BUTTON_LABEL[phase]}
+          </button>
+        </div>
+      </div>
+
+      <div className="paper-foot">
         <span>
-          <span className="text-ink font-bold tracking-[0.14em]">N.B.</span>
-          <span className="text-ink-faint mx-2.5">/</span>
-          Handler
-          <span className="text-ink-faint mx-2.5">/</span>
-          STA-1
+          {file} · cycle {cycle.index} of {meta.max_cycles} · p.1
         </span>
-        <span>
-          {meta.codename}
-          <span className="text-ink-faint mx-2"> · </span>
-          PF.{meta.agents[0]?.file_number ?? "??-?"}
-        </span>
+        {showFootHint && (
+          <span className="paper-foot-hint">tap to skip reveal</span>
+        )}
       </div>
     </article>
-  );
-}
-
-function MemoRow({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="grid grid-cols-[64px_1fr] gap-3">
-      <span className="font-bold tracking-[0.1em]">{label}</span>
-      <span>{value}</span>
-    </div>
   );
 }
