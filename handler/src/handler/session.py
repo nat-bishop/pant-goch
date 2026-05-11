@@ -28,11 +28,9 @@ from pydantic import TypeAdapter
 
 from .agents import AgentBundle
 from .events import Event, fold
-from .models import Mission, State
+from .models import Mission, State, make_initial_state
 
 
-# Module-level adapter so we don't re-build it per session. Rebuilt in Phase 1
-# once the Event union is concrete.
 _EVENT_ADAPTER: TypeAdapter[Any] = TypeAdapter(Event)
 
 
@@ -59,17 +57,10 @@ class Session:
             raise IndexError(
                 f"event index {index} out of range [0, {len(self.event_log)}]"
             )
-        snapshot = _fresh_state_from_mission(self.mission)
+        snapshot = make_initial_state(self.mission)
         for ev in self.event_log[:index]:
             fold(snapshot, ev)
         return snapshot
-
-
-def _fresh_state_from_mission(mission: Mission) -> State:
-    """Construct a starting `State` from authored `Mission` initial qualities.
-    Phase 1 fills out the universal-quality injection (cycles_remaining,
-    per-agent cover) and authored initial qualities."""
-    return State()
 
 
 def make_session(
@@ -83,7 +74,7 @@ def make_session(
     return Session(
         mission=mission,
         agents=agents,
-        state=_fresh_state_from_mission(mission),
+        state=make_initial_state(mission),
         persist=persist,
     )
 

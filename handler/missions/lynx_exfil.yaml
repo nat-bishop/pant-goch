@@ -1,0 +1,293 @@
+# Op. LYNX-EXFIL — the MVP mission per HANDLER_SPEC_V2 §10.
+#
+# Universal qualities are auto-injected by `make_initial_state`:
+#   mission.cycles_remaining = max_cycles
+#   agent[LYNX].cover = 6 (from agents[*].starting_cover)
+#   agent[KESTREL].cover = 9
+#
+# Authored qualities listed under `initial_qualities` below.
+
+id: lynx_exfil
+name: "Op. LYNX-EXFIL"
+codename: "LYNX-EXFIL"
+max_cycles: 6
+
+opening_prose: |
+  LYNX has been deep cover in the city for two years. Forty-eight hours ago she
+  was photographed at a meeting that should not have happened. Counter-intel
+  hasn't moved on her yet but the sweep is tightening. KESTREL is in the same
+  city, two days into a separate reconnaissance op. You have six cycles to
+  get LYNX out.
+
+agents:
+  - id: LYNX
+    codename: Lynx
+    file_number: "19-X"
+    voice_register: "terse, observational, cautious; first-person; clipped sentences"
+    voice_details: |
+      Two years deep cover. Speaks like she's already lost things she hasn't
+      yet. Doesn't justify, doesn't decorate. Notices what changed, names it,
+      moves on.
+    starting_cover: 6
+
+  - id: KESTREL
+    codename: Kestrel
+    file_number: "41-K"
+    voice_register: "elaborate, justifying, present-tense; first-person; runs sentences long"
+    voice_details: |
+      Two years in service, improvises constantly. Talks herself through
+      situations on paper. Justifies before it occurs to her that no one
+      asked.
+    starting_cover: 9
+
+initial_qualities:
+  mission.extraction_stage: 0   # 0 unstarted, 1 papers, 2 location, 3 exfil
+
+outcomes:
+  win_lynx_extracted: "LYNX safely extracted via the eastern train route."
+  loss_lynx_captured: "LYNX's cover collapsed before extraction. She was lost."
+  loss_timeout: "The window closed. The operation has been closed without resolution."
+
+archetypes:
+  - id: ACTIVATE_SLEEPER_FOR_PAPERS
+    intent: "Activate the sleeper REDFIELD to surface the extraction papers."
+    when:
+      kind: quality_equals
+      quality: mission.extraction_stage
+      value: 0
+    params: []
+    effects:
+      - quality: mission.extraction_stage
+        value: 1
+        op: set
+
+  - id: RETRIEVE_PAPERS_VIA_AGENT
+    intent: "Send the bound agent to physically pick up the papers — costs cover."
+    when:
+      kind: and
+      of:
+        - kind: quality_equals
+          quality: mission.extraction_stage
+          value: 1
+        - kind: quality_gt
+          quality: agent[$agent].cover
+          value: 0
+    params: [agent]
+    effects:
+      - quality: mission.extraction_stage
+        value: 2
+        op: set
+      - quality: agent[$agent].cover
+        value: -2
+        op: add
+
+  - id: DEAD_DROP_PAPERS
+    intent: "Slower, safer alternative to direct retrieval. No cover hit but doesn't progress."
+    when:
+      kind: quality_equals
+      quality: mission.extraction_stage
+      value: 1
+    params: []
+    effects: []
+
+  - id: LYNX_MOVES_TO_SAFEHOUSE
+    intent: "LYNX repositions for exfil. Modest cover cost."
+    when:
+      kind: and
+      of:
+        - kind: quality_gte
+          quality: mission.extraction_stage
+          value: 1
+        - kind: quality_lte
+          quality: mission.extraction_stage
+          value: 2
+        - kind: quality_gt
+          quality: agent[LYNX].cover
+          value: 0
+    params: []
+    effects:
+      - quality: agent[LYNX].cover
+        value: -1
+        op: add
+
+  - id: RUN_EXFIL
+    intent: "Eastern train extraction. Terminal action — clears the mission."
+    when:
+      kind: and
+      of:
+        - kind: quality_equals
+          quality: mission.extraction_stage
+          value: 2
+        - kind: quality_gt
+          quality: agent[LYNX].cover
+          value: 0
+    params: []
+    effects:
+      # Two conditional branches per spec §5: clean exit costs less.
+      - quality: mission.extraction_stage
+        value: 3
+        op: set
+      - quality: agent[LYNX].cover
+        value: -2
+        op: add
+        when:
+          kind: quality_gte
+          quality: agent[LYNX].cover
+          value: 5
+      - quality: agent[LYNX].cover
+        value: -4
+        op: add
+        when:
+          kind: quality_lt
+          quality: agent[LYNX].cover
+          value: 5
+
+  - id: DIVERSION_BY_AGENT
+    intent: "Bound agent draws counter-intel attention. Costly to them, protects LYNX one cycle."
+    when:
+      kind: quality_gt
+      quality: agent[$agent].cover
+      value: 1
+    params: [agent]
+    effects:
+      - quality: agent[$agent].cover
+        value: -3
+        op: add
+      - quality: agent[LYNX].cover_protected
+        value: true
+        op: set
+
+  - id: HOLD
+    intent: "Take no action this cycle. Passive pressure beats fire; cover decays."
+    when:
+      kind: quality_gte
+      quality: mission.cycles_remaining
+      value: 1
+    params: []
+    effects: []
+
+moments:
+  - id: kestrel_sacrifice
+    fires_at_most: once_per_mission
+    when:
+      kind: and
+      of:
+        - kind: quality_lte
+          quality: agent[KESTREL].cover
+          value: 5
+        - kind: quality_gt
+          quality: agent[KESTREL].cover
+          value: 0
+        - kind: quality_lte
+          quality: mission.extraction_stage
+          value: 2
+        - kind: quality_lte
+          quality: mission.cycles_remaining
+          value: 2
+        - kind: not
+          of:
+            kind: moment_fired
+            moment: kestrel_sacrifice
+    intent: |
+      KESTREL deliberately sacrifices her remaining cover so LYNX has clean
+      lanes for the next stage of extraction. Permanent loss. The player is
+      consciously trading one agent for the other.
+    must_communicate:
+      - The decision is KESTREL's deliberate choice, not accidental
+      - The cost is permanent and irreversible
+      - LYNX gains a tangible safety advantage
+    must_not:
+      - Predict whether LYNX successfully escapes
+      - Frame KESTREL as already captured (she is choosing to be)
+      - Specify tactical details that may not fit current state
+    tone: "solemn, deliberate, present-tense"
+    effects:
+      - quality: agent[KESTREL].cover
+        value: 0
+        op: set
+      - quality: mission.extraction_stage
+        value: 1
+        op: add
+      - quality: agent[LYNX].cover_protected
+        value: true
+        op: set
+
+beats:
+  - id: extraction_complete
+    terminal: true
+    outcome_key: win_lynx_extracted
+    priority: 0
+    when:
+      kind: and
+      of:
+        - kind: quality_equals
+          quality: mission.extraction_stage
+          value: 3
+        - kind: quality_gt
+          quality: agent[LYNX].cover
+          value: 0
+
+  - id: lynx_lost
+    terminal: true
+    outcome_key: loss_lynx_captured
+    priority: 0
+    when:
+      kind: quality_equals
+      quality: agent[LYNX].cover
+      value: 0
+
+  - id: timeout
+    terminal: true
+    outcome_key: loss_timeout
+    priority: 1
+    when:
+      kind: quality_equals
+      quality: mission.cycles_remaining
+      value: 0
+
+  # Reaction: marks the agent lost when cover hits 0. Fires once per agent.
+  # The terminal `lynx_lost` short-circuits the cycle when LYNX hits 0, so
+  # this beat effectively only ever marks KESTREL in practice. Authored as
+  # `for_each_agent` so it stays correct if a future mission adds agents.
+  - id: agent_lost_when_cover_zero
+    for_each_agent: true
+    fires_at_most: once_per_agent
+    priority: 5
+    when:
+      kind: quality_equals
+      quality: agent[$agent].cover
+      value: 0
+    effects:
+      - quality: agent[$agent].lost
+        value: true
+        op: set
+
+  # Passive pressure: when the authorized option DIDN'T progress the mission,
+  # both agents' covers tick down. This is what makes HOLD costly.
+  - id: world_attention_tightens
+    fires_at_most: unlimited
+    only_when_no_progress_this_cycle: true
+    priority: 10
+    when:
+      kind: quality_lt
+      quality: mission.extraction_stage
+      value: 3
+    effects:
+      - quality: agent[LYNX].cover
+        value: -1
+        op: add
+        when:
+          # cover_protected (set by DIVERSION_BY_AGENT or kestrel_sacrifice)
+          # blocks this cycle's decay on LYNX.
+          kind: not
+          of:
+            kind: quality_equals
+            quality: agent[LYNX].cover_protected
+            value: true
+      - quality: agent[KESTREL].cover
+        value: -1
+        op: add
+        when:
+          kind: quality_gt
+          quality: agent[KESTREL].cover
+          value: 0
