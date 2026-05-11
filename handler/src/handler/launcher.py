@@ -200,10 +200,8 @@ def resolve_config(settings: Settings | None = None) -> LlamaConfig:
     # Reasoning is setting-driven (config.py:llama_reasoning_mode). Default
     # `off` → drop both flags from the command line so llama-server's own
     # default takes over (no `<think>` block in Gemma 4 outputs). Flip to
-    # `on` via env to restore thinking on chat + director; the per-agent
-    # `_NO_THINK_KWARGS` overrides in agents.py keep classifier/extractor/
-    # fact-checker/summary no-think regardless. `auto` lets llama-server
-    # detect from the chat template.
+    # `on` via env to restore thinking on the three agents (SoP, drafter,
+    # renderer). `auto` lets llama-server detect from the chat template.
     reasoning_mode = s.llama_reasoning_mode if s.llama_reasoning_mode != "off" else None
     reasoning_format = "deepseek" if reasoning_mode in ("on", "auto") else None
     return LlamaConfig(

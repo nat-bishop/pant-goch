@@ -5,22 +5,13 @@ import { useStore } from "../store";
 export function OutcomeCard() {
   const outcome = useStore((s) => s.outcome);
   const meta = useStore((s) => s.mission_meta);
-  const state = useStore((s) => s.state);
-  const inbox = useStore((s) => s.inbox);
 
   if (!outcome || !meta) return null;
 
   const win = outcome.outcome_key.startsWith("win_");
-  const cyclesUsed = inbox.length;
-  const lostAgents = meta.agents
-    .filter((a) => {
-      const cover = state[`agent[${a.id}].cover`];
-      return typeof cover === "number" && cover <= 0;
-    })
-    .map((a) => a.id);
-  const liveAgents = meta.agents
-    .filter((a) => !lostAgents.includes(a.id))
-    .map((a) => a.id);
+  const cyclesUsed = outcome.cycles_used;
+  const lostAgents = outcome.agents_lost;
+  const liveAgents = outcome.agents_alive;
 
   return (
     <div
@@ -50,7 +41,7 @@ export function OutcomeCard() {
         </div>
 
         <div className="grid grid-cols-2 gap-6 text-[11px] uppercase tracking-[0.18em] text-ink-soft mb-9">
-          <Stat label="Cycles used" value={`${cyclesUsed} / ${meta.max_cycles}`} />
+          <Stat label="Cycles used" value={`${cyclesUsed} / ${outcome.cycles_max}`} />
           <Stat label="Agents lost" value={lostAgents.join(", ") || "none"} />
           <Stat label="Agents alive" value={liveAgents.join(", ") || "none"} />
           <Stat label="Outcome key" value={outcome.outcome_key} />

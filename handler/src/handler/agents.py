@@ -419,33 +419,69 @@ def engine_fallback_options(
     """Engine-authored fallback when the drafter exhausts retries. Picks
     deterministic options from the valid catalog with terse generic prose.
 
-    Strategy: HOLD is always present and goes first; then one (archetype, agent)
-    per available agent, then up to one more. Forced moment is fulfilled by
-    promoting/synthesising a satisfying option when required.
+    Strategy:
+    - If a forced moment is required, the first option satisfies it (using
+      any agent-bound catalog entry as carrier — moments apply their effects
+      on top of the carrier archetype's).
+    - HOLD is included next if available.
+    - Then one (archetype, agent) per remaining agent.
+    - Fill from leftover catalog entries until 3–4 options exist.
+
+    The validator requires 3–4 options and (when a forced moment is active)
+    exactly one option with `satisfies_moment` set. The function preserves
+    that contract whenever the catalog has enough variety.
     """
     options: list[Option] = []
-    # Pull a HOLD if available.
-    for (a, ag, params) in catalog:
-        if a == "HOLD":
-            options.append(
+    used_keys: set[tuple[str, str | None]] = set()
+
+    def _add(opt: Option) -> None:
+        key = (opt.archetype, opt.agent)
+        if key in used_keys:
+            return
+        used_keys.add(key)
+        options.append(opt)
+
+    # Forced moment FIRST so it's never overwritten by later fill.
+    if forced_moment is not None:
+        carrier = next(
+            ((a, ag, params) for (a, ag, params) in catalog if ag is not None),
+            None,
+        )
+        if carrier is not None:
+            a, ag, params = carrier
+            _add(
                 Option(
                     archetype=a,
                     agent=ag,
                     params=params,
-                    title="Hold position",
-                    prose="Take no action this cycle. Both agents stay put. The situation tightens.",
+                    title=forced_moment.id,
+                    prose=forced_moment.intent.strip()[:240] or f"Honor the {forced_moment.id} moment.",
+                    satisfies_moment=forced_moment.id,
                 )
             )
-            break
-    # One archetype per agent if available.
-    seen_agents: set[str | None] = {None}
+
+    # HOLD next, if available and not already used as a forced-moment carrier.
     for (a, ag, params) in catalog:
-        if a == "HOLD":
+        if a != "HOLD":
             continue
-        if ag in seen_agents:
+        _add(
+            Option(
+                archetype=a,
+                agent=ag,
+                params=params,
+                title="Hold position",
+                prose="Take no action this cycle. Both agents stay put. The situation tightens.",
+            )
+        )
+        break
+
+    # One archetype per remaining agent.
+    seen_agents: set[str | None] = {o.agent for o in options}
+    for (a, ag, params) in catalog:
+        if a == "HOLD" or ag in seen_agents:
             continue
         seen_agents.add(ag)
-        options.append(
+        _add(
             Option(
                 archetype=a,
                 agent=ag,
@@ -457,14 +493,13 @@ def engine_fallback_options(
                 ),
             )
         )
-        if len(options) == 3:
+        if len(options) >= 4:
             break
-    # If we still don't have 3, fill from remaining catalog entries.
+
+    # Fill from remaining catalog entries until ≥3 (or catalog exhausted).
     if len(options) < 3:
         for (a, ag, params) in catalog:
-            if any(o.archetype == a and o.agent == ag for o in options):
-                continue
-            options.append(
+            _add(
                 Option(
                     archetype=a,
                     agent=ag,
@@ -475,28 +510,7 @@ def engine_fallback_options(
             )
             if len(options) >= 3:
                 break
-    # Forced moment: synthesise a satisfying option if possible.
-    if forced_moment is not None:
-        # Replace last option with one that satisfies the moment, using the
-        # moment's intent as prose. We can't know which (archetype, agent) is
-        # the right fit mechanically — moments are mechanically engine-driven,
-        # so we pair the moment with the first agent-bound catalog entry
-        # whose effects align (heuristic: any agent-bound option works as a
-        # carrier; the moment's effects are layered on top).
-        carrier = next(
-            ((a, ag, params) for (a, ag, params) in catalog if ag is not None),
-            None,
-        )
-        if carrier is not None:
-            a, ag, params = carrier
-            options[-1] = Option(
-                archetype=a,
-                agent=ag,
-                params=params,
-                title=f"{forced_moment.id}",
-                prose=forced_moment.intent.strip()[:240],
-                satisfies_moment=forced_moment.id,
-            )
+
     return options[:4]
 
 

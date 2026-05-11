@@ -41,6 +41,12 @@ Thumbs.db
 # Local-only Playwright MCP session artifacts (browser logs, page snapshots)
 .playwright-mcp/
 
+# TypeScript incremental build cache
+*.tsbuildinfo
+
+# Vite production build output
+web/dist/
+
 # Logfire project credentials (per-machine, contains write token)
 .logfire/
 

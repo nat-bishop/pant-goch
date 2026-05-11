@@ -52,6 +52,11 @@ export interface CycleState {
 export interface Outcome {
   outcome_key: string;
   summary: string;
+  terminal_beat: string;
+  cycles_used: number;
+  cycles_max: number;
+  agents_lost: string[];
+  agents_alive: string[];
 }
 
 interface Store {
@@ -316,7 +321,17 @@ export const useStore = create<Store>((set, get) => ({
         break;
 
       case "mission_resolved":
-        set({ outcome: { outcome_key: ev.outcome, summary: ev.summary } });
+        set({
+          outcome: {
+            outcome_key: ev.outcome,
+            summary: ev.summary,
+            terminal_beat: ev.terminal_beat,
+            cycles_used: ev.cycles_used,
+            cycles_max: ev.cycles_max,
+            agents_lost: ev.agents_lost,
+            agents_alive: ev.agents_alive,
+          },
+        });
         break;
 
       case "session_closed":

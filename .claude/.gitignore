@@ -1,0 +1,10 @@
+# Ignore everything in .claude/ except the committed skills directory.
+# Sessions, transcripts, plans, and local cache stay local; skills are
+# the only artifact meant to ship with the repo.
+*
+!.gitignore
+!skills/
+!skills/**
+# Don't commit Python bytecode under skills/scripts/.
+skills/**/__pycache__/
+skills/**/*.pyc

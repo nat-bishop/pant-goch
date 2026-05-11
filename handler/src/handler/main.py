@@ -65,7 +65,7 @@ from .launcher import (
 )
 from .mission_loader import MissionLoadError, load_mission
 from .models import Mission, Option, State
-from .session import Session, make_session
+from .session import Session, make_jsonl_persistor, make_session
 
 
 _BOOT_SETTINGS = Settings()
@@ -428,7 +428,7 @@ async def _run_session_loop(rt: SessionRuntime) -> None:
     try:
         while True:
             async def _await_auth() -> Option:
-                rt.auth_future = asyncio.get_event_loop().create_future()
+                rt.auth_future = asyncio.get_running_loop().create_future()
                 option = await rt.auth_future
                 rt.auth_future = None
                 return option
@@ -488,8 +488,12 @@ def health() -> dict[str, str]:
 
 @app.post("/mission/start", response_model=StartResponse)
 async def mission_start() -> StartResponse:
-    assert MISSION is not None and AGENTS is not None, "lifespan not run"
-    session = make_session(MISSION, AGENTS)
+    assert MISSION is not None and AGENTS is not None and SETTINGS is not None, "lifespan not run"
+    persist = None
+    if SETTINGS.session_save_path is not None:
+        SETTINGS.session_save_path.parent.mkdir(parents=True, exist_ok=True)
+        persist = make_jsonl_persistor(SETTINGS.session_save_path)
+    session = make_session(MISSION, AGENTS, persist=persist)
     rt = SessionRuntime(session=session)
     SESSIONS[session.id] = rt
     rt.cycle_task = asyncio.create_task(_run_session_loop(rt))

@@ -4,12 +4,9 @@ LLAMA_BIN   := vendor/llama.cpp/llama-server.exe
 LLAMA_HOST  := 127.0.0.1
 LLAMA_PORT  := 8080
 
-# Eval llama: Qwen 3.6 35B-A3B (MoE, ~3B active) on mainline llama.cpp,
-# routed through the same `launcher.py` path as the engine (config in
-# config.py:eval_llama_*; argv in launcher.build_command). Powers the
-# synthetic-player agent and every LLM judge in the playtester. Different
-# family from Gemma (the SUT) to mitigate same-family preference leakage
-# in judging — see arxiv 2502.01534.
+# Eval llama (Qwen 3.6 35B-A3B MoE) — only needed by future LLM-judge phases
+# of the playtest. The MVP playtest is programmatic-only and doesn't require
+# the eval llama. Kept here for when judges return.
 EVAL_MODEL      := models/Qwen3.6-35B-A3B-Q8_0.gguf
 EVAL_MODEL_URL  := https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/Qwen3.6-35B-A3B-Q8_0.gguf
 
@@ -17,22 +14,20 @@ EVAL_MODEL_URL  := https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/m
 
 .PHONY: help
 help:
-	@echo "Inbox targets:"
-	@echo "  make run             Boot sidecar (spawns llama) + web dev server in parallel"
-	@echo "  make download-model       Fetch the Gemma 4 E4B Q8_0 GGUF (~8 GB)"
-	@echo "  make download-eval-model  Fetch the Qwen 3.6 35B-A3B Q8_0 GGUF (~37 GB)"
-	@echo "  make llama                Run engine llama-server (Gemma on :8080, single-user KV)"
-	@echo "  make llama-playtest       Run engine llama with bumped KV pool for the playtester (~2M ctx, 64 concurrent)"
-	@echo "  make llama-eval           Run eval llama-server (Qwen 35B-A3B on :8081, -np 16 -c 512k, ~78 GB VRAM)"
-	@echo "  make sidecar              Run Python sidecar, no llama   (terminal 2)"
-	@echo "  make web                  Run Vite dev server            (terminal 3)"
-	@echo "  make test                 Run pytest"
-	@echo "  make playtest             Run the LLM playtester (requires both llamas up)"
-	@echo "  make lint-scenario   Lint handler/scenario.yaml (fast; spec rules only)"
-	@echo "  make analyze-scenario  Run ASP-backed reachability analyzer (clingo; sub-second on 13b)"
-	@echo "  make typecheck       Run TS typecheck on web/"
-	@echo "  make clean           Remove __pycache__ and logs/*.log"
-	@echo "  make kill-zombies    Force-kill stragglers on :8000/:8080/:5173-5176 (recovery)"
+	@echo "HANDLER targets:"
+	@echo "  make run            Boot sidecar (spawns llama) + web dev server in parallel"
+	@echo "  make download-model      Fetch the Gemma 4 E4B Q8_0 GGUF (~8 GB)"
+	@echo "  make download-eval-model Fetch the Qwen 3.6 35B-A3B Q8_0 GGUF (~37 GB)"
+	@echo "  make llama               Run engine llama-server (Gemma on :8080)"
+	@echo "  make llama-eval          Run eval llama-server (Qwen 35B-A3B on :8081)"
+	@echo "  make sidecar             Run Python sidecar, externally-managed llama (terminal 2)"
+	@echo "  make web                 Run Vite dev server (terminal 3)"
+	@echo "  make test                Run pytest"
+	@echo "  make typecheck           Run TS typecheck on web/"
+	@echo "  make playtest            Run the option-picker playtest (requires sidecar running)"
+	@echo "  make clean               Remove __pycache__ and logs/*.log"
+	@echo "  make kill-zombies        Force-kill stragglers on :8000/:8080/:5173-5176"
+	@echo "  make mission-check       Validate handler/missions/*.yaml against the schema"
 
 # `run` boots sidecar and web in parallel via `concurrently` (npm). Ctrl-C
 # propagates through concurrently → tree-kill → both children die. The
@@ -57,31 +52,15 @@ $(EVAL_MODEL):
 .PHONY: download-eval-model
 download-eval-model: $(EVAL_MODEL)
 
-# Boots llama-server via handler.run_llama so the argv comes from the
-# same `launcher.build_command` the sidecar uses. Don't reintroduce a
-# hardcoded llama-server invocation here — it will drift from Settings
-# (this is exactly how `-np` got stuck at 8 while config.py said 128).
+# Boots llama-server via handler.run_llama so the argv comes from the same
+# `launcher.build_command` the sidecar uses. Don't reintroduce a hardcoded
+# llama-server invocation here — it will drift from Settings.
 .PHONY: llama
 llama: $(MODEL)
 	cd handler && uv run python -m handler.run_llama
 
-# Engine llama, sized for the playtester at --parallel 64. Bumps `-np` to
-# 64 (matches max concurrency) and lets launcher.py auto-size `-c` to
-# `n_parallel × llama_ctx = 64 × 32k = 2M`. Single-session llama_ctx stays
-# 32k, so the chat agent's history-compaction threshold is unaffected.
-# KV cost ≈ 64 × 32k × ~4 KB/tok (Gemma MQA) ≈ ~8 GB VRAM. The default
-# `--no-kv-unified` (see config.py:llama_kv_unified) means llama-server
-# divides `-c` by `-np` per slot — each slot gets the full 32k budget.
-.PHONY: llama-playtest
-llama-playtest: $(MODEL)
-	cd handler && LLAMA_N_PARALLEL=64 uv run python -m handler.run_llama
-
-# Eval llama: Qwen 3.6 35B-A3B (MoE) on mainline llama.cpp. Routed through
-# the same `handler.run_llama` entry point as the engine — `--role eval`
-# selects `resolve_eval_config` (config.py:eval_llama_*) which omits the
-# Gemma-specific `--reasoning` flags but keeps `--jinja` (Qwen has its own
-# bundled chat template + thinking handling). Defaults size for the
-# playtester at `--parallel 64`: -np 64 --kv-unified, auto-sized -c=2M.
+# Eval llama, routed through the same launcher.py with `--role eval`. Used
+# by future LLM-judge phases of the playtest.
 .PHONY: llama-eval
 llama-eval: $(EVAL_MODEL)
 	cd handler && uv run python -m handler.run_llama --role eval
@@ -98,39 +77,18 @@ web:
 test:
 	cd handler && uv run pytest
 
-# Scenario linter. Runs against `handler/scenario.yaml` by default.
-# Loads the scenario via the Pydantic models (so `_cross_references`
-# parse errors surface first), then applies the author-facing checks the
-# model doesn't catch on its own. Fast — spec rules only. The state-space
-# analyzer is opt-in via `--analyzer`; run `make analyze-scenario` to
-# invoke it as its own target. See `handler/scripts/lint_rules.md`
-# for what each check does and why.
-.PHONY: lint-scenario
-lint-scenario:
-	cd handler && uv run python scripts/lint_scenario.py scenario.yaml
+# Mission YAML schema check — loads every handler/missions/*.yaml and
+# surfaces validator errors with the file path. Cheap (no llama, no SSE).
+.PHONY: mission-check
+mission-check:
+	cd handler && uv run python -c "from pathlib import Path; from handler.mission_loader import load_mission; [print(f'OK {p.name}: {load_mission(p).codename}') for p in sorted(Path('missions').glob('*.yaml'))]"
 
-# Static reachability analyzer (ASP-backed via clingo). Computes which
-# beats are reachable from boot, per-quality value bounds, and orphan/
-# bound-mismatch findings that the spec lint can't see. Sub-second on
-# the production scenario thanks to clingo's brave-mode consequence
-# reasoning — see DendryScope (Robison & Mateas, AIIDE 2023) for the
-# encoding precedent. Run before commit / in CI alongside `lint-scenario`.
-.PHONY: analyze-scenario
-analyze-scenario:
-	cd handler && uv run python scripts/analyze_scenario.py scenario.yaml
-
-# LLM playtester. Probes /health on BOTH llama servers (engine on :8080,
-# eval on :8081) before booting; errors clearly if either isn't up. Boot
-# them in separate terminals first via `make llama-playtest` (bumped KV
-# pool) and `make llama-eval`. Installs the optional pydantic-evals dep on
-# first run via `uv sync --extra playtest`. PYTHONIOENCODING=utf-8 keeps
-# pydantic-evals' rich-rendered evaluation summary from crashing on the
-# Windows cp1252 console when it prints `✓` / `✗` glyphs. `python -u`
-# disables stdout buffering so progress is visible while the run is in
-# flight (default-buffered subprocesses don't flush until exit).
+# Playtest harness. Requires the sidecar to be running (boots its own llama
+# by default). Probes /health before starting. Programmatic evaluators only
+# for MVP — LLM judges come back when prose-quality scoring is worth it.
 .PHONY: playtest
 playtest:
-	cd handler && uv sync --extra playtest && PYTHONIOENCODING=utf-8 uv run python -u -m scripts.playtest
+	cd handler && PYTHONIOENCODING=utf-8 uv run python -u -m scripts.playtest
 
 .PHONY: typecheck
 typecheck:

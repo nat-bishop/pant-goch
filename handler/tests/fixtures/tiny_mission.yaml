@@ -1,0 +1,139 @@
+# Minimal HANDLER mission used by unit tests. 2 agents, 3 archetypes, 1
+# moment, 4 beats. Exercises every engine primitive without LYNX-EXFIL's
+# tuning. The "tiny" suffix signals: this is NOT a playable scenario.
+
+id: tiny
+name: "Tiny Test Mission"
+codename: "TINY"
+max_cycles: 4
+
+opening_prose: "A two-agent test bed."
+
+agents:
+  - id: ALPHA
+    codename: Alpha
+    file_number: "01-A"
+    voice_register: "test voice"
+    starting_cover: 5
+  - id: BRAVO
+    codename: Bravo
+    file_number: "02-B"
+    voice_register: "test voice"
+    starting_cover: 5
+
+initial_qualities:
+  mission.progress: 0
+
+outcomes:
+  win: "ALPHA pushed the progress to 2."
+  loss_agent_lost: "An agent's cover collapsed."
+  loss_timeout: "Out of cycles."
+
+archetypes:
+  - id: PUSH
+    intent: "Advance the mission."
+    when:
+      kind: quality_lt
+      quality: mission.progress
+      value: 2
+    effects:
+      - quality: mission.progress
+        value: 1
+        op: add
+
+  - id: SACRIFICE_BY_AGENT
+    intent: "Burn cover to advance."
+    when:
+      kind: quality_gt
+      quality: agent[$agent].cover
+      value: 0
+    params: [agent]
+    effects:
+      - quality: agent[$agent].cover
+        value: -2
+        op: add
+      - quality: mission.progress
+        value: 1
+        op: add
+
+  - id: HOLD
+    intent: "Do nothing."
+    when:
+      kind: quality_gte
+      quality: mission.cycles_remaining
+      value: 1
+    effects: []
+
+moments:
+  - id: turning_point
+    fires_at_most: once_per_mission
+    when:
+      kind: and
+      of:
+        - kind: quality_equals
+          quality: mission.progress
+          value: 1
+        - kind: not
+          of:
+            kind: moment_fired
+            moment: turning_point
+    intent: "Test moment that ratchets progress + costs ALPHA cover."
+    must_communicate: ["test"]
+    must_not: []
+    tone: "test"
+    effects:
+      - quality: mission.progress
+        value: 1
+        op: add
+      - quality: agent[ALPHA].cover
+        value: -3
+        op: add
+
+beats:
+  - id: win
+    terminal: true
+    outcome_key: win
+    priority: 0
+    when:
+      kind: quality_gte
+      quality: mission.progress
+      value: 2
+
+  - id: timeout
+    terminal: true
+    outcome_key: loss_timeout
+    priority: 1
+    when:
+      kind: quality_equals
+      quality: mission.cycles_remaining
+      value: 0
+
+  - id: agent_lost
+    for_each_agent: true
+    fires_at_most: once_per_agent
+    priority: 5
+    when:
+      kind: quality_equals
+      quality: agent[$agent].cover
+      value: 0
+    effects:
+      - quality: agent[$agent].lost
+        value: true
+        op: set
+
+  - id: passive_decay
+    fires_at_most: unlimited
+    only_when_no_progress_this_cycle: true
+    priority: 10
+    when:
+      kind: quality_lt
+      quality: mission.progress
+      value: 2
+    effects:
+      - quality: agent[ALPHA].cover
+        value: -1
+        op: add
+        when:
+          kind: quality_gt
+          quality: agent[ALPHA].cover
+          value: 0

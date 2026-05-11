@@ -87,7 +87,7 @@ export type SseEvent =
   | { event: "dispatch_started"; cycle: number; acting: string; archetype: string }
   | { event: "dispatch_word"; cycle: number; idx: number; word: string; acting: string; is_last?: boolean }
   | { event: "cycle_closed"; cycle: number; state: GameState }
-  | { event: "mission_resolved"; outcome: string; summary: string }
+  | { event: "mission_resolved"; outcome: string; summary: string; terminal_beat: string; cycles_used: number; cycles_max: number; agents_lost: string[]; agents_alive: string[] }
   | { event: "session_closed" }
   | { event: "error"; code: string };
 

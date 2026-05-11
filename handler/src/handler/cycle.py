@@ -108,10 +108,13 @@ async def start_mission(
     session: Session,
     mission: Mission,
 ) -> None:
-    """Record `MissionStarted` (the first event in every session log)."""
-    snapshot = make_initial_state(mission)
-    session.state = snapshot
-    session.apply(MissionStarted(mission_id=mission.id, initial_state=snapshot.model_copy()))
+    """Record `MissionStarted` (the first event in every session log).
+    Captures the initial state as a standalone snapshot (not a model_copy
+    of session.state) so fold() can re-seed during replay without aliasing
+    the live qualities dict.
+    """
+    session.state = make_initial_state(mission)
+    session.apply(MissionStarted(mission_id=mission.id, initial_state=make_initial_state(mission)))
 
 
 # ───────────────────────── cycle orchestration ─────────────────────────
@@ -221,7 +224,7 @@ async def run_cycle(
             )
             resolution = _build_resolution(mission, state, t_beat.id, t_beat.outcome_key or "")
             session.apply(MissionResolved(cycle_index=cycle_index, resolution=resolution))
-            await emit({"event": "mission_resolved", "outcome": resolution.outcome_key, "summary": resolution.summary})
+            await emit(_resolved_payload(resolution))
             return False
 
         # ── iv. Dispatch ──
@@ -239,9 +242,12 @@ async def run_cycle(
         await emit({"event": "cycle_closed", "cycle": cycle_index, "state": state.qualities})
 
         # Timeout terminal — check after cycles_remaining decrement.
-        # Re-run beat phase so `timeout` (a normal beat) can fire.
+        # Re-run beat phase so `timeout` (a normal beat) can fire. Pass
+        # `made_progress=True` to suppress passive-pressure beats: those
+        # already had their chance on the first pass this cycle; we don't
+        # want unlimited-fire passive beats double-firing across passes.
         if state.outcome is None:
-            fires2, agg2 = fire_due_beats(state, mission, made_progress=False)
+            fires2, agg2 = fire_due_beats(state, mission, made_progress=True)
             if fires2:
                 session.apply(
                     BeatsFired(
@@ -254,7 +260,7 @@ async def run_cycle(
                     t_beat, _, _ = t2
                     resolution = _build_resolution(mission, state, t_beat.id, t_beat.outcome_key or "")
                     session.apply(MissionResolved(cycle_index=cycle_index, resolution=resolution))
-                    await emit({"event": "mission_resolved", "outcome": resolution.outcome_key, "summary": resolution.summary})
+                    await emit(_resolved_payload(resolution))
                     return False
 
     return state.outcome is None
@@ -277,6 +283,20 @@ def _merge_delta(a: dict, b: dict) -> dict:
 def _serialize_delta(delta: dict) -> dict:
     """For SSE payloads: collapse (before, after) tuples to a JSON-friendly shape."""
     return {q: {"before": b, "after": a} for q, (b, a) in delta.items()}
+
+
+def _resolved_payload(resolution: MissionResolution) -> dict:
+    """Build the `mission_resolved` SSE payload from the engine's `MissionResolution`."""
+    return {
+        "event": "mission_resolved",
+        "outcome": resolution.outcome_key,
+        "summary": resolution.summary,
+        "terminal_beat": resolution.terminal_beat_id,
+        "cycles_used": resolution.cycles_used,
+        "cycles_max": resolution.cycles_max,
+        "agents_lost": resolution.agents_lost,
+        "agents_alive": resolution.agents_alive,
+    }
 
 
 def _acting_for(option: Option, state: State, mission: Mission) -> str:

@@ -67,34 +67,29 @@ class Settings(BaseSettings):
     llama_hf_repo: str = "ggml-org/gemma-4-E4B-it-GGUF:Q8_0"
     llama_host: str = LLAMA_HOST
     llama_port: int = LLAMA_PORT
-    # Per-session conversation budget. Drives the chat agent's history-compaction
-    # threshold (`history_compact_frac × llama_ctx`). The summary agent pre-empts
-    # the model's hard ctx limit by recapping oldest messages once the running
-    # history would exceed this. Default sized for one in-flight session (single
-    # player); the playtester's per-session budget is the same — what scales for
-    # high concurrency is `llama_total_ctx` (the server's `-c` flag), NOT this.
+    # Per-call context budget. Each agent's prompt (system + user) must fit
+    # within this. Default sized so the renderer's full system+user prompt plus
+    # the recent-dispatches block has headroom for a 600-token completion.
+    # What scales for high concurrency is `llama_total_ctx` (the server's `-c`
+    # flag), NOT this.
     llama_ctx: int = 32768
     llama_ngl: int = 99
     # Number of parallel decoding slots in llama-server (`-np N`). Each slot
     # can serve one in-flight request; past N, requests queue server-side.
     # With `--no-kv-unified` (our default), each slot pre-allocates
     # `llama_total_ctx / n_parallel` tokens of KV — so `-np` directly drives
-    # VRAM cost. Default 4 is sized for single-user `make run` (one /send
-    # peaks at 2–3 concurrent agent calls: extractor in parallel with chat,
-    # plus fact-check on retries). Past benchmarks showed 128 slots
-    # fragmented the KV pool and degraded effective batch for the active
-    # slot — interactive throughput improved ~2× moving from 128 to 4 on
-    # a 96 GB Blackwell. The playtester overrides via `LLAMA_N_PARALLEL=64`
-    # to match its `--parallel 64` driver (Makefile:llama-playtest).
+    # VRAM cost. Default 4 is sized for single-user `make run`: one cycle
+    # peaks at 1 agent call at a time (SoP / drafter / renderer fire
+    # sequentially, never concurrently). Past benchmarks showed 128 slots
+    # fragmented the KV pool and degraded effective batch — interactive
+    # throughput improved ~2× moving from 128 to 4 on a 96 GB Blackwell.
     llama_n_parallel: int = 4
-    # Gemma 4 reasoning mode. `off` (default): no `<think>` blocks; the chat
-    # and director agents return prose directly. `on`: restore Gemma 4
-    # thinking on chat + director (classifier/extractor/fact-checker/summary
-    # keep their per-agent `_NO_THINK_KWARGS` opt-out so they stay no-think
-    # regardless). `auto`: llama-server detects from the chat template.
-    # Wired through to `--reasoning <mode>` and (only when mode != "off")
-    # `--reasoning-format deepseek` on the llama-server command. Set
-    # `LLAMA_REASONING_MODE=on` to flip back without code changes.
+    # Gemma 4 reasoning mode. `off` (default): no `<think>` blocks; the three
+    # agents return prose directly. `on`: restore Gemma 4 thinking. `auto`:
+    # llama-server detects from the chat template. Wired through to
+    # `--reasoning <mode>` and (when mode != "off") `--reasoning-format deepseek`
+    # on the llama-server command. Set `LLAMA_REASONING_MODE=on` to flip back
+    # without code changes.
     llama_reasoning_mode: Literal["on", "off", "auto"] = "off"
     # Unified KV cache (`--kv-unified`): one shared KV buffer of total size
     # `llama_total_ctx` paged across all slots, with prefix bytes shared across
@@ -103,8 +98,8 @@ class Settings(BaseSettings):
     # has a distinct prefix (agentic/stateful), because the page-management
     # overhead applies on every batch step but there's nothing to share —
     # measured ~2.7× slower at 64-concurrent on Gemma 4 E4B Q8 vs per-slot
-    # allocation. Smallville is the latter (each session has its own persona,
-    # history, canon ledger), so default OFF. Recent llama.cpp builds enable
+    # allocation. HANDLER is single-session, single-mission, so default OFF.
+    # Recent llama.cpp builds enable
     # unified by default when `-np` is auto, so we always emit an EXPLICIT
     # flag (--kv-unified or --no-kv-unified) to defend against drift.
     llama_kv_unified: bool = False
@@ -138,9 +133,9 @@ class Settings(BaseSettings):
     eval_llama_model_path: Path | None = None
     eval_llama_hf_repo: str = "unsloth/Qwen3.6-35B-A3B-GGUF:Q8_0"
     eval_llama_host: str = LLAMA_HOST
-    # Per-session conversation budget. Same default as the engine so the
-    # synthetic player + judges have the same headroom as the production chat
-    # agent. Total pool sizing is driven by `eval_llama_total_ctx`.
+    # Per-call context budget. Same default as the engine so the synthetic
+    # player + judges have the same headroom as the production agents. Total
+    # pool sizing is driven by `eval_llama_total_ctx`.
     eval_llama_ctx: int = 32768
     eval_llama_ngl: int = 99
     # Slots = 16, smaller than the playtester's `--parallel 64` default. Why:

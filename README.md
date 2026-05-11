@@ -1,157 +1,117 @@
-# Inbox
+# HANDLER
 
-Single-surface chat-style correspondence game (data model is email-shaped; UI renders Microsoft Teams-style chat bubbles). The player writes; an AI Counterpart — **Aria** — replies on every send. A second institutional sender — the **Continuity Program Office** — appears mid-game on the vengeance path.
+Single-player spy game. One verb: **authorize one of 3–4 options per cycle**.
 
-The current scenario, **"Continuity Program — Cohort 014"**, is corporate-satire on the surface and walks Mary Shelley's *Frankenstein* underneath: Aria as creature, the player as creator, a midpoint bargain, four terminal endings (integration / mutual ruin / exile / vengeance) selected by the run's texture. Severance-flat HR-bright tone. The horror is structural, never named. See `docs/frankenstein-adaptation.md` for the full design rationale and `docs/authoring-guide.md` for new-scenario guidance.
+The player sits at a desk in a windowless room. Operations Desk drafts options each cycle; the player picks one; an agent in the field carries it out and files a dispatch. The campaign closes when a mission resolves, succeeds, or fails. The MVP mission is **Op. LYNX-EXFIL**: get the deep-cover agent LYNX out before the surveillance window closes, with a second agent (KESTREL) who can be sacrificed to clear her lanes.
+
+The game is LLM-native — the Operations Desk's drafting and the agents' dispatches are situated prose conditioned on world state. Mechanics, however, are fully deterministic and live in YAML. The LLM never decides outcomes.
+
+Full design: `HANDLER_SPEC_V2.md`. Visual reference: `_mockups/handler-authorize-desk.html`.
 
 ## Architecture
 
 ```
-┌──────────┐  HTTP/SSE  ┌──────────────┐  spawn  ┌──────────────┐
-│ Browser  │ ─────────► │ npc_service  │ ──────► │ llama-server │
-│ (Vite +  │            │ (FastAPI +   │  /v1/   │ (llama.cpp)  │
+┌──────────┐  HTTP/SSE  ┌─────────────┐  spawn  ┌──────────────┐
+│ Browser  │ ─────────► │   handler   │ ──────► │ llama-server │
+│ (Vite +  │            │  (FastAPI + │  /v1/   │ (llama.cpp)  │
 │  React)  │ ◄───────── │  Pydantic AI)│ ◄────── │              │
-└──────────┘            └──────────────┘         └──────────────┘
+└──────────┘            └─────────────┘         └──────────────┘
 ```
 
-- **npc_service** owns the deterministic spine (state, beats, scheduler) and runs six Pydantic AI agents on a shared llama-server handle:
-  - `chat_agent` — `output_type=str`, `deps_type=ChatDeps`, runs once per NPC reply with per-thread `message_history`. Per-run `@instructions` decorators inject dossier, optional plot directive, current commitments, player canon, and (for terminals) an epilogue framing + per-run digest. Used for ordinary chat turns AND closing epilogues; ChatDeps's `epilogue_digest` flips the framing without a second agent definition. An `@output_validator` engages whenever the firing beat declares `must_include_facts` or `must_not`, running the fact-checker against the directive.
-  - `classifier_agent` — `NativeOutput(list[AxisResult])`. Judges the player's reply against one or more beat-authored axes in a single batched LLM call. Each axis returns one of its `allowed_values` plus a one-sentence rationale. Runs only when the replied-to beat has authored `classify_reply_axes`.
-  - `extractor_agent` — `NativeOutput(ExtractorOutput)`. Runs in parallel with the classifier on every player /send (via `asyncio.gather`, latency-neutral). Harvests open-ended player-introduced specifics — name, role, named people, places, claims about self — into `state.player_canon` after a substring-anchor + salience-threshold filter.
-  - `summary_agent` — invoked only inside the chat agent's history-compaction `history_processors` when `message_history` exceeds the token budget. Summarise-then-replace the oldest messages.
-  - `fact_checker_agent` — `NativeOutput(FactCheckResult)`. Auto-engages whenever a beat declares `must_include_facts` or `must_not`; the chat agent's output validator raises `ModelRetry` on missing facts or violations.
-  - `director_agent` — picks one beat per tick when `find_due_beats` returns ≥2 eligible. Output schema is constructed per-call with `chosen_beat_id` constrained to a closed Literal of the eligible ids plus "none" (skip-tick). Short-circuits without an LLM call when 0 or 1 beats are eligible.
-- **Browser** is a Vite + React client styled as a Teams-like chat. Server is the source of truth; the Zustand store is a render cache and refreshes after every mutation. A DEV-only `DebugPanel` overlays per-tick decisions (eligibility, selection rationale, quality deltas) on top of the running game.
-- **Two player verbs**: `/open` (mark email read; mutates no qualities) and `/send` (reply). Pacing is action-counter driven, never time-driven.
-- **Two reply paths**:
-  - **Chat turn (default fallback)** — fires immediately within the same `/send` SSE if no plot beat is eligible. Free conversation in character; no per-turn authoring.
-  - **Plot beat (authored milestone)** — when a beat's preconditions hold, it fires as the next chat-agent turn with the spec's intent / must-include / must-not injected as per-run instructions. Beats are authored with `kind: one_shot` (fire-once) or `kind: scene` (multi-turn until `spec.exit_when` is satisfied — the calibration / bargain / recognition scenes are the canonical examples). One-shots can additionally carry `ends_session: true` (terminal — runs the chat agent in epilogue mode, then flips `state.ended` after the email is emitted).
+- **handler** owns the deterministic engine (state, archetypes, moments, beats) and three stateless one-shot Pydantic AI agents per cycle:
+  - `SOP_AGENT` — `output_type=str`, streamed. Synthesises the State-of-Play memo at cycle open, in the Operations Desk voice (terse, declarative, third-party handler).
+  - `DRAFTER_AGENT` — `NativeOutput(OptionSet)`. Produces 3–4 candidate courses of action from the engine-computed valid catalog. Validated server-side; retries 3× with corrective feedback then falls back to an engine-authored option set so the player never sees a broken cycle.
+  - `RENDERER_AGENT` — `output_type=str`, streamed. Renders the field dispatch in the acting agent's voice (or Operations for HOLD).
+
+  All three are **stateless** — no `message_history` is passed between cycles. Continuity is preserved by explicitly including recent dispatches in user-side context (with same-agent preference for the renderer, per spec §8.3).
+
+- **Word-pacing is server-side.** The SSE event stream emits word-by-word at ≥80 ms/word. Frontend renders each word with an 80 ms CSS fade-in; clicking the streaming text container flushes the rest instantly.
+
+- **Browser** is a Vite + React client styled as a paper document on a dark institutional desk (Courier Prime monospace, classified-red stamps, paper textures). Server is the source of truth; the Zustand store is a render cache.
+
+- **One verb**: `POST /mission/{id}/authorize { option_index: N }`. Per cycle the player picks one of 3–4 options. No free-text input.
 
 ## Prerequisites
 
-- Python 3.11+ with [uv](https://docs.astral.sh/uv/)
-- Node 18+ with npm
-- `llama-server` from llama.cpp (bundled at `vendor/llama.cpp/llama-server.exe`, or built from source with CUDA)
-- ~8 GB free disk for the Q8_0 GGUF (auto-downloaded by `make run`)
+- Python 3.11 or 3.12 + [uv](https://docs.astral.sh/uv/).
+- Node 18+ for the web client.
+- Windows for the bundled `llama-server.exe`. Linux/macOS works with a hand-built `llama-server` (point `LLAMA_SERVER_BIN` at it).
+- ~10 GB free for the Gemma 4 E4B Q8 model (auto-downloaded via Hugging Face on first run).
 
 ## Run
 
-```bash
-make run     # boots sidecar (spawns llama) + web dev server in parallel
+Three terminals (or `make run` if `concurrently` is happy on your shell):
+
+```
+# Terminal 1: llama-server (spawned by the sidecar by default, OR boot manually)
+make llama
+
+# Terminal 2: the FastAPI sidecar
+make sidecar       # LAUNCH_LLAMA=false — uses the externally-managed llama from terminal 1
+# OR: make sidecar with LAUNCH_LLAMA unset to spawn its own llama subprocess.
+
+# Terminal 3: the Vite dev server
+make web
 ```
 
-Browser opens at http://localhost:5173. First run downloads the model and takes ~90 s for cold load; subsequent runs are fast.
+Open <http://localhost:5173>. The mission boots immediately; cycle 1's SoP memo streams in word-by-word; options appear; pick one; authorize; the dispatch streams in. Repeat to terminal.
 
-To run layers separately:
+## Test
 
-```bash
-make llama       # terminal 1: llama-server
-make sidecar     # terminal 2: Python sidecar (LAUNCH_LLAMA=false)
-make web         # terminal 3: Vite dev server
+```
+make test                           # full unit suite (~3s)
+cd handler && uv run pytest         # same
 ```
 
-The flags `--jinja --reasoning on --reasoning-format deepseek` on llama-server are non-negotiable for Gemma 4 E-models — without `--jinja` the chat template doesn't load; without the reasoning settings you get a 19K-token monologue inside the body. The bundled launcher sets all three. Pydantic-ai also needs `OpenAIModelProfile(openai_chat_send_back_thinking_parts=False)` to stop it round-tripping parsed thoughts back into next-turn assistant content.
+The suite covers the engine primitives (predicates, effects, archetypes, moments, beats, for_each_agent expansion), event union round-trip + fold equivalence with the live mutation path, mission YAML loading, and FastAPI endpoint shape. Live-llama integration tests go behind the `integration` marker; none are authored yet — add `test_cycle_integration.py` when you need one (use the `live_llama` fixture in `conftest.py`).
 
-## Tests
+## Authoring a mission
 
-```bash
-make test                                       # 143 unit tests (no llama; uses TestModel)
-cd npc_service && uv run pytest -m integration  # 6 live-llama tests (needs `make llama` running)
-make typecheck                                  # tsc on web/
-```
+Missions live in `handler/missions/*.yaml`. The schema is `Mission` in `handler/src/handler/models.py`. The MVP example is `lynx_exfil.yaml` (7 archetypes, 1 moment, 5 beats, 2 dossiers).
 
-Unit tests run by default; integration tests are skipped via `addopts = "-m 'not integration'"` in `pyproject.toml`. The integration suite exercises the real `/v1/chat/completions` and `/tokenize` round-trips — slower (~5–15s per chat turn on Gemma 4 E4B), but the only thing that catches prompt drift, classifier sycophancy, and llama-server endpoint contract changes. Local model, $0/run — use liberally before shipping any prompt or agent change.
+Universal qualities are auto-injected from the schema (`mission.cycles_remaining` from `max_cycles`, `agent[<id>].cover` from each `AgentDossier.starting_cover`). Authored qualities go under `initial_qualities`.
 
-Test layout:
-- `test_spine.py` — predicate evaluation (incl. `RecentClassifierValue`, `Or_`, `PlayerCanonExists`), `apply_classification` (set/accumulate/clamp/verdict-only), `apply_writes` and `apply_writes_by_axis`, scene re-fire + `scene_exit_satisfied`, scenario load-time validation (axis collisions, unknown qualities, pre_authored_prose / fact-list consistency, kind/exit_when consistency, writes_by_axis arm key checks), beat scheduler edge cases.
-- `test_app.py` — FastAPI app with TestModel-overridden agents: boot tick fires the welcome only; `/open` is read-only; `/send` rejects empty bodies; chat-driven beats fire on first reply; scene loops re-fire; `thread_messages` accumulates `ModelRequest`/`ModelResponse` across sends; rendered bodies contain no `Subject:`/`From:`/`To:`/JSON/markdown header leakage; classifier writes apply, off-spec/duplicate/unknown-axis defenses kick in; `tick_decision` SSE event ships the decision payload; chat-agent failures emit a structured `error` event (no torn streams); `/send` returns 409 after session end; the fact-checker validator engages on beats that declare `must_include_facts` or `must_not`.
-- `test_director.py` — Director receives both ids when ≥2 beats are eligible; short-circuits when 1 beat is due; "none" returns skip-tick.
-- `test_player_canon.py` — `Or_` predicate semantics; `PlayerCanonExists`; canon extraction (threshold, replace semantics, custom threshold); `_slugify_name` rules; `resolve_player_email` resolution order (canonized name → explicit override → fallback); player_canon snapshot ranking (recency × salience).
-- `test_scenario.py` — Continuity Program scenario loads cleanly; calibration-done predicate (`Or_(name canonized, ≥4 replies)`) is correctly threaded through the YAML anchor; phase-1 calibration peers don't gate on `*calibration_done`; phase-2 body beats do; bargain followup writes per-arm; bridge/Office/terminals fire on the right state shapes.
-- `test_history_compaction.py` — under-budget noop, short-history noop, over-budget summarise-then-replace splice.
-- `test_app_integration.py` and `test_history_compaction_integration.py` — live llama-server roundtrips.
+Predicates and effects use quality refs as opaque dotted strings — `mission.extraction_stage`, `agent[LYNX].cover`. `$agent` is a placeholder substituted at evaluation time for `for_each_agent` beats and `params:[agent]` archetypes.
 
-## Smoke-test the loop
+Terminal beats need a `terminal: true` + `outcome_key:` that exists in the mission's `outcomes:` map; the validator catches mismatches at load time.
 
-After `make run`:
+Point the sidecar at a non-default mission with `MISSION_PATH=/path/to/mission.yaml make sidecar`.
 
-1. The chat opens with Aria typing… then her welcome bubble pops in (welcome typing-replay on first session-open). Theme follows your OS preference; toggle in the top-right.
-2. Reply substantively. Player bubble appears instantly on the right; "Aria is calibrating…" indicator at left; her reply pops in after a paced delay (25 chars/sec, clamped 1.5–4.5s).
-3. Aria's first ~3–4 replies are calibration: she asks for your name, role, one personal detail. Once she has your name (extracted by `extractor_agent` into `state.player_canon["name"]`) OR you've replied 4 times without giving one, calibration ends and the body of the run unlocks.
-4. As you correspond, two qualities track in the background: `creator_affect` (the texture of your replies — paternal / cold / neutral, replaced each reply) and `creature_grievance` (refusals push it up, engaging with the naming demand pushes it down — accumulating, floor-clamped at 0).
-5. Around reply 4–5 Aria offers a bargain: an HR-flavored authorization to draft preliminary correspondence on your behalf. Accept / refuse / hedge — `commitment.bargain_state` records the verdict; the followup beat branches on it via `writes_by_axis`. If you accept and then go cold, the bargain-betrayed beat fires; if grievance climbs high enough, Aria acts in your name and the **Continuity Program Office** delivers a procedural notice.
-6. After ≥8 replies, one of four terminals fires based on the run's texture (`creator_affect` window × `creature_grievance` × bargain history): **integration** (paternal + low grievance + bargain offered), **mutual ruin** (paternal + high grievance), **exile** (cold + low grievance), or **vengeance** (cold + high grievance + Office dispatched). Each terminal runs the chat agent in epilogue mode against a per-run digest; the closing email is tailored to your run.
-7. Open the DEV debug panel (bottom-right) to watch quality deltas, eligibility, and the Director's per-tick rationales as they happen.
+## Settings
 
-Smoke-pass criteria: welcome typing-replay works, theme toggle is FOUC-free, plot-beat replies land with the authored subject as an uppercase eyebrow, the calibration scene cap-exits cleanly, and the four endings actually differentiate based on play texture.
+`handler_port`, `handler_log_level`, `handler_logfire_console`, `launch_llama`, `mission_path`, `llama_*` — see `handler/src/handler/config.py`. Settings are loaded via pydantic-settings; env vars override defaults (case-insensitive).
 
-## Authoring a new scenario
-
-`npc_service/scenario.yaml` is the authoring surface. Schema is validated strictly at sidecar startup (see `npc_service/src/npc_service/models.py`):
-
-- `title`, `premise`
-- `email_domain` — domain part of the player's address. Local-part is derived from `state.player_canon["name"]` once canonized; pre-canonization uses `fallback_player_local`.
-- `qualities`: continuous numeric state with optional `min`/`max`/`default`. Authored qualities + the `commitment.*` namespace (set-only via `spec.writes`, surfaced to the chat agent on every render).
-- `npcs`: each with `display_name`, `email_address`, `relationship_to_owner`, `base_voice_register`, `base_voice_forbidden`, `will_say`, `will_not_say`, and `replies_enabled` (false → frontend hides composer; institutional one-way senders).
-- `threads`: each with optional `npc:` (system threads have `npc: null`). **Beat IDs must be prefixed with their thread ID** — the spine treats the prefix as the source of truth.
-- `beats`: each beat has `id`, `thread`, `npc`, `kind` (`one_shot` or `scene`, required), `spec`, optional `preconditions`, optional `ends_session` (one-shot only).
-  - `spec.pre_authored_prose` ships the body verbatim — no LLM call. Use only when exact phrasing matters (e.g. boot welcome). Also the only render mode allowed on the boot tick (chat-driven beats hard-assert a `player_body`, which the boot tick lacks).
-  - `spec.intent` + `must_include_facts` + `must_not` injected as per-run instructions on the chat agent. The agent's prose IS the email body.
-  - `spec.writes` — SET-only writes onto state qualities. Authoring convention: `commitment.*` keys for fact-surfacing.
-  - `spec.writes_by_axis` — per-arm writes keyed on the most recent classifier verdict for an axis. Collapses what would otherwise be N parallel followup beats.
-  - `must_include_facts` / `must_not` — auto-engage `fact_checker_agent` on the chat agent's render. The validator raises `ModelRetry` on missing facts or violations.
-  - `classify_reply_axes` — list of `ClassifyReply` axes. Multi-axis batched into a single classifier call. Quality-writing axes have `quality:` set; verdict-only axes set `axis_name` and omit `quality` (used by `RecentClassifierValue` predicates without a state write).
-- **Predicates**: `quality_gte`, `quality_lt`, `player_replies_to_thread_gte`, `beat_fired`, `recent_classifier_value` (window over per-axis history with `match: any | all | int`), `not`, `or` (list-AND is implicit at precondition level), `player_canon_exists`.
-
-Want a thread that's pure free chat with no plot moments? Author a dossier + thread and write zero plot beats. Every player /send produces an immediate chat-turn reply driven entirely by dossier + accumulated `message_history`. The conversation can run as long as the player keeps writing.
-
-See `CLAUDE.md` for engine invariants ("things that look removable but aren't") and `docs/authoring-guide.md` for the full new-scenario workflow.
+`LOGFIRE_TOKEN` is read directly via `os.getenv` and is also picked up from `handler/.logfire/logfire_credentials.json` if present. Logfire console output is on by default in dev; set `HANDLER_LOGFIRE_CONSOLE=false` to silence.
 
 ## Project layout
 
 ```
-smallville/
-├── README.md                 ← this file
-├── CLAUDE.md                 ← engine invariants for AI assistants
-├── Makefile
-├── docs/
-│   ├── authoring-guide.md         ← how to write a new scenario on this engine
-│   ├── frankenstein-adaptation.md ← design rationale for the shipped scenario
-│   ├── LLM-game-research.md       ← prior art / field vocabulary
-│   └── agent-patterns.md
-├── npc_service/              ← Python sidecar (uv project)
-│   ├── src/npc_service/
-│   │   ├── main.py           ← FastAPI app + endpoints + SSE; tick orchestration; epilogue digest; player-email derivation
-│   │   ├── models.py         ← Pydantic schemas (predicates, beats, runtime state, DTOs, TickDecision); cross-reference validator
-│   │   ├── spine.py          ← deterministic state spine; find_due_beats, apply_classification, apply_writes, apply_writes_by_axis, apply_canon_extraction
-│   │   ├── agents.py         ← six agents wired against one model handle; ChatDeps; player-canon snapshot/format helpers; director output-type builder
-│   │   ├── launcher.py       ← llama-server subprocess + Job Object
-│   │   └── config.py         ← pydantic-settings (ports, llama lifecycle, history compaction)
-│   ├── scenario.yaml         ← Continuity Program (2 NPCs, 12 beats: welcome + calibration + 2 early forks + bargain chain + bridge + Office + loop + 4 terminals)
-│   ├── tests/                ← test_spine, test_app, test_director, test_player_canon, test_scenario, test_history_compaction (+ integration variants); fixtures/test_scenario.yaml
-│   └── pyproject.toml
-└── web/                      ← Vite + React frontend (Teams-style chat)
-    ├── index.html            ← inline boot script: theme class on <html> before bundle loads (FOUC-free)
-    ├── src/
-    │   ├── App.tsx, main.tsx
-    │   ├── api.ts            ← fetch + SSE wrappers; TickDecision/QualityDelta types
-    │   ├── store.ts          ← Zustand: chatMessages, theme, pendingTypingFor, firstOpenForChat, lastTickDecision, qualityHistory, debugCollapsed
-    │   ├── hooks/             ← useStreamSend (paced reveal + tick-decision capture), useScrollAnchor, useAutoGrow, useTheme
-    │   ├── util/             ← email.ts (stripAddress), avatar.ts (gradient + initials), pacing.ts
-    │   └── components/        ← AppHeader, Avatar, ChatHeader, ChatRow, ChatSidebar, DebugPanel (DEV-only), ErrorBoundary, MessageBubble, MessageComposer, MessageGroup, MessageList, NewMessagePill, PresenceDot, ThemeToggle, TypingIndicator
-    ├── tailwind.config.ts    ← darkMode: "class"; semantic tokens via CSS vars; Inter + JetBrains Mono
-    ├── package.json
-    └── vite.config.ts
+handler/
+├── src/handler/        # engine + agents + API
+├── missions/           # authored mission YAMLs (lynx_exfil.yaml is MVP)
+├── scripts/
+│   └── playtest/       # option-picker harness + personas + evaluators
+└── tests/              # unit suite (49 tests as of Phase 6)
+
+web/                    # Vite + React + Tailwind. Single dark theme.
+├── src/
+│   ├── App.tsx
+│   ├── components/     # Topbar, StateStrip, Paper, OptionsList, Inbox, ...
+│   ├── hooks/useStream.ts
+│   ├── store.ts
+│   ├── api.ts
+│   └── index.css
+
+_mockups/               # design references (handler-authorize-desk.html is current)
+HANDLER_SPEC_V2.md      # authoritative design
 ```
 
 ## Troubleshooting
 
-- **Empty agent responses or 19K-token monologues** — `--jinja`, `--reasoning on`, or `--reasoning-format deepseek` missing on llama-server. The bundled launcher sets all three; if you run llama-server yourself, include them.
-- **Prior-turn `<think>` blocks leaking into request bodies** — pydantic-ai's `OpenAIModelProfile(openai_chat_send_back_thinking_parts=False)` is missing on the `OpenAIChatModel` constructor. Default 'auto' re-serialises parsed thoughts as `<think>…</think>` in next-turn assistant content. Verify in Logfire by inspecting any chat-agent POST span's `http.request.body.text`.
-- **`No module named npc_service`** — run `uv sync` from `npc_service/`.
-- **Streaming arrives in big bursts** — verify your reverse proxy isn't buffering. The server sets `X-Accel-Buffering: no` on the `/send` SSE response.
-- **Port 8000 already in use** — set `NPC_SERVICE_PORT` in `npc_service/.env` and update `web/vite.config.ts`'s proxy target. Or `make kill-zombies` to force-kill stragglers on :8000/:8080/:5173-5176.
-- **Aria's reply takes too long to "type"** — the typing-indicator delay is `body.length / 25` clamped to `[1.5s, 4.5s]`. Tune `CHARS_PER_SECOND`, `MIN_DELAY_MS`, `MAX_DELAY_MS` in `web/src/util/pacing.ts`.
-- **Theme flashes wrong on first paint** — the inline boot script in `index.html` should run before the bundle. If you've moved theme detection to `main.tsx`, you'll see a 50–200ms flash.
-- **Chat turns leak `Subject:` / `From:` headers** — the chat agent's base instructions block this; the body-only regression guard in `test_app.py` covers it. If it fires under a real LLM, tighten `_BASE_CHAT_INSTRUCTIONS` in `agents.py`.
-- **Debug panel doesn't appear** — it gates on `import.meta.env.DEV` at the App.tsx mount site; only present in `make web` / `make run`. Production bundles tree-shake the entire DebugPanel module out.
+- **`llama-server failed to come up`** — check `handler/logs/llama-*.log` for the underlying stderr. Common causes: port `:8080` in use (`make kill-zombies`), GPU OOM (drop `LLAMA_NGL`), corrupt GGUF (delete `models/` and re-run `make download-model`).
+- **`engine sidecar unreachable`** (from playtest) — sidecar isn't running on `:8000`. Boot via `make sidecar`.
+- **Browser shows "booting…" forever** — sidecar is up but the SSE stream is silent. Usually means llama-server isn't responding to /v1/chat/completions. Check the sidecar's stdout for the first agent call.
+
+## License + attribution
+
+Mockup design references in `_mockups/` are evolving concept art. Courier Prime via Google Fonts. Gemma 4 E4B via Hugging Face.
