@@ -527,6 +527,10 @@ body {
   background: var(--paper);
   width: 100%;
   max-width: 720px;
+  /* Locked min-height so the sheet doesn't expand as SoP / option words
+     stream in. Sized to fit caveat + doctype + locked 12em SoP block +
+     4 option rows (60px each) + auth + foot at current paddings. */
+  min-height: 920px;
   padding: 76px 84px 60px;
   box-shadow: var(--shadow-paper);
   position: relative;
@@ -621,7 +625,10 @@ body {
   font-size: 14.5px;
   line-height: 1.75;
   color: var(--ink);
-  min-height: 11.5em;
+  /* Locked height — word reflow during SoP streaming must not expand
+     the block. SoPs are authored to fit at this register. */
+  height: 12em;
+  overflow: hidden;
 }
 
 /* Options block — gated until SoP completes */
@@ -651,6 +658,10 @@ body {
   gap: 8px;
   padding: 10px 8px;
   margin: 0 -8px;
+  /* Locked min-height per row so each slot reserves space before its
+     prose words stream in. Fits the i./check + 2 lines of 13.5px/1.7
+     opt-prose plus 10px×2 padding. */
+  min-height: 64px;
   cursor: pointer;
   align-items: baseline;
   border-top: 1px dashed var(--rule-soft);
@@ -659,6 +670,10 @@ body {
 .opt-row:first-child { border-top-color: transparent; }
 .opt-row:hover { background: var(--stamp-bg); }
 .paper-sheet[data-authorized="true"] .opt-row { cursor: default; }
+/* Empty slot — reserves height but renders nothing, so the page stays
+   stable while options stream in one by one (or only 3 of 4 arrive). */
+.opt-row.placeholder { visibility: hidden; pointer-events: none; }
+.opt-row.placeholder:hover { background: transparent; }
 .opt-n {
   font-family: "Courier Prime", monospace;
   font-size: 12px;
@@ -911,6 +926,11 @@ body {
 
 .archive-card {
   max-width: 620px;
+  /* Locked min-height so the modal doesn't expand as dispatch words
+     stream in. Sized for tag/from/route header + ~12 lines of 14px/1.85
+     archive-body + delta footer at current paddings. Longer dispatches
+     scroll inside the body. */
+  min-height: 520px;
   padding: 44px 52px 36px;
   position: relative;
   animation: paper-rise 0.5s var(--ease) both;

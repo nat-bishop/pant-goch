@@ -25,7 +25,7 @@ help:
 	@echo "  make web                 Run Vite dev server (terminal 3)"
 	@echo "  make test                Run pytest"
 	@echo "  make typecheck           Run TS typecheck on web/"
-	@echo "  make playtest            Run the option-picker playtest (requires sidecar running)"
+	@echo "  make playtest            Run the option-picker playtest (spawns sidecar+llama; one terminal)"
 	@echo "  make clean               Remove __pycache__ and logs/*.log"
 	@echo "  make kill-zombies        Force-kill stragglers on :8000/:8080/:5173-5176"
 	@echo "  make mission-check       Validate handler/missions/*.yaml against the schema"
@@ -92,14 +92,16 @@ test:
 mission-check:
 	cd handler && uv run python -c "from pathlib import Path; from handler.mission_loader import load_mission; [print(f'OK {p.name}: {load_mission(p).codename}') for p in sorted(Path('missions').glob('*.yaml'))]"
 
-# Playtest harness. Defaults to --parallel 16; pair with `make llama-playtest`
-# so the engine llama has 16 slots, otherwise sessions queue past the 4 slots
-# of `make llama` / `make run`. Probes /health before starting. Programmatic
-# evaluators only for MVP — LLM judges come back when prose-quality scoring is
-# worth it.
+# Playtest harness. `--spawn-engine` boots a sidecar (which boots llama with
+# LLAMA_N_PARALLEL=16 / LLAMA_TOTAL_CTX=524288 — same shape as `make llama-playtest`)
+# and tears it down on exit; reuses an already-healthy engine on :8000 if one
+# is up. Drop the flag (or call `uv run python -m scripts.playtest` directly)
+# for the two-terminal flow when iterating fast on a long-lived sidecar.
+# Programmatic evaluators only for MVP — LLM judges come back when prose-quality
+# scoring is worth it.
 .PHONY: playtest
 playtest:
-	cd handler && PYTHONIOENCODING=utf-8 uv run python -u -m scripts.playtest
+	cd handler && PYTHONIOENCODING=utf-8 uv run python -u -m scripts.playtest --spawn-engine
 
 .PHONY: typecheck
 typecheck:

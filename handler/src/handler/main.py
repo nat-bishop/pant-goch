@@ -66,6 +66,7 @@ from .launcher import (
 from .mission_loader import MissionLoadError, load_mission
 from .models import Mission, Option, State
 from .session import Session, make_jsonl_persistor, make_session
+from .spine import due_moments, valid_archetype_combinations
 
 
 _BOOT_SETTINGS = Settings()
@@ -116,7 +117,14 @@ class SessionRuntime:
     futures the cycle loop alternates between (auth = pause INSIDE a cycle
     waiting for the player's pick; continue = pause BETWEEN cycles waiting
     for the player to click through), the cycle task itself, and a rolling
-    buffer of past dispatches (for renderer voice anchoring)."""
+    buffer of past dispatches (for renderer voice anchoring).
+
+    Cross-cycle prefetch (HANDLER_SPEC_V2 §11 wall-clock optimisation): when
+    cycle N's renderer LLM finishes, a background task pre-runs cycle N+1's
+    SoP + drafter LLM calls so they're ready by the time the player clicks
+    Continue. Results are tagged with `prefetched_cycle_index` so the SoP /
+    drafter callables only consume data meant for the cycle they're running.
+    """
 
     session: Session
     out_queue: asyncio.Queue[dict] = field(default_factory=asyncio.Queue)
@@ -125,6 +133,13 @@ class SessionRuntime:
     current_options: list[Option] | None = None
     cycle_task: asyncio.Task | None = None
     dispatches: list[DispatchRecord] = field(default_factory=list)
+    # Cross-cycle prefetch fields — populated by `prefetch_next_cycle`,
+    # consumed by the SoP / drafter callables on the next run_cycle iteration.
+    prefetched_cycle_index: int | None = None
+    prefetched_sop_text: str | None = None
+    prefetched_options: list[Option] | None = None
+    prefetched_engine_fallback: bool = False
+    prefetch_task: asyncio.Task | None = None
 
     async def await_auth(self) -> Option:
         """Block the cycle loop until POST /authorize resolves auth_future."""
@@ -141,6 +156,14 @@ class SessionRuntime:
             await self.continue_future
         finally:
             self.continue_future = None
+
+    def _clear_prefetch(self) -> None:
+        """Reset all prefetch fields (after consumption, cancellation, or a
+        stale-result discard)."""
+        self.prefetched_cycle_index = None
+        self.prefetched_sop_text = None
+        self.prefetched_options = None
+        self.prefetched_engine_fallback = False
 
 
 SESSIONS: dict[str, SessionRuntime] = {}
@@ -315,23 +338,100 @@ async def paced_word_emitter(
 # ───────────────────────── agent call wrappers (the SopFn/DrafterFn/RendererFn shapes) ─────────────────────────
 
 
+async def _run_paced_stream(
+    agent: Any,
+    prompt: str,
+    emit: Callable[[dict], Awaitable[None]],
+    *,
+    event_kind: str,
+    extra: dict,
+) -> tuple[str, asyncio.Task]:
+    """Stream `agent.run_stream(prompt)` to the client as paced word events,
+    but resolve the full text the moment the LLM stream is exhausted — not
+    when pacing finishes. Returns `(text, pacing_task)` so the caller can
+    kick off downstream work (drafter LLM or cross-cycle prefetch) while
+    paced word emission continues in the background.
+    """
+    text_ready: asyncio.Future[str] = asyncio.get_event_loop().create_future()
+    buf: list[str] = []
+
+    async def _stream_and_pace() -> None:
+        try:
+            async with agent.run_stream(prompt) as result:
+
+                async def teed() -> AsyncIterator[str]:
+                    async for chunk in result.stream_text(delta=True):
+                        buf.append(chunk)
+                        yield chunk
+                    if not text_ready.done():
+                        text_ready.set_result("".join(buf))
+
+                await paced_word_emitter(
+                    _words_from_stream(teed()),
+                    emit,
+                    event_kind=event_kind,
+                    extra=extra,
+                )
+        except BaseException as e:
+            if not text_ready.done():
+                text_ready.set_exception(e)
+            raise
+
+    pacing_task = asyncio.create_task(_stream_and_pace())
+    text = await text_ready
+    return text, pacing_task
+
+
 def _build_sop_callable(rt: SessionRuntime) -> Any:
-    async def _sop(session: Session, cycle_index: int) -> str:
+    """Returns the SoP text as soon as the LLM finishes generating, and a
+    pacing_task that continues emitting paced `sop_word` SSE events in the
+    background. The caller can start the drafter LLM (which needs sop_text)
+    while pacing finishes — net wall-clock win equal to ~drafter LLM time.
+
+    If `rt.prefetched_sop_text` was populated by `prefetch_next_cycle` for
+    this cycle, skip the LLM call entirely and just pace the buffered text.
+    """
+
+    async def _sop(session: Session, cycle_index: int) -> tuple[str, asyncio.Task]:
         assert AGENTS is not None
-        prompt = _sop_user_prompt(cycle_index, session.state, session.mission, rt.dispatches)
-        async with AGENTS.sop.run_stream(prompt) as result:
-            text = await paced_word_emitter(
-                _words_from_stream(result.stream_text(delta=True)),
-                rt.out_queue.put,
-                event_kind="sop_word",
-                extra={"cycle": cycle_index},
+        extra = {"cycle": cycle_index}
+
+        # Consume prefetched data if it's tagged for this cycle.
+        if (
+            rt.prefetched_cycle_index == cycle_index
+            and rt.prefetched_sop_text is not None
+        ):
+            text = rt.prefetched_sop_text
+            rt.prefetched_sop_text = None  # drafter still needs prefetched_options
+            pacing_task = asyncio.create_task(
+                paced_word_emitter(
+                    _words_from_text(text),
+                    rt.out_queue.put,
+                    event_kind="sop_word",
+                    extra=extra,
+                )
             )
-        return text
+            return text, pacing_task
+
+        prompt = _sop_user_prompt(cycle_index, session.state, session.mission, rt.dispatches)
+        return await _run_paced_stream(
+            AGENTS.sop, prompt, rt.out_queue.put,
+            event_kind="sop_word", extra=extra,
+        )
+
     return _sop
 
 
-def _build_drafter_callable(rt: SessionRuntime) -> Any:
-    async def _draft(
+def _build_drafter_llm_callable(rt: SessionRuntime) -> Any:
+    """LLM-only phase of the drafter — runs `draft_with_retries` (or consumes
+    prefetched options). NO SSE emission; that's `_build_drafter_emit_callable`.
+
+    Splitting LLM from emission lets `cycle.py` schedule this as a background
+    task while SoP pacing finishes, so options arrive at the client with no
+    idle gap after SoP.
+    """
+
+    async def _drafter_llm(
         session: Session,
         cycle_index: int,
         sop_text: str,
@@ -339,12 +439,24 @@ def _build_drafter_callable(rt: SessionRuntime) -> Any:
         forced_moment_id: str | None,
     ) -> tuple[list[Option], bool]:
         assert AGENTS is not None
+
+        # Consume prefetched options if tagged for this cycle.
+        if (
+            rt.prefetched_cycle_index == cycle_index
+            and rt.prefetched_options is not None
+        ):
+            options = rt.prefetched_options
+            engine_fallback = rt.prefetched_engine_fallback
+            rt.prefetched_options = None
+            rt.prefetched_engine_fallback = False
+            return options, engine_fallback
+
         forced_moment = None
         if forced_moment_id is not None:
             forced_moment = next(
                 (m for m in session.mission.moments if m.id == forced_moment_id), None
             )
-        options, engine_fallback = await draft_with_retries(
+        return await draft_with_retries(
             AGENTS.drafter,
             cycle_index=cycle_index,
             state=session.state,
@@ -354,7 +466,23 @@ def _build_drafter_callable(rt: SessionRuntime) -> Any:
             forced_moment=forced_moment,
             dispatches=rt.dispatches,
         )
-        # Reveal each option's prose word-by-word over SSE.
+
+    return _drafter_llm
+
+
+def _build_drafter_emit_callable(rt: SessionRuntime) -> Any:
+    """Emit phase: paces each option's prose to the client as
+    `option_started` + `option_word` ×N events, then `options_complete`.
+    Also stores `options` on `rt.current_options` so `/authorize` can index it.
+    """
+
+    async def _drafter_emit(
+        cycle_index: int,
+        options: list[Option],
+        engine_fallback: bool,
+        forced_moment_id: str | None,
+    ) -> None:
+        rt.current_options = options
         for option_idx, option in enumerate(options):
             await rt.out_queue.put(
                 {
@@ -384,19 +512,29 @@ def _build_drafter_callable(rt: SessionRuntime) -> Any:
                 "engine_fallback": engine_fallback,
             }
         )
-        rt.current_options = options
-        return options, engine_fallback
-    return _draft
+
+    return _drafter_emit
 
 
 def _build_renderer_callable(rt: SessionRuntime) -> Any:
+    """Returns the dispatch text as soon as the LLM finishes, and a
+    pacing_task that continues emitting paced `dispatch_word` SSE events.
+    Cycle.py uses the LLM-done signal to fire `on_renderer_text_ready`,
+    which schedules cycle N+1's prefetch — overlapping cycle N+1's LLM
+    work with cycle N's modal-display wall time.
+
+    The dispatch is appended to `rt.dispatches` synchronously once text is
+    ready (before pacing finishes), so prefetch sees the just-rendered
+    dispatch when building cycle N+1's user prompts.
+    """
+
     async def _render(
         session: Session,
         cycle_index: int,
         option: Option,
         delta: dict,
         acting: str,
-    ) -> str:
+    ) -> tuple[str, asyncio.Task]:
         assert AGENTS is not None
         await rt.out_queue.put(
             {
@@ -409,13 +547,13 @@ def _build_renderer_callable(rt: SessionRuntime) -> Any:
         prompt = _renderer_user_prompt(
             cycle_index, session.state, session.mission, option, delta, acting, rt.dispatches,
         )
-        async with AGENTS.renderer.run_stream(prompt) as result:
-            text = await paced_word_emitter(
-                _words_from_stream(result.stream_text(delta=True)),
-                rt.out_queue.put,
-                event_kind="dispatch_word",
-                extra={"cycle": cycle_index, "acting": acting},
-            )
+        text, pacing_task = await _run_paced_stream(
+            AGENTS.renderer, prompt, rt.out_queue.put,
+            event_kind="dispatch_word",
+            extra={"cycle": cycle_index, "acting": acting},
+        )
+        # Append synchronously so any prefetch kicked off by the renderer-done
+        # hook sees this dispatch in `rt.dispatches`.
         rt.dispatches.append(
             DispatchRecord(
                 cycle_index=cycle_index,
@@ -424,8 +562,69 @@ def _build_renderer_callable(rt: SessionRuntime) -> Any:
                 text=text,
             )
         )
-        return text
+        return text, pacing_task
+
     return _render
+
+
+# ───────────────────────── cross-cycle prefetch ─────────────────────────
+
+
+async def prefetch_next_cycle(rt: SessionRuntime, next_cycle_index: int) -> None:
+    """Run cycle N+1's SoP + drafter LLM calls in the background while the
+    player reads cycle N's dispatch modal. State is final after cycle N's
+    `tick_cycle_close` + timeout re-check; agents are stateless; the only
+    thing gating these calls is the /continue UI gate.
+
+    Results are stashed on `rt` (tagged with `next_cycle_index`) and consumed
+    by the SoP / drafter callables on the next `run_cycle` iteration.
+    """
+    assert AGENTS is not None
+    state = rt.session.state
+    if state.outcome is not None:
+        return  # mission resolved; no next cycle
+    mission = rt.session.mission
+
+    with logfire.span("prefetch_next_cycle", cycle_index=next_cycle_index):
+        sop_prompt = _sop_user_prompt(next_cycle_index, state, mission, rt.dispatches)
+        sop_result = await AGENTS.sop.run(sop_prompt)
+        rt.prefetched_sop_text = sop_result.output
+
+        catalog = valid_archetype_combinations(state, mission)
+        forced = due_moments(state, mission)
+        forced_moment = forced[0] if forced else None
+        options, fallback = await draft_with_retries(
+            AGENTS.drafter,
+            cycle_index=next_cycle_index,
+            state=state,
+            mission=mission,
+            sop_text=rt.prefetched_sop_text,
+            catalog=catalog,
+            forced_moment=forced_moment,
+            dispatches=rt.dispatches,
+        )
+        rt.prefetched_options = options
+        rt.prefetched_engine_fallback = fallback
+
+
+def _build_renderer_text_ready_hook(rt: SessionRuntime) -> Any:
+    """Fires when cycle N's renderer LLM completes (state is final by the
+    time cycle.py invokes it: tick_cycle_close + timeout re-check have run).
+    Cancels any stale prefetch left over from earlier cycles, then schedules
+    cycle N+1's prefetch in the background."""
+
+    async def _hook(cycle_index: int) -> None:
+        # Defensive: cancel any in-flight prefetch task from an earlier cycle.
+        if rt.prefetch_task is not None and not rt.prefetch_task.done():
+            rt.prefetch_task.cancel()
+            with contextlib.suppress(BaseException):
+                await rt.prefetch_task
+        rt._clear_prefetch()
+        next_idx = cycle_index + 1
+        rt.prefetched_cycle_index = next_idx
+        rt.prefetch_task = asyncio.create_task(prefetch_next_cycle(rt, next_idx))
+
+    return _hook
 
 
 # ───────────────────────── cycle loop ─────────────────────────
@@ -448,23 +647,33 @@ async def _run_session_loop(rt: SessionRuntime) -> None:
         }
     )
     cycle_index = 1
+    # Per-session callable bundle. Built once: the SoP / drafter LLM phase /
+    # drafter emit phase / renderer / prefetch-hook closures all capture `rt`,
+    # so we don't need to rebuild them every iteration.
+    sop_fn = _build_sop_callable(rt)
+    drafter_llm_fn = _build_drafter_llm_callable(rt)
+    drafter_emit_fn = _build_drafter_emit_callable(rt)
+    renderer_fn = _build_renderer_callable(rt)
+    on_renderer_text_ready_fn = _build_renderer_text_ready_hook(rt)
     try:
         while True:
             active = await run_cycle(
                 rt.session,
                 cycle_index,
-                sop=_build_sop_callable(rt),
-                drafter=_build_drafter_callable(rt),
-                renderer=_build_renderer_callable(rt),
+                sop=sop_fn,
+                drafter_llm=drafter_llm_fn,
+                drafter_emit=drafter_emit_fn,
+                renderer=renderer_fn,
                 emit=rt.out_queue.put,
                 await_authorization=rt.await_auth,
+                on_renderer_text_ready=on_renderer_text_ready_fn,
             )
             if not active:
                 break
             # Gate the next cycle on the player clicking "Continue" — symmetric
-            # with the in-cycle auth gate. Without this, the engine would loop
-            # straight into cycle N+1's SoP while the player is still reading
-            # the dispatch they just authorized.
+            # with the in-cycle auth gate. Cycle N+1's LLM work is already in
+            # flight via the prefetch task scheduled by `on_renderer_text_ready`,
+            # so this gate now only waits on the player, not on LLM latency.
             await rt.out_queue.put({"event": "awaiting_continue", "cycle": cycle_index})
             await rt.await_continue()
             cycle_index += 1
@@ -475,6 +684,11 @@ async def _run_session_loop(rt: SessionRuntime) -> None:
         logfire.exception("session loop crashed", session_id=rt.session.id)
         await rt.out_queue.put({"event": "error", "code": "session_crashed"})
     finally:
+        # Cancel any in-flight prefetch so it doesn't outlive the session.
+        if rt.prefetch_task is not None and not rt.prefetch_task.done():
+            rt.prefetch_task.cancel()
+            with contextlib.suppress(BaseException):
+                await rt.prefetch_task
         await rt.out_queue.put({"event": "session_closed"})
 
 

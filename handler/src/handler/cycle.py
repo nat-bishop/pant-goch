@@ -15,6 +15,14 @@ State mutation always flows through `session.apply(event)`. The spine
 functions mutate session.state in place — that's the live path — but
 the emitted event carries the same delta so `fold()` reproduces the
 state during replay.
+
+Wall-clock optimisations (HANDLER_SPEC_V2 §11):
+  - The SoP callable returns `(text, pacing_task)` so the drafter LLM can
+    start the moment SoP's LLM stream is exhausted, while paced sop_word
+    SSE events continue to the client in the background.
+  - The renderer callable does the same for `dispatch_word` pacing, and
+    fires `on_renderer_text_ready` so `main.py` can schedule cycle N+1's
+    prefetch while cycle N's dispatch is still pacing to the modal.
 """
 from __future__ import annotations
 
@@ -64,11 +72,15 @@ log = logging.getLogger(__name__)
 
 
 class SopFn(Protocol):
-    async def __call__(self, session: Session, cycle_index: int) -> str:
-        """Render the State-of-Play memo. Returns the full text after streaming."""
+    async def __call__(
+        self, session: Session, cycle_index: int
+    ) -> tuple[str, asyncio.Task]:
+        """Render the State-of-Play memo. Returns (full text, pacing_task).
+        Text resolves as soon as the LLM stream is exhausted; pacing_task
+        continues emitting paced `sop_word` SSE events in the background."""
 
 
-class DrafterFn(Protocol):
+class DrafterLLMFn(Protocol):
     async def __call__(
         self,
         session: Session,
@@ -77,8 +89,21 @@ class DrafterFn(Protocol):
         valid_catalog: list[tuple[str, str | None, dict[str, str]]],
         forced_moment_id: str | None,
     ) -> tuple[list[Option], bool]:
-        """Return (options, engine_fallback). On engine_fallback=True the
-        engine emitted a deterministic fallback set after retries exhausted."""
+        """LLM-only phase of the drafter. No SSE emission. Returns
+        (options, engine_fallback). On engine_fallback=True the drafter
+        exhausted retries and the engine synthesised a fallback set."""
+
+
+class DrafterEmitFn(Protocol):
+    async def __call__(
+        self,
+        cycle_index: int,
+        options: list[Option],
+        engine_fallback: bool,
+        forced_moment_id: str | None,
+    ) -> None:
+        """Pace each option's prose to the client as option_started +
+        option_word ×N events, terminated by options_complete."""
 
 
 class RendererFn(Protocol):
@@ -89,9 +114,17 @@ class RendererFn(Protocol):
         option: Option,
         delta: dict,
         acting: str,
-    ) -> str:
-        """Render the field dispatch in the acting agent's voice. Returns
-        the full text after streaming."""
+    ) -> tuple[str, asyncio.Task]:
+        """Render the field dispatch. Returns (full text, pacing_task).
+        Same shape as SopFn — text resolves on LLM-done so the caller can
+        kick off cross-cycle prefetch while pacing continues."""
+
+
+class OnRendererTextReadyFn(Protocol):
+    async def __call__(self, cycle_index: int) -> None:
+        """Fires once cycle N's renderer LLM has produced its text AND state
+        is final (tick_cycle_close + timeout re-check done). main.py uses
+        this to schedule cycle N+1's prefetch."""
 
 
 class Emitter(Protocol):
@@ -100,6 +133,10 @@ class Emitter(Protocol):
     word events to the connected client without knowing about HTTP."""
 
     async def __call__(self, payload: dict) -> None: ...
+
+
+async def _noop_renderer_text_ready(_cycle_index: int) -> None:
+    return
 
 
 # ───────────────────────── start / await primitives ─────────────────────────
@@ -126,10 +163,12 @@ async def run_cycle(
     cycle_index: int,
     *,
     sop: SopFn,
-    drafter: DrafterFn,
+    drafter_llm: DrafterLLMFn,
+    drafter_emit: DrafterEmitFn,
     renderer: RendererFn,
     emit: Emitter,
     await_authorization: Callable[[], Awaitable[Option]],
+    on_renderer_text_ready: OnRendererTextReadyFn = _noop_renderer_text_ready,
 ) -> bool:
     """Run one cycle. Returns True if the mission is still active, False on
     terminal (caller stops iterating).
@@ -137,6 +176,10 @@ async def run_cycle(
     `await_authorization` is supplied by main.py: it waits for the player's
     POST /authorize, validates the picked option against `options`, and
     returns the resolved `Option` (which carries the prose from drafter).
+
+    `on_renderer_text_ready` is invoked after the renderer LLM produces its
+    text AND state is final (tick_cycle_close + any timeout re-check done).
+    Main.py uses this to schedule cycle N+1's prefetch.
     """
     mission = session.mission
     state = session.state
@@ -153,7 +196,9 @@ async def run_cycle(
         await emit({"event": "cycle_opened", "cycle": cycle_index, "state": state.qualities})
 
         # ── i. SoP synthesizer ──
-        sop_text = await sop(session, cycle_index)
+        # Returns text the moment the LLM stream is exhausted; pacing_task
+        # continues emitting paced sop_word events to the client in the bg.
+        sop_text, sop_pacing = await sop(session, cycle_index)
         session.apply(SopRendered(cycle_index=cycle_index, text=sop_text))
 
         # ── ii. Drafter (with optional forced moment) ──
@@ -161,9 +206,18 @@ async def run_cycle(
         forced = due_moments(state, mission)
         forced_id = forced[0].id if forced else None
 
-        options, engine_fallback = await drafter(
-            session, cycle_index, sop_text, catalog, forced_id,
+        # Run drafter LLM in parallel with SoP pacing. The drafter only needs
+        # sop_text (the LLM output), not the paced emission, so it can start
+        # as soon as the LLM finishes generating.
+        drafter_task = asyncio.create_task(
+            drafter_llm(session, cycle_index, sop_text, catalog, forced_id)
         )
+
+        # Wait for SoP pacing to finish before showing options — keeps the
+        # reading order (SoP, then options) intact on the client.
+        await sop_pacing
+
+        options, engine_fallback = await drafter_task
         session.apply(
             OptionsDrafted(
                 cycle_index=cycle_index,
@@ -172,6 +226,7 @@ async def run_cycle(
                 engine_fallback=engine_fallback,
             )
         )
+        await drafter_emit(cycle_index, options, engine_fallback, forced_id)
         await emit({"event": "awaiting_auth"})
 
         # ── player picks ──
@@ -217,7 +272,7 @@ async def run_cycle(
             t_beat, _, _ = terminal
             # ── terminal dispatch (still rendered, in appropriate voice) ──
             acting = _acting_for(chosen)
-            text = await renderer(session, cycle_index, chosen, delta, acting)
+            text, render_pacing = await renderer(session, cycle_index, chosen, delta, acting)
             session.apply(
                 DispatchRendered(
                     cycle_index=cycle_index, acting=acting, archetype=chosen.archetype, text=text,
@@ -225,28 +280,33 @@ async def run_cycle(
             )
             resolution = _build_resolution(mission, state, t_beat.id, t_beat.outcome_key or "")
             session.apply(MissionResolved(cycle_index=cycle_index, resolution=resolution))
+            # Wait for dispatch pacing so the client sees the full final
+            # dispatch before mission_resolved hits.
+            await render_pacing
             await emit(_resolved_payload(resolution))
             return False
 
         # ── iv. Dispatch ──
         acting = _acting_for(chosen)
-        text = await renderer(session, cycle_index, chosen, delta, acting)
+        text, render_pacing = await renderer(session, cycle_index, chosen, delta, acting)
         session.apply(
             DispatchRendered(
                 cycle_index=cycle_index, acting=acting, archetype=chosen.archetype, text=text,
             )
         )
 
-        # ── cycle close ──
+        # ── cycle close (deterministic; runs while pacing continues in bg) ──
         close_delta = tick_cycle_close(state)
         session.apply(CycleClosed(cycle_index=cycle_index, delta=close_delta))
-        await emit({"event": "cycle_closed", "cycle": cycle_index, "state": state.qualities})
 
-        # Timeout terminal — check after cycles_remaining decrement.
-        # Re-run beat phase so `timeout` (a normal beat) can fire. Pass
+        # Timeout terminal — check after cycles_remaining decrement. Re-run
+        # the beat phase so `timeout` (a normal beat) can fire. Pass
         # `made_progress=True` to suppress passive-pressure beats: those
-        # already had their chance on the first pass this cycle; we don't
-        # want unlimited-fire passive beats double-firing across passes.
+        # already had their chance on the first pass this cycle.
+        #
+        # State mutations happen here synchronously; the matching SSE emit
+        # (mission_resolved) is deferred below until dispatch pacing finishes.
+        terminal_resolved: dict | None = None
         if state.outcome is None:
             fires2, agg2 = fire_due_beats(state, mission, made_progress=True)
             if fires2:
@@ -259,10 +319,26 @@ async def run_cycle(
                 t2 = next(((b, ag, d) for (b, ag, d) in fires2 if b.terminal), None)
                 if t2 is not None:
                     t_beat, _, _ = t2
-                    resolution = _build_resolution(mission, state, t_beat.id, t_beat.outcome_key or "")
+                    resolution = _build_resolution(
+                        mission, state, t_beat.id, t_beat.outcome_key or ""
+                    )
                     session.apply(MissionResolved(cycle_index=cycle_index, resolution=resolution))
-                    await emit(_resolved_payload(resolution))
-                    return False
+                    terminal_resolved = _resolved_payload(resolution)
+
+        # Fire prefetch hook only if mission is still active. State is final
+        # at this point (cycle_close + timeout re-check both done), so the
+        # prefetched SoP/drafter will see the correct cycle N+1 starting state.
+        if terminal_resolved is None:
+            await on_renderer_text_ready(cycle_index)
+
+        # Wait for dispatch pacing to finish before emitting any cycle-close
+        # signals — otherwise the client would see cycle_closed (or
+        # mission_resolved) while still receiving dispatch_word events.
+        await render_pacing
+        await emit({"event": "cycle_closed", "cycle": cycle_index, "state": state.qualities})
+        if terminal_resolved is not None:
+            await emit(terminal_resolved)
+            return False
 
     return state.outcome is None
 

@@ -1,7 +1,6 @@
 """End-to-end cycle integration test against the FastAPI surface.
 
-llama is not booted — the three agent-call builders (`_build_sop_callable`,
-`_build_drafter_callable`, `_build_renderer_callable`) are monkeypatched to
+llama is not booted — the per-cycle agent-call builders are monkeypatched to
 produce deterministic stub outputs. The cycle orchestration + authorize +
 continue endpoints + event sequencing run for real.
 
@@ -25,6 +24,13 @@ from handler.models import Option
 _TINY_PATH = str(Path(__file__).parent / "fixtures" / "tiny_mission.yaml")
 
 
+def _completed_task() -> asyncio.Task:
+    """Fills the `pacing_task` slot in the stub SoP / renderer return value.
+    Stubs have no pacing to do — the real callables overlap LLM and pacing,
+    stubs just hand back an already-resolving task."""
+    return asyncio.create_task(asyncio.sleep(0))
+
+
 def _stub_sop(rt):
     async def _sop(session, cycle_index):
         text = f"State of play for cycle {cycle_index}. Resources nominal."
@@ -34,12 +40,12 @@ def _stub_sop(rt):
         await rt.out_queue.put(
             {"event": "sop_word", "cycle": cycle_index, "idx": 1, "word": "", "is_last": True}
         )
-        return text
+        return text, _completed_task()
     return _sop
 
 
-def _stub_drafter(rt):
-    async def _draft(session, cycle_index, sop_text, catalog, forced_moment_id):
+def _stub_drafter_llm(rt):
+    async def _drafter_llm(session, cycle_index, sop_text, catalog, forced_moment_id):
         # Sort PUSH first so /authorize index 0 reliably progresses the mission.
         ordered = sorted(catalog, key=lambda c: (0 if c[0] == "PUSH" else 1, c[0]))
         options: list[Option] = []
@@ -61,6 +67,13 @@ def _stub_drafter(rt):
             )
             if len(options) == 3:
                 break
+        return options, False
+    return _drafter_llm
+
+
+def _stub_drafter_emit(rt):
+    async def _drafter_emit(cycle_index, options, engine_fallback, forced_moment_id):
+        rt.current_options = options
         for option_idx, option in enumerate(options):
             await rt.out_queue.put(
                 {
@@ -81,12 +94,10 @@ def _stub_drafter(rt):
                 "count": len(options),
                 "has_forced_moment": forced_moment_id is not None,
                 "moment_id": forced_moment_id,
-                "engine_fallback": False,
+                "engine_fallback": engine_fallback,
             }
         )
-        rt.current_options = options
-        return options, False
-    return _draft
+    return _drafter_emit
 
 
 def _stub_renderer(rt):
@@ -102,8 +113,18 @@ def _stub_renderer(rt):
         rt.dispatches.append(
             DispatchRecord(cycle_index=cycle_index, acting=acting, archetype=option.archetype, text=text)
         )
-        return text
+        return text, _completed_task()
     return _render
+
+
+def _stub_renderer_text_ready_hook(rt):
+    """Disable cross-cycle prefetch in this integration test — prefetch would
+    try to hit `AGENTS.sop.run` against the (non-booted) llama-server. The
+    cycle orchestration is what we're testing here; prefetch correctness is
+    verified separately."""
+    async def _hook(_cycle_index: int) -> None:
+        return
+    return _hook
 
 
 @pytest.fixture
@@ -113,8 +134,10 @@ def stubbed_client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     from handler import main as _main
     monkeypatch.setattr(_main, "EXTERNAL_LLAMA_PROBE_TIMEOUT_SECONDS", 0.1)
     monkeypatch.setattr(_main, "_build_sop_callable", _stub_sop)
-    monkeypatch.setattr(_main, "_build_drafter_callable", _stub_drafter)
+    monkeypatch.setattr(_main, "_build_drafter_llm_callable", _stub_drafter_llm)
+    monkeypatch.setattr(_main, "_build_drafter_emit_callable", _stub_drafter_emit)
     monkeypatch.setattr(_main, "_build_renderer_callable", _stub_renderer)
+    monkeypatch.setattr(_main, "_build_renderer_text_ready_hook", _stub_renderer_text_ready_hook)
     monkeypatch.setattr(_main, "WORD_PACE_S", 0.0)
     with TestClient(_main.app) as client:
         yield client
