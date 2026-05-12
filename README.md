@@ -108,7 +108,7 @@ HANDLER_SPEC_V2.md      # authoritative design
 
 ## Troubleshooting
 
-- **`llama-server failed to come up`** — check `handler/logs/llama-*.log` for the underlying stderr. Common causes: port `:8080` in use (`make kill-zombies`), GPU OOM (drop `LLAMA_NGL`), corrupt GGUF (delete `models/` and re-run `make download-model`).
+- **`llama-server failed to come up`** — check `handler/logs/llama-*.log` for the underlying stderr. Common causes: port `:8080` in use (`make kill`), GPU OOM (drop `LLAMA_NGL`), corrupt GGUF (delete `models/` and re-run `make download-model`).
 - **`engine sidecar unreachable`** (from playtest) — sidecar isn't running on `:8000`. Boot via `make sidecar`.
 - **Browser shows "booting…" forever** — sidecar is up but the SSE stream is silent. Usually means llama-server isn't responding to /v1/chat/completions. Check the sidecar's stdout for the first agent call.
 

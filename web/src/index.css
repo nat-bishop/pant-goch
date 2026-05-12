@@ -529,8 +529,8 @@ body {
   max-width: 720px;
   /* Locked min-height so the sheet doesn't expand as SoP / option words
      stream in. Sized to fit caveat + doctype + locked 12em SoP block +
-     4 option rows (60px each) + auth + foot at current paddings. */
-  min-height: 920px;
+     4 option rows (116px each) + auth + foot at current paddings. */
+  min-height: 1080px;
   padding: 76px 84px 60px;
   box-shadow: var(--shadow-paper);
   position: relative;
@@ -659,9 +659,10 @@ body {
   padding: 10px 8px;
   margin: 0 -8px;
   /* Locked min-height per row so each slot reserves space before its
-     prose words stream in. Fits the i./check + 2 lines of 13.5px/1.7
-     opt-prose plus 10px×2 padding. */
-  min-height: 64px;
+     prose words stream in. Matches the populated height (opt-title +
+     3-line-clamped opt-prose + 10px×2 padding ≈ 116px) so the visible
+     position of the auth block doesn't drift as options arrive. */
+  min-height: 116px;
   cursor: pointer;
   align-items: baseline;
   border-top: 1px dashed var(--rule-soft);
@@ -673,7 +674,6 @@ body {
 /* Empty slot — reserves height but renders nothing, so the page stays
    stable while options stream in one by one (or only 3 of 4 arrive). */
 .opt-row.placeholder { visibility: hidden; pointer-events: none; }
-.opt-row.placeholder:hover { background: transparent; }
 .opt-n {
   font-family: "Courier Prime", monospace;
   font-size: 12px;
@@ -693,12 +693,28 @@ body {
   font-size: 14.5px;
   font-weight: 600;
   color: var(--ink);
+  /* One-line clamp — same rationale as .opt-prose: any overflow would
+     break the locked row + sheet heights. */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 1;
+  line-clamp: 1;
+  overflow: hidden;
 }
 .opt-prose {
   font-family: "Newsreader", "Iowan Old Style", Georgia, serif;
   font-size: 13.5px;
   color: var(--ink-soft);
   line-height: 1.7;
+  /* Clamp to 3 lines so .opt-row height stays at its 104px min — drafters
+     occasionally produce 4-line prose, which would otherwise expand the
+     sheet past its locked 1080px min. Hard ellipsis is preferable to
+     letting the page reflow mid-stream. */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  overflow: hidden;
 }
 .opts.has-sel .opt-row:not(.sel) { opacity: 0.34; }
 .opts.authorized .opt-row:not(.sel) { opacity: 0.18; }
@@ -926,13 +942,14 @@ body {
 
 .archive-card {
   max-width: 620px;
-  /* Locked min-height so the modal doesn't expand as dispatch words
-     stream in. Sized for tag/from/route header + ~12 lines of 14px/1.85
-     archive-body + delta footer at current paddings. Longer dispatches
-     scroll inside the body. */
-  min-height: 520px;
+  /* Locked size so the card doesn't grow with the dispatch's length —
+     short and long dispatches render at the same dimensions. Body
+     scrolls when content exceeds the locked region (see .archive-body). */
+  height: 640px;
   padding: 44px 52px 36px;
   position: relative;
+  display: flex;
+  flex-direction: column;
   animation: paper-rise 0.5s var(--ease) both;
 }
 
@@ -1004,6 +1021,12 @@ body {
   line-height: 1.85;
   color: var(--ink);
   white-space: pre-wrap;
+  /* Take all remaining vertical space inside the locked archive-card and
+     scroll internally when the dispatch is long. Card stays a constant
+     640px regardless of how short or long this body is. */
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .archive-delta {

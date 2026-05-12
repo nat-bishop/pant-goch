@@ -27,7 +27,7 @@ help:
 	@echo "  make typecheck           Run TS typecheck on web/"
 	@echo "  make playtest            Run the option-picker playtest (spawns sidecar+llama; one terminal)"
 	@echo "  make clean               Remove __pycache__ and logs/*.log"
-	@echo "  make kill-zombies        Force-kill stragglers on :8000/:8080/:5173-5176"
+	@echo "  make kill                Force-kill stragglers on :8000/:8080/:5173-5176"
 	@echo "  make mission-check       Validate handler/missions/*.yaml against the schema"
 
 # `run` boots sidecar and web in parallel via `concurrently` (npm). Ctrl-C
@@ -117,6 +117,6 @@ clean:
 # listening sockets, so it would print "killed" while the port was still
 # bound). The PowerShell lives in a .ps1 to avoid Make+bash+PowerShell
 # quoting hell. Exits non-zero if any port is still bound after the kill.
-.PHONY: kill-zombies
-kill-zombies:
+.PHONY: kill
+kill:
 	@powershell -NoProfile -ExecutionPolicy Bypass -File scripts/kill-zombies.ps1
