@@ -146,14 +146,26 @@ export const useStore = create<Store>((set, get) => ({
 
   startMission: async () => {
     if (get().bootStarted) return;
-    set({ bootStarted: true });
-    try {
-      const r = await api.startMission();
-      set({ session_id: r.session_id });
-      // mission_meta + initial state will land via the first SSE event.
-    } catch (e: any) {
-      set({ errorMessage: e.message ?? String(e), bootStarted: false });
+    set({ bootStarted: true, errorMessage: null });
+    // Sidecar boot waits for llama-server /health (~3-5s). Vite is up in
+    // <200ms, so the first /mission/start typically hits ECONNREFUSED.
+    // Retry with backoff so the user doesn't need to reload.
+    const delays = [200, 400, 800, 1500, 2500, 4000];
+    let lastErr: unknown = null;
+    for (let attempt = 0; attempt <= delays.length; attempt++) {
+      try {
+        const r = await api.startMission();
+        set({ session_id: r.session_id });
+        // mission_meta + initial state will land via the first SSE event.
+        return;
+      } catch (e) {
+        lastErr = e;
+        if (attempt === delays.length) break;
+        await new Promise((resolve) => setTimeout(resolve, delays[attempt]));
+      }
     }
+    const msg = lastErr instanceof Error ? lastErr.message : String(lastErr);
+    set({ errorMessage: msg, bootStarted: false });
   },
 
   authorize: async () => {
