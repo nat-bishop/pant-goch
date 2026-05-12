@@ -36,7 +36,7 @@ def session_completed(rec: SessionRecord) -> EvalResult:
 
 
 def terminal_reached(rec: SessionRecord) -> EvalResult:
-    """A terminal beat fired (mission resolved with an outcome)."""
+    """A terminal event fired (mission resolved with an outcome)."""
     if rec.outcome is None:
         return EvalResult(
             "terminal_reached", False, f"no terminal; cycles={rec.cycles_used()}"

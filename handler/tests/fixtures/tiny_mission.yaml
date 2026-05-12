@@ -1,6 +1,7 @@
-# Minimal HANDLER mission used by unit tests. 2 agents, 3 archetypes, 1
-# moment, 4 beats. Exercises every engine primitive without LYNX-EXFIL's
-# tuning. The "tiny" suffix signals: this is NOT a playable scenario.
+# Minimal HANDLER mission used by unit tests. 2 agents, 3 archetypes, 5
+# events (1 forced + 4 passive). Exercises every engine primitive without
+# LYNX-EXFIL's tuning. The "tiny" suffix signals: this is NOT a playable
+# scenario.
 
 id: tiny
 name: "Tiny Test Mission"
@@ -21,11 +22,9 @@ agents:
     voice_register: "test voice"
     starting_cover: 5
 
-initial_qualities:
-  mission.progress: 0
-
-quality_descriptors:
+qualities:
   mission.progress:
+    initial: 0
     values:
       "0": "the operation has not yet advanced"
       "1": "the operation has advanced one step"
@@ -71,8 +70,10 @@ archetypes:
       value: 1
     effects: []
 
-moments:
+events:
+  # Forced (drafter-surfaced) event.
   - id: turning_point
+    force_into_drafter: true
     fires_at_most: once_per_mission
     when:
       kind: and
@@ -82,9 +83,9 @@ moments:
           value: 1
         - kind: not
           of:
-            kind: moment_fired
-            moment: turning_point
-    intent: "Test moment that ratchets progress + costs ALPHA cover."
+            kind: event_fired
+            event: turning_point
+    intent: "Test forced event that ratchets progress + costs ALPHA cover."
     must_communicate: ["test"]
     must_not: []
     tone: "test"
@@ -96,7 +97,7 @@ moments:
         value: -3
         op: add
 
-beats:
+  # Passive (post-authorization) events.
   - id: win
     terminal: true
     outcome_key: win

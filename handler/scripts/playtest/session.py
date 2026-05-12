@@ -34,10 +34,12 @@ class CycleTrace:
     chosen_index: int | None = None
     chosen_archetype: str | None = None
     effects_delta: dict[str, Any] = field(default_factory=dict)
-    beats_fired: list[str] = field(default_factory=list)
+    events_fired: list[str] = field(default_factory=list)
     dispatch_text: str = ""
     dispatch_acting: str | None = None
     used_engine_fallback: bool = False
+    # `moment_id` keeps the LLM-facing wire term (engine SSE field name)
+    # — the value is an event id from `mission.events`.
     forced_moment_id: str | None = None
 
 
@@ -61,10 +63,10 @@ class SessionRecord:
     def cycles_used(self) -> int:
         return len(self.cycles)
 
-    def fired_beats(self) -> list[str]:
+    def fired_events(self) -> list[str]:
         out: list[str] = []
         for c in self.cycles:
-            out.extend(c.beats_fired)
+            out.extend(c.events_fired)
         return out
 
     def engine_fallback_count(self) -> int:
@@ -185,8 +187,8 @@ async def run_session(
                         await client.post(f"/mission/{session_id}/continue")
                     elif kind == "effects_applied" and current is not None:
                         current.effects_delta = ev.get("delta", {})
-                    elif kind == "beats_fired" and current is not None:
-                        current.beats_fired.extend(ev.get("beats", []))
+                    elif kind == "events_fired" and current is not None:
+                        current.events_fired.extend(ev.get("events", []))
                     elif kind == "dispatch_started" and current is not None:
                         current.dispatch_acting = ev.get("acting")
                     elif kind == "dispatch_word" and current is not None:

@@ -1,8 +1,8 @@
 """Engine: predicate evaluation + state mutation. Pure deterministic functions.
 
 The LLM never writes to state — every state mutation flows through one of
-the spine entry points (`apply_archetype_effects`, `apply_moment_effects`,
-`fire_due_beats`, `tick_cycle_close`) and is called from `cycle.py`.
+the spine entry points (`apply_archetype_effects`, `apply_forced_event_effects`,
+`fire_due_passive_events`, `tick_cycle_close`) and is called from `cycle.py`.
 
 No I/O, no LLM calls, no async. Every function is pure (returns a new value)
 or mutates the passed-in `State` in place (well-marked). Predicate evaluation
@@ -11,17 +11,16 @@ never mutates.
 from __future__ import annotations
 
 import copy
-from typing import Any, assert_never
+from typing import Any, Literal, assert_never
 
 from .models import (
     And_,
     Archetype,
-    Beat,
-    BeatFired,
+    DramaticQuestion,
     Effect,
+    Event,
+    EventFired,
     Mission,
-    Moment,
-    MomentFired,
     Not_,
     Option,
     Or_,
@@ -32,9 +31,14 @@ from .models import (
     QualityLt,
     QualityLte,
     State,
+    iter_predicate_leaves,
     substitute_effect,
     substitute_predicate,
 )
+
+
+ActPhase = Literal["setup", "complication", "climax", "crisis"]
+TensionBand = Literal["steady", "escalating", "crisis"]
 
 
 # ───────────────────────── predicate evaluation ─────────────────────────
@@ -57,10 +61,8 @@ def evaluate_predicate(state: State, pred: Predicate) -> bool:
     if isinstance(pred, QualityEquals):
         v = state.get_quality(pred.quality)
         return v is not None and v == pred.value
-    if isinstance(pred, BeatFired):
-        return pred.beat in state.fired_beats
-    if isinstance(pred, MomentFired):
-        return pred.moment in state.fired_moments
+    if isinstance(pred, EventFired):
+        return pred.event in state.fired
     if isinstance(pred, Not_):
         return not evaluate_predicate(state, pred.of)
     if isinstance(pred, And_):
@@ -146,7 +148,7 @@ def valid_archetype_combinations(
                 if cover is None or float(cover) <= 0:
                     continue
                 # Substitute $agent in the precondition before evaluating.
-                pred = substitute_predicate(arch.when, agent.id)
+                pred = substitute_predicate(arch.when, {"agent": agent.id})
                 if evaluate_predicate(state, pred):
                     catalog.append((arch.id, agent.id, {"agent": agent.id}))
         else:
@@ -155,19 +157,24 @@ def valid_archetype_combinations(
     return catalog
 
 
-# ───────────────────────── moment enumeration ─────────────────────────
+# ───────────────────────── forced-event enumeration ─────────────────────────
 
 
-def due_moments(state: State, mission: Mission) -> list[Moment]:
-    """Moments whose `when` holds and haven't exhausted `fires_at_most`."""
-    out: list[Moment] = []
-    for m in mission.moments:
-        if m.fires_at_most == "once_per_mission" and m.id in state.fired_moments:
+def due_forced_events(state: State, mission: Mission) -> list[Event]:
+    """Forced events whose `when` holds and haven't exhausted `fires_at_most`.
+    Filters `mission.events` to those with `force_into_drafter=True` — these
+    are surfaced to the drafter so one option this cycle must satisfy them.
+    """
+    out: list[Event] = []
+    for e in mission.events:
+        if not e.force_into_drafter:
             continue
-        # `once_per_agent` on moments is not exercised in MVP; the only MVP
-        # moment (kestrel_sacrifice) fires once per mission.
-        if evaluate_predicate(state, m.when):
-            out.append(m)
+        if e.fires_at_most == "once_per_mission" and e.id in state.fired:
+            continue
+        # `once_per_agent` on forced events is not exercised in MVP; the only
+        # MVP forced event (kestrel_sacrifice) fires once per mission.
+        if evaluate_predicate(state, e.when):
+            out.append(e)
     return out
 
 
@@ -184,7 +191,7 @@ def apply_archetype_effects(
     arch = mission.archetype(option.archetype)
     effects = list(arch.effects)
     if option.agent is not None:
-        effects = [substitute_effect(e, option.agent) for e in effects]
+        effects = [substitute_effect(e, {"agent": option.agent}) for e in effects]
     return _apply_many(state, effects)
 
 
@@ -208,36 +215,36 @@ def option_progresses_mission(delta: dict[str, tuple[Any, Any]], mission: Missio
     return False
 
 
-# ───────────────────────── moment application ─────────────────────────
+# ───────────────────────── forced-event application ─────────────────────────
 
 
-def apply_moment_effects(
-    state: State, moment: Moment, option: Option
+def apply_forced_event_effects(
+    state: State, event: Event, option: Option
 ) -> dict[str, tuple[Any, Any]]:
-    """Apply a fired moment's effects to state IN PLACE. Returns net delta.
-    The option's agent (if any) is substituted into `$agent` references.
-    Records the moment in `state.fired_moments`.
+    """Apply a fired forced event's effects to state IN PLACE. Returns net
+    delta. The option's agent (if any) is substituted into `$agent` references.
+    Records the event in `state.fired`.
     """
-    effects = list(moment.effects)
+    effects = list(event.effects)
     if option.agent is not None:
-        effects = [substitute_effect(e, option.agent) for e in effects]
+        effects = [substitute_effect(e, {"agent": option.agent}) for e in effects]
     delta = _apply_many(state, effects)
-    state.fired_moments.append(moment.id)
+    state.fired.append(event.id)
     return delta
 
 
-# ───────────────────────── beat firing ─────────────────────────
+# ───────────────────────── passive-event firing ─────────────────────────
 
 
-def _beat_fired_already(state: State, beat: Beat, agent_id: str | None) -> bool:
-    if beat.fires_at_most == "unlimited":
+def _event_fired_already(state: State, event: Event, agent_id: str | None) -> bool:
+    if event.fires_at_most == "unlimited":
         return False
-    if beat.fires_at_most == "once_per_mission":
-        return beat.id in state.fired_beats
+    if event.fires_at_most == "once_per_mission":
+        return event.id in state.fired
     # once_per_agent
     if agent_id is None:
-        return beat.id in state.fired_beats
-    return f"{beat.id}:{agent_id}" in state.fired_per_agent
+        return event.id in state.fired
+    return f"{event.id}:{agent_id}" in state.fired_per_agent
 
 
 def merge_delta_into(
@@ -245,64 +252,65 @@ def merge_delta_into(
 ) -> None:
     """Merge `source` delta into `target` in place — first-seen `before` wins,
     latest `after` wins. Used to fold per-fire deltas into a cycle aggregate
-    and to layer a moment's effects over an archetype's."""
+    and to layer a forced event's effects over an archetype's."""
     for q, (b, a) in source.items():
         existing = target.get(q)
         target[q] = (existing[0] if existing else b, a)
 
 
-def fire_due_beats(
+def fire_due_passive_events(
     state: State, mission: Mission, made_progress: bool
-) -> tuple[list[tuple[Beat, str | None, dict[str, tuple[Any, Any]]]], dict[str, tuple[Any, Any]]]:
-    """Fire every eligible beat in (priority, authored) order. Mutates state
-    in place. Returns:
-        - list of (beat, agent_id_or_None, per-beat delta) for each fire
+) -> tuple[list[tuple[Event, str | None, dict[str, tuple[Any, Any]]]], dict[str, tuple[Any, Any]]]:
+    """Fire every eligible passive event (`force_into_drafter=False`) in
+    (priority, authored) order. Mutates state in place. Returns:
+        - list of (event, agent_id_or_None, per-event delta) for each fire
         - aggregate delta across all fires
 
-    Iterates beats in stable order. For `for_each_agent` beats, fires once per
-    matching agent. Stops the cycle's beat phase when a `terminal` beat fires
-    (subsequent beats do not fire that cycle).
+    For `for_each_agent` events, fires once per matching agent. Stops the
+    cycle's passive-event phase when a `terminal` event fires (subsequent
+    events do not fire that cycle).
     """
-    fires: list[tuple[Beat, str | None, dict[str, tuple[Any, Any]]]] = []
+    fires: list[tuple[Event, str | None, dict[str, tuple[Any, Any]]]] = []
     aggregate: dict[str, tuple[Any, Any]] = {}
 
-    ordered = sorted(enumerate(mission.beats), key=lambda x: (x[1].priority, x[0]))
+    passive = [(i, e) for i, e in enumerate(mission.events) if not e.force_into_drafter]
+    ordered = sorted(passive, key=lambda x: (x[1].priority, x[0]))
 
-    for _, beat in ordered:
+    for _, event in ordered:
         if state.outcome is not None:
             break  # terminal short-circuit
-        if beat.only_when_no_progress_this_cycle and made_progress:
+        if event.only_when_no_progress_this_cycle and made_progress:
             continue
 
-        if beat.for_each_agent:
+        if event.for_each_agent:
             for agent in mission.agents:
-                if _beat_fired_already(state, beat, agent.id):
+                if _event_fired_already(state, event, agent.id):
                     continue
-                pred = substitute_predicate(beat.when, agent.id)
+                pred = substitute_predicate(event.when, {"agent": agent.id})
                 if not evaluate_predicate(state, pred):
                     continue
-                effects = [substitute_effect(e, agent.id) for e in beat.effects]
+                effects = [substitute_effect(e, {"agent": agent.id}) for e in event.effects]
                 delta = _apply_many(state, effects)
-                state.fired_per_agent.append(f"{beat.id}:{agent.id}")
-                # Also record in fired_beats — predicates that just ask "did
-                # this beat fire at all" don't care about the agent split.
-                state.fired_beats.append(beat.id)
-                if beat.terminal and beat.outcome_key is not None:
-                    state.outcome = beat.outcome_key
-                fires.append((beat, agent.id, delta))
+                state.fired_per_agent.append(f"{event.id}:{agent.id}")
+                # Also record in `state.fired` — predicates that just ask
+                # "did this event fire at all" don't care about the agent split.
+                state.fired.append(event.id)
+                if event.terminal and event.outcome_key is not None:
+                    state.outcome = event.outcome_key
+                fires.append((event, agent.id, delta))
                 merge_delta_into(aggregate, delta)
-                if beat.terminal:
+                if event.terminal:
                     break  # one terminal fire is enough
         else:
-            if _beat_fired_already(state, beat, None):
+            if _event_fired_already(state, event, None):
                 continue
-            if not evaluate_predicate(state, beat.when):
+            if not evaluate_predicate(state, event.when):
                 continue
-            delta = _apply_many(state, beat.effects)
-            state.fired_beats.append(beat.id)
-            if beat.terminal and beat.outcome_key is not None:
-                state.outcome = beat.outcome_key
-            fires.append((beat, None, delta))
+            delta = _apply_many(state, event.effects)
+            state.fired.append(event.id)
+            if event.terminal and event.outcome_key is not None:
+                state.outcome = event.outcome_key
+            fires.append((event, None, delta))
             merge_delta_into(aggregate, delta)
 
     return fires, aggregate
@@ -333,5 +341,154 @@ def tick_cycle_close(state: State) -> dict[str, tuple[Any, Any]]:
 def snapshot(state: State) -> State:
     """Deep copy a State — used for replay and the debug timeline."""
     return copy.deepcopy(state)
+
+
+# ───────────────────────── narrative-shape derivations ─────────────────────────
+
+
+# Cover at or below this value puts the mission in crisis act phase.
+_COVER_BRINK = 2
+# When `cycles_remaining / max_cycles` drops to / below this, climax begins.
+_CLIMAX_THRESHOLD = 0.34
+# When the ratio is at / above this, the setup phase still holds (provided
+# no cover loss has happened yet).
+_SETUP_THRESHOLD = 0.66
+# Cover swing thresholds for derive_tension_band — values are absolute
+# magnitudes summed across all .cover qualities this cycle.
+_CRISIS_SWING = 4
+_ESCALATING_SWING = 2
+
+
+def _is_numeric(v: Any) -> bool:
+    """True for int/float values that should be treated as numbers — excludes
+    bool (which `isinstance(True, int)` returns True for) and None."""
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def derive_act_phase(state: State, mission: Mission) -> ActPhase:
+    """Classify the current cycle into a four-act register so the renderer
+    and SoP can adopt an appropriate dramatic tone. Mission-agnostic — uses
+    universal qualities only (cycles_remaining + per-agent cover).
+
+    Precedence: crisis > climax > setup > complication. The order matters
+    because crisis (an agent on the brink) trumps "we still have time."
+    """
+    cycles_raw = state.get_quality("mission.cycles_remaining")
+    cycles = int(cycles_raw) if _is_numeric(cycles_raw) else 0
+    max_cycles = mission.max_cycles
+    # crisis: any agent's cover is at the brink, OR one cycle left.
+    for agent in mission.agents:
+        cover = state.get_quality(f"agent[{agent.id}].cover")
+        if _is_numeric(cover) and int(cover) <= _COVER_BRINK:
+            return "crisis"
+    if cycles <= 1:
+        return "crisis"
+    if max_cycles > 0 and cycles / max_cycles <= _CLIMAX_THRESHOLD:
+        return "climax"
+    # setup holds only while no agent has taken any cover loss yet.
+    if max_cycles > 0 and cycles / max_cycles >= _SETUP_THRESHOLD:
+        if all(
+            not _is_numeric(state.get_quality(f"agent[{a.id}].cover"))
+            or int(state.get_quality(f"agent[{a.id}].cover")) >= a.starting_cover
+            for a in mission.agents
+        ):
+            return "setup"
+    return "complication"
+
+
+def derive_tension_band(prior_state: State | None, state: State) -> TensionBand:
+    """Classify the magnitude of cover swing this cycle — a renderer-side
+    signal so a quiet cycle reads measured and a sharp drop reads kinetic.
+    `prior_state` is the state at the start of the cycle (before
+    archetype/moment/beat application); `state` is post-cycle.
+    """
+    if prior_state is None:
+        return "steady"
+    total_swing = 0
+    for q, after in state.qualities.items():
+        if not q.endswith(".cover"):
+            continue
+        before = prior_state.qualities.get(q, after)
+        if _is_numeric(after) and _is_numeric(before):
+            total_swing += abs(int(after) - int(before))
+    if total_swing >= _CRISIS_SWING:
+        return "crisis"
+    if total_swing >= _ESCALATING_SWING:
+        return "escalating"
+    return "steady"
+
+
+def select_dramatic_question(state: State, mission: Mission) -> str | None:
+    """Return the first dramatic question whose `when` matches current state,
+    or None if no question fires. Author orders most-specific first."""
+    for dq in mission.dramatic_questions:
+        if evaluate_predicate(state, dq.when):
+            return dq.question
+    return None
+
+
+def invalid_archetype_combinations(
+    state: State, mission: Mission
+) -> list[tuple[str, str | None, str]]:
+    """For each (archetype, agent) combination whose precondition is NOT
+    satisfied, return (archetype_id, agent_id_or_None, reason). Reason is a
+    short human-readable description of which precondition leaf failed —
+    surfaced to the drafter so it can reason about *why* an option is
+    unavailable instead of only seeing the trimmed catalog.
+
+    Sibling of `valid_archetype_combinations`; together they cover the full
+    archetype × agent space without overlap.
+    """
+    invalid: list[tuple[str, str | None, str]] = []
+    for arch in mission.archetypes:
+        if "agent" in arch.params:
+            for agent in mission.agents:
+                cover = state.get_quality(f"agent[{agent.id}].cover")
+                if not _is_numeric(cover) or float(cover) <= 0:
+                    invalid.append((arch.id, agent.id, f"agent[{agent.id}] is lost"))
+                    continue
+                pred = substitute_predicate(arch.when, {"agent": agent.id})
+                if evaluate_predicate(state, pred):
+                    continue
+                invalid.append((arch.id, agent.id, _describe_failing_predicate(state, pred)))
+        else:
+            if evaluate_predicate(state, arch.when):
+                continue
+            invalid.append((arch.id, None, _describe_failing_predicate(state, arch.when)))
+    return invalid
+
+
+def _describe_failing_predicate(state: State, pred: Predicate) -> str:
+    """Walk the predicate tree; return a short description of the first leaf
+    that evaluates False. If every leaf passes (which can happen for composite
+    failures driven by Or_/Not_ logic), return a generic message."""
+    for leaf in iter_predicate_leaves(pred):
+        if not evaluate_predicate(state, leaf):
+            return _format_leaf(state, leaf)
+    return "preconditions not met"
+
+
+# Comparison-leaf templates. Keyed by predicate class; the format string uses
+# `q` (quality ref), `v` (actual value from state), `t` (required threshold).
+_COMPARISON_LEAF_TEMPLATES: dict[type, str] = {
+    QualityGte:    "{q} is {v} (requires >= {t})",
+    QualityGt:     "{q} is {v} (requires > {t})",
+    QualityLte:    "{q} is {v} (requires <= {t})",
+    QualityLt:     "{q} is {v} (requires < {t})",
+    QualityEquals: "{q} is {v} (requires == {t!r})",
+}
+
+
+def _format_leaf(state: State, leaf: Predicate) -> str:
+    """Render one failing leaf as a short prose hint (e.g.
+    'mission.extraction_stage is 0 (requires >= 2)')."""
+    template = _COMPARISON_LEAF_TEMPLATES.get(type(leaf))
+    if template is not None:
+        return template.format(
+            q=leaf.quality, v=state.get_quality(leaf.quality), t=leaf.value
+        )
+    if isinstance(leaf, EventFired):
+        return f"event {leaf.event!r} has not fired"
+    return "precondition not met"
 
 

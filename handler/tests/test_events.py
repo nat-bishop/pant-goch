@@ -13,11 +13,11 @@ import pytest
 from pydantic import TypeAdapter
 
 from handler.events import (
-    BeatsFired,
     CycleClosed,
     CycleOpened,
     EffectsApplied,
     Event,
+    EventsFired,
     MissionStarted,
     OptionAuthorized,
     OptionsDrafted,
@@ -27,7 +27,7 @@ from handler.mission_loader import load_mission
 from handler.models import MissionResolution, Option, State, make_initial_state
 from handler.spine import (
     apply_archetype_effects,
-    fire_due_beats,
+    fire_due_passive_events,
     tick_cycle_close,
 )
 
@@ -47,7 +47,7 @@ def test_event_union_roundtrip(mission) -> None:
         MissionStarted(mission_id="tiny", initial_state=initial),
         CycleOpened(cycle_index=1),
         EffectsApplied(cycle_index=1, delta={"mission.progress": (0, 1)}),
-        BeatsFired(cycle_index=1, fires=[("passive_decay", None, {"agent[ALPHA].cover": (5, 4)})]),
+        EventsFired(cycle_index=1, fires=[("passive_decay", None, {"agent[ALPHA].cover": (5, 4)})]),
         CycleClosed(cycle_index=1, delta={"mission.cycles_remaining": (4, 3)}),
     ]
     for ev in samples:
@@ -84,9 +84,9 @@ def test_fold_observation_events_dont_mutate(mission) -> None:
     assert s.outcome is None
 
 
-def test_fold_beats_fired_records_fire_ledger(mission) -> None:
+def test_fold_events_fired_records_fire_ledger(mission) -> None:
     s = make_initial_state(mission)
-    ev = BeatsFired(
+    ev = EventsFired(
         cycle_index=1,
         fires=[
             ("agent_lost", "ALPHA", {"agent[ALPHA].lost": (None, True)}),
@@ -94,7 +94,7 @@ def test_fold_beats_fired_records_fire_ledger(mission) -> None:
     )
     fold(s, ev)
     assert s.get_quality("agent[ALPHA].lost") is True
-    assert "agent_lost" in s.fired_beats
+    assert "agent_lost" in s.fired
     assert "agent_lost:ALPHA" in s.fired_per_agent
 
 

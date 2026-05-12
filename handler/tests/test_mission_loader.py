@@ -20,7 +20,7 @@ def test_tiny_mission_loads() -> None:
     assert m.id == "tiny"
     assert {a.id for a in m.agents} == {"ALPHA", "BRAVO"}
     assert {a.id for a in m.archetypes} == {"PUSH", "SACRIFICE_BY_AGENT", "HOLD"}
-    assert {b.id for b in m.beats} >= {"win", "timeout", "passive_decay"}
+    assert {e.id for e in m.events} >= {"win", "timeout", "passive_decay"}
 
 
 def test_lynx_exfil_loads() -> None:
@@ -28,7 +28,7 @@ def test_lynx_exfil_loads() -> None:
     assert m.codename == "LYNX-EXFIL"
     assert m.max_cycles == 6
     assert len(m.archetypes) >= 5
-    assert any(mm.id == "kestrel_sacrifice" for mm in m.moments)
+    assert any(e.id == "kestrel_sacrifice" and e.force_into_drafter for e in m.events)
 
 
 def test_missing_file_raises_with_path(tmp_path: Path) -> None:
@@ -53,10 +53,10 @@ def test_top_level_must_be_mapping(tmp_path: Path) -> None:
     assert "mapping" in str(exc.value)
 
 
-def test_load_fails_on_missing_quality_descriptor(tmp_path: Path) -> None:
-    """Every key in `initial_qualities` must have a matching descriptor.
-    Forces authors to write in-fiction labels for mission-specific qualities
-    instead of letting raw `mission.foo: 0` leak into the narrative state block."""
+def test_load_fails_on_quality_without_descriptor(tmp_path: Path) -> None:
+    """A `qualities:` entry with `initial:` but no `buckets:`/`values:` is
+    rejected by the per-quality validator. Co-locating initial + descriptor
+    means the author can't write one without the other."""
     bad = tmp_path / "missing_descriptor.yaml"
     bad.write_text(
         """\
@@ -67,15 +67,17 @@ agents:
   - id: A
     codename: A
     starting_cover: 5
-initial_qualities:
-  mission.undescribed: 0
+qualities:
+  mission.undescribed:
+    initial: 0
+    # no buckets, no values — the Quality model rejects this
 archetypes:
   - id: X
     when:
       kind: quality_gte
       quality: a
       value: 0
-beats:
+events:
   - id: end
     terminal: true
     outcome_key: w
@@ -91,5 +93,6 @@ outcomes:
     )
     with pytest.raises(MissionLoadError) as exc:
         load_mission(bad)
-    assert "mission.undescribed" in str(exc.value)
-    assert "quality_descriptors" in str(exc.value)
+    msg = str(exc.value)
+    # The Quality model's _has_descriptor validator names buckets/values.
+    assert "buckets" in msg or "values" in msg

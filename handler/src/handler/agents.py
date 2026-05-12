@@ -35,13 +35,30 @@ from pydantic_ai.models.openai import OpenAIChatModel
 
 from .models import (
     AgentDossier,
+    Event,
     Mission,
-    Moment,
     Option,
     OptionSet,
-    QualityDescriptor,
     State,
 )
+from .spine import (
+    ActPhase,
+    TensionBand,
+    derive_act_phase,
+    derive_tension_band,
+    invalid_archetype_combinations,
+    select_dramatic_question,
+)
+
+
+# Map act phase → renderer tone band (4k). Centralised so the SoP and the
+# renderer agree on how each phase reads tonally.
+_TONE_BAND: dict[ActPhase, str] = {
+    "setup":        "measured — the operation is establishing; cadence is unhurried, observation precedes action",
+    "complication": "kinetic — the operation is in motion; sentences shorter, moves are observed and named",
+    "climax":       "urgent — decisive cycles; verbs land, hesitation reads as cost",
+    "crisis":       "spare — collapse is one mistake away; cut everything that isn't load-bearing",
+}
 
 
 log = logging.getLogger(__name__)
@@ -112,6 +129,19 @@ def _setting_block(mission: Mission) -> str:
     return f"\nSETTING:\n{mission.setting.strip()}\n"
 
 
+def _standing_orders_block(mission: Mission) -> str:
+    """Per-mission persistent prose constraints (4e). Injected into all three
+    agent system prompts so the renderer/SoP/drafter honour them every cycle.
+    Empty when the mission authored none."""
+    if not mission.standing_orders:
+        return ""
+    bullets = "\n".join(f"  - {order}" for order in mission.standing_orders)
+    return (
+        "\nSTANDING ORDERS (honour every cycle — do not contradict):\n"
+        f"{bullets}\n"
+    )
+
+
 def _sop_system_prompt(mission: Mission) -> str:
     return f"""\
 You are Operations Desk. You write the State of Play memo at the start of
@@ -127,9 +157,11 @@ MISSION:
 {_setting_block(mission)}
 AGENTS DEPLOYED:
 {_agent_dossier_block(mission.agents)}
-
+{_standing_orders_block(mission)}
 RULES:
 - Look forward. Name the threat. Name the resources. Name what has not moved.
+- If a DRAMATIC QUESTION is supplied this cycle, lead the memo with it (in
+  prose — not as a header). The memo is *about* that question.
 - 1–3 paragraphs. ~120–180 words total.
 - NEVER use numbers for state. No "cover six", no "six cycles remaining",
   no "stage two", no percentages, no out-of-ten scoring.
@@ -161,7 +193,7 @@ MISSION:
 {_setting_block(mission)}
 AGENTS DEPLOYED:
 {_agent_dossier_block(mission.agents)}
-
+{_standing_orders_block(mission)}
 OUTPUT SHAPE (strict):
 Each option carries:
   - `archetype`: one of the archetype ids from the VALID CATALOG below.
@@ -208,11 +240,16 @@ Desk register (terse, third-party, declarative).
 {_setting_block(mission)}
 AGENTS DEPLOYED:
 {_agent_dossier_block(mission.agents)}
-
+{_standing_orders_block(mission)}
 DISPATCH RULES:
 - 1–4 paragraphs. ~90–180 words.
 - Voice: as specified for ACTING. First-person for agents, third-party for operations.
 - Honor the RESOLVED STATE DELTA. If cover dropped, the prose reflects what cost that.
+- Adopt the TONE BAND given each cycle (measured / kinetic / urgent / spare)
+  — sentence rhythm must match the current dramatic register.
+- End on a single short observational sentence — a closing beat the reader
+  carries into the next cycle. No summary, no signoff: a thing seen, a
+  thing felt, a thing left unmoved.
 - NEVER use numbers for state. No "cover six", no "six cycles remaining".
 - NEVER use game/system vocabulary ("cover level", "extraction stage",
   "cycles remaining"). The CURRENT STATE block describes state in narrative
@@ -242,8 +279,7 @@ DISPATCH RULES:
 
 
 # Built-in fallback cover buckets used when a mission doesn't override
-# `quality_descriptors["agent[*].cover"]`. Ordered: first threshold whose
-# value >= cover wins.
+# `qualities["agent[*].cover"]`. Ordered: first threshold whose value >= cover wins.
 _BUILTIN_COVER_BUCKETS: list[tuple[int, str]] = [
     (0, "cover blown"),
     (2, "cover compromised"),
@@ -257,9 +293,9 @@ def _describe_cover(value: int, mission: Mission, agent_id: str) -> str:
     """Narrative descriptor for an agent's cover. Honors mission overrides at
     the per-agent key (`agent[LYNX].cover`) or the wildcard key
     (`agent[*].cover`); otherwise falls back to the built-in buckets."""
-    override = mission.quality_descriptors.get(
+    override = mission.qualities.get(
         f"agent[{agent_id}].cover"
-    ) or mission.quality_descriptors.get("agent[*].cover")
+    ) or mission.qualities.get("agent[*].cover")
     if override is not None:
         described = override.describe(value)
         if described is not None:
@@ -272,10 +308,10 @@ def _describe_cover(value: int, mission: Mission, agent_id: str) -> str:
 
 def _describe_cycles(cycles_remaining: int, max_cycles: int, mission: Mission) -> str:
     """Narrative descriptor for the operation clock. Authors may override via
-    `quality_descriptors["mission.cycles_remaining"]` (numeric buckets on the
+    a `qualities["mission.cycles_remaining"]` entry (numeric buckets on the
     raw cycles_remaining value). Built-in fallback buckets on the ratio so
     the descriptor scales with mission length."""
-    override = mission.quality_descriptors.get("mission.cycles_remaining")
+    override = mission.qualities.get("mission.cycles_remaining")
     if override is not None:
         described = override.describe(cycles_remaining)
         if described is not None:
@@ -295,18 +331,18 @@ def _describe_cycles(cycles_remaining: int, max_cycles: int, mission: Mission) -
 def _describe_authored_quality(
     quality_name: str, value: float | int | str | bool, mission: Mission
 ) -> str | None:
-    """Look up a mission-authored descriptor. Returns None if no descriptor
-    exists for `quality_name` — callers skip the line rather than leaking
+    """Look up a mission-authored descriptor. Returns None if no entry exists
+    for `quality_name` — callers skip the line rather than leaking
     `quality_name: value`."""
-    descriptor = mission.quality_descriptors.get(quality_name)
-    if descriptor is None:
+    quality = mission.qualities.get(quality_name)
+    if quality is None:
         return None
-    return descriptor.describe(value)
+    return quality.describe(value)
 
 
 def _narrative_state_block(state: State, mission: Mission) -> str:
     """In-fiction state summary for the SoP and renderer. No raw numerics, no
-    raw quality ids, no fired-beat/fired-moment ledger noise."""
+    raw quality ids, no fired-event ledger noise."""
     lines: list[str] = []
     cycles_raw = state.get_quality("mission.cycles_remaining")
     cycles = int(cycles_raw) if isinstance(cycles_raw, (int, float)) and not isinstance(cycles_raw, bool) else 0
@@ -351,10 +387,19 @@ def _sop_user_prompt(
     # reliable place the model picked up "six cycles remaining" / "five
     # cycles remaining" as the lede. Time pressure is now carried by the
     # OPERATION CLOCK descriptor in the narrative state block.
+    act_phase = derive_act_phase(state, mission)
+    dramatic_question = select_dramatic_question(state, mission)
+    dq_block = (
+        f"DRAMATIC QUESTION (lead the memo with this — in prose):\n  {dramatic_question}\n\n"
+        if dramatic_question is not None
+        else ""
+    )
     return f"""\
 State of Play memo. Field reports follow.
 
-CURRENT STATE:
+ACT PHASE: {act_phase}
+
+{dq_block}CURRENT STATE:
 {_narrative_state_block(state, mission)}
 
 RECENT DISPATCHES (last 3, oldest first):
@@ -372,22 +417,48 @@ def _catalog_block(catalog: list[tuple[str, str | None, dict[str, str]]]) -> str
     return "\n".join(lines)
 
 
-def _forced_moment_block(moment: Moment | None) -> str:
-    if moment is None:
+def _forced_moment_block(event: Event | None) -> str:
+    """Render the FORCED MOMENT block for the drafter prompt. The prompt
+    label keeps the narrative word "moment" (stable system-prompt vocabulary,
+    KV-cache prefix); internally the input is an authored `Event` with
+    `force_into_drafter=True`.
+    """
+    if event is None:
         return "(no forced moment this cycle.)"
     return f"""\
 A FORCED MOMENT must appear among this cycle's options:
-  moment_id: {moment.id}
-  intent: {moment.intent.strip()}
+  moment_id: {event.id}
+  intent: {event.intent.strip()}
   must_communicate:
-{chr(10).join(f"    - {x}" for x in moment.must_communicate)}
+{chr(10).join(f"    - {x}" for x in event.must_communicate)}
   must_not:
-{chr(10).join(f"    - {x}" for x in moment.must_not)}
-  tone: {moment.tone}
-EXACTLY ONE option this cycle must set `satisfies_moment` = "{moment.id}"
+{chr(10).join(f"    - {x}" for x in event.must_not)}
+  tone: {event.tone}
+EXACTLY ONE option this cycle must set `satisfies_moment` = "{event.id}"
 and write prose that honors the rules above. The mechanical effect of the
 moment is engine-applied; you only write the prose situated in current state.
 """
+
+
+def _locked_block(
+    state: State, mission: Mission
+) -> str:
+    """Per-cycle list of archetypes that are NOT in the catalog right now,
+    each annotated with which precondition leaf failed. Helps the drafter
+    reason about *why* an option is unavailable instead of seeing only the
+    trimmed catalog (4i)."""
+    locked = invalid_archetype_combinations(state, mission)
+    if not locked:
+        return ""
+    lines = []
+    for arch_id, agent_id, reason in locked:
+        target = f"{arch_id}({agent_id})" if agent_id else arch_id
+        lines.append(f"  - {target} — {reason}")
+    return (
+        "LOCKED THIS CYCLE (use as context for option framing — do NOT propose these):\n"
+        + "\n".join(lines)
+        + "\n"
+    )
 
 
 def _drafter_user_prompt(
@@ -396,7 +467,7 @@ def _drafter_user_prompt(
     mission: Mission,
     sop_text: str,
     catalog: list[tuple[str, str | None, dict[str, str]]],
-    forced_moment: Moment | None,
+    forced_event: Event | None,
     dispatches: list[DispatchRecord],
     *,
     retry_feedback: str | None = None,
@@ -407,8 +478,11 @@ def _drafter_user_prompt(
     retry = ""
     if retry_feedback:
         retry = f"\nPREVIOUS ATTEMPT WAS REJECTED:\n{retry_feedback}\n"
+    act_phase = derive_act_phase(state, mission)
     return f"""\
 Draft 3 or 4 options now.
+
+ACT PHASE: {act_phase}
 
 CURRENT STATE:
 {_narrative_state_block(state, mission)}
@@ -422,10 +496,10 @@ STATE OF PLAY MEMO (this cycle, just rendered):
 VALID CATALOG (engine-computed; you MUST pick from this exact set):
 {_catalog_block(catalog)}
 
-ARCHETYPE INTENTS (for prose framing — these are NOT the player-facing prose):
+{_locked_block(state, mission)}ARCHETYPE INTENTS (for prose framing — these are NOT the player-facing prose):
 {archetype_intents}
 
-{_forced_moment_block(forced_moment)}{retry}
+{_forced_moment_block(forced_event)}{retry}
 Produce 3 or 4 options now.
 """
 
@@ -438,6 +512,8 @@ def _renderer_user_prompt(
     delta: dict[str, tuple[Any, Any]],
     acting: str,
     dispatches: list[DispatchRecord],
+    *,
+    prior_state: State | None = None,
 ) -> str:
     delta_lines = []
     for q, (before, after) in delta.items():
@@ -470,8 +546,16 @@ def _renderer_user_prompt(
     else:
         anchor = dispatches[-2:]
 
+    act_phase = derive_act_phase(state, mission)
+    tone_band = _TONE_BAND[act_phase]
+    tension_band = derive_tension_band(prior_state, state)
+
     return f"""\
 Cycle {cycle_index} of {mission.max_cycles}. Render the FIELD DISPATCH.
+
+ACT PHASE: {act_phase}
+TONE BAND: {tone_band}
+TENSION (this cycle's cover swing): {tension_band}
 
 {voice_note}
 
@@ -523,11 +607,14 @@ class DrafterValidationError(ValueError):
 def validate_options(
     options: list[Option],
     catalog: list[tuple[str, str | None, dict[str, str]]],
-    forced_moment_id: str | None,
+    forced_event_id: str | None,
 ) -> None:
     """Raise `DrafterValidationError` with a corrective message if the option
     set doesn't satisfy the constraints. Used by `draft_with_retries` to
-    decide whether to retry."""
+    decide whether to retry. `forced_event_id` (if set) is the id of the
+    forced event that must appear as `Option.satisfies_moment` on exactly one
+    option (LLM-facing field name preserved).
+    """
     problems: list[str] = []
     if not (3 <= len(options) <= 4):
         problems.append(
@@ -542,12 +629,12 @@ def validate_options(
                 f"option {i + 1}: archetype={opt.archetype!r} agent={opt.agent!r} "
                 f"is not in the VALID CATALOG"
             )
-    if forced_moment_id is not None:
-        satisfiers = [o for o in options if o.satisfies_moment == forced_moment_id]
+    if forced_event_id is not None:
+        satisfiers = [o for o in options if o.satisfies_moment == forced_event_id]
         if len(satisfiers) != 1:
             problems.append(
-                f"forced moment {forced_moment_id!r}: expected exactly 1 option "
-                f"with satisfies_moment={forced_moment_id!r}, found {len(satisfiers)}"
+                f"forced moment {forced_event_id!r}: expected exactly 1 option "
+                f"with satisfies_moment={forced_event_id!r}, found {len(satisfiers)}"
             )
     if problems:
         raise DrafterValidationError("; ".join(problems))
@@ -556,20 +643,20 @@ def validate_options(
 def engine_fallback_options(
     catalog: list[tuple[str, str | None, dict[str, str]]],
     mission: Mission,
-    forced_moment: Moment | None,
+    forced_event: Event | None,
 ) -> list[Option]:
     """Engine-authored fallback when the drafter exhausts retries. Picks
     deterministic options from the valid catalog with terse generic prose.
 
     Strategy:
-    - If a forced moment is required, the first option satisfies it (using
-      any agent-bound catalog entry as carrier — moments apply their effects
-      on top of the carrier archetype's).
+    - If a forced event is required, the first option satisfies it (using
+      any agent-bound catalog entry as carrier — forced events apply their
+      effects on top of the carrier archetype's).
     - HOLD is included next if available.
     - Then one (archetype, agent) per remaining agent.
     - Fill from leftover catalog entries until 3–4 options exist.
 
-    The validator requires 3–4 options and (when a forced moment is active)
+    The validator requires 3–4 options and (when a forced event is active)
     exactly one option with `satisfies_moment` set. The function preserves
     that contract whenever the catalog has enough variety.
     """
@@ -583,8 +670,8 @@ def engine_fallback_options(
         used_keys.add(key)
         options.append(opt)
 
-    # Forced moment FIRST so it's never overwritten by later fill.
-    if forced_moment is not None:
+    # Forced event FIRST so it's never overwritten by later fill.
+    if forced_event is not None:
         carrier = next(
             ((a, ag, params) for (a, ag, params) in catalog if ag is not None),
             None,
@@ -596,9 +683,9 @@ def engine_fallback_options(
                     archetype=a,
                     agent=ag,
                     params=params,
-                    title=forced_moment.id,
-                    prose=forced_moment.intent.strip()[:240] or f"Honor the {forced_moment.id} moment.",
-                    satisfies_moment=forced_moment.id,
+                    title=forced_event.id,
+                    prose=forced_event.intent.strip()[:240] or f"Honor the {forced_event.id} moment.",
+                    satisfies_moment=forced_event.id,
                 )
             )
 
@@ -664,7 +751,7 @@ async def draft_with_retries(
     mission: Mission,
     sop_text: str,
     catalog: list[tuple[str, str | None, dict[str, str]]],
-    forced_moment: Moment | None,
+    forced_event: Event | None,
     dispatches: list[DispatchRecord],
     max_retries: int = 3,
 ) -> tuple[list[Option], bool]:
@@ -672,12 +759,12 @@ async def draft_with_retries(
     validator's complaints back into the next prompt as `retry_feedback`. If
     all attempts fail, return the engine-authored fallback option set and the
     flag `engine_fallback=True`."""
-    forced_id = forced_moment.id if forced_moment is not None else None
+    forced_id = forced_event.id if forced_event is not None else None
     last_error: str | None = None
     attempts = 0
     while attempts <= max_retries:
         prompt = _drafter_user_prompt(
-            cycle_index, state, mission, sop_text, catalog, forced_moment, dispatches,
+            cycle_index, state, mission, sop_text, catalog, forced_event, dispatches,
             retry_feedback=last_error,
         )
         with logfire.span("drafter_call", attempt=attempts + 1):
@@ -699,4 +786,4 @@ async def draft_with_retries(
     log.warning(
         "drafter exhausted %d retries; using engine fallback options", max_retries
     )
-    return engine_fallback_options(catalog, mission, forced_moment), True
+    return engine_fallback_options(catalog, mission, forced_event), True

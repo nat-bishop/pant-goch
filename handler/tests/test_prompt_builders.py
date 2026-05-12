@@ -26,9 +26,9 @@ from handler.mission_loader import load_mission
 from handler.models import (
     AgentDossier,
     Archetype,
-    Beat,
+    Event,
     Mission,
-    QualityDescriptor,
+    Quality,
     QualityGte,
     State,
     make_initial_state,
@@ -71,8 +71,8 @@ def test_describe_cover_mission_override_wins() -> None:
         max_cycles=4,
         agents=[AgentDossier(id="A", codename="A", starting_cover=5)],
         archetypes=[Archetype(id="X", when=QualityGte(quality="a", value=0))],
-        beats=[
-            Beat(
+        events=[
+            Event(
                 id="end",
                 terminal=True,
                 outcome_key="w",
@@ -80,8 +80,8 @@ def test_describe_cover_mission_override_wins() -> None:
             )
         ],
         outcomes={"w": ""},
-        quality_descriptors={
-            "agent[*].cover": QualityDescriptor(
+        qualities={
+            "agent[*].cover": Quality(
                 buckets=[(0.0, "ALPHA DOWN"), (10.0, "ALPHA UP")]
             )
         },
@@ -167,17 +167,14 @@ def test_narrative_state_block_emits_protected_cover_suffix() -> None:
     assert "under protective cover this cycle" in block
 
 
-def test_narrative_state_block_omits_fired_beats_and_moments() -> None:
-    """Fired-beat / fired-moment ledgers read like log lines — strip them
-    from the SoP context entirely (the recent-dispatch block carries
-    continuity)."""
+def test_narrative_state_block_omits_fired_events() -> None:
+    """The fired-event ledger reads like a log line — strip it from the SoP
+    context entirely (the recent-dispatch block carries continuity)."""
     mission = load_mission(_TINY)
     state = make_initial_state(mission)
-    state.fired_beats.append("some_beat")
-    state.fired_moments.append("some_moment")
+    state.fired.append("some_event")
     block = _narrative_state_block(state, mission)
-    assert "some_beat" not in block
-    assert "some_moment" not in block
+    assert "some_event" not in block
     assert "fired_" not in block
 
 
@@ -277,7 +274,7 @@ def test_drafter_user_prompt_uses_narrative_state_block() -> None:
         mission=mission,
         sop_text="(test SoP body)",
         catalog=[],
-        forced_moment=None,
+        forced_event=None,
         dispatches=[],
     )
     # narrative descriptors present:
@@ -296,6 +293,180 @@ def test_describe_authored_quality_returns_none_when_unauthored() -> None:
     assert _describe_authored_quality("mission.totally_unknown", 0, mission) is None
 
 
+# ───────────────────────── prompt enrichment signals ─────────────────────────
+
+
+def _mission_with_signals() -> Mission:
+    """Mission carrying every signal the enrichment plumbing reads."""
+    from handler.models import DramaticQuestion, QualityLte
+    return Mission(
+        id="m",
+        name="m",
+        max_cycles=6,
+        agents=[
+            AgentDossier(id="A", codename="A", starting_cover=8),
+            AgentDossier(id="B", codename="B", starting_cover=8),
+        ],
+        archetypes=[
+            Archetype(id="X", when=QualityGte(quality="a", value=0)),
+            # Locked for the 'cycle 1' state — no agent has cover 0 etc.
+            Archetype(id="ENDGAME", when=QualityGte(quality="mission.stage", value=2)),
+        ],
+        events=[
+            Event(id="end", terminal=True, outcome_key="w", when=QualityGte(quality="x", value=0))
+        ],
+        outcomes={"w": ""},
+        qualities={"mission.stage": Quality(initial=0, values={"0": "untested", "1": "live", "2": "done"})},
+        standing_orders=["LYNX must not be photographed again."],
+        dramatic_questions=[
+            DramaticQuestion(
+                when=QualityGte(quality="mission.cycles_remaining", value=1),
+                question="What now?",
+            ),
+        ],
+    )
+
+
+def test_sop_system_prompt_includes_standing_orders_block() -> None:
+    mission = _mission_with_signals()
+    prompt = _sop_system_prompt(mission)
+    assert "STANDING ORDERS" in prompt
+    assert "LYNX must not be photographed again" in prompt
+
+
+def test_drafter_system_prompt_includes_standing_orders_block() -> None:
+    mission = _mission_with_signals()
+    prompt = _drafter_system_prompt(mission)
+    assert "STANDING ORDERS" in prompt
+
+
+def test_renderer_system_prompt_includes_end_on_a_beat_rule() -> None:
+    mission = _mission_with_signals()
+    prompt = _renderer_system_prompt(mission)
+    assert "End on a single short observational sentence" in prompt
+    assert "TONE BAND" in prompt
+
+
+def test_renderer_system_prompt_includes_standing_orders_block() -> None:
+    mission = _mission_with_signals()
+    prompt = _renderer_system_prompt(mission)
+    assert "STANDING ORDERS" in prompt
+
+
+def test_system_prompts_omit_standing_orders_block_when_empty() -> None:
+    """Authors with no standing orders shouldn't see the heading at all."""
+    mission = load_mission(_TINY)
+    assert "STANDING ORDERS" not in _sop_system_prompt(mission)
+    assert "STANDING ORDERS" not in _drafter_system_prompt(mission)
+    assert "STANDING ORDERS" not in _renderer_system_prompt(mission)
+
+
+def test_sop_user_prompt_includes_act_phase_and_dramatic_question() -> None:
+    mission = _mission_with_signals()
+    state = make_initial_state(mission)
+    from handler.agents import _sop_user_prompt
+    prompt = _sop_user_prompt(cycle_index=1, state=state, mission=mission, dispatches=[])
+    assert "ACT PHASE: setup" in prompt
+    assert "DRAMATIC QUESTION" in prompt
+    assert "What now?" in prompt
+
+
+def test_sop_user_prompt_omits_dramatic_question_when_no_match() -> None:
+    """When no dramatic question matches (or none are authored), the DQ block
+    is omitted entirely. The act phase still appears unconditionally."""
+    mission = load_mission(_TINY)  # tiny mission authors no dramatic_questions
+    state = make_initial_state(mission)
+    from handler.agents import _sop_user_prompt
+    prompt = _sop_user_prompt(cycle_index=1, state=state, mission=mission, dispatches=[])
+    assert "DRAMATIC QUESTION" not in prompt
+    assert "ACT PHASE:" in prompt
+
+
+def test_drafter_user_prompt_includes_locked_block() -> None:
+    """ENDGAME requires stage>=2 which isn't met — must appear in LOCKED block."""
+    mission = _mission_with_signals()
+    state = make_initial_state(mission)
+    prompt = _drafter_user_prompt(
+        cycle_index=1,
+        state=state,
+        mission=mission,
+        sop_text="(test sop)",
+        catalog=[],
+        forced_event=None,
+        dispatches=[],
+    )
+    assert "LOCKED THIS CYCLE" in prompt
+    assert "ENDGAME" in prompt
+    assert "ACT PHASE:" in prompt
+
+
+def test_drafter_user_prompt_omits_locked_block_when_empty() -> None:
+    """tiny mission has only 3 archetypes, all available at cycle 1 — no LOCKED block."""
+    mission = load_mission(_TINY)
+    state = make_initial_state(mission)
+    prompt = _drafter_user_prompt(
+        cycle_index=1,
+        state=state,
+        mission=mission,
+        sop_text="(test sop)",
+        catalog=[],
+        forced_event=None,
+        dispatches=[],
+    )
+    assert "LOCKED THIS CYCLE" not in prompt
+
+
+def test_renderer_user_prompt_includes_act_phase_tone_and_tension() -> None:
+    """Renderer prompt surfaces all three per-cycle tonal signals."""
+    from handler.agents import _renderer_user_prompt
+    from handler.models import Option
+    mission = load_mission(_LYNX)
+    prior = make_initial_state(mission)
+    state = make_initial_state(mission)
+    state.set_quality("agent[LYNX].cover", 4)  # -2 swing → escalating
+    option = Option(
+        archetype="HOLD",
+        agent=None,
+        title="Hold position",
+        prose="Take no action this cycle.",
+    )
+    prompt = _renderer_user_prompt(
+        cycle_index=1,
+        state=state,
+        mission=mission,
+        option=option,
+        delta={"agent[LYNX].cover": (6, 4)},
+        acting="operations",
+        dispatches=[],
+        prior_state=prior,
+    )
+    assert "ACT PHASE:" in prompt
+    assert "TONE BAND:" in prompt
+    assert "TENSION" in prompt
+    # 2-point swing → escalating (per spine logic).
+    assert "escalating" in prompt
+
+
+def test_renderer_user_prompt_tension_steady_when_no_prior() -> None:
+    """If prior_state is None the band defaults to steady."""
+    from handler.agents import _renderer_user_prompt
+    from handler.models import Option
+    mission = load_mission(_LYNX)
+    state = make_initial_state(mission)
+    option = Option(archetype="HOLD", agent=None, title="x", prose="y")
+    prompt = _renderer_user_prompt(
+        cycle_index=1,
+        state=state,
+        mission=mission,
+        option=option,
+        delta={},
+        acting="operations",
+        dispatches=[],
+        prior_state=None,
+    )
+    assert "steady" in prompt
+
+
 def test_describe_authored_quality_supports_label_prefix() -> None:
     mission = Mission(
         id="m",
@@ -303,8 +474,8 @@ def test_describe_authored_quality_supports_label_prefix() -> None:
         max_cycles=4,
         agents=[AgentDossier(id="A", codename="A", starting_cover=5)],
         archetypes=[Archetype(id="X", when=QualityGte(quality="a", value=0))],
-        beats=[
-            Beat(
+        events=[
+            Event(
                 id="end",
                 terminal=True,
                 outcome_key="w",
@@ -312,10 +483,11 @@ def test_describe_authored_quality_supports_label_prefix() -> None:
             )
         ],
         outcomes={"w": ""},
-        initial_qualities={"mission.stage": 0},
-        quality_descriptors={
-            "mission.stage": QualityDescriptor(
-                label="extraction", values={"0": "papers not yet surfaced"}
+        qualities={
+            "mission.stage": Quality(
+                initial=0,
+                label="extraction",
+                values={"0": "papers not yet surfaced"},
             )
         },
     )

@@ -10,11 +10,11 @@ from pathlib import Path
 import pytest
 
 from handler.events import (
-    BeatsFired,
     CycleClosed,
     CycleOpened,
     DispatchRendered,
     EffectsApplied,
+    EventsFired,
     MissionStarted,
     OptionAuthorized,
     OptionsDrafted,
@@ -137,8 +137,8 @@ def test_jsonl_persist_then_replay_matches_live(
     replay_into_session(replayed, events)
 
     assert dict(replayed.state.qualities) == dict(live.state.qualities)
-    assert replayed.state.fired_beats == live.state.fired_beats
-    assert replayed.state.fired_moments == live.state.fired_moments
+    assert replayed.state.fired == live.state.fired
+    assert replayed.state.fired_per_agent == live.state.fired_per_agent
 
 
 def test_replay_into_session_skips_persist_hook(

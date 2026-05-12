@@ -4,7 +4,7 @@ deterministic spine and the three LLM agents per HANDLER_SPEC_V2 §3:
   i.   SoP synthesizer       (agents.sop)
   ii.  Drafter               (agents.drafter)
        ── player picks ──    (await session.await_authorization)
-  iii. Effects + beats       (spine.apply_* + spine.fire_due_beats)
+  iii. Effects + events      (spine.apply_* + spine.fire_due_passive_events)
   iv.  Dispatch renderer     (agents.renderer)
        ── cycle close ──     (spine.tick_cycle_close)
 
@@ -34,11 +34,11 @@ from typing import Awaitable, Callable, Protocol
 import logfire
 
 from .events import (
-    BeatsFired,
     CycleClosed,
     CycleOpened,
     DispatchRendered,
     EffectsApplied,
+    EventsFired,
     MissionResolved,
     MissionStarted,
     OptionAuthorized,
@@ -55,11 +55,12 @@ from .models import (
 from .session import Session
 from .spine import (
     apply_archetype_effects,
-    apply_moment_effects,
-    due_moments,
-    fire_due_beats,
+    apply_forced_event_effects,
+    due_forced_events,
+    fire_due_passive_events,
     merge_delta_into,
     option_progresses_mission,
+    snapshot,
     tick_cycle_close,
     valid_archetype_combinations,
 )
@@ -87,7 +88,7 @@ class DrafterLLMFn(Protocol):
         cycle_index: int,
         sop_text: str,
         valid_catalog: list[tuple[str, str | None, dict[str, str]]],
-        forced_moment_id: str | None,
+        forced_event_id: str | None,
     ) -> tuple[list[Option], bool]:
         """LLM-only phase of the drafter. No SSE emission. Returns
         (options, engine_fallback). On engine_fallback=True the drafter
@@ -100,7 +101,7 @@ class DrafterEmitFn(Protocol):
         cycle_index: int,
         options: list[Option],
         engine_fallback: bool,
-        forced_moment_id: str | None,
+        forced_event_id: str | None,
     ) -> None:
         """Pace each option's prose to the client as option_started +
         option_word ×N events, terminated by options_complete."""
@@ -114,10 +115,15 @@ class RendererFn(Protocol):
         option: Option,
         delta: dict,
         acting: str,
+        prior_state: State,
     ) -> tuple[str, asyncio.Task]:
         """Render the field dispatch. Returns (full text, pacing_task).
         Same shape as SopFn — text resolves on LLM-done so the caller can
-        kick off cross-cycle prefetch while pacing continues."""
+        kick off cross-cycle prefetch while pacing continues.
+
+        `prior_state` is the snapshot taken at cycle open, before any of
+        this cycle's mutations applied. Used by the renderer prompt to
+        compute the tension band (4c) — magnitude of the cycle's cover swing."""
 
 
 class OnRendererTextReadyFn(Protocol):
@@ -191,6 +197,10 @@ async def run_cycle(
         cycle_index=cycle_index,
         mission=mission.id,
     ):
+        # Snapshot state at cycle open. Renderer reads this back to compute
+        # the tension band (4c) — magnitude of the cycle's cover swing.
+        prior_state = snapshot(state)
+
         # ── cycle opened ──
         session.apply(CycleOpened(cycle_index=cycle_index))
         await emit({"event": "cycle_opened", "cycle": cycle_index, "state": state.qualities})
@@ -201,16 +211,16 @@ async def run_cycle(
         sop_text, sop_pacing = await sop(session, cycle_index)
         session.apply(SopRendered(cycle_index=cycle_index, text=sop_text))
 
-        # ── ii. Drafter (with optional forced moment) ──
+        # ── ii. Drafter (with optional forced event) ──
         catalog = valid_archetype_combinations(state, mission)
-        forced = due_moments(state, mission)
-        forced_id = forced[0].id if forced else None
+        forced = due_forced_events(state, mission)
+        forced_event_id = forced[0].id if forced else None
 
         # Run drafter LLM in parallel with SoP pacing. The drafter only needs
         # sop_text (the LLM output), not the paced emission, so it can start
         # as soon as the LLM finishes generating.
         drafter_task = asyncio.create_task(
-            drafter_llm(session, cycle_index, sop_text, catalog, forced_id)
+            drafter_llm(session, cycle_index, sop_text, catalog, forced_event_id)
         )
 
         # Wait for SoP pacing to finish before showing options — keeps the
@@ -222,11 +232,11 @@ async def run_cycle(
             OptionsDrafted(
                 cycle_index=cycle_index,
                 options=options,
-                moment_id=forced_id,
+                forced_event_id=forced_event_id,
                 engine_fallback=engine_fallback,
             )
         )
-        await drafter_emit(cycle_index, options, engine_fallback, forced_id)
+        await drafter_emit(cycle_index, options, engine_fallback, forced_event_id)
         await emit({"event": "awaiting_auth"})
 
         # ── player picks ──
@@ -239,46 +249,52 @@ async def run_cycle(
             )
         )
 
-        # ── iii. Effects + beats ──
+        # ── iii. Effects + passive events ──
         delta = apply_archetype_effects(state, chosen, mission)
-        moment_id: str | None = None
+        satisfied_event_id: str | None = None
+        # `chosen.satisfies_moment` keeps the LLM-facing "moment" word in the
+        # Option field name; its value is an event id from `mission.events`.
         if chosen.satisfies_moment is not None and forced is not None:
-            for m in forced:
-                if m.id == chosen.satisfies_moment:
-                    mdelta = apply_moment_effects(state, m, chosen)
-                    merge_delta_into(delta, mdelta)
-                    moment_id = m.id
+            for e in forced:
+                if e.id == chosen.satisfies_moment:
+                    edelta = apply_forced_event_effects(state, e, chosen)
+                    merge_delta_into(delta, edelta)
+                    satisfied_event_id = e.id
                     break
-        session.apply(EffectsApplied(cycle_index=cycle_index, delta=delta, moment_id=moment_id))
+        session.apply(EffectsApplied(
+            cycle_index=cycle_index, delta=delta, forced_event_id=satisfied_event_id,
+        ))
         await emit({"event": "effects_applied", "delta": _serialize_delta(delta)})
 
         made_progress = option_progresses_mission(delta, mission)
-        fires, agg = fire_due_beats(state, mission, made_progress)
+        fires, agg = fire_due_passive_events(state, mission, made_progress)
         if fires:
             session.apply(
-                BeatsFired(
+                EventsFired(
                     cycle_index=cycle_index,
-                    fires=[(b.id, agent_id, d) for (b, agent_id, d) in fires],
+                    fires=[(ev.id, agent_id, d) for (ev, agent_id, d) in fires],
                 )
             )
             await emit({
-                "event": "beats_fired",
-                "beats": [b.id for (b, _, _) in fires],
+                "event": "events_fired",
+                "events": [ev.id for (ev, _, _) in fires],
                 "delta": _serialize_delta(agg),
             })
 
-        terminal = next(((b, ag, d) for (b, ag, d) in fires if b.terminal), None)
+        terminal = next(((ev, ag, d) for (ev, ag, d) in fires if ev.terminal), None)
         if terminal is not None:
-            t_beat, _, _ = terminal
+            t_event, _, _ = terminal
             # ── terminal dispatch (still rendered, in appropriate voice) ──
             acting = _acting_for(chosen)
-            text, render_pacing = await renderer(session, cycle_index, chosen, delta, acting)
+            text, render_pacing = await renderer(
+                session, cycle_index, chosen, delta, acting, prior_state
+            )
             session.apply(
                 DispatchRendered(
                     cycle_index=cycle_index, acting=acting, archetype=chosen.archetype, text=text,
                 )
             )
-            resolution = _build_resolution(mission, state, t_beat.id, t_beat.outcome_key or "")
+            resolution = _build_resolution(mission, state, t_event.id, t_event.outcome_key or "")
             session.apply(MissionResolved(cycle_index=cycle_index, resolution=resolution))
             # Wait for dispatch pacing so the client sees the full final
             # dispatch before mission_resolved hits.
@@ -288,7 +304,9 @@ async def run_cycle(
 
         # ── iv. Dispatch ──
         acting = _acting_for(chosen)
-        text, render_pacing = await renderer(session, cycle_index, chosen, delta, acting)
+        text, render_pacing = await renderer(
+            session, cycle_index, chosen, delta, acting, prior_state
+        )
         session.apply(
             DispatchRendered(
                 cycle_index=cycle_index, acting=acting, archetype=chosen.archetype, text=text,
@@ -300,27 +318,27 @@ async def run_cycle(
         session.apply(CycleClosed(cycle_index=cycle_index, delta=close_delta))
 
         # Timeout terminal — check after cycles_remaining decrement. Re-run
-        # the beat phase so `timeout` (a normal beat) can fire. Pass
-        # `made_progress=True` to suppress passive-pressure beats: those
-        # already had their chance on the first pass this cycle.
+        # the passive-event phase so `timeout` (a normal passive event) can
+        # fire. Pass `made_progress=True` to suppress passive-pressure events:
+        # those already had their chance on the first pass this cycle.
         #
         # State mutations happen here synchronously; the matching SSE emit
         # (mission_resolved) is deferred below until dispatch pacing finishes.
         terminal_resolved: dict | None = None
         if state.outcome is None:
-            fires2, agg2 = fire_due_beats(state, mission, made_progress=True)
+            fires2, agg2 = fire_due_passive_events(state, mission, made_progress=True)
             if fires2:
                 session.apply(
-                    BeatsFired(
+                    EventsFired(
                         cycle_index=cycle_index,
-                        fires=[(b.id, agent_id, d) for (b, agent_id, d) in fires2],
+                        fires=[(ev.id, agent_id, d) for (ev, agent_id, d) in fires2],
                     )
                 )
-                t2 = next(((b, ag, d) for (b, ag, d) in fires2 if b.terminal), None)
+                t2 = next(((ev, ag, d) for (ev, ag, d) in fires2 if ev.terminal), None)
                 if t2 is not None:
-                    t_beat, _, _ = t2
+                    t_event, _, _ = t2
                     resolution = _build_resolution(
-                        mission, state, t_beat.id, t_beat.outcome_key or ""
+                        mission, state, t_event.id, t_event.outcome_key or ""
                     )
                     session.apply(MissionResolved(cycle_index=cycle_index, resolution=resolution))
                     terminal_resolved = _resolved_payload(resolution)
@@ -357,7 +375,7 @@ def _resolved_payload(resolution: MissionResolution) -> dict:
         "event": "mission_resolved",
         "outcome": resolution.outcome_key,
         "summary": resolution.summary,
-        "terminal_beat": resolution.terminal_beat_id,
+        "terminal_event": resolution.terminal_event_id,
         "cycles_used": resolution.cycles_used,
         "cycles_max": resolution.cycles_max,
         "agents_lost": resolution.agents_lost,
@@ -374,7 +392,7 @@ def _acting_for(option: Option) -> str:
 
 
 def _build_resolution(
-    mission: Mission, state: State, terminal_beat_id: str, outcome_key: str
+    mission: Mission, state: State, terminal_event_id: str, outcome_key: str
 ) -> MissionResolution:
     cycles_used = mission.max_cycles - int(state.get_quality("mission.cycles_remaining") or 0)
     lost: list[str] = []
@@ -388,7 +406,7 @@ def _build_resolution(
     summary = mission.outcomes.get(outcome_key, outcome_key)
     return MissionResolution(
         outcome_key=outcome_key,
-        terminal_beat_id=terminal_beat_id,
+        terminal_event_id=terminal_event_id,
         cycles_used=cycles_used,
         cycles_max=mission.max_cycles,
         agents_lost=lost,

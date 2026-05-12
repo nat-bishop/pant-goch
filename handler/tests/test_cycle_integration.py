@@ -45,7 +45,7 @@ def _stub_sop(rt):
 
 
 def _stub_drafter_llm(rt):
-    async def _drafter_llm(session, cycle_index, sop_text, catalog, forced_moment_id):
+    async def _drafter_llm(session, cycle_index, sop_text, catalog, forced_event_id):
         # Sort PUSH first so /authorize index 0 reliably progresses the mission.
         ordered = sorted(catalog, key=lambda c: (0 if c[0] == "PUSH" else 1, c[0]))
         options: list[Option] = []
@@ -54,7 +54,7 @@ def _stub_drafter_llm(rt):
             if (arch, agent) in seen:
                 continue
             seen.add((arch, agent))
-            satisfies = forced_moment_id if (forced_moment_id and not any(o.satisfies_moment for o in options)) else None
+            satisfies = forced_event_id if (forced_event_id and not any(o.satisfies_moment for o in options)) else None
             options.append(
                 Option(
                     archetype=arch,
@@ -72,7 +72,7 @@ def _stub_drafter_llm(rt):
 
 
 def _stub_drafter_emit(rt):
-    async def _drafter_emit(cycle_index, options, engine_fallback, forced_moment_id):
+    async def _drafter_emit(cycle_index, options, engine_fallback, forced_event_id):
         rt.current_options = options
         for option_idx, option in enumerate(options):
             await rt.out_queue.put(
@@ -92,8 +92,8 @@ def _stub_drafter_emit(rt):
                 "event": "options_complete",
                 "cycle": cycle_index,
                 "count": len(options),
-                "has_forced_moment": forced_moment_id is not None,
-                "moment_id": forced_moment_id,
+                "has_forced_moment": forced_event_id is not None,
+                "moment_id": forced_event_id,
                 "engine_fallback": engine_fallback,
             }
         )
@@ -101,7 +101,7 @@ def _stub_drafter_emit(rt):
 
 
 def _stub_renderer(rt):
-    async def _render(session, cycle_index, option, delta, acting):
+    async def _render(session, cycle_index, option, delta, acting, prior_state):
         text = f"Dispatch for cycle {cycle_index} ({acting}, {option.archetype})."
         await rt.out_queue.put(
             {"event": "dispatch_started", "cycle": cycle_index, "acting": acting, "archetype": option.archetype}
@@ -237,7 +237,7 @@ def test_full_cycle_to_terminal(stubbed_client: TestClient) -> None:
     # Server stats round-trip through SSE.
     assert resolved["outcome"] in {"win", "loss_timeout", "loss_agent_lost"}
     assert resolved["cycles_max"] == 4
-    assert resolved["terminal_beat"] in {"win", "timeout", "agent_lost"}
+    assert resolved["terminal_event"] in {"win", "timeout", "agent_lost"}
     assert isinstance(resolved["agents_alive"], list)
     assert isinstance(resolved["agents_lost"], list)
 

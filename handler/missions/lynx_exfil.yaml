@@ -5,7 +5,9 @@
 #   agent[LYNX].cover = 6 (from agents[*].starting_cover)
 #   agent[KESTREL].cover = 9
 #
-# Authored qualities listed under `initial_qualities` below.
+# Authored qualities are listed under `qualities:`. Predicates and effects
+# may be written as short DSL strings (see `dsl.py`) or as the explicit
+# tagged-union dict form — both are accepted.
 
 id: lynx_exfil
 name: "Op. LYNX-EXFIL"
@@ -24,6 +26,28 @@ setting: |
   runs the sweep out of the central directorate. The photographic exposure
   on LYNX is the open file driving the tightening perimeter. The eastern
   train line is the planned extraction corridor.
+
+# Persistent prose constraints surfaced to all three agents' system prompts.
+# Use for facts the renderer/SoP/drafter must honour every cycle. Authored
+# only — no LLM in the loop.
+standing_orders:
+  - "LYNX must not be photographed again. Counter-intel already has one image; a second locks her file."
+  - "The Vienna network is offline. Do not surface Vienna assets as available."
+  - "The eastern train corridor is clean. That extraction route has not been compromised."
+
+# Per-state-shape SoP framing. Engine selects the first matching question
+# each cycle; SoP leads with it. Author from most-specific to most-general.
+dramatic_questions:
+  - when: "agent[LYNX].cover <= 2"
+    question: "LYNX is hours from collapse. What buys her one more cycle?"
+  - when: "agent[KESTREL].cover <= 4 and mission.cycles_remaining <= 2"
+    question: "Is KESTREL still useful, or do we cut her loose?"
+  - when: "mission.extraction_stage == 2 and mission.cycles_remaining <= 2"
+    question: "Run the train tonight, or hold one more cycle for clean lanes?"
+  - when: "mission.cycles_remaining <= 2"
+    question: "There is no longer time for caution."
+  - when: "mission.extraction_stage == 0"
+    question: "Where do we surface the papers, and at what cost?"
 
 agents:
   - id: LYNX
@@ -54,15 +78,13 @@ agents:
       her lanes for LYNX if the operation demands it.
     starting_cover: 9
 
-initial_qualities:
-  mission.extraction_stage: 0   # 0 unstarted, 1 papers, 2 location, 3 exfil
-
-# In-fiction descriptors used by the narrative state block. Every key in
-# `initial_qualities` MUST have an entry (the engine enforces this). Authors
-# may also override universal qualities (`agent[*].cover`, `mission.cycles_remaining`)
-# but LYNX-EXFIL keeps the built-in defaults for those.
-quality_descriptors:
+# Authored qualities — initial value AND narrative descriptor in one block.
+# Universal qualities (`agent[*].cover`, `mission.cycles_remaining`) are
+# auto-injected by the engine and use built-in descriptors; add a `qualities:`
+# entry only when overriding the built-in display.
+qualities:
   mission.extraction_stage:
+    initial: 0   # 0 unstarted, 1 papers, 2 location, 3 exfil
     values:
       "0": "the extraction papers have not yet been surfaced"
       "1": "the extraction papers are being moved into hand"
@@ -77,143 +99,66 @@ outcomes:
 archetypes:
   - id: ACTIVATE_SLEEPER_FOR_PAPERS
     intent: "Activate the sleeper REDFIELD to surface the extraction papers."
-    when:
-      kind: quality_equals
-      quality: mission.extraction_stage
-      value: 0
+    when: "mission.extraction_stage == 0"
     params: []
     effects:
-      - quality: mission.extraction_stage
-        value: 1
-        op: set
+      - "mission.extraction_stage = 1"
 
   - id: RETRIEVE_PAPERS_VIA_AGENT
     intent: "Send the bound agent to physically pick up the papers — costs cover."
-    when:
-      kind: and
-      of:
-        - kind: quality_equals
-          quality: mission.extraction_stage
-          value: 1
-        - kind: quality_gt
-          quality: agent[$agent].cover
-          value: 0
+    when: "mission.extraction_stage == 1 and agent[$agent].cover > 0"
     params: [agent]
     effects:
-      - quality: mission.extraction_stage
-        value: 2
-        op: set
-      - quality: agent[$agent].cover
-        value: -2
-        op: add
+      - "mission.extraction_stage = 2"
+      - "agent[$agent].cover -= 2"
 
   - id: DEAD_DROP_PAPERS
     intent: "Slower, safer alternative to direct retrieval. No cover hit but doesn't progress."
-    when:
-      kind: quality_equals
-      quality: mission.extraction_stage
-      value: 1
+    when: "mission.extraction_stage == 1"
     params: []
     effects: []
 
   - id: LYNX_MOVES_TO_SAFEHOUSE
     intent: "LYNX repositions for exfil. Modest cover cost."
-    when:
-      kind: and
-      of:
-        - kind: quality_gte
-          quality: mission.extraction_stage
-          value: 1
-        - kind: quality_lte
-          quality: mission.extraction_stage
-          value: 2
-        - kind: quality_gt
-          quality: agent[LYNX].cover
-          value: 0
+    when: "mission.extraction_stage in 1..2 and agent[LYNX].cover > 0"
     params: []
     effects:
-      - quality: agent[LYNX].cover
-        value: -1
-        op: add
+      - "agent[LYNX].cover -= 1"
 
   - id: RUN_EXFIL
     intent: "Eastern train extraction. Terminal action — clears the mission."
-    when:
-      kind: and
-      of:
-        - kind: quality_equals
-          quality: mission.extraction_stage
-          value: 2
-        - kind: quality_gt
-          quality: agent[LYNX].cover
-          value: 0
+    when: "mission.extraction_stage == 2 and agent[LYNX].cover > 0"
     params: []
     effects:
       # Two conditional branches per spec §5: clean exit costs less.
-      - quality: mission.extraction_stage
-        value: 3
-        op: set
-      - quality: agent[LYNX].cover
-        value: -2
-        op: add
-        when:
-          kind: quality_gte
-          quality: agent[LYNX].cover
-          value: 5
-      - quality: agent[LYNX].cover
-        value: -4
-        op: add
-        when:
-          kind: quality_lt
-          quality: agent[LYNX].cover
-          value: 5
+      - "mission.extraction_stage = 3"
+      - "agent[LYNX].cover -= 2 if agent[LYNX].cover >= 5"
+      - "agent[LYNX].cover -= 4 if agent[LYNX].cover < 5"
 
   - id: DIVERSION_BY_AGENT
     intent: "Bound agent draws counter-intel attention. Costly to them, protects LYNX one cycle."
-    when:
-      kind: quality_gt
-      quality: agent[$agent].cover
-      value: 1
+    when: "agent[$agent].cover > 1"
     params: [agent]
     effects:
-      - quality: agent[$agent].cover
-        value: -3
-        op: add
-      - quality: agent[LYNX].cover_protected
-        value: true
-        op: set
+      - "agent[$agent].cover -= 3"
+      - "agent[LYNX].cover_protected = true"
 
   - id: HOLD
     intent: "Take no action this cycle. Passive pressure beats fire; cover decays."
-    when:
-      kind: quality_gte
-      quality: mission.cycles_remaining
-      value: 1
+    when: "mission.cycles_remaining >= 1"
     params: []
     effects: []
 
-moments:
+# Authored events — one concept covering both forced (drafter-surfaced)
+# events and passive (post-authorization) events. The `force_into_drafter`
+# flag selects between the two shapes at runtime.
+events:
+  # Forced: surfaced to the drafter, fires when the player picks the
+  # satisfying option. Carries LLM-facing prose constraints.
   - id: kestrel_sacrifice
+    force_into_drafter: true
     fires_at_most: once_per_mission
-    when:
-      kind: and
-      of:
-        - kind: quality_lte
-          quality: agent[KESTREL].cover
-          value: 5
-        - kind: quality_gt
-          quality: agent[KESTREL].cover
-          value: 0
-        - kind: quality_lte
-          quality: mission.extraction_stage
-          value: 2
-        - kind: quality_lte
-          quality: mission.cycles_remaining
-          value: 2
-        - kind: not
-          of:
-            kind: moment_fired
-            moment: kestrel_sacrifice
+    when: "agent[KESTREL].cover in 1..5 and mission.extraction_stage <= 2 and mission.cycles_remaining <= 2 and not event_fired:kestrel_sacrifice"
     intent: |
       KESTREL deliberately sacrifices her remaining cover so LYNX has clean
       lanes for the next stage of extraction. Permanent loss. The player is
@@ -228,65 +173,40 @@ moments:
       - Specify tactical details that may not fit current state
     tone: "solemn, deliberate, present-tense"
     effects:
-      - quality: agent[KESTREL].cover
-        value: 0
-        op: set
-      - quality: mission.extraction_stage
-        value: 1
-        op: add
-      - quality: agent[LYNX].cover_protected
-        value: true
-        op: set
+      - "agent[KESTREL].cover = 0"
+      - "mission.extraction_stage += 1"
+      - "agent[LYNX].cover_protected = true"
 
-beats:
+  # Terminal passive events — set state.outcome and end the mission.
   - id: extraction_complete
     terminal: true
     outcome_key: win_lynx_extracted
     priority: 0
-    when:
-      kind: and
-      of:
-        - kind: quality_equals
-          quality: mission.extraction_stage
-          value: 3
-        - kind: quality_gt
-          quality: agent[LYNX].cover
-          value: 0
+    when: "mission.extraction_stage == 3 and agent[LYNX].cover > 0"
 
   - id: lynx_lost
     terminal: true
     outcome_key: loss_lynx_captured
     priority: 0
-    when:
-      kind: quality_equals
-      quality: agent[LYNX].cover
-      value: 0
+    when: "agent[LYNX].cover == 0"
 
   - id: timeout
     terminal: true
     outcome_key: loss_timeout
     priority: 1
-    when:
-      kind: quality_equals
-      quality: mission.cycles_remaining
-      value: 0
+    when: "mission.cycles_remaining == 0"
 
   # Reaction: marks the agent lost when cover hits 0. Fires once per agent.
   # The terminal `lynx_lost` short-circuits the cycle when LYNX hits 0, so
-  # this beat effectively only ever marks KESTREL in practice. Authored as
+  # this event effectively only ever marks KESTREL in practice. Authored as
   # `for_each_agent` so it stays correct if a future mission adds agents.
   - id: agent_lost_when_cover_zero
     for_each_agent: true
     fires_at_most: once_per_agent
     priority: 5
-    when:
-      kind: quality_equals
-      quality: agent[$agent].cover
-      value: 0
+    when: "agent[$agent].cover == 0"
     effects:
-      - quality: agent[$agent].lost
-        value: true
-        op: set
+      - "agent[$agent].lost = true"
 
   # Passive pressure: when the authorized option DIDN'T progress the mission,
   # both agents' covers tick down. This is what makes HOLD costly.
@@ -294,26 +214,9 @@ beats:
     fires_at_most: unlimited
     only_when_no_progress_this_cycle: true
     priority: 10
-    when:
-      kind: quality_lt
-      quality: mission.extraction_stage
-      value: 3
+    when: "mission.extraction_stage < 3"
     effects:
-      - quality: agent[LYNX].cover
-        value: -1
-        op: add
-        when:
-          # cover_protected (set by DIVERSION_BY_AGENT or kestrel_sacrifice)
-          # blocks this cycle's decay on LYNX.
-          kind: not
-          of:
-            kind: quality_equals
-            quality: agent[LYNX].cover_protected
-            value: true
-      - quality: agent[KESTREL].cover
-        value: -1
-        op: add
-        when:
-          kind: quality_gt
-          quality: agent[KESTREL].cover
-          value: 0
+      # cover_protected (set by DIVERSION_BY_AGENT or kestrel_sacrifice)
+      # blocks this cycle's decay on LYNX.
+      - "agent[LYNX].cover -= 1 if not agent[LYNX].cover_protected == true"
+      - "agent[KESTREL].cover -= 1 if agent[KESTREL].cover > 0"

@@ -1,11 +1,12 @@
-"""Event-sourced session log: every state change in the engine is an Event.
+"""Event-sourced session log: every state change in the engine is a log
+entry (different concept from `models.Event`, the mission-authored event).
 
-Two flavors:
+Two flavors of log entry:
 - **Observation events** — recorded LLM outputs (SoP memo, drafted options,
   rendered dispatches, mission start). `fold` records them but does not
   mutate state.
-- **Mutation events** — the actual state writes (effects applied, beats
-  fired, cycle closed, mission resolved). `fold` performs the mutation
+- **Mutation events** — the actual state writes (effects applied, passive
+  events fired, cycle closed, mission resolved). `fold` performs the mutation
   by replaying the recorded delta onto state.
 
 The live path: `spine.py` functions mutate state in place AND return a
@@ -60,7 +61,8 @@ class OptionsDrafted(BaseModel):
     kind: Literal["options_drafted"] = "options_drafted"
     cycle_index: int
     options: list[Option]
-    moment_id: str | None = None  # set if drafter included a forced moment
+    # Id of the forced event surfaced to the drafter this cycle, if any.
+    forced_event_id: str | None = None
     engine_fallback: bool = False  # True if engine emitted fallback options
 
 
@@ -85,23 +87,25 @@ class DispatchRendered(BaseModel):
 
 
 class EffectsApplied(BaseModel):
-    """Carries the delta from `apply_archetype_effects` (and any moment
+    """Carries the delta from `apply_archetype_effects` (and any forced-event
     effects merged in)."""
 
     kind: Literal["effects_applied"] = "effects_applied"
     cycle_index: int
     delta: Delta
-    moment_id: str | None = None  # if the option satisfied a moment
+    # Id of the forced event the chosen option satisfied this cycle, if any.
+    forced_event_id: str | None = None
 
 
-class BeatsFired(BaseModel):
-    """Records one or more beats that fired this cycle. Each entry carries
-    its own delta plus the (beat_id, agent_id_or_None) pair. Terminal beats
-    are included; the next event will be `MissionResolved`."""
+class EventsFired(BaseModel):
+    """Records one or more passive events that fired this cycle. Each entry
+    carries its own delta plus the (event_id, agent_id_or_None) pair.
+    Terminal events are included; the next log entry will be `MissionResolved`.
+    """
 
-    kind: Literal["beats_fired"] = "beats_fired"
+    kind: Literal["events_fired"] = "events_fired"
     cycle_index: int
-    fires: list[tuple[str, str | None, Delta]]  # (beat_id, agent_id|None, delta)
+    fires: list[tuple[str, str | None, Delta]]  # (event_id, agent_id|None, delta)
 
 
 class CycleClosed(BaseModel):
@@ -131,7 +135,7 @@ Event = Annotated[
         OptionAuthorized,
         DispatchRendered,
         EffectsApplied,
-        BeatsFired,
+        EventsFired,
         CycleClosed,
         MissionResolved,
     ],
@@ -155,10 +159,8 @@ def fold(state: State, event: Event) -> None:
         # Replay path: reseed state from the recorded initial snapshot.
         state.qualities.clear()
         state.qualities.update(event.initial_state.qualities)
-        state.fired_beats.clear()
-        state.fired_beats.extend(event.initial_state.fired_beats)
-        state.fired_moments.clear()
-        state.fired_moments.extend(event.initial_state.fired_moments)
+        state.fired.clear()
+        state.fired.extend(event.initial_state.fired)
         state.fired_per_agent.clear()
         state.fired_per_agent.extend(event.initial_state.fired_per_agent)
         state.outcome = event.initial_state.outcome
@@ -168,15 +170,15 @@ def fold(state: State, event: Event) -> None:
         return  # observation only
     if isinstance(event, EffectsApplied):
         _apply_delta(state, event.delta)
-        if event.moment_id is not None and event.moment_id not in state.fired_moments:
-            state.fired_moments.append(event.moment_id)
+        if event.forced_event_id is not None and event.forced_event_id not in state.fired:
+            state.fired.append(event.forced_event_id)
         return
-    if isinstance(event, BeatsFired):
-        for beat_id, agent_id, delta in event.fires:
+    if isinstance(event, EventsFired):
+        for event_id, agent_id, delta in event.fires:
             _apply_delta(state, delta)
-            state.fired_beats.append(beat_id)
+            state.fired.append(event_id)
             if agent_id is not None:
-                state.fired_per_agent.append(f"{beat_id}:{agent_id}")
+                state.fired_per_agent.append(f"{event_id}:{agent_id}")
         return
     if isinstance(event, CycleClosed):
         _apply_delta(state, event.delta)

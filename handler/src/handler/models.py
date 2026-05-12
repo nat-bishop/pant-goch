@@ -1,21 +1,21 @@
-"""Handler engine models — predicates, effects, archetypes, moments, beats,
+"""Handler engine models — predicates, effects, archetypes, events,
 missions, options, state.
 
 Two layers:
 
 - **Authoring** (loaded from a mission YAML, immutable at runtime):
-  `Mission`, `AgentDossier`, `Archetype`, `Moment`, `Beat`. Quality refs are
+  `Mission`, `AgentDossier`, `Archetype`, `Event`. Quality refs are
   opaque dotted strings — `mission.cycles_remaining`, `mission.extraction_stage`,
   `agent[LYNX].cover`. Predicates are tagged-union Pydantic models, not
   free-form strings — every predicate is type-checked at load time.
 
 - **Runtime** (mutable, owned by `cycle.py` via `spine.py`'s pure functions):
   `State`. Holds the flat qualities map plus engine-internal trackers
-  (fired_beats, fired_moments, per-agent fire ledger, outcome).
+  (`fired` ledger, per-agent fire ledger, outcome).
 
 The LLM never writes to state. State writes happen only through the three
-spine entry points (`apply_archetype_effects`, `apply_moment_effects`,
-`fire_due_beats`) plus `tick_cycle_close`.
+spine entry points (`apply_archetype_effects`, `apply_forced_event_effects`,
+`fire_due_passive_events`) plus `tick_cycle_close`.
 
 Adding a new `Predicate` variant — coordinated edits:
   1. Define the class here, inheriting `_PredicateLeaf` (evaluated directly)
@@ -82,19 +82,12 @@ class QualityEquals(_PredicateLeaf):
     value: str | int | float
 
 
-class BeatFired(_PredicateLeaf):
-    """True iff the named beat is in `state.fired_beats`. Used under `Not_`
+class EventFired(_PredicateLeaf):
+    """True iff the named event is in `state.fired`. Used under `Not_`
     to express mutual exclusion."""
 
-    kind: Literal["beat_fired"] = "beat_fired"
-    beat: str
-
-
-class MomentFired(_PredicateLeaf):
-    """True iff the named moment is in `state.fired_moments`."""
-
-    kind: Literal["moment_fired"] = "moment_fired"
-    moment: str
+    kind: Literal["event_fired"] = "event_fired"
+    event: str
 
 
 class Not_(_PredicateComposite):
@@ -131,8 +124,7 @@ Predicate = Annotated[
         QualityLte,
         QualityLt,
         QualityEquals,
-        BeatFired,
-        MomentFired,
+        EventFired,
         Not_,
         And_,
         Or_,
@@ -194,40 +186,51 @@ class AgentDossier(BaseModel):
     starting_cover: int = Field(ge=0, le=10)
 
 
-class QualityDescriptor(BaseModel):
-    """Maps a quality's numeric/string value to an in-fiction descriptor
-    used by the narrative state block. Use `buckets` for numeric qualities,
-    `values` for discrete enums. Exactly one MUST be non-empty.
+class Quality(BaseModel):
+    """One authored quality — initial value plus the in-fiction descriptor
+    used by the narrative state block. The single per-quality authoring unit;
+    every entry in `Mission.qualities` is a `Quality`.
+
+    Use `buckets` for numeric qualities, `values` for discrete enums. Exactly
+    one MUST be non-empty — that requirement is what eliminates the older
+    "missing descriptor" footgun (initial value and descriptor are co-located,
+    so an author can't write one without the other).
 
     Bucket lookup walks the list in authored order; the first bucket whose
     `threshold` >= the actual value wins. Author bottom-up:
         buckets:
-          - [0, "blown"]      # value 0
+          - [0, "blown"]
           - [2, "compromised"]   # 1..2
           - [5, "degraded"]      # 3..5
           - [8, "intact"]        # 6..8
           - [10, "solid"]        # 9..10
 
-    `values` is keyed by the literal value coerced to its string form. Authors
-    write `"0": "papers not yet surfaced"` etc.
+    `values` is keyed by the literal value coerced to its string form
+    (`"0": "papers not yet surfaced"`).
 
     `label` (optional) prefixes every descriptor — e.g. label="extraction"
     yields "extraction: papers not yet surfaced".
+
+    `initial` is omitted only for universal qualities the engine injects
+    (`agent[*].cover`, `mission.cycles_remaining`); a `qualities:` entry for
+    those exists purely to override the built-in display buckets.
     """
 
+    initial: float | int | str | None = None
     buckets: list[tuple[float, str]] = Field(default_factory=list)
     values: dict[str, str] = Field(default_factory=dict)
     label: str = ""
 
     @model_validator(mode="after")
-    def _exactly_one_form(self) -> "QualityDescriptor":
+    def _has_descriptor(self) -> "Quality":
         if not self.buckets and not self.values:
             raise ValueError(
-                "QualityDescriptor: must set one of `buckets` or `values` (got neither)"
+                "Quality: must set one of `buckets` or `values` (got neither). "
+                "Every quality must carry its narrative descriptor."
             )
         if self.buckets and self.values:
             raise ValueError(
-                "QualityDescriptor: set EITHER `buckets` OR `values`, not both"
+                "Quality: set EITHER `buckets` OR `values`, not both"
             )
         return self
 
@@ -249,6 +252,17 @@ class QualityDescriptor(BaseModel):
         return f"{self.label}: {body}" if self.label else body
 
 
+class DramaticQuestion(BaseModel):
+    """Author-written framing for a cycle: when the predicate matches, the SoP
+    leads with this question instead of summarising state. Selection walks the
+    mission's list in authored order and picks the first match — author from
+    most-specific to least-specific.
+    """
+
+    when: Predicate
+    question: str = Field(min_length=1)
+
+
 class Archetype(BaseModel):
     """Player-driven action template. Owns a precondition (`when`), a list of
     effects (deterministic state writes), and an optional `params` declaration
@@ -267,62 +281,78 @@ class Archetype(BaseModel):
     intent: str = ""
 
 
-class Moment(BaseModel):
-    """Authored decision point. Engine forces the drafter to include an option
-    satisfying this moment when its `when` predicate fires. The mechanical
-    `effects` are fixed; the LLM writes situated prose around them per
-    `intent` / `must_communicate` / `must_not` / `tone`.
+class Event(BaseModel):
+    """Predicate-gated mission event. One authored concept, three runtime shapes
+    selected by flag:
+
+    - **Forced** (`force_into_drafter=True`): the engine adds the event to the
+      drafter's forced-option requirement; effects fire when the player picks
+      the satisfying option. Carries the LLM-facing prose constraints
+      (`intent` / `must_communicate` / `must_not` / `tone`).
+    - **Passive** (`force_into_drafter=False`): the engine fires the event
+      after archetype effects apply when `when` matches. Three sub-shapes:
+        * `terminal=True` — sets `state.outcome` and ends the mission.
+        * `only_when_no_progress_this_cycle=True` — passive pressure that
+          fires only if the authorized option didn't progress the mission.
+        * Reaction — fires unconditionally when predicate matches; lifts
+          flags ("agent lost") in response to state changes.
+    - **Per-agent** (`for_each_agent=True`, passive only): expands `$agent`
+      over the mission's agents — fires one instance per matching agent.
+
+    `fires_at_most` controls re-firing across cycles. Mutual-exclusion
+    invariants on the flag combinations are enforced by `_consistency`.
     """
 
     id: str = Field(min_length=1)
     when: Predicate
-    fires_at_most: Literal["once_per_mission", "once_per_agent"] = "once_per_mission"
     effects: list[Effect] = Field(default_factory=list)
+    fires_at_most: Literal["unlimited", "once_per_mission", "once_per_agent"] = "once_per_mission"
+
+    # Forced-event (drafter-surfaced) fields. Ignored when force_into_drafter=False.
+    force_into_drafter: bool = False
     intent: str = ""
     must_communicate: list[str] = Field(default_factory=list)
     must_not: list[str] = Field(default_factory=list)
     tone: str = ""
 
-
-class Beat(BaseModel):
-    """Predicate-gated engine event. No player input. Three flavors via flags:
-
-    - **Terminal** (`terminal=True`): sets `state.outcome` and ends the mission.
-    - **Passive pressure** (`only_when_no_progress_this_cycle=True`): fires
-      only if the authorized option didn't progress the mission this cycle.
-    - **Reaction**: fires unconditionally when predicate matches; useful for
-      lifting flags ("agent lost") in response to state changes.
-
-    `fires_at_most` controls re-firing across cycles. `for_each_agent: true`
-    expands `$agent` placeholders in `when` and `effects` over the mission's
-    agents — fires one instance per matching agent.
-    """
-
-    id: str = Field(min_length=1)
-    when: Predicate
-    effects: list[Effect] = Field(default_factory=list)
+    # Passive-event (post-authorization) fields. Ignored when force_into_drafter=True.
     terminal: bool = False
-    outcome_key: str | None = None  # for terminal beats: sets state.outcome
-    fires_at_most: Literal["unlimited", "once_per_mission", "once_per_agent"] = "once_per_mission"
+    outcome_key: str | None = None  # for terminal events: sets state.outcome
     only_when_no_progress_this_cycle: bool = False
     for_each_agent: bool = False
-    # Authoring-order priority; lower fires first when multiple beats are due
-    # in the same evaluation pass. Tie-breaker is authored order.
+    # Authoring-order priority; lower fires first when multiple events are due
+    # in the same passive-fire pass. Tie-breaker is authored order.
     priority: int = 0
 
     @model_validator(mode="after")
-    def _terminal_has_outcome(self) -> "Beat":
+    def _consistency(self) -> "Event":
         if self.terminal and not self.outcome_key:
             raise ValueError(
-                f"Beat {self.id!r}: terminal=True requires outcome_key"
+                f"Event {self.id!r}: terminal=True requires outcome_key"
             )
         if self.for_each_agent and self.fires_at_most == "once_per_mission":
             # `once_per_mission` doesn't make sense with for_each_agent —
             # the natural pairing is `once_per_agent`.
             raise ValueError(
-                f"Beat {self.id!r}: for_each_agent=True requires "
+                f"Event {self.id!r}: for_each_agent=True requires "
                 f"fires_at_most='once_per_agent' or 'unlimited'"
             )
+        if self.force_into_drafter:
+            # Forced events fire pre-effects via drafter selection; the passive
+            # post-effects flags have no engine semantics in that path.
+            if self.terminal:
+                raise ValueError(
+                    f"Event {self.id!r}: force_into_drafter cannot combine with terminal"
+                )
+            if self.for_each_agent:
+                raise ValueError(
+                    f"Event {self.id!r}: force_into_drafter cannot combine with for_each_agent"
+                )
+            if self.only_when_no_progress_this_cycle:
+                raise ValueError(
+                    f"Event {self.id!r}: force_into_drafter cannot combine with "
+                    f"only_when_no_progress_this_cycle"
+                )
         return self
 
 
@@ -340,19 +370,24 @@ class Mission(BaseModel):
     setting: str = ""
     max_cycles: int = Field(gt=0)
     agents: list[AgentDossier] = Field(min_length=1)
-    # Mission-authored initial qualities (e.g. extraction_stage=0). Universal
-    # qualities (cycles_remaining, agent[*].cover) are auto-injected from
-    # `max_cycles` and `agents` — not redundantly declared here.
-    initial_qualities: dict[str, float | int | str] = Field(default_factory=dict)
-    # Quality name → narrative descriptor. REQUIRED for every key declared in
-    # `initial_qualities`; optional override for universal qualities
-    # (agent[*].cover, mission.cycles_remaining). The mission validator below
-    # enforces this so authors can't silently leak raw quality ids into the
-    # narrative state block.
-    quality_descriptors: dict[str, QualityDescriptor] = Field(default_factory=dict)
+    # Quality authoring. Each entry carries the initial value AND the narrative
+    # descriptor in one block — co-locating them eliminates the older "missing
+    # descriptor" footgun. Universal qualities (agent[*].cover,
+    # mission.cycles_remaining) appear here only when overriding the engine's
+    # built-in display; their initial values come from `max_cycles` and
+    # `agents[*].starting_cover` and are injected by `make_initial_state`.
+    qualities: dict[str, Quality] = Field(default_factory=dict)
+    # Per-mission persistent prose constraints, injected into all three agent
+    # system prompts. Use for facts the renderer/SoP must honor every cycle
+    # (e.g. "LYNX must not be photographed again", "the Vienna network is
+    # offline"). Authored, no LLM in the loop.
+    standing_orders: list[str] = Field(default_factory=list)
+    # Per-state-shape SoP framing. Engine selects the first matching question
+    # each cycle; SoP leads with it instead of summarising state. Author from
+    # most-specific predicate to most-general.
+    dramatic_questions: list[DramaticQuestion] = Field(default_factory=list)
     archetypes: list[Archetype] = Field(min_length=1)
-    moments: list[Moment] = Field(default_factory=list)
-    beats: list[Beat] = Field(min_length=1)
+    events: list[Event] = Field(min_length=1)
     # Map of outcome_key → human prose summary for the outcome card.
     outcomes: dict[str, str] = Field(default_factory=dict)
 
@@ -361,39 +396,31 @@ class Mission(BaseModel):
         for collection, label in (
             (self.agents, "agent"),
             (self.archetypes, "archetype"),
-            (self.moments, "moment"),
-            (self.beats, "beat"),
+            (self.events, "event"),
         ):
             seen: set[str] = set()
             for item in collection:
                 if item.id in seen:
                     raise ValueError(f"duplicate {label} id: {item.id!r}")
                 seen.add(item.id)
-        # Outcome keys referenced by terminal beats must be in `outcomes`.
-        for beat in self.beats:
-            if beat.terminal and beat.outcome_key not in self.outcomes:
+        # Outcome keys referenced by terminal events must be in `outcomes`.
+        for event in self.events:
+            if event.terminal and event.outcome_key not in self.outcomes:
                 raise ValueError(
-                    f"Beat {beat.id!r}: outcome_key {beat.outcome_key!r} "
+                    f"Event {event.id!r}: outcome_key {event.outcome_key!r} "
                     f"is not in mission.outcomes ({sorted(self.outcomes)})"
                 )
         return self
 
-    @model_validator(mode="after")
-    def _quality_descriptors_cover_authored_qualities(self) -> "Mission":
-        """Every key in `initial_qualities` must have a `quality_descriptors`
-        entry. Universal qualities (cycles_remaining, agent[*].cover) have
-        built-in narrative descriptors and don't need authoring."""
-        missing = sorted(
-            q for q in self.initial_qualities if q not in self.quality_descriptors
-        )
-        if missing:
-            raise ValueError(
-                f"Mission {self.id!r}: quality_descriptors is missing entries "
-                f"for authored qualities {missing}. Every key in "
-                f"`initial_qualities` must have a narrative descriptor so the "
-                f"SoP/renderer state block doesn't leak raw quality ids."
-            )
-        return self
+    def initial_qualities_for_state(self) -> dict[str, float | int | str]:
+        """Return the (name → initial value) mapping the engine should seed
+        into State at mission start. Universal qualities (cycles_remaining,
+        agent[*].cover) are injected separately by `make_initial_state`."""
+        return {
+            name: q.initial
+            for name, q in self.qualities.items()
+            if q.initial is not None
+        }
 
     def archetype(self, id: str) -> Archetype:
         for a in self.archetypes:
@@ -422,7 +449,10 @@ class Option(BaseModel):
     params: dict[str, str] = Field(default_factory=dict)
     title: str = Field(min_length=1)
     prose: str = Field(min_length=1)
-    # Set True for options that satisfy a forced moment this cycle.
+    # Id of the forced event this option satisfies, if any. The LLM-facing
+    # field name keeps the narrative word "moment" (the drafter prompt and
+    # system-prompt prefix speak of FORCED MOMENT); the engine reads it as
+    # an event id and looks the event up in `mission.events`.
     satisfies_moment: str | None = None
 
 
@@ -445,13 +475,15 @@ class State(BaseModel):
     """
 
     qualities: dict[str, float | int | str | bool] = Field(default_factory=dict)
-    fired_beats: list[str] = Field(default_factory=list)  # one entry per fire
-    fired_moments: list[str] = Field(default_factory=list)
-    # Per-(beat, agent) firing ledger for `for_each_agent` beats with
-    # `fires_at_most='once_per_agent'`. Key is f"{beat_id}:{agent_id}".
+    # One entry per fire of an event (forced or passive). May contain duplicates
+    # for events with `fires_at_most="unlimited"`. The `EventFired(event)`
+    # predicate is just a membership check against this list.
+    fired: list[str] = Field(default_factory=list)
+    # Per-(event, agent) firing ledger for `for_each_agent` events with
+    # `fires_at_most='once_per_agent'`. Key is f"{event_id}:{agent_id}".
     fired_per_agent: list[str] = Field(default_factory=list)
     outcome: str | None = None
-    # Set True for the duration of one cycle by moment effects like
+    # Set True for the duration of one cycle by forced-event effects like
     # kestrel_sacrifice (LYNX.cover_protected). Cleared by `tick_cycle_close`.
     one_cycle_flags: dict[str, bool] = Field(default_factory=dict)
 
@@ -465,13 +497,13 @@ class State(BaseModel):
 def make_initial_state(mission: Mission) -> State:
     """Construct the starting `State` for a mission. Injects universal
     qualities (`mission.cycles_remaining`, `agent[*].cover`) and authored
-    initial qualities."""
+    initial values from `mission.qualities`."""
     qualities: dict[str, float | int | str | bool] = {
         "mission.cycles_remaining": mission.max_cycles,
     }
     for agent in mission.agents:
         qualities[f"agent[{agent.id}].cover"] = agent.starting_cover
-    qualities.update(mission.initial_qualities)
+    qualities.update(mission.initial_qualities_for_state())
     return State(qualities=qualities)
 
 
@@ -482,7 +514,7 @@ class MissionResolution(BaseModel):
     """Snapshot at terminal — what the outcome card shows."""
 
     outcome_key: str
-    terminal_beat_id: str
+    terminal_event_id: str
     cycles_used: int
     cycles_max: int
     agents_lost: list[str]
@@ -493,45 +525,46 @@ class MissionResolution(BaseModel):
 # ───────────────────────── quality-ref substitution ─────────────────────────
 
 
-def substitute_agent(s: str, agent_id: str) -> str:
-    """Replace `$agent` in `s` with the concrete agent id. Used by the engine
-    when expanding `for_each_agent` beats and `params: [agent]` archetypes."""
-    return s.replace("$agent", agent_id)
+def substitute_placeholders(s: str, placeholders: dict[str, str]) -> str:
+    """Replace each `$name` in `s` with the value bound to that name. Empty
+    dict is a no-op. Generalises beyond `$agent` so future shape templates can
+    bind arbitrary parameters (e.g. `{"pays": "KESTREL", "benefits": "LYNX"}`)."""
+    for name, value in placeholders.items():
+        s = s.replace(f"${name}", value)
+    return s
 
 
-def substitute_predicate(pred: Predicate, agent_id: str) -> Predicate:
-    """Return a new `Predicate` with every `$agent` reference resolved to
-    `agent_id`. Walks composites; leaves are reconstructed with substituted
-    quality refs.
-    """
+def substitute_predicate(pred: Predicate, placeholders: dict[str, str]) -> Predicate:
+    """Return a new `Predicate` with every `$name` reference resolved per
+    `placeholders`. Walks composites; leaves are reconstructed with substituted
+    quality refs."""
     if isinstance(pred, QualityGte):
-        return QualityGte(quality=substitute_agent(pred.quality, agent_id), value=pred.value)
+        return QualityGte(quality=substitute_placeholders(pred.quality, placeholders), value=pred.value)
     if isinstance(pred, QualityGt):
-        return QualityGt(quality=substitute_agent(pred.quality, agent_id), value=pred.value)
+        return QualityGt(quality=substitute_placeholders(pred.quality, placeholders), value=pred.value)
     if isinstance(pred, QualityLte):
-        return QualityLte(quality=substitute_agent(pred.quality, agent_id), value=pred.value)
+        return QualityLte(quality=substitute_placeholders(pred.quality, placeholders), value=pred.value)
     if isinstance(pred, QualityLt):
-        return QualityLt(quality=substitute_agent(pred.quality, agent_id), value=pred.value)
+        return QualityLt(quality=substitute_placeholders(pred.quality, placeholders), value=pred.value)
     if isinstance(pred, QualityEquals):
-        return QualityEquals(quality=substitute_agent(pred.quality, agent_id), value=pred.value)
-    if isinstance(pred, BeatFired):
-        return BeatFired(beat=substitute_agent(pred.beat, agent_id))
-    if isinstance(pred, MomentFired):
-        return MomentFired(moment=substitute_agent(pred.moment, agent_id))
+        return QualityEquals(quality=substitute_placeholders(pred.quality, placeholders), value=pred.value)
+    if isinstance(pred, EventFired):
+        return EventFired(event=substitute_placeholders(pred.event, placeholders))
     if isinstance(pred, Not_):
-        return Not_(of=substitute_predicate(pred.of, agent_id))
+        return Not_(of=substitute_predicate(pred.of, placeholders))
     if isinstance(pred, And_):
-        return And_(of=[substitute_predicate(p, agent_id) for p in pred.of])
+        return And_(of=[substitute_predicate(p, placeholders) for p in pred.of])
     if isinstance(pred, Or_):
-        return Or_(of=[substitute_predicate(p, agent_id) for p in pred.of])
+        return Or_(of=[substitute_predicate(p, placeholders) for p in pred.of])
     assert_never(pred)
 
 
-def substitute_effect(eff: Effect, agent_id: str) -> Effect:
-    """Return a new `Effect` with `$agent` substituted in quality and (if set) `when`."""
+def substitute_effect(eff: Effect, placeholders: dict[str, str]) -> Effect:
+    """Return a new `Effect` with placeholders substituted in quality and
+    (if set) `when`."""
     return Effect(
-        quality=substitute_agent(eff.quality, agent_id),
+        quality=substitute_placeholders(eff.quality, placeholders),
         value=eff.value,
         op=eff.op,
-        when=substitute_predicate(eff.when, agent_id) if eff.when else None,
+        when=substitute_predicate(eff.when, placeholders) if eff.when else None,
     )

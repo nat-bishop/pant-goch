@@ -67,7 +67,7 @@ from .launcher import (
 from .mission_loader import MissionLoadError, load_mission
 from .models import Mission, Option, State
 from .session import Session, make_jsonl_persistor, make_session
-from .spine import due_moments, valid_archetype_combinations
+from .spine import due_forced_events, valid_archetype_combinations
 
 
 _BOOT_SETTINGS = Settings()
@@ -470,7 +470,7 @@ def _build_drafter_llm_callable(rt: SessionRuntime) -> Any:
         cycle_index: int,
         sop_text: str,
         catalog: list[tuple[str, str | None, dict[str, str]]],
-        forced_moment_id: str | None,
+        forced_event_id: str | None,
     ) -> tuple[list[Option], bool]:
         assert AGENTS is not None
 
@@ -485,10 +485,10 @@ def _build_drafter_llm_callable(rt: SessionRuntime) -> Any:
             rt.prefetched_engine_fallback = False
             return options, engine_fallback
 
-        forced_moment = None
-        if forced_moment_id is not None:
-            forced_moment = next(
-                (m for m in session.mission.moments if m.id == forced_moment_id), None
+        forced_event = None
+        if forced_event_id is not None:
+            forced_event = next(
+                (e for e in session.mission.events if e.id == forced_event_id), None
             )
         return await draft_with_retries(
             AGENTS.drafter,
@@ -497,7 +497,7 @@ def _build_drafter_llm_callable(rt: SessionRuntime) -> Any:
             mission=session.mission,
             sop_text=sop_text,
             catalog=catalog,
-            forced_moment=forced_moment,
+            forced_event=forced_event,
             dispatches=rt.dispatches,
         )
 
@@ -514,7 +514,7 @@ def _build_drafter_emit_callable(rt: SessionRuntime) -> Any:
         cycle_index: int,
         options: list[Option],
         engine_fallback: bool,
-        forced_moment_id: str | None,
+        forced_event_id: str | None,
     ) -> None:
         rt.current_options = options
         for option_idx, option in enumerate(options):
@@ -541,8 +541,8 @@ def _build_drafter_emit_callable(rt: SessionRuntime) -> Any:
                 "event": "options_complete",
                 "cycle": cycle_index,
                 "count": len(options),
-                "has_forced_moment": forced_moment_id is not None,
-                "moment_id": forced_moment_id,
+                "has_forced_moment": forced_event_id is not None,
+                "moment_id": forced_event_id,
                 "engine_fallback": engine_fallback,
             }
         )
@@ -568,6 +568,7 @@ def _build_renderer_callable(rt: SessionRuntime) -> Any:
         option: Option,
         delta: dict,
         acting: str,
+        prior_state,
     ) -> tuple[str, asyncio.Task]:
         assert AGENTS is not None
         await rt.out_queue.put(
@@ -580,6 +581,7 @@ def _build_renderer_callable(rt: SessionRuntime) -> Any:
         )
         prompt = _renderer_user_prompt(
             cycle_index, session.state, session.mission, option, delta, acting, rt.dispatches,
+            prior_state=prior_state,
         )
         text, pacing_task = await _run_paced_stream(
             AGENTS.renderer, prompt, rt.out_queue.put,
@@ -625,8 +627,8 @@ async def prefetch_next_cycle(rt: SessionRuntime, next_cycle_index: int) -> None
         rt.prefetched_sop_text = sop_result.output
 
         catalog = valid_archetype_combinations(state, mission)
-        forced = due_moments(state, mission)
-        forced_moment = forced[0] if forced else None
+        forced = due_forced_events(state, mission)
+        forced_event = forced[0] if forced else None
         options, fallback = await draft_with_retries(
             AGENTS.drafter,
             cycle_index=next_cycle_index,
@@ -634,7 +636,7 @@ async def prefetch_next_cycle(rt: SessionRuntime, next_cycle_index: int) -> None
             mission=mission,
             sop_text=rt.prefetched_sop_text,
             catalog=catalog,
-            forced_moment=forced_moment,
+            forced_event=forced_event,
             dispatches=rt.dispatches,
         )
         rt.prefetched_options = options

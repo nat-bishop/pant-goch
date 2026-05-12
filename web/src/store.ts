@@ -48,15 +48,15 @@ export interface CycleState {
   // True after the server emits `awaiting_continue` — engine is paused
   // between cycles waiting for the player to click through.
   awaiting_continue: boolean;
-  // Latest cycle delta (effects + beats merged) — surfaced to the dispatch modal.
+  // Latest cycle delta (effects + events merged) — surfaced to the dispatch modal.
   delta: Delta;
-  beats_fired: string[];
+  events_fired: string[];
 }
 
 export interface Outcome {
   outcome_key: string;
   summary: string;
-  terminal_beat: string;
+  terminal_event: string;
   cycles_used: number;
   cycles_max: number;
   agents_lost: string[];
@@ -102,7 +102,7 @@ function newCycle(index: number): CycleState {
     dispatch_complete: false,
     awaiting_continue: false,
     delta: {},
-    beats_fired: [],
+    events_fired: [],
   };
 }
 
@@ -299,14 +299,14 @@ export const useStore = create<Store>((set, get) => ({
         break;
       }
 
-      case "beats_fired": {
+      case "events_fired": {
         const c = get().cycle;
         if (!c) return;
         set({
           cycle: {
             ...c,
             delta: mergeDelta(c.delta, ev.delta),
-            beats_fired: [...c.beats_fired, ...ev.beats],
+            events_fired: [...c.events_fired, ...ev.events],
           },
         });
         break;
@@ -363,7 +363,7 @@ export const useStore = create<Store>((set, get) => ({
           outcome: {
             outcome_key: ev.outcome,
             summary: ev.summary,
-            terminal_beat: ev.terminal_beat,
+            terminal_event: ev.terminal_event,
             cycles_used: ev.cycles_used,
             cycles_max: ev.cycles_max,
             agents_lost: ev.agents_lost,
