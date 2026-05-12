@@ -47,6 +47,21 @@ The single composite walker `iter_predicate_leaves` covers analysis-side consume
 - `make test` — fast unit suite. 49 tests as of Phase 6. No live llama needed.
 - `cd handler && uv run pytest -m integration` — placeholder for live-llama integration tests. The current `conftest.py` exposes the `live_llama` fixture and the `consume_sse` SSE helper. Add `test_cycle_integration.py` here to walk a full mission with a deterministic option picker.
 
+## Inferno gateway (dev-mode opt-in)
+
+The shipped game spawns its own bundled `llama-server` subprocess on `:8080` loading Gemma 4 E4B GGUF — single-player offline, no external dependencies. **This path is sacred — don't change it.**
+
+For dev sessions on the Blackwell box, the sidecar can instead point at the [inferno gateway](`C:\Users\Nat\Documents\dev\inferno`) which serves the same GGUF via llama-cpp-python (byte-identical chat template + kernel params; parity is established by construction in inferno's `LlamaCppModelConfig` defaults). The win is VRAM co-residency — Gemma shares the budget with FLUX / TRELLIS / Qwen-Image instead of competing through orphaned subprocesses.
+
+Env vars (both must be set; either alone is ignored):
+
+- `SMALLVILLE_USE_INFERNO=1` — skip the bundled `llama-server` subprocess; probe inferno's `/health` instead and route the pydantic-ai client at inferno's `/v1`. Unset (default): shipping behavior, bundled subprocess on `:8080`.
+- `INFERNO_URL` — inferno's root URL (default `http://127.0.0.1:7770`).
+
+When `SMALLVILLE_USE_INFERNO=1`, lifespan's `_probe_inferno_health` fails loud if inferno isn't reachable — there's no silent fallback. Rollback is `unset SMALLVILLE_USE_INFERNO` and restart.
+
+Playtester / eval LLM: `eval_llama_base_url` (Settings field at `config.py:131`) now defaults to `f"{INFERNO_URL}/v1"` when `INFERNO_URL` is set, otherwise None (caller falls back to the legacy `EVAL_LLAMA_BASE_URL` constant pointing at `make llama-eval` on `:8081`). No consumer wires this today — programmatic evaluators only — but the plumbing is there for future LLM judges.
+
 ## Don't "clean up" without reading the comment first
 
 Each invariant is anchored by an inline comment at the call site explaining why:

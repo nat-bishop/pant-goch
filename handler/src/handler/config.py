@@ -22,9 +22,11 @@ the fixture runs.
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Literal
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -125,10 +127,24 @@ class Settings(BaseSettings):
     # Powers the synthetic-player agent and the LLM judges. Different family from
     # the engine SUT (Gemma) to mitigate same-family preference leakage in judging
     # — see arxiv 2502.01534. Default points at port 8081 so the engine llama on
-    # 8080 stays unaffected. Lifecycle is user-managed (`make llama-eval`); the
-    # playtester just probes /health on this URL before starting.
+    # 8080 stays unaffected. Lifecycle is user-managed (`make llama-eval`) for the
+    # legacy bundled-llama-server path; the inferno gateway is the new default.
     eval_llama_port: int = EVAL_LLAMA_PORT
-    eval_llama_base_url: str | None = None
+    # Precedence (resolved at Settings() instantiation):
+    # 1. Explicit `EVAL_LLAMA_BASE_URL` env var (highest — for hand-overrides).
+    # 2. `INFERNO_URL` env var, suffixed with `/v1` (canonical for inferno-served eval).
+    # 3. None — consumer falls back to the legacy `EVAL_LLAMA_BASE_URL` constant
+    #    (i.e. `make llama-eval` on :8081).
+    # No consumer wires this today (programmatic evaluators only — see
+    # scripts/playtest/evaluators.py) but the resolution is plumbed so future
+    # LLM-judge code reads from inferno out of the box.
+    eval_llama_base_url: str | None = Field(
+        default_factory=lambda: (
+            f"{os.environ['INFERNO_URL'].rstrip('/')}/v1"
+            if os.environ.get("INFERNO_URL")
+            else None
+        ),
+    )
     # Boot-time fields (mirror engine field-for-field; routed through
     # `launcher.resolve_eval_config` → `build_command`). Defaults sized for the
     # playtester at `--parallel 64`.
@@ -163,6 +179,19 @@ class Settings(BaseSettings):
     eval_llama_kv_unified: bool = True
     eval_llama_total_ctx: int = 0
     eval_llama_extra_args: str = ""
+
+    # ───────── inferno gateway (dev-mode opt-in for engine Gemma) ─────────
+    # When `use_inferno` is true, the sidecar skips spawning its bundled
+    # `llama-server` subprocess and points the engine pydantic-ai client at
+    # inferno's `/v1` endpoint instead. The shipped game ignores this — env
+    # var is unset in distribution, so `launch_llama` (default True) wins
+    # and the bundled subprocess boots as today. Dev sessions on the
+    # Blackwell set `SMALLVILLE_USE_INFERNO=1` to share VRAM with FLUX /
+    # TRELLIS / Qwen-Image via inferno's budgeted co-residency.
+    # Namespaced env var (`SMALLVILLE_USE_INFERNO`) rather than `USE_INFERNO`
+    # so it doesn't collide with other inferno-aware projects on the same box.
+    use_inferno: bool = Field(default=False, validation_alias="SMALLVILLE_USE_INFERNO")
+    inferno_url: str = "http://127.0.0.1:7770"
 
     # Path to the mission YAML to load at lifespan boot. None → fall back to
     # handler/missions/lynx_exfil.yaml relative to this file. Tests + the

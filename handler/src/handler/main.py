@@ -28,6 +28,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable
 
+import httpx
 import logfire
 from logfire import ConsoleOptions
 from fastapi import FastAPI, HTTPException, Request
@@ -107,8 +108,29 @@ LLM_LOGFIRE = logfire.with_tags("llm")
 SETTINGS: Settings | None = None
 LLAMA_PROC: subprocess.Popen | None = None
 EXTERNAL_LLAMA_PROBE_TIMEOUT_SECONDS = 2.0
+INFERNO_PROBE_TIMEOUT_SECONDS = 5.0
 MISSION: Mission | None = None
 AGENTS: AgentBundle | None = None
+
+
+async def _probe_inferno_health(url: str, timeout: float = INFERNO_PROBE_TIMEOUT_SECONDS) -> None:
+    """One-shot probe of inferno's /health. Fail loud — when use_inferno is
+    set there is no silent fallback to the bundled llama-server (rollback is
+    `unset SMALLVILLE_USE_INFERNO; restart`)."""
+    health_url = f"{url.rstrip('/')}/health"
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        try:
+            resp = await client.get(health_url)
+        except httpx.HTTPError as e:
+            raise LlamaStartupError(
+                f"inferno at {health_url} unreachable: {e}. "
+                f"Start inferno (uvicorn inferno.server:app --port 7770) or "
+                f"unset SMALLVILLE_USE_INFERNO."
+            ) from e
+        if resp.status_code != 200:
+            raise LlamaStartupError(
+                f"inferno at {health_url} returned {resp.status_code}: {resp.text[:200]}"
+            )
 
 
 @dataclass
@@ -193,12 +215,21 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     with logfire.span(
         "llama_lifecycle",
         launch=settings.launch_llama,
+        use_inferno=settings.use_inferno,
         port=cfg.port,
         ctx=cfg.ctx,
         model_path=str(cfg.model_path) if cfg.model_path else None,
         hf_repo=cfg.hf_repo,
     ) as llama_span:
-        if settings.launch_llama:
+        if settings.use_inferno:
+            logfire.info(
+                "inferno mode — skipping bundled llama-server",
+                url=settings.inferno_url,
+            )
+            await _probe_inferno_health(settings.inferno_url)
+            llama_span.set_attribute("inferno", True)
+            llama_span.set_attribute("healthy", True)
+        elif settings.launch_llama:
             logfire.info("starting llama-server (managed)")
             try:
                 LLAMA_PROC = start_llama(cfg)
@@ -222,7 +253,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                     error=str(e),
                 )
 
-        api_url = settings.llama_base_url or f"http://{cfg.host}:{cfg.port}/v1"
+        if settings.use_inferno:
+            api_url = f"{settings.inferno_url.rstrip('/')}/v1"
+        else:
+            api_url = settings.llama_base_url or f"http://{cfg.host}:{cfg.port}/v1"
         model_name = "gemma-4-e4b"
         logfire.info("building model", model=model_name, base_url=api_url)
         base_profile = openai_model_profile(model_name)
