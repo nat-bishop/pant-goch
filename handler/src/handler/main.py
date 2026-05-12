@@ -569,6 +569,8 @@ def _build_renderer_callable(rt: SessionRuntime) -> Any:
         delta: dict,
         acting: str,
         prior_state,
+        *,
+        leans: list[str] = (),
     ) -> tuple[str, asyncio.Task]:
         assert AGENTS is not None
         await rt.out_queue.put(
@@ -582,6 +584,7 @@ def _build_renderer_callable(rt: SessionRuntime) -> Any:
         prompt = _renderer_user_prompt(
             cycle_index, session.state, session.mission, option, delta, acting, rt.dispatches,
             prior_state=prior_state,
+            leans=leans,
         )
         text, pacing_task = await _run_paced_stream(
             AGENTS.renderer, prompt, rt.out_queue.put,

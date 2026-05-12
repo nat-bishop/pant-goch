@@ -2,8 +2,13 @@
 #
 # Universal qualities are auto-injected by `make_initial_state`:
 #   mission.cycles_remaining = max_cycles
-#   agent[LYNX].cover = 6 (from agents[*].starting_cover)
+#   agent[LYNX].cover = 6 (from cast[*].starting_cover for role=agent)
 #   agent[KESTREL].cover = 9
+#
+# Cast roles: agent (operatives), handler (the player — RAVEN), boss
+# (the player's superior — MERIWETHER), opposition (the named antagonist —
+# MUNTEANU). Only role=agent members get a cover quality and appear in
+# archetype expansion; the others are renderer-prompt content only.
 #
 # Authored qualities are listed under `qualities:`. Predicates and effects
 # may be written as short DSL strings (see `dsl.py`) or as the explicit
@@ -15,25 +20,54 @@ codename: "LYNX-EXFIL"
 max_cycles: 6
 
 opening_prose: |
-  LYNX has been deep cover in the city for two years. Forty-eight hours ago she
-  was photographed at a meeting that should not have happened. Counter-intel
-  hasn't moved on her yet but the sweep is tightening. KESTREL is in the same
-  city, two days into a separate reconnaissance op. You have six cycles to
-  get LYNX out.
+  Bucharest. LYNX has been deep cover for two years. Forty-eight hours ago
+  she was photographed at a meeting that should not have happened — Colonel
+  MUNTEANU holds that file. KESTREL is in the same city on a separate
+  reconnaissance, cover intact, paired with LYNX on the Vienna op two
+  winters back. Six cycles to get LYNX out before MUNTEANU names her.
+
+opening_briefing: |
+  From: MERIWETHER, Director, Romanian Desk
+  To: RAVEN, handler-of-record
+  Re: OP. LYNX-EXFIL
+
+  You have six cycles.
+
+  Forty-eight hours ago the resident's people photographed LYNX at a meet
+  that should not have happened. The image is in the Bucharest file.
+  Counter-intel — Colonel MUNTEANU, name him plainly in your cables — has
+  not moved yet. He will. The sweep is tightening; once LYNX is named in
+  MUNTEANU's report the file closes.
+
+  The eastern train is clean. The Vienna network is offline; do not ask.
+
+  KESTREL is in the city on a separate reconnaissance, cover intact. She
+  is yours to spend. Spend her carefully.
+
+  Treasury is interested. Treasury is not patient. The deputy chief has
+  asked twice this morning whether you are the right handler for this
+  file. I have not yet answered.
+
+  Bring her home, RAVEN. Or do not. The choice is filed against your name.
+
+  — M.
 
 setting: |
-  The city: tradecraft-heavy, surveillance-saturated. Counter-intelligence
-  runs the sweep out of the central directorate. The photographic exposure
-  on LYNX is the open file driving the tightening perimeter. The eastern
-  train line is the planned extraction corridor.
+  Bucharest. Tradecraft-heavy, surveillance-saturated. Counter-intelligence
+  is Colonel MUNTEANU's directorate; the photographic file on LYNX is the
+  driver of the tightening perimeter. The Vienna network is offline. The
+  eastern train line is the planned extraction corridor — clean, for now.
+  REDFIELD, your fourteen-year sleeper, is the only access to the papers.
 
 # Persistent prose constraints surfaced to all three agents' system prompts.
 # Use for facts the renderer/SoP/drafter must honour every cycle. Authored
 # only — no LLM in the loop.
 standing_orders:
-  - "LYNX must not be photographed again. Counter-intel already has one image; a second locks her file."
+  - "LYNX must not be photographed again. MUNTEANU already has one image; a second names her in his file."
   - "The Vienna network is offline. Do not surface Vienna assets as available."
   - "The eastern train corridor is clean. That extraction route has not been compromised."
+  - "MUNTEANU has not yet named LYNX in his report. Once he does, the file closes."
+  - "Render MUNTEANU through absence and pressure — never put words in his mouth."
 
 # Per-state-shape SoP framing. Engine selects the first matching question
 # each cycle; SoP leads with it. Author from most-specific to most-general.
@@ -49,34 +83,101 @@ dramatic_questions:
   - when: "mission.extraction_stage == 0"
     question: "Where do we surface the papers, and at what cost?"
 
-agents:
+cast:
   - id: LYNX
     codename: Lynx
     file_number: "19-X"
-    voice_register: "terse, observational, cautious; first-person; clipped sentences"
+    role: agent
+    voice_register: "terse, observational, present-tense; first-person; clipped sentences"
     voice_details: |
-      Two years deep cover. Speaks like she's already lost things she hasn't
-      yet. Doesn't justify, doesn't decorate. Notices what changed, names it,
-      moves on.
+      Two years deep cover in Bucharest. Farm-trained '23, paired with
+      KESTREL on a Vienna courier run KESTREL took the public hit to
+      salvage. She has not forgotten. Daughter, eight, in London —
+      fourteen months unseen, not in the file but RAVEN knows.
+
+      Voice: terse, observational, present-tense; clipped sentences.
+      Notices what changed, names it, moves on. When stalling, returns
+      to a single sensory detail — the heat of a tram window, the light
+      at five. Cuts herself off mid-thought when she catches herself
+      decorating. Trusts RAVEN; does not say so. The trust shows in what
+      she leaves unsaid.
     situation: |
       Inside the city on partial cover. Forty-eight hours since the
-      compromising photograph. The sweep has not yet moved on her but the
-      directorate is reading the file. Her movement is constrained.
+      compromising photograph. The sweep has not yet moved on her but
+      MUNTEANU is reading the file. Her movement is constrained.
     starting_cover: 6
 
   - id: KESTREL
     codename: Kestrel
     file_number: "41-K"
+    role: agent
     voice_register: "elaborate, justifying, present-tense; first-person; runs sentences long"
     voice_details: |
-      Two years in service, improvises constantly. Talks herself through
-      situations on paper. Justifies before it occurs to her that no one
-      asked.
+      Two years in service, improvises constantly. Older than LYNX, served
+      a tour under RAVEN before LYNX existed in the file. The Vienna run
+      cost her a back channel she still doesn't speak of. Knows LYNX has
+      a daughter; never names it in cables.
+
+      Voice: elaborate, justifying, present-tense; runs sentences long.
+      Talks herself through situations on paper — justifies before it
+      occurs to her that no one asked. Tells: when calm, lists things in
+      threes. When unsteady, sentences fragment. Treats RAVEN with grudging
+      deference, the way you treat the case officer who got you out the
+      first time.
     situation: |
       Two days into a reconnaissance op in the same city, separate cover
-      identity, intact. She is positioned to draw attention or sacrifice
-      her lanes for LYNX if the operation demands it.
+      identity, intact. Positioned to draw attention or to burn her own
+      lanes for LYNX if the operation demands it. She has done this once
+      before.
     starting_cover: 9
+
+  - id: RAVEN
+    codename: Raven
+    file_number: "—"
+    role: handler
+    voice_register: "the field does not see your voice — you are the silent reader of every dispatch"
+    voice_details: |
+      Three years in this seat. Ran KESTREL on the Vienna courier that
+      nearly ended both of them. Ran LYNX into Bucharest cover. Promoted
+      over MERIWETHER's reservations — that promotion is the file's most
+      recent entry, and MERIWETHER has not yet decided whether he was
+      wrong.
+
+      The agents write TO you. "You" in their dispatches is RAVEN. They
+      do not address you by name; they do not need to. Your presence is
+      what the prose is shaped against.
+
+  - id: MERIWETHER
+    codename: Meriwether
+    file_number: "—"
+    role: boss
+    voice_register: "terse, declarative; assumes you know the file; uses surnames over given names and codenames over surnames"
+    voice_details: |
+      Director, Romanian Desk. Twenty-six years in the service. Buried
+      two handlers and one director under cover stories the press never
+      questioned. Read RAVEN's file twice. Sits opposite Treasury and the
+      deputy chief at the morning brief.
+
+      Voice: never decorates. Acknowledges nothing — even success is
+      "noted, RAVEN." Appears in cables at mission open and at mission
+      close; otherwise his presence is felt as pressure, not text.
+
+  - id: MUNTEANU
+    codename: Munteanu
+    file_number: "—"
+    role: opposition
+    voice_register: "never written in his own voice — his presence shows as pressure, as perimeter, as a tram-window face the agents recognise too late"
+    voice_details: |
+      Colonel, Romanian counter-intelligence directorate. Forty-one.
+      Holds the file with the compromising photograph of LYNX. Has not
+      yet named her in his report — she is "the woman in the photograph"
+      in his cables, which is worse, because once he names her the file
+      closes.
+
+      Render him through absence and tightening: a courier route
+      suddenly unavailable, a familiar face in a tram window, a meeting
+      LYNX did not attend that nobody arranged. Never put words in his
+      mouth; never write him directly.
 
 # Authored qualities — initial value AND narrative descriptor in one block.
 # Universal qualities (`agent[*].cover`, `mission.cycles_remaining`) are
@@ -171,10 +272,75 @@ events:
       - Predict whether LYNX successfully escapes
       - Frame KESTREL as already captured (she is choosing to be)
       - Specify tactical details that may not fit current state
-    tone: "solemn, deliberate, present-tense"
+    tone: "solemn, deliberate, present-tense — like the closing line of a cable that does not need to be signed"
+    lean_on:
+      - "KESTREL has already paid into this run — Vienna, or the earlier warning, or both — name the earlier cost glancingly and let it stand"
+      - "LYNX does not save her — KESTREL chooses, LYNX accepts the choice; render this in whoever's voice is acting, never in a third party's"
+      - "name one thing KESTREL leaves behind that the file does not record (a notebook, a sentence she did not finish in her last cable, the back channel she never spoke of); do not explain it"
+      - "MUNTEANU is not named in this dispatch — he is present as the pressure KESTREL is walking into"
     effects:
       - "agent[KESTREL].cover = 0"
       - "mission.extraction_stage += 1"
+      - "agent[LYNX].cover_protected = true"
+
+  # Forced: burn the sleeper for fast intel. Early-mission. Surfaces the
+  # papers AND positions LYNX in one cycle, but costs REDFIELD's life. The
+  # player trades a man for a cycle of tempo.
+  - id: burn_redfield
+    force_into_drafter: true
+    fires_at_most: once_per_mission
+    when: "mission.extraction_stage == 0 and not event_fired:burn_redfield"
+    intent: |
+      Burn the sleeper REDFIELD to surface the extraction papers and
+      position LYNX in one cycle. REDFIELD has been in place fourteen
+      years; he does not survive contact. Papers in hand and the
+      safe-house confirmed by dispatch close. The cost is moral, not
+      tactical — RAVEN is choosing to spend a man.
+    must_communicate:
+      - REDFIELD is named, and named as dead by the dispatch's close
+      - The papers are in LYNX's hand and the safe-house is confirmed
+      - RAVEN made this choice consciously
+    must_not:
+      - Frame REDFIELD as surviving, rescued, or merely lost
+      - Decorate the death — name it, do not narrate it
+      - Predict whether LYNX successfully extracts later
+    tone: "solemn, terse, present-tense — the cost is moral, not tactical"
+    lean_on:
+      - "REDFIELD is a man, not a function — fourteen years in place, a Belgrade contact who survived the '11 sweep, a wife who does not know his real name"
+      - "LYNX does not decorate her grief — name a single sensory detail (the smell of the courier's coat, the taste of metal) and let the rest stand"
+      - "MUNTEANU is not yet named, but his pressure is what made this choice the only fast one"
+    effects:
+      - "mission.extraction_stage = 2"
+
+  # Forced: KESTREL warns LYNX directly via a brush pass. Mid-mission, when
+  # KESTREL still has cover to spend and LYNX is under pressure. KESTREL
+  # initiates; the handler approves. Sets up kestrel_sacrifice — by the
+  # time KESTREL trades the rest of her cover, the player has already
+  # watched her pay once.
+  - id: kestrel_warns_lynx
+    force_into_drafter: true
+    fires_at_most: once_per_mission
+    when: "mission.extraction_stage in 1..2 and agent[KESTREL].cover >= 6 and agent[LYNX].cover <= 5 and not event_fired:kestrel_warns_lynx"
+    intent: |
+      KESTREL surfaces just enough to warn LYNX directly — a brush pass
+      at the tram stop, a courier note signed in a hand LYNX recognises.
+      KESTREL pays in cover; LYNX gains one cycle of protection. KESTREL
+      initiates the cost; RAVEN approves it.
+    must_communicate:
+      - KESTREL initiates the warning — it is her choice, not ordered
+      - LYNX recognises the warning's source even if its content is unspoken
+      - KESTREL's cover takes a measurable hit
+    must_not:
+      - Specify the warning's content — name only the fact of it
+      - Predict whether kestrel_sacrifice will follow
+      - Frame KESTREL as already burned (she is choosing the cost, not paying it all)
+    tone: "intimate, terse — the moment is between two people who have done this before"
+    lean_on:
+      - "KESTREL writes shorter sentences than usual this cycle — she is making a decision and her prose narrows around it"
+      - "LYNX recognises the brush pass through one specific sensory detail; do not let her name what the warning says"
+      - "name the Vienna run once, glancingly, without explanation — both agents know what it cost and the reader does not need to be told"
+    effects:
+      - "agent[KESTREL].cover -= 2"
       - "agent[LYNX].cover_protected = true"
 
   # Terminal passive events — set state.outcome and end the mission.
@@ -183,18 +349,30 @@ events:
     outcome_key: win_lynx_extracted
     priority: 0
     when: "mission.extraction_stage == 3 and agent[LYNX].cover > 0"
+    lean_on:
+      - "LYNX writes the final dispatch — not exuberant, not safe yet; she is on the train and the city is still in the windows"
+      - "name one absence — REDFIELD, KESTREL, or the daughter she will see this week — pick the one this run actually paid for"
+      - "do not have MERIWETHER speak in this dispatch; he reads it later, that is enough"
 
   - id: lynx_lost
     terminal: true
     outcome_key: loss_lynx_captured
     priority: 0
     when: "agent[LYNX].cover == 0"
+    lean_on:
+      - "the final dispatch is from the desk, in the Operations register — terse, declarative, no decoration"
+      - "MUNTEANU has named her now; the file closes; do not show MUNTEANU directly"
+      - "RAVEN's codename is on the cable header — the reader is told whose desk this lands on, no more"
 
   - id: timeout
     terminal: true
     outcome_key: loss_timeout
     priority: 1
     when: "mission.cycles_remaining == 0"
+    lean_on:
+      - "the window closed without resolution — the dispatch reports what was NOT done"
+      - "name the eastern train, and that LYNX is not on it"
+      - "MUNTEANU does not appear; he does not need to anymore"
 
   # Reaction: marks the agent lost when cover hits 0. Fires once per agent.
   # The terminal `lynx_lost` short-circuits the cycle when LYNX hits 0, so

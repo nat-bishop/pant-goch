@@ -10,7 +10,9 @@ max_cycles: 4
 
 opening_prose: "A two-agent test bed."
 
-agents:
+opening_briefing: "Test briefing for the operation. Cycle 1 only."
+
+cast:
   - id: ALPHA
     codename: Alpha
     file_number: "01-A"
@@ -21,6 +23,10 @@ agents:
     file_number: "02-B"
     voice_register: "test voice"
     starting_cover: 5
+  - id: HANDLER
+    codename: Raven
+    role: handler
+    voice_register: "test handler voice"
 
 qualities:
   mission.progress:
@@ -89,6 +95,8 @@ events:
     must_communicate: ["test"]
     must_not: []
     tone: "test"
+    lean_on:
+      - "test lean directive for ALPHA"
     effects:
       - quality: mission.progress
         value: 1

@@ -6,7 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from handler.models import (
-    AgentDossier,
+    CastMember,
     And_,
     Archetype,
     DramaticQuestion,
@@ -92,7 +92,7 @@ def _make_mission(*, events: list[Event] | None = None) -> Mission:
         id="t",
         name="t",
         max_cycles=2,
-        agents=[AgentDossier(id="A", codename="A", starting_cover=5)],
+        cast=[CastMember(id="A", codename="A", starting_cover=5)],
         archetypes=[Archetype(id="X", when=QualityGte(quality="a", value=0))],
         events=events or [
             Event(
@@ -112,7 +112,7 @@ def test_mission_rejects_duplicate_archetype_ids() -> None:
             id="t",
             name="t",
             max_cycles=2,
-            agents=[AgentDossier(id="A", codename="A", starting_cover=5)],
+            cast=[CastMember(id="A", codename="A", starting_cover=5)],
             archetypes=[
                 Archetype(id="X", when=QualityGte(quality="a", value=0)),
                 Archetype(id="X", when=QualityGte(quality="a", value=0)),
@@ -208,9 +208,9 @@ def test_make_initial_state_injects_universal_qualities() -> None:
         id="t",
         name="t",
         max_cycles=4,
-        agents=[
-            AgentDossier(id="A", codename="A", starting_cover=6),
-            AgentDossier(id="B", codename="B", starting_cover=9),
+        cast=[
+            CastMember(id="A", codename="A", starting_cover=6),
+            CastMember(id="B", codename="B", starting_cover=9),
         ],
         archetypes=[Archetype(id="X", when=QualityGte(quality="a", value=0))],
         events=[
@@ -239,7 +239,7 @@ def _basic_mission_kwargs() -> dict:
         id="t",
         name="t",
         max_cycles=2,
-        agents=[AgentDossier(id="A", codename="A", starting_cover=5)],
+        cast=[CastMember(id="A", codename="A", starting_cover=5)],
         archetypes=[Archetype(id="X", when=QualityGte(quality="a", value=0))],
         events=[
             Event(
@@ -386,3 +386,226 @@ def test_substitute_effect_resolves_arbitrary_names() -> None:
     assert out.quality == "agent[KESTREL].cover"
     assert isinstance(out.when, QualityGt)
     assert out.when.quality == "agent[KESTREL].cover"
+
+
+# ───────────────────────── cast schema ─────────────────────────
+
+
+def test_cast_member_role_defaults_to_agent() -> None:
+    m = CastMember(id="LYNX", codename="Lynx", starting_cover=6)
+    assert m.role == "agent"
+
+
+def test_cast_member_handler_omits_starting_cover() -> None:
+    m = CastMember(id="RAVEN", codename="Raven", role="handler")
+    assert m.role == "handler"
+    assert m.starting_cover is None
+
+
+def test_cast_member_agent_role_requires_starting_cover() -> None:
+    with pytest.raises(ValidationError) as exc:
+        CastMember(id="LYNX", codename="Lynx", role="agent")
+    assert "starting_cover" in str(exc.value)
+
+
+def test_cast_member_non_agent_rejects_starting_cover() -> None:
+    """A handler/boss/opposition member must NOT carry starting_cover —
+    they don't get a cover quality and the field would mislead authors."""
+    with pytest.raises(ValidationError) as exc:
+        CastMember(id="RAVEN", codename="Raven", role="handler", starting_cover=5)
+    assert "starting_cover" in str(exc.value)
+
+
+def test_mission_agents_filters_by_role() -> None:
+    m = Mission(
+        id="t",
+        name="t",
+        max_cycles=2,
+        cast=[
+            CastMember(id="A", codename="A", role="agent", starting_cover=5),
+            CastMember(id="RAVEN", codename="Raven", role="handler"),
+            CastMember(id="CONTROL", codename="Control", role="boss"),
+            CastMember(id="VOLKOV", codename="Volkov", role="opposition"),
+        ],
+        archetypes=[Archetype(id="X", when=QualityGte(quality="a", value=0))],
+        events=[
+            Event(
+                id="end",
+                terminal=True,
+                outcome_key="w",
+                when=QualityGte(quality="x", value=0),
+            )
+        ],
+        outcomes={"w": ""},
+    )
+    assert [a.id for a in m.agents] == ["A"]
+    assert {c.id for c in m.cast} == {"A", "RAVEN", "CONTROL", "VOLKOV"}
+
+
+def test_mission_member_finds_any_role() -> None:
+    m = Mission(
+        id="t",
+        name="t",
+        max_cycles=2,
+        cast=[
+            CastMember(id="A", codename="A", role="agent", starting_cover=5),
+            CastMember(id="RAVEN", codename="Raven", role="handler"),
+        ],
+        archetypes=[Archetype(id="X", when=QualityGte(quality="a", value=0))],
+        events=[
+            Event(
+                id="end",
+                terminal=True,
+                outcome_key="w",
+                when=QualityGte(quality="x", value=0),
+            )
+        ],
+        outcomes={"w": ""},
+    )
+    assert m.member("RAVEN").role == "handler"
+    assert m.member("A").role == "agent"
+    with pytest.raises(KeyError):
+        m.member("NOPE")
+
+
+def test_mission_requires_at_least_one_agent() -> None:
+    """A cast with no role='agent' members is invalid — the engine has
+    nothing to expand archetypes over."""
+    with pytest.raises(ValidationError) as exc:
+        Mission(
+            id="t",
+            name="t",
+            max_cycles=2,
+            cast=[CastMember(id="RAVEN", codename="Raven", role="handler")],
+            archetypes=[Archetype(id="X", when=QualityGte(quality="a", value=0))],
+            events=[
+                Event(
+                    id="end",
+                    terminal=True,
+                    outcome_key="w",
+                    when=QualityGte(quality="x", value=0),
+                )
+            ],
+            outcomes={"w": ""},
+        )
+    assert "agent" in str(exc.value)
+
+
+def test_mission_rejects_duplicate_cast_ids_across_roles() -> None:
+    with pytest.raises(ValidationError) as exc:
+        Mission(
+            id="t",
+            name="t",
+            max_cycles=2,
+            cast=[
+                CastMember(id="LYNX", codename="Lynx", role="agent", starting_cover=5),
+                CastMember(id="LYNX", codename="Lynx the Handler", role="handler"),
+            ],
+            archetypes=[Archetype(id="X", when=QualityGte(quality="a", value=0))],
+            events=[
+                Event(
+                    id="end",
+                    terminal=True,
+                    outcome_key="w",
+                    when=QualityGte(quality="x", value=0),
+                )
+            ],
+            outcomes={"w": ""},
+        )
+    assert "duplicate cast member id" in str(exc.value)
+
+
+def test_mission_agent_lookup_only_returns_agents() -> None:
+    m = Mission(
+        id="t",
+        name="t",
+        max_cycles=2,
+        cast=[
+            CastMember(id="A", codename="A", role="agent", starting_cover=5),
+            CastMember(id="RAVEN", codename="Raven", role="handler"),
+        ],
+        archetypes=[Archetype(id="X", when=QualityGte(quality="a", value=0))],
+        events=[
+            Event(
+                id="end",
+                terminal=True,
+                outcome_key="w",
+                when=QualityGte(quality="x", value=0),
+            )
+        ],
+        outcomes={"w": ""},
+    )
+    # mission.agent() only iterates the agents property — handler lookups raise.
+    assert m.agent("A").id == "A"
+    with pytest.raises(KeyError):
+        m.agent("RAVEN")
+
+
+def test_make_initial_state_skips_non_agent_cast() -> None:
+    """Only role='agent' members get a `cover` quality injected."""
+    m = Mission(
+        id="t",
+        name="t",
+        max_cycles=2,
+        cast=[
+            CastMember(id="A", codename="A", role="agent", starting_cover=5),
+            CastMember(id="RAVEN", codename="Raven", role="handler"),
+        ],
+        archetypes=[Archetype(id="X", when=QualityGte(quality="a", value=0))],
+        events=[
+            Event(
+                id="end",
+                terminal=True,
+                outcome_key="w",
+                when=QualityGte(quality="x", value=0),
+            )
+        ],
+        outcomes={"w": ""},
+    )
+    s = make_initial_state(m)
+    assert s.get_quality("agent[A].cover") == 5
+    assert s.get_quality("agent[RAVEN].cover") is None
+
+
+# ───────────────────────── opening_briefing + lean_on ─────────────────────────
+
+
+def test_mission_opening_briefing_defaults_empty() -> None:
+    m = Mission(**_basic_mission_kwargs())
+    assert m.opening_briefing == ""
+
+
+def test_mission_opening_briefing_round_trip() -> None:
+    m = Mission(
+        **_basic_mission_kwargs(),
+        opening_briefing="The boss's cable framing the operation.",
+    )
+    assert "boss's cable" in m.opening_briefing
+
+
+def test_event_lean_on_defaults_empty() -> None:
+    e = Event(
+        id="end",
+        terminal=True,
+        outcome_key="w",
+        when=QualityGte(quality="x", value=0),
+    )
+    assert e.lean_on == []
+
+
+def test_event_lean_on_accepts_free_form_directives() -> None:
+    e = Event(
+        id="kestrel_sacrifice",
+        force_into_drafter=True,
+        intent="x",
+        must_communicate=[],
+        must_not=[],
+        tone="x",
+        when=QualityGte(quality="x", value=0),
+        lean_on=[
+            "foreground KESTREL's grief for her daughter",
+            "name LYNX's exhaustion at the window",
+        ],
+    )
+    assert len(e.lean_on) == 2
+    assert "grief" in e.lean_on[0]

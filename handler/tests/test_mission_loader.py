@@ -18,9 +18,21 @@ _LYNX = Path(__file__).resolve().parents[1] / "missions" / "lynx_exfil.yaml"
 def test_tiny_mission_loads() -> None:
     m = load_mission(_TINY)
     assert m.id == "tiny"
+    # mission.agents is now a property filtering role=='agent'.
     assert {a.id for a in m.agents} == {"ALPHA", "BRAVO"}
+    # mission.cast carries every role (the tiny fixture authors a handler).
+    assert {c.id for c in m.cast} == {"ALPHA", "BRAVO", "HANDLER"}
+    assert m.member("HANDLER").role == "handler"
     assert {a.id for a in m.archetypes} == {"PUSH", "SACRIFICE_BY_AGENT", "HOLD"}
     assert {e.id for e in m.events} >= {"win", "timeout", "passive_decay"}
+
+
+def test_tiny_mission_loads_opening_briefing_and_lean_on() -> None:
+    """The tiny fixture authors a cycle-1 briefing and a forced-event lean."""
+    m = load_mission(_TINY)
+    assert "Test briefing" in m.opening_briefing
+    turning = next(e for e in m.events if e.id == "turning_point")
+    assert turning.lean_on == ["test lean directive for ALPHA"]
 
 
 def test_lynx_exfil_loads() -> None:
@@ -63,7 +75,7 @@ def test_load_fails_on_quality_without_descriptor(tmp_path: Path) -> None:
 id: bad
 name: "Bad mission — undescribed quality"
 max_cycles: 3
-agents:
+cast:
   - id: A
     codename: A
     starting_cover: 5

@@ -69,7 +69,7 @@ The suite covers the engine primitives (predicates, effects, archetypes, events 
 
 Missions live in `handler/missions/*.yaml`. The schema is `Mission` in `handler/src/handler/models.py`. The MVP example is `lynx_exfil.yaml` (7 archetypes, 6 events — one forced and five passive, 2 dossiers).
 
-Universal qualities are auto-injected from the schema (`mission.cycles_remaining` from `max_cycles`, `agent[<id>].cover` from each `AgentDossier.starting_cover`). Authored qualities go under `qualities:` — each entry carries the initial value AND the in-fiction descriptor in one block, so an author can't write one without the other.
+Universal qualities are auto-injected from the schema (`mission.cycles_remaining` from `max_cycles`, `agent[<id>].cover` from each agent-role `CastMember.starting_cover`). Authored qualities go under `qualities:` — each entry carries the initial value AND the in-fiction descriptor in one block, so an author can't write one without the other.
 
 Predicates and effects use quality refs as opaque dotted strings — `mission.extraction_stage`, `agent[LYNX].cover`. Both may be authored as the explicit tagged-union dict form OR as short DSL strings: `when: "agent[$agent].cover > 0 and mission.extraction_stage == 1"` and `effects: ["agent[$agent].cover -= 2"]`. `$agent` (and other `$name` placeholders) are substituted at evaluation time for `for_each_agent` events and `params:[agent]` archetypes.
 

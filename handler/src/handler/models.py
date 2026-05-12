@@ -4,7 +4,7 @@ missions, options, state.
 Two layers:
 
 - **Authoring** (loaded from a mission YAML, immutable at runtime):
-  `Mission`, `AgentDossier`, `Archetype`, `Event`. Quality refs are
+  `Mission`, `CastMember`, `Archetype`, `Event`. Quality refs are
   opaque dotted strings — `mission.cycles_remaining`, `mission.extraction_stage`,
   `agent[LYNX].cover`. Predicates are tagged-union Pydantic models, not
   free-form strings — every predicate is type-checked at load time.
@@ -168,12 +168,18 @@ class Effect(BaseModel):
 # ───────────────────────── authoring schemas ─────────────────────────
 
 
-class AgentDossier(BaseModel):
-    """An operative deployed on the mission. The codename is the
-    canonical id used in quality refs (`agent[LYNX].cover`)."""
+class CastMember(BaseModel):
+    """A character in the mission. `role="agent"` is an operative deployed in
+    the field (canonical id used in quality refs like `agent[LYNX].cover`);
+    `role="handler"` is the player's in-fiction identity; `role="boss"` is
+    the player's superior; `role="opposition"` is a named antagonist. Only
+    role="agent" members get a `cover` quality injected by `make_initial_state`
+    and appear in archetype expansion / for_each_agent — non-agent members
+    are renderer-prompt content only."""
 
     id: str = Field(min_length=1)  # canonical codename, e.g. "LYNX"
     codename: str = Field(min_length=1)  # display form, e.g. "Lynx"
+    role: Literal["agent", "handler", "boss", "opposition"] = "agent"
     file_number: str = Field(default="")  # e.g. "19-X"
     voice_register: str = Field(default="")  # short character pitch
     voice_details: str = Field(default="")  # longer character notes for renderer
@@ -183,7 +189,22 @@ class AgentDossier(BaseModel):
     # than only the static opening_prose. Mid-mission drift is carried by
     # recent dispatches, not by re-authoring this field.
     situation: str = Field(default="")
-    starting_cover: int = Field(ge=0, le=10)
+    # Required for role="agent" (where the engine reads it to inject the
+    # `agent[<id>].cover` quality at mission start). Non-agent members omit it.
+    starting_cover: int | None = Field(default=None, ge=0, le=10)
+
+    @model_validator(mode="after")
+    def _agents_have_starting_cover(self) -> "CastMember":
+        if self.role == "agent" and self.starting_cover is None:
+            raise ValueError(
+                f"CastMember {self.id!r}: role='agent' requires starting_cover"
+            )
+        if self.role != "agent" and self.starting_cover is not None:
+            raise ValueError(
+                f"CastMember {self.id!r}: role={self.role!r} must not set "
+                f"starting_cover (only role='agent' members get cover)"
+            )
+        return self
 
 
 class Quality(BaseModel):
@@ -324,6 +345,12 @@ class Event(BaseModel):
     # in the same passive-fire pass. Tie-breaker is authored order.
     priority: int = 0
 
+    # Free-form prose directives the renderer should foreground when this
+    # event fires. `cycle._collect_leans` aggregates these across the cycle's
+    # fired events and threads them into the renderer's user prompt verbatim.
+    # No reference validation: author co-locates fact and lean in YAML.
+    lean_on: list[str] = Field(default_factory=list)
+
     @model_validator(mode="after")
     def _consistency(self) -> "Event":
         if self.terminal and not self.outcome_key:
@@ -380,13 +407,19 @@ class Mission(BaseModel):
     # opening_prose alone if unset.
     setting: str = ""
     max_cycles: int = Field(gt=0)
-    agents: list[AgentDossier] = Field(min_length=1)
+    # Full cast for the mission — operatives (role="agent"), the player's
+    # in-fiction handler (role="handler"), the boss (role="boss"), named
+    # opposition (role="opposition"). Only role="agent" members are seen by
+    # the engine (archetype expansion, for_each_agent, cover injection); the
+    # rest are renderer-prompt content. Access agents via `mission.agents`
+    # (property); access any member via `mission.member(id)`.
+    cast: list[CastMember] = Field(min_length=1)
     # Quality authoring. Each entry carries the initial value AND the narrative
     # descriptor in one block — co-locating them eliminates the older "missing
     # descriptor" footgun. Universal qualities (agent[*].cover,
     # mission.cycles_remaining) appear here only when overriding the engine's
     # built-in display; their initial values come from `max_cycles` and
-    # `agents[*].starting_cover` and are injected by `make_initial_state`.
+    # `cast[*].starting_cover` (agent role only) and are injected by `make_initial_state`.
     qualities: dict[str, Quality] = Field(default_factory=dict)
     # Per-mission persistent prose constraints, injected into all three agent
     # system prompts. Use for facts the renderer/SoP must honor every cycle
@@ -399,13 +432,18 @@ class Mission(BaseModel):
     dramatic_questions: list[DramaticQuestion] = Field(default_factory=list)
     archetypes: list[Archetype] = Field(min_length=1)
     events: list[Event] = Field(min_length=1)
+    # Cycle-1-only briefing prose. Prepended to the SoP user prompt on cycle 1
+    # so the player meets the cast and the stakes before the operational
+    # cycles begin. Empty = no briefing branch (skips the block). Front-loads
+    # investment without restructuring cycles or adding a mechanic.
+    opening_briefing: str = Field(default="")
     # Map of outcome_key → human prose summary for the outcome card.
     outcomes: dict[str, str] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _id_uniqueness(self) -> "Mission":
         for collection, label in (
-            (self.agents, "agent"),
+            (self.cast, "cast member"),
             (self.archetypes, "archetype"),
             (self.events, "event"),
         ):
@@ -421,6 +459,14 @@ class Mission(BaseModel):
                     f"Event {event.id!r}: outcome_key {event.outcome_key!r} "
                     f"is not in mission.outcomes ({sorted(self.outcomes)})"
                 )
+        return self
+
+    @model_validator(mode="after")
+    def _at_least_one_agent(self) -> "Mission":
+        if not self.agents:
+            raise ValueError(
+                "Mission must include at least one cast member with role='agent'."
+            )
         return self
 
     def initial_qualities_for_state(self) -> dict[str, float | int | str]:
@@ -439,11 +485,25 @@ class Mission(BaseModel):
                 return a
         raise KeyError(f"archetype {id!r} not in mission {self.id!r}")
 
-    def agent(self, id: str) -> AgentDossier:
+    @property
+    def agents(self) -> list[CastMember]:
+        """Agent-role cast members. The engine reads this for archetype
+        expansion, for_each_agent, and cover injection — non-agent roles
+        are renderer content only and must not appear here."""
+        return [m for m in self.cast if m.role == "agent"]
+
+    def agent(self, id: str) -> CastMember:
         for a in self.agents:
             if a.id == id:
                 return a
         raise KeyError(f"agent {id!r} not in mission {self.id!r}")
+
+    def member(self, id: str) -> CastMember:
+        """Look up any cast member by id, regardless of role."""
+        for m in self.cast:
+            if m.id == id:
+                return m
+        raise KeyError(f"cast member {id!r} not in mission {self.id!r}")
 
 
 # ───────────────────────── drafter output ─────────────────────────
@@ -511,6 +571,8 @@ def make_initial_state(mission: Mission) -> State:
         "mission.cycles_remaining": mission.max_cycles,
     }
     for agent in mission.agents:
+        # CastMember validator guarantees role="agent" has starting_cover set.
+        assert agent.starting_cover is not None
         qualities[f"agent[{agent.id}].cover"] = agent.starting_cover
     qualities.update(mission.initial_qualities_for_state())
     return State(qualities=qualities)

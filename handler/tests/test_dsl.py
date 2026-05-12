@@ -290,7 +290,7 @@ def test_dsl_round_trip_via_inline_mission(tmp_path: Path) -> None:
 id: tt
 name: "DSL test"
 max_cycles: 3
-agents:
+cast:
   - id: A
     codename: A
     starting_cover: 5

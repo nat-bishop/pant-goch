@@ -250,14 +250,14 @@ def test_derive_act_phase_climax_when_window_closing():
     """Cycles below the 0.34 ratio → climax (provided no agent is on the
     brink and we're not at the final cycle). Tiny mission has max_cycles=4,
     which collapses climax into crisis; build a longer mission inline."""
-    from handler.models import AgentDossier, Archetype, Event
+    from handler.models import CastMember, Archetype, Event
     m = Mission(
         id="long",
         name="long",
         max_cycles=10,
-        agents=[
-            AgentDossier(id="A", codename="A", starting_cover=8),
-            AgentDossier(id="B", codename="B", starting_cover=8),
+        cast=[
+            CastMember(id="A", codename="A", starting_cover=8),
+            CastMember(id="B", codename="B", starting_cover=8),
         ],
         archetypes=[Archetype(id="X", when=QualityGte(quality="a", value=0))],
         events=[Event(id="end", terminal=True, outcome_key="w", when=QualityGte(quality="x", value=0))],

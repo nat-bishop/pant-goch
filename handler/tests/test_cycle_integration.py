@@ -101,7 +101,14 @@ def _stub_drafter_emit(rt):
 
 
 def _stub_renderer(rt):
-    async def _render(session, cycle_index, option, delta, acting, prior_state):
+    async def _render(session, cycle_index, option, delta, acting, prior_state, *, leans=()):
+        # Accumulate every leans payload the renderer receives across the
+        # session so tests can assert that lean_on directives thread through
+        # from fired events into the renderer call. Each entry is the list
+        # of resolved lean lines for one cycle's dispatch.
+        if not hasattr(rt, "lean_history"):
+            rt.lean_history = []
+        rt.lean_history.append(list(leans))
         text = f"Dispatch for cycle {cycle_index} ({acting}, {option.archetype})."
         await rt.out_queue.put(
             {"event": "dispatch_started", "cycle": cycle_index, "acting": acting, "archetype": option.archetype}
@@ -253,6 +260,48 @@ def test_full_cycle_to_terminal(stubbed_client: TestClient) -> None:
     # /state reflects terminal outcome.
     s = stubbed_client.get(f"/mission/{sid}/state").json()
     assert s["outcome"] is not None
+
+
+def test_forced_event_lean_threads_to_renderer(stubbed_client: TestClient) -> None:
+    """The tiny mission's `turning_point` forced event carries
+    `lean_on: ["test lean directive for ALPHA"]`. When the drafter stub
+    surfaces that event and the player authorizes the satisfying option,
+    the renderer must receive that lean line."""
+    from handler import main as _main
+
+    r = stubbed_client.post("/mission/start")
+    sid = r.json()["session_id"]
+    rt = _main.SESSIONS[sid]
+
+    resolved = None
+    for _ in range(20):
+        _await_future(stubbed_client, lambda: rt.auth_future)
+        while not rt.out_queue.empty():
+            rt.out_queue.get_nowait()
+        # Authorize index 0 — PUSH on cycle 1; on cycle 2 turning_point is due
+        # and the drafter stub assigns satisfies_event to the first option.
+        stubbed_client.post(f"/mission/{sid}/authorize", json={"option_index": 0})
+        for _ in range(200):
+            _pump(stubbed_client)
+            while not rt.out_queue.empty():
+                ev = rt.out_queue.get_nowait()
+                if ev.get("event") == "mission_resolved":
+                    resolved = ev
+            if resolved is not None:
+                break
+            if rt.continue_future is not None and not rt.continue_future.done():
+                break
+        if resolved is not None:
+            break
+        stubbed_client.post(f"/mission/{sid}/continue")
+
+    assert resolved is not None
+    # The turning_point lean must have surfaced in at least one renderer call.
+    all_leans = [line for batch in getattr(rt, "lean_history", []) for line in batch]
+    assert "test lean directive for ALPHA" in all_leans, (
+        f"expected the tiny mission's forced-event lean to thread through "
+        f"to the renderer; got lean_history={getattr(rt, 'lean_history', [])}"
+    )
 
 
 def test_authorize_rejects_bad_index(stubbed_client: TestClient) -> None:

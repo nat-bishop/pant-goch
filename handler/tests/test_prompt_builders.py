@@ -24,7 +24,7 @@ from handler.agents import (
 )
 from handler.mission_loader import load_mission
 from handler.models import (
-    AgentDossier,
+    CastMember,
     Archetype,
     Event,
     Mission,
@@ -69,7 +69,7 @@ def test_describe_cover_mission_override_wins() -> None:
         id="m",
         name="m",
         max_cycles=4,
-        agents=[AgentDossier(id="A", codename="A", starting_cover=5)],
+        cast=[CastMember(id="A", codename="A", starting_cover=5)],
         archetypes=[Archetype(id="X", when=QualityGte(quality="a", value=0))],
         events=[
             Event(
@@ -220,7 +220,7 @@ def test_sop_system_prompt_includes_authored_setting() -> None:
     mission = load_mission(_LYNX)
     prompt = _sop_system_prompt(mission)
     assert "SETTING:" in prompt
-    assert "tradecraft-heavy" in prompt  # from lynx_exfil.yaml setting
+    assert "Bucharest" in prompt  # from lynx_exfil.yaml setting
 
 
 def test_sop_system_prompt_omits_setting_when_unauthored() -> None:
@@ -303,9 +303,9 @@ def _mission_with_signals() -> Mission:
         id="m",
         name="m",
         max_cycles=6,
-        agents=[
-            AgentDossier(id="A", codename="A", starting_cover=8),
-            AgentDossier(id="B", codename="B", starting_cover=8),
+        cast=[
+            CastMember(id="A", codename="A", starting_cover=8),
+            CastMember(id="B", codename="B", starting_cover=8),
         ],
         archetypes=[
             Archetype(id="X", when=QualityGte(quality="a", value=0)),
@@ -467,12 +467,185 @@ def test_renderer_user_prompt_tension_steady_when_no_prior() -> None:
     assert "steady" in prompt
 
 
+# ───────────────────────── cast block + briefing + leans ─────────────────────────
+
+
+def _basic_mission_kwargs() -> dict:
+    return dict(
+        id="t",
+        name="t",
+        max_cycles=2,
+        cast=[CastMember(id="A", codename="A", starting_cover=5)],
+        archetypes=[Archetype(id="X", when=QualityGte(quality="a", value=0))],
+        events=[
+            Event(
+                id="end",
+                terminal=True,
+                outcome_key="w",
+                when=QualityGte(quality="x", value=0),
+            )
+        ],
+        outcomes={"w": ""},
+    )
+
+
+def _mission_with_handler() -> Mission:
+    return Mission(
+        id="m",
+        name="m",
+        codename="TEST-CODE",
+        max_cycles=4,
+        cast=[
+            CastMember(
+                id="ALPHA",
+                codename="Alpha",
+                role="agent",
+                voice_register="agent register",
+                starting_cover=6,
+            ),
+            CastMember(
+                id="RAVEN",
+                codename="Raven",
+                role="handler",
+                voice_register="handler register",
+                voice_details="codename only; trusted by Control",
+            ),
+            CastMember(
+                id="CONTROL",
+                codename="Control",
+                role="boss",
+                voice_register="boss register",
+            ),
+            CastMember(
+                id="VOLKOV",
+                codename="Volkov",
+                role="opposition",
+                voice_register="opposition register",
+            ),
+        ],
+        archetypes=[Archetype(id="X", when=QualityGte(quality="a", value=0))],
+        events=[
+            Event(
+                id="end",
+                terminal=True,
+                outcome_key="w",
+                when=QualityGte(quality="x", value=0),
+            )
+        ],
+        outcomes={"w": ""},
+    )
+
+
+def test_cast_block_renders_role_label_for_non_agents() -> None:
+    mission = _mission_with_handler()
+    prompt = _renderer_system_prompt(mission)
+    assert "RAVEN (handler" in prompt
+    assert "CONTROL (boss" in prompt
+    assert "VOLKOV (opposition" in prompt
+
+
+def test_cast_block_omits_role_label_for_agents() -> None:
+    """Agent entries keep the legacy `(file N, codename 'X')` shape so the
+    KV-cache prefix is stable for agent-only missions."""
+    mission = _mission_with_handler()
+    prompt = _renderer_system_prompt(mission)
+    # Agent role does NOT prefix "(agent;" before the file/codename parens.
+    assert "ALPHA (agent" not in prompt
+    # But the agent IS in the cast block:
+    assert "ALPHA" in prompt
+
+
+def test_cast_block_renders_voice_details_when_present() -> None:
+    mission = _mission_with_handler()
+    prompt = _renderer_system_prompt(mission)
+    assert "codename only; trusted by Control" in prompt
+
+
+def test_sop_user_prompt_prepends_briefing_on_cycle_1() -> None:
+    from handler.agents import _sop_user_prompt
+    mission = Mission(
+        **_basic_mission_kwargs(),
+        opening_briefing="OPS: clean exfil only. Burn nothing.",
+    )
+    state = make_initial_state(mission)
+    prompt = _sop_user_prompt(cycle_index=1, state=state, mission=mission, dispatches=[])
+    assert "OPENING BRIEFING" in prompt
+    assert "clean exfil only" in prompt
+
+
+def test_sop_user_prompt_omits_briefing_after_cycle_1() -> None:
+    from handler.agents import _sop_user_prompt
+    mission = Mission(
+        **_basic_mission_kwargs(),
+        opening_briefing="OPS: clean exfil only. Burn nothing.",
+    )
+    state = make_initial_state(mission)
+    prompt = _sop_user_prompt(cycle_index=2, state=state, mission=mission, dispatches=[])
+    assert "OPENING BRIEFING" not in prompt
+    assert "clean exfil only" not in prompt
+
+
+def test_sop_user_prompt_omits_briefing_when_empty() -> None:
+    """Cycle 1 with no authored opening_briefing must not produce the
+    block (no empty heading)."""
+    from handler.agents import _sop_user_prompt
+    mission = Mission(**_basic_mission_kwargs())  # no opening_briefing
+    state = make_initial_state(mission)
+    prompt = _sop_user_prompt(cycle_index=1, state=state, mission=mission, dispatches=[])
+    assert "OPENING BRIEFING" not in prompt
+
+
+def test_renderer_user_prompt_includes_leans_when_provided() -> None:
+    from handler.agents import _renderer_user_prompt
+    from handler.models import Option
+    mission = load_mission(_LYNX)
+    state = make_initial_state(mission)
+    option = Option(archetype="HOLD", agent=None, title="x", prose="y")
+    prompt = _renderer_user_prompt(
+        cycle_index=1,
+        state=state,
+        mission=mission,
+        option=option,
+        delta={},
+        acting="operations",
+        dispatches=[],
+        prior_state=None,
+        leans=[
+            "foreground KESTREL's grief for her daughter",
+            "name LYNX's exhaustion at the window",
+        ],
+    )
+    assert "LEAN-ON THIS CYCLE" in prompt
+    assert "foreground KESTREL" in prompt
+    assert "exhaustion at the window" in prompt
+
+
+def test_renderer_user_prompt_omits_lean_block_when_empty() -> None:
+    """Default — no leans, no block at all (no empty heading)."""
+    from handler.agents import _renderer_user_prompt
+    from handler.models import Option
+    mission = load_mission(_LYNX)
+    state = make_initial_state(mission)
+    option = Option(archetype="HOLD", agent=None, title="x", prose="y")
+    prompt = _renderer_user_prompt(
+        cycle_index=1,
+        state=state,
+        mission=mission,
+        option=option,
+        delta={},
+        acting="operations",
+        dispatches=[],
+        prior_state=None,
+    )
+    assert "LEAN-ON THIS CYCLE" not in prompt
+
+
 def test_describe_authored_quality_supports_label_prefix() -> None:
     mission = Mission(
         id="m",
         name="m",
         max_cycles=4,
-        agents=[AgentDossier(id="A", codename="A", starting_cover=5)],
+        cast=[CastMember(id="A", codename="A", starting_cover=5)],
         archetypes=[Archetype(id="X", when=QualityGte(quality="a", value=0))],
         events=[
             Event(

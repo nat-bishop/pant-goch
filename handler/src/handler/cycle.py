@@ -46,6 +46,7 @@ from .events import (
     SopRendered,
 )
 from .models import (
+    Event,
     Mission,
     MissionResolution,
     Option,
@@ -116,6 +117,8 @@ class RendererFn(Protocol):
         delta: dict,
         acting: str,
         prior_state: State,
+        *,
+        leans: list[str] = (),
     ) -> tuple[str, asyncio.Task]:
         """Render the field dispatch. Returns (full text, pacing_task).
         Same shape as SopFn — text resolves on LLM-done so the caller can
@@ -123,7 +126,12 @@ class RendererFn(Protocol):
 
         `prior_state` is the snapshot taken at cycle open, before any of
         this cycle's mutations applied. Used by the renderer prompt to
-        compute the tension band (4c) — magnitude of the cycle's cover swing."""
+        compute the tension band (4c) — magnitude of the cycle's cover swing.
+
+        `leans` is the (already prioritized + capped) list of free-form
+        renderer directives collected from this cycle's fired events. Each
+        entry is a plain-language line ("foreground KESTREL's grief..."),
+        injected into the user prompt verbatim."""
 
 
 class OnRendererTextReadyFn(Protocol):
@@ -252,12 +260,14 @@ async def run_cycle(
         # ── iii. Effects + passive events ──
         delta = apply_archetype_effects(state, chosen, mission)
         satisfied_event_id: str | None = None
+        satisfied_forced: Event | None = None
         if chosen.satisfies_event is not None:
             for e in forced:
                 if e.id == chosen.satisfies_event:
                     edelta = apply_forced_event_effects(state, e, chosen)
                     merge_delta_into(delta, edelta)
                     satisfied_event_id = e.id
+                    satisfied_forced = e
                     break
         session.apply(EffectsApplied(
             cycle_index=cycle_index, delta=delta, forced_event_id=satisfied_event_id,
@@ -266,6 +276,7 @@ async def run_cycle(
 
         made_progress = option_progresses_mission(delta, mission)
         fires, agg = fire_due_passive_events(state, mission, made_progress)
+        leans = _collect_leans(satisfied_forced, fires)
         if fires:
             session.apply(
                 EventsFired(
@@ -285,7 +296,7 @@ async def run_cycle(
             # ── terminal dispatch (still rendered, in appropriate voice) ──
             acting = _acting_for(chosen)
             text, render_pacing = await renderer(
-                session, cycle_index, chosen, delta, acting, prior_state
+                session, cycle_index, chosen, delta, acting, prior_state, leans=leans,
             )
             session.apply(
                 DispatchRendered(
@@ -303,7 +314,7 @@ async def run_cycle(
         # ── iv. Dispatch ──
         acting = _acting_for(chosen)
         text, render_pacing = await renderer(
-            session, cycle_index, chosen, delta, acting, prior_state
+            session, cycle_index, chosen, delta, acting, prior_state, leans=leans,
         )
         session.apply(
             DispatchRendered(
@@ -387,6 +398,30 @@ def _acting_for(option: Option) -> str:
     if option.agent is not None:
         return option.agent
     return "operations"
+
+
+_LEAN_CAP = 4
+
+
+def _collect_leans(
+    forced_event: Event | None,
+    passive_fires: list,
+) -> list[str]:
+    """Prioritize and cap the cycle's lean directives for the renderer.
+
+    Order: satisfied forced event → terminal passive events → non-terminal
+    passive events (already in priority order via `fire_due_passive_events`).
+    Capped at `_LEAN_CAP` to keep the prompt focused."""
+    out: list[str] = []
+    if forced_event is not None:
+        out.extend(forced_event.lean_on)
+    terminal_leans: list[str] = []
+    nonterminal_leans: list[str] = []
+    for (ev, _, _) in passive_fires:
+        (terminal_leans if ev.terminal else nonterminal_leans).extend(ev.lean_on)
+    out.extend(terminal_leans)
+    out.extend(nonterminal_leans)
+    return out[:_LEAN_CAP]
 
 
 def _build_resolution(

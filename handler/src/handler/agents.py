@@ -27,14 +27,14 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Sequence
 
 import logfire
 from pydantic_ai import Agent, NativeOutput
 from pydantic_ai.models.openai import OpenAIChatModel
 
 from .models import (
-    AgentDossier,
+    CastMember,
     Event,
     Mission,
     Option,
@@ -96,20 +96,35 @@ class AgentBundle:
 # ───────────────────────── system-prompt builders ─────────────────────────
 
 
-def _agent_dossier_block(dossiers: list[AgentDossier]) -> str:
+_ROLE_LABEL: dict[str, str] = {
+    "agent": "agent",
+    "handler": "handler (player)",
+    "boss": "boss",
+    "opposition": "opposition",
+}
+
+
+def _cast_block(members: list[CastMember]) -> str:
+    """Render the cast block. Agent-role entries keep the legacy
+    `(file N, codename 'X')` shape so the KV-cache prefix stays stable for
+    agent-only missions; non-agent roles carry their role label inline."""
     parts: list[str] = []
-    for d in dossiers:
-        line = (
-            f"  - {d.id} (file {d.file_number}, codename {d.codename!r}): "
-            f"{d.voice_register}\n    {d.voice_details.strip()}"
-        )
+    for d in members:
+        if d.role == "agent":
+            prefix = f"file {d.file_number}, codename {d.codename!r}"
+        else:
+            file_segment = f"file {d.file_number}, " if d.file_number else ""
+            prefix = f"{_ROLE_LABEL[d.role]}; {file_segment}codename {d.codename!r}"
+        header = f"  - {d.id} ({prefix}): {d.voice_register}"
+        body_lines: list[str] = []
+        if d.voice_details.strip():
+            body_lines.append(f"    {d.voice_details.strip()}")
         if d.situation.strip():
-            # Indent every line of the situation to keep the dossier block readable.
             situation_indented = "\n".join(
                 f"    {ln}" for ln in d.situation.strip().splitlines()
             )
-            line = f"{line}\n    Situation:\n{situation_indented}"
-        parts.append(line)
+            body_lines.append(f"    Situation:\n{situation_indented}")
+        parts.append("\n".join([header, *body_lines]))
     return "\n".join(parts)
 
 
@@ -142,6 +157,31 @@ def _standing_orders_block(mission: Mission) -> str:
     )
 
 
+def _opening_briefing_block(cycle_index: int, mission: Mission) -> str:
+    """Cycle-1-only briefing prepended to the SoP user prompt — the boss's
+    framing cable that opens the operation."""
+    if cycle_index != 1 or not mission.opening_briefing.strip():
+        return ""
+    return (
+        "OPENING BRIEFING (lead the memo with this, in the boss's voice "
+        "as authored — do not paraphrase, do not summarise; render as "
+        "the cable that opens the operation):\n"
+        f"{mission.opening_briefing.strip()}\n\n"
+    )
+
+
+def _leans_block(leans: Sequence[str]) -> str:
+    """Per-cycle renderer directives collected by `cycle._collect_leans`
+    from the cycle's fired events. Injected verbatim — author wrote them."""
+    if not leans:
+        return ""
+    bullets = "\n".join(f"  - {line}" for line in leans)
+    return (
+        "\nLEAN-ON THIS CYCLE (honour these — they tell you what to "
+        f"foreground in the prose):\n{bullets}\n"
+    )
+
+
 def _sop_system_prompt(mission: Mission) -> str:
     return f"""\
 You are Operations Desk. You write the State of Play memo at the start of
@@ -155,8 +195,8 @@ write in the register of a real intelligence brief.
 MISSION:
 {mission.opening_prose.strip()}
 {_setting_block(mission)}
-AGENTS DEPLOYED:
-{_agent_dossier_block(mission.agents)}
+MISSION CAST:
+{_cast_block(mission.cast)}
 {_standing_orders_block(mission)}
 RULES:
 - Look forward. Name the threat. Name the resources. Name what has not moved.
@@ -170,7 +210,7 @@ RULES:
   failure points", no "mission timer", no "window of N cycles".
 - Describe the world. A specific operative in a specific city with a
   specific cover posture against a specific threat. Use SETTING and the
-  AGENTS DEPLOYED dossiers as your grounding.
+  MISSION CAST dossiers as your grounding.
 - The CURRENT STATE block describes state in narrative terms (e.g.
   "LYNX: cover intact"). Mirror that register; do not re-translate it
   into numbers.
@@ -191,8 +231,8 @@ VOICE: {_VOICE_OPERATIONS}
 MISSION:
 {mission.opening_prose.strip()}
 {_setting_block(mission)}
-AGENTS DEPLOYED:
-{_agent_dossier_block(mission.agents)}
+MISSION CAST:
+{_cast_block(mission.cast)}
 {_standing_orders_block(mission)}
 OUTPUT SHAPE (strict):
 Each option carries:
@@ -241,8 +281,8 @@ You will be told `ACTING` (an agent id, or "operations") and the agent's
 dossier. Write in that voice. For "operations", write in the Operations
 Desk register (terse, third-party, declarative).
 {_setting_block(mission)}
-AGENTS DEPLOYED:
-{_agent_dossier_block(mission.agents)}
+MISSION CAST:
+{_cast_block(mission.cast)}
 {_standing_orders_block(mission)}
 DISPATCH RULES:
 - 1–4 paragraphs. ~90–180 words.
@@ -402,7 +442,7 @@ State of Play memo. Field reports follow.
 
 ACT PHASE: {act_phase}
 
-{dq_block}CURRENT STATE:
+{_opening_briefing_block(cycle_index, mission)}{dq_block}CURRENT STATE:
 {_narrative_state_block(state, mission)}
 
 RECENT DISPATCHES (last 3, oldest first):
@@ -516,6 +556,7 @@ def _renderer_user_prompt(
     dispatches: list[DispatchRecord],
     *,
     prior_state: State | None = None,
+    leans: list[str] = (),
 ) -> str:
     delta_lines = []
     for q, (before, after) in delta.items():
@@ -560,7 +601,7 @@ TONE BAND: {tone_band}
 TENSION (this cycle's cover swing): {tension_band}
 
 {voice_note}
-
+{_leans_block(leans)}
 AUTHORIZED OPTION:
   archetype: {option.archetype}
   agent: {option.agent or "(none)"}
