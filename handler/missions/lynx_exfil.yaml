@@ -80,8 +80,17 @@ dramatic_questions:
     question: "Run the train tonight, or hold one more cycle for clean lanes?"
   - when: "mission.cycles_remaining <= 2"
     question: "There is no longer time for caution."
+  # Stage-0 variants — rotate so a stage-stuck playthrough doesn't repeat
+  # the same opening line every cycle. Most-specific first.
+  - when: "mission.extraction_stage == 0 and event_fired:kestrel_warns_lynx"
+    question: "KESTREL paid for that warning. What did it buy us?"
+  - when: "mission.extraction_stage == 0 and mission.cycles_remaining <= 3"
+    question: "REDFIELD has been in place fourteen years. Spend him, or find another way?"
   - when: "mission.extraction_stage == 0"
     question: "Where do we surface the papers, and at what cost?"
+  # Stage-1 variant — the papers are moving but not yet placed.
+  - when: "mission.extraction_stage == 1"
+    question: "The papers are in motion. Who carries them, and at what cost?"
 
 cast:
   - id: LYNX
@@ -161,6 +170,20 @@ cast:
       Voice: never decorates. Acknowledges nothing — even success is
       "noted, RAVEN." Appears in cables at mission open and at mission
       close; otherwise his presence is felt as pressure, not text.
+
+  - id: REDFIELD
+    codename: Redfield
+    file_number: "—"
+    role: asset
+    voice_register: "never written in his own voice — REDFIELD is the man on the other end of the burn"
+    voice_details: |
+      Fourteen years in place in Bucharest. Belgrade contact who survived
+      the '11 sweep. Wife who does not know his real name. He is the only
+      access to the extraction papers, and contact costs him his life.
+    situation: |
+      Off-stage. The sleeper is in the file as a Bucharest civilian; the
+      file does not know he is yours. Activating him surfaces the papers
+      and ends him in one cycle.
 
   - id: MUNTEANU
     codename: Munteanu

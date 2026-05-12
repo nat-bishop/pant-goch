@@ -94,7 +94,10 @@ export function Paper() {
       <div className="status-divider" />
 
       <div className="sop-block">
-        <div className="sop-label">STATE OF PLAY</div>
+        <div className="sop-label">
+          OPERATIONS DESK
+          <span className="block-sub"> · State of Play</span>
+        </div>
         <div className="sop-body">
           <StreamingText
             words={cycle.sop_words}
@@ -105,7 +108,10 @@ export function Paper() {
       </div>
 
       <div className={`opts-block ${optsVisible ? "in" : ""}`}>
-        <div className="opts-label">FOR AUTHORIZATION</div>
+        <div className="opts-label">
+          OPERATIONS DESK
+          <span className="block-sub"> · Courses of Action</span>
+        </div>
         <OptionsList visible={optsVisible} />
 
         <div className="auth">

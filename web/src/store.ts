@@ -1,5 +1,12 @@
 import { create } from "zustand";
-import type { AgentMeta, Delta, GameState, SseEvent } from "./api";
+import type {
+  AgentMeta,
+  CastMember,
+  Delta,
+  DeltaDescriptors,
+  GameState,
+  SseEvent,
+} from "./api";
 import { OPERATIONS_ACTOR } from "./api";
 import * as api from "./api";
 
@@ -11,6 +18,9 @@ export interface MissionMeta {
   codename: string;
   max_cycles: number;
   agents: AgentMeta[];
+  cast: CastMember[];
+  opening_briefing: string;
+  opening_prose: string;
 }
 
 export interface OptionDraft {
@@ -50,6 +60,12 @@ export interface CycleState {
   awaiting_continue: boolean;
   // Latest cycle delta (effects + events merged) — surfaced to the dispatch modal.
   delta: Delta;
+  // Accumulated narrative-descriptor map across the cycle's mutation phases
+  // (effects_applied + events_fired + cycle_closed). Powers the RESULT
+  // footer in the dispatch overlay: a one-line "what just moved" summary
+  // pulled from server-side `_describe_*` helpers. Filtered: same-bucket
+  // swings (e.g. 8→7 cover, both 'intact') don't surface.
+  delta_descriptors: DeltaDescriptors;
   events_fired: string[];
 }
 
@@ -73,6 +89,10 @@ interface Store {
   errorMessage: string | null;
   bootStarted: boolean;
   modalDispatchIndex: number | null;
+  // Onboarding modal — shown once at the start of a session, gated by user
+  // dismissal. Reset on restart (no localStorage) so a replay is implicitly
+  // first-time again.
+  onboardingDismissed: boolean;
 
   startMission: () => Promise<void>;
   authorize: () => Promise<void>;
@@ -80,6 +100,7 @@ interface Store {
   selectOption: (idx: number | null) => void;
   openModal: (cycleIndex: number) => void;
   closeModal: () => void;
+  dismissOnboarding: () => void;
   handleEvent: (event: SseEvent) => void;
   reset: () => void;
 }
@@ -102,25 +123,33 @@ function newCycle(index: number): CycleState {
     dispatch_complete: false,
     awaiting_continue: false,
     delta: {},
+    delta_descriptors: {},
     events_fired: [],
   };
 }
 
-function mergeDelta(a: Delta, b: Delta): Delta {
-  const out: Delta = { ...a };
+// Cycle accumulates mutation phases in order: effects → events → close.
+// Both deltas and their narrative descriptors merge the same way — keep the
+// first-seen `before` (the cycle's true starting value) and the latest
+// `after` (the cycle's final value for that quality).
+function mergeByQuality<T extends { before: unknown; after: unknown }>(
+  a: Record<string, T>,
+  b: Record<string, T> | undefined,
+): Record<string, T> {
+  if (!b || Object.keys(b).length === 0) return a;
+  const out: Record<string, T> = { ...a };
   for (const [k, v] of Object.entries(b)) {
-    if (k in out) {
-      out[k] = { before: out[k].before, after: v.after };
-    } else {
-      out[k] = v;
-    }
+    out[k] = k in out ? { ...v, before: out[k].before } : v;
   }
   return out;
 }
 
 // ─── store ───────────────────────────────────────────────────────────────
 
-export const useStore = create<Store>((set, get) => ({
+// `useStore` is also attached to `window` in dev so Playwright tests can
+// snapshot store state directly via `window.__STORE__.getState()`. No-op in
+// production where `import.meta.env.DEV` is false.
+const _store = create<Store>((set, get) => ({
   session_id: null,
   mission_meta: null,
   state: {},
@@ -130,6 +159,7 @@ export const useStore = create<Store>((set, get) => ({
   errorMessage: null,
   bootStarted: false,
   modalDispatchIndex: null,
+  onboardingDismissed: false,
 
   reset: () =>
     set({
@@ -142,6 +172,7 @@ export const useStore = create<Store>((set, get) => ({
       errorMessage: null,
       modalDispatchIndex: null,
       bootStarted: false,
+      onboardingDismissed: false,
     }),
 
   startMission: async () => {
@@ -175,8 +206,14 @@ export const useStore = create<Store>((set, get) => ({
     if (!cycle.awaiting_auth || cycle.authorized) return;
     try {
       await api.authorize(session_id, cycle.selected_option_index);
+      // Re-read after the await — the server may have streamed
+      // `dispatch_started`/`effects_applied` while we were awaiting the
+      // /authorize response, and a stale-cycle spread here would clobber
+      // those SSE-driven fields (dispatch_acting, delta, etc.).
+      const latest = get().cycle;
+      if (!latest) return;
       set({
-        cycle: { ...cycle, authorized: true, awaiting_auth: false },
+        cycle: { ...latest, authorized: true, awaiting_auth: false },
       });
     } catch (e: any) {
       set({ errorMessage: e.message ?? String(e) });
@@ -205,6 +242,8 @@ export const useStore = create<Store>((set, get) => ({
   openModal: (cycleIndex) => set({ modalDispatchIndex: cycleIndex }),
   closeModal: () => set({ modalDispatchIndex: null }),
 
+  dismissOnboarding: () => set({ onboardingDismissed: true }),
+
   handleEvent: (ev) => {
     switch (ev.event) {
       case "mission_started":
@@ -215,6 +254,9 @@ export const useStore = create<Store>((set, get) => ({
             codename: ev.codename,
             max_cycles: ev.max_cycles,
             agents: ev.agents,
+            cast: ev.cast,
+            opening_briefing: ev.opening_briefing,
+            opening_prose: ev.opening_prose,
           },
           state: ev.state,
         });
@@ -295,7 +337,16 @@ export const useStore = create<Store>((set, get) => ({
       case "effects_applied": {
         const c = get().cycle;
         if (!c) return;
-        set({ cycle: { ...c, delta: mergeDelta(c.delta, ev.delta) } });
+        set({
+          cycle: {
+            ...c,
+            delta: mergeByQuality(c.delta, ev.delta),
+            delta_descriptors: mergeByQuality(
+              c.delta_descriptors,
+              ev.delta_descriptors,
+            ),
+          },
+        });
         break;
       }
 
@@ -305,7 +356,11 @@ export const useStore = create<Store>((set, get) => ({
         set({
           cycle: {
             ...c,
-            delta: mergeDelta(c.delta, ev.delta),
+            delta: mergeByQuality(c.delta, ev.delta),
+            delta_descriptors: mergeByQuality(
+              c.delta_descriptors,
+              ev.delta_descriptors,
+            ),
             events_fired: [...c.events_fired, ...ev.events],
           },
         });
@@ -354,9 +409,26 @@ export const useStore = create<Store>((set, get) => ({
         break;
       }
 
-      case "cycle_closed":
-        set({ state: ev.state });
+      case "cycle_closed": {
+        const c = get().cycle;
+        // Accumulate the cycle-close descriptors (cycles_remaining tick) into
+        // the dispatch's RESULT footer if the cycle is still on-screen.
+        if (c && ev.delta_descriptors && Object.keys(ev.delta_descriptors).length > 0) {
+          set({
+            state: ev.state,
+            cycle: {
+              ...c,
+              delta_descriptors: mergeByQuality(
+                c.delta_descriptors,
+                ev.delta_descriptors,
+              ),
+            },
+          });
+        } else {
+          set({ state: ev.state });
+        }
         break;
+      }
 
       case "mission_resolved":
         set({
@@ -387,6 +459,11 @@ export const useStore = create<Store>((set, get) => ({
     }
   },
 }));
+
+export const useStore = _store;
+if (import.meta.env.DEV) {
+  (window as unknown as { __STORE__: typeof _store }).__STORE__ = _store;
+}
 
 function applyDeltaToState(state: GameState, delta: Delta): GameState {
   if (Object.keys(delta).length === 0) return state;

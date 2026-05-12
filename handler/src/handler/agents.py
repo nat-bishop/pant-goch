@@ -101,6 +101,7 @@ _ROLE_LABEL: dict[str, str] = {
     "handler": "handler (player)",
     "boss": "boss",
     "opposition": "opposition",
+    "asset": "asset",
 }
 
 
@@ -144,41 +145,45 @@ def _setting_block(mission: Mission) -> str:
     return f"\nSETTING:\n{mission.setting.strip()}\n"
 
 
+def _bullet_block(
+    header: str,
+    lines: Sequence[str],
+    *,
+    leading_blank: bool = True,
+    trailing_blank: bool = False,
+) -> str:
+    """Render a header line followed by `  - line` bullets. Empty `lines`
+    collapses to an empty string — callers don't have to guard against the
+    empty case. `leading_blank=True` (default) prepends a newline so the
+    block visually separates from preceding prose; `trailing_blank=True`
+    appends an extra newline (used by `_what_moved_block` so the block
+    sits one blank line above the dramatic question that follows it).
+    """
+    if not lines:
+        return ""
+    bullets = "\n".join(f"  - {line}" for line in lines)
+    prefix = "\n" if leading_blank else ""
+    suffix = "\n\n" if trailing_blank else "\n"
+    return f"{prefix}{header}\n{bullets}{suffix}"
+
+
 def _standing_orders_block(mission: Mission) -> str:
     """Per-mission persistent prose constraints (4e). Injected into all three
     agent system prompts so the renderer/SoP/drafter honour them every cycle.
     Empty when the mission authored none."""
-    if not mission.standing_orders:
-        return ""
-    bullets = "\n".join(f"  - {order}" for order in mission.standing_orders)
-    return (
-        "\nSTANDING ORDERS (honour every cycle — do not contradict):\n"
-        f"{bullets}\n"
-    )
-
-
-def _opening_briefing_block(cycle_index: int, mission: Mission) -> str:
-    """Cycle-1-only briefing prepended to the SoP user prompt — the boss's
-    framing cable that opens the operation."""
-    if cycle_index != 1 or not mission.opening_briefing.strip():
-        return ""
-    return (
-        "OPENING BRIEFING (lead the memo with this, in the boss's voice "
-        "as authored — do not paraphrase, do not summarise; render as "
-        "the cable that opens the operation):\n"
-        f"{mission.opening_briefing.strip()}\n\n"
+    return _bullet_block(
+        "STANDING ORDERS (honour every cycle — do not contradict):",
+        list(mission.standing_orders),
     )
 
 
 def _leans_block(leans: Sequence[str]) -> str:
     """Per-cycle renderer directives collected by `cycle._collect_leans`
     from the cycle's fired events. Injected verbatim — author wrote them."""
-    if not leans:
-        return ""
-    bullets = "\n".join(f"  - {line}" for line in leans)
-    return (
-        "\nLEAN-ON THIS CYCLE (honour these — they tell you what to "
-        f"foreground in the prose):\n{bullets}\n"
+    return _bullet_block(
+        "LEAN-ON THIS CYCLE (honour these — they tell you what to "
+        "foreground in the prose):",
+        list(leans),
     )
 
 
@@ -200,9 +205,15 @@ MISSION CAST:
 {_standing_orders_block(mission)}
 RULES:
 - Look forward. Name the threat. Name the resources. Name what has not moved.
-- If a DRAMATIC QUESTION is supplied this cycle, lead the memo with it (in
-  prose — not as a header). The memo is *about* that question.
-- 1–3 paragraphs. ~120–180 words total.
+- If WHAT MOVED LAST CYCLE is provided, open the memo by naming this cycle's
+  pivot — what changed, what didn't — in one sentence, before the dramatic
+  question. If no WHAT MOVED block is provided (cycle 1), open on the
+  dramatic question directly.
+- If a DRAMATIC QUESTION is supplied this cycle, the memo is *about* that
+  question — lead with it in prose (not as a header), after the pivot line
+  if one was written.
+- 1–2 short paragraphs. ~60–110 words total. Cut anything that doesn't
+  move the memo forward.
 - NEVER use numbers for state. No "cover six", no "six cycles remaining",
   no "stage two", no percentages, no out-of-ten scoring.
 - NEVER use game/system vocabulary. No "cover level", no "cover meter",
@@ -240,10 +251,9 @@ Each option carries:
   - `agent`: the bound agent id when the catalog entry has one, else null.
   - `params`: copy from the catalog entry's params.
   - `title`: ~6–10 words, imperative voice (e.g. "Run eastern exfil — now").
-  - `prose`: 1–2 sentences, ~15–25 words. The title already names the
-     action; the agent label already names who. Prose adds ONLY what the
-     title cannot: the cost, the risk, or the stake. No restating the
-     verb. No scene-setting. Read at a glance.
+  - `prose`: 1 sentence, ~12–20 words. Read at a glance. The title carries
+     the verb; the agent label names who. Prose carries ONLY the cost,
+     the risk, or the stake. No restating the verb. No scene-setting.
   - `satisfies_event`: null, unless one option satisfies the FORCED EVENT.
 
 VALIDITY RULES (the engine REJECTS options that violate these):
@@ -258,6 +268,10 @@ PROSE RULES:
   in the world (e.g. "burns through LYNX's already-degraded cover" — NOT
   "-3 cover" and NOT "drops cover level to four").
 - Span tonal range: at least one safe-but-slow option, one fast-but-risky.
+- When RECENTLY TRIED is provided, your option set MUST span a different
+  tonal range than the prior cycle's: a different bound agent, a different
+  cost shape, or a different point on the safe-↔-risky axis. Do not propose
+  the same (archetype, agent) pair the player just authorized.
 - NEVER predict outcomes. NEVER fabricate state that isn't in the user prompt.
 - NEVER use numbers for state. No "cover six", no "six cycles remaining",
   no "stage two", no percentages, no out-of-ten scoring.
@@ -285,7 +299,8 @@ MISSION CAST:
 {_cast_block(mission.cast)}
 {_standing_orders_block(mission)}
 DISPATCH RULES:
-- 1–4 paragraphs. ~90–180 words.
+- 1–2 short paragraphs. ~60–110 words. Cut anything that doesn't carry
+  voice, cost, or the closing beat. No padding.
 - Voice: as specified for ACTING. First-person for agents, third-party for operations.
 - Honor the RESOLVED STATE DELTA. If cover dropped, the prose reflects what cost that.
 - Adopt the TONE BAND given each cycle (measured / kinetic / urgent / spare)
@@ -383,6 +398,138 @@ def _describe_authored_quality(
     return quality.describe(value)
 
 
+# Per-cycle delta type, shared with cycle.py's aggregate computation.
+DeltaMap = dict[str, tuple[Any, Any]]
+
+
+def _agent_id_from_cover_quality(quality: str) -> str | None:
+    """Extract `LYNX` from `agent[LYNX].cover`. None for non-cover or
+    non-agent-scoped quality refs (e.g. `agent[LYNX].cover_protected` or
+    `mission.cycles_remaining`)."""
+    if not quality.startswith("agent[") or not quality.endswith(".cover"):
+        return None
+    closing = quality.find("]")
+    if closing < 0:
+        return None
+    return quality[len("agent["):closing]
+
+
+def _is_numeric_value(v: Any) -> bool:
+    """Numeric, but not bool — `isinstance(True, int)` is True in Python."""
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def describe_quality_pair(
+    quality: str, before: Any, after: Any, mission: Mission
+) -> tuple[str | None, str | None]:
+    """Return (before_descriptor, after_descriptor) for a delta entry.
+
+    Used by both the SoP "WHAT MOVED LAST CYCLE" block and the SSE
+    `delta_descriptors` field. Returns (None, None) for qualities whose
+    descriptors don't change (e.g. cover dropped 7→6 within the same
+    bucket) or for qualities with no authored / built-in descriptor
+    (e.g. one-cycle flags, lost flags).
+    """
+    if quality == "mission.cycles_remaining":
+        before_desc = (
+            _describe_cycles(int(before), mission.max_cycles, mission)
+            if _is_numeric_value(before)
+            else None
+        )
+        after_desc = (
+            _describe_cycles(int(after), mission.max_cycles, mission)
+            if _is_numeric_value(after)
+            else None
+        )
+        return before_desc, after_desc
+
+    agent_id = _agent_id_from_cover_quality(quality)
+    if agent_id is not None:
+        before_desc = (
+            _describe_cover(int(before), mission, agent_id)
+            if _is_numeric_value(before)
+            else None
+        )
+        after_desc = (
+            _describe_cover(int(after), mission, agent_id)
+            if _is_numeric_value(after)
+            else None
+        )
+        return before_desc, after_desc
+
+    # Authored mission qualities (mission.extraction_stage etc.) — only those
+    # with a `qualities:` entry get descriptors. Skip transient agent flags
+    # (`cover_protected`, `lost`) which have no descriptor by design.
+    before_desc = (
+        _describe_authored_quality(quality, before, mission)
+        if before is not None
+        else None
+    )
+    after_desc = (
+        _describe_authored_quality(quality, after, mission)
+        if after is not None
+        else None
+    )
+    return before_desc, after_desc
+
+
+def describe_delta(delta: DeltaMap, mission: Mission) -> dict[str, dict[str, str | None]]:
+    """Render a delta as `{quality: {before, after, agent_id}}` narrative
+    descriptors. `agent_id` is the operative whose cover changed (e.g.
+    "LYNX") or None for mission-scoped qualities — the client uses it to
+    prefix the RESULT line without re-parsing the quality ref.
+
+    Drops entries whose descriptors are absent or unchanged — the result is
+    only the moves with a *narrative* signal, suitable for both the SoP
+    "what moved last cycle" prompt block and the client-facing RESULT
+    footer (via SSE).
+    """
+    out: dict[str, dict[str, str | None]] = {}
+    for quality, (before, after) in delta.items():
+        before_desc, after_desc = describe_quality_pair(quality, before, after, mission)
+        if before_desc is None and after_desc is None:
+            continue
+        if before_desc == after_desc:
+            continue
+        out[quality] = {
+            "before": before_desc,
+            "after": after_desc,
+            "agent_id": _agent_id_from_cover_quality(quality),
+        }
+    return out
+
+
+def _what_moved_block(
+    last_cycle_delta: DeltaMap | None, mission: Mission
+) -> str:
+    """Render the SoP user-prompt block summarising what changed in the
+    previous cycle. Empty when no prior cycle exists, or when nothing in
+    the delta produced a narrative-level change.
+    """
+    if not last_cycle_delta:
+        return ""
+    descriptors = describe_delta(last_cycle_delta, mission)
+    if not descriptors:
+        return ""
+    # Order: cover changes first (most player-visible), then extraction
+    # progress, then operation clock. Within each, mission-authored order.
+    cover_lines, mission_lines, clock_lines = [], [], []
+    for q, d in descriptors.items():
+        if d["agent_id"] is not None:
+            cover_lines.append(f"{d['agent_id']}: {d['before']} → {d['after']}")
+        elif q == "mission.cycles_remaining":
+            clock_lines.append(str(d["after"]))
+        else:
+            mission_lines.append(str(d["after"]))
+    return _bullet_block(
+        "WHAT MOVED LAST CYCLE (open the memo by naming this pivot in one "
+        "sentence, before the dramatic question):",
+        [*cover_lines, *mission_lines, *clock_lines],
+        leading_blank=False,
+        trailing_blank=True,
+    )
+
+
 def _narrative_state_block(state: State, mission: Mission) -> str:
     """In-fiction state summary for the SoP and renderer. No raw numerics, no
     raw quality ids, no fired-event ledger noise."""
@@ -424,7 +571,12 @@ def _dispatches_block(dispatches: list[DispatchRecord], limit: int) -> str:
 
 
 def _sop_user_prompt(
-    cycle_index: int, state: State, mission: Mission, dispatches: list[DispatchRecord]
+    cycle_index: int,
+    state: State,
+    mission: Mission,
+    dispatches: list[DispatchRecord],
+    *,
+    last_cycle_delta: DeltaMap | None = None,
 ) -> str:
     # Intentionally NO "cycle N of M" opener — that header was the most
     # reliable place the model picked up "six cycles remaining" / "five
@@ -437,12 +589,13 @@ def _sop_user_prompt(
         if dramatic_question is not None
         else ""
     )
+    what_moved = _what_moved_block(last_cycle_delta, mission)
     return f"""\
 State of Play memo. Field reports follow.
 
 ACT PHASE: {act_phase}
 
-{_opening_briefing_block(cycle_index, mission)}{dq_block}CURRENT STATE:
+{what_moved}{dq_block}CURRENT STATE:
 {_narrative_state_block(state, mission)}
 
 RECENT DISPATCHES (last 3, oldest first):
@@ -489,17 +642,33 @@ def _locked_block(
     each annotated with which precondition leaf failed. Helps the drafter
     reason about *why* an option is unavailable instead of seeing only the
     trimmed catalog (4i)."""
-    locked = invalid_archetype_combinations(state, mission)
-    if not locked:
-        return ""
-    lines = []
-    for arch_id, agent_id, reason in locked:
-        target = f"{arch_id}({agent_id})" if agent_id else arch_id
-        lines.append(f"  - {target} — {reason}")
-    return (
-        "LOCKED THIS CYCLE (use as context for option framing — do NOT propose these):\n"
-        + "\n".join(lines)
-        + "\n"
+    lines = [
+        f"{arch_id}({agent_id}) — {reason}" if agent_id else f"{arch_id} — {reason}"
+        for arch_id, agent_id, reason in invalid_archetype_combinations(state, mission)
+    ]
+    return _bullet_block(
+        "LOCKED THIS CYCLE (use as context for option framing — do NOT propose these):",
+        lines,
+        leading_blank=False,
+    )
+
+
+def _recently_tried_block(
+    recently_tried: Sequence[tuple[int, str, str | None]] | None,
+) -> str:
+    """Render the RECENTLY TRIED block: the last 1-2 cycles' authorized
+    (cycle_index, archetype, agent_id_or_None) tuples. Empty for cycle 1.
+    Drafter is told to span a different tonal range from these picks."""
+    lines = [
+        f"C{cycle_idx}: {archetype}({agent_id})" if agent_id else f"C{cycle_idx}: {archetype}"
+        for cycle_idx, archetype, agent_id in (recently_tried or [])
+    ]
+    return _bullet_block(
+        "RECENTLY TRIED (vary tonal range from these — different agent, "
+        "different cost shape, or different point on the safe-↔-risky "
+        "axis; do not propose the same (archetype, agent) pair the player "
+        "just authorized):",
+        lines,
     )
 
 
@@ -513,6 +682,7 @@ def _drafter_user_prompt(
     dispatches: list[DispatchRecord],
     *,
     retry_feedback: str | None = None,
+    recently_tried: Sequence[tuple[int, str, str | None]] | None = None,
 ) -> str:
     archetype_intents = "\n".join(
         f"  - {a.id}: {a.intent}" for a in mission.archetypes
@@ -540,7 +710,7 @@ VALID CATALOG (engine-computed; you MUST pick from this exact set):
 
 {_locked_block(state, mission)}ARCHETYPE INTENTS (for prose framing — these are NOT the player-facing prose):
 {archetype_intents}
-
+{_recently_tried_block(recently_tried)}
 {_forced_event_block(forced_event)}{retry}
 Produce 3 or 4 options now.
 """
@@ -797,6 +967,7 @@ async def draft_with_retries(
     forced_event: Event | None,
     dispatches: list[DispatchRecord],
     max_retries: int = 3,
+    recently_tried: Sequence[tuple[int, str, str | None]] | None = None,
 ) -> tuple[list[Option], bool]:
     """Call the drafter up to `max_retries + 1` times. Each failure feeds the
     validator's complaints back into the next prompt as `retry_feedback`. If
@@ -809,6 +980,7 @@ async def draft_with_retries(
         prompt = _drafter_user_prompt(
             cycle_index, state, mission, sop_text, catalog, forced_event, dispatches,
             retry_feedback=last_error,
+            recently_tried=recently_tried,
         )
         with logfire.span("drafter_call", attempt=attempts + 1):
             try:

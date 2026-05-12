@@ -146,6 +146,10 @@ class SessionRuntime:
     SoP + drafter LLM calls so they're ready by the time the player clicks
     Continue. Results are tagged with `prefetched_cycle_index` so the SoP /
     drafter callables only consume data meant for the cycle they're running.
+
+    `last_cycle_delta` and `last_authorized` carry one-cycle context forward
+    so the next cycle's SoP/drafter prompts can lead with "what moved last
+    cycle" and "vary from what was recently tried" respectively.
     """
 
     session: Session
@@ -162,6 +166,14 @@ class SessionRuntime:
     prefetched_options: list[Option] | None = None
     prefetched_engine_fallback: bool = False
     prefetch_task: asyncio.Task | None = None
+    # Cycle N's full aggregate delta (effects + events + close + 2nd pass),
+    # set by `on_cycle_close`. Cycle N+1's SoP user prompt reads this to
+    # lead with "what moved last cycle". None on cycle 1.
+    last_cycle_delta: dict[str, tuple[Any, Any]] | None = None
+    # Last 2 authorized picks as (cycle_index, archetype, agent_id|None).
+    # Cycle N+1's drafter prompt reads this to vary tonal range. Updated by
+    # `_run_session_loop` after each /authorize lands.
+    last_authorized: list[tuple[int, str, str | None]] = field(default_factory=list)
 
     async def await_auth(self) -> Option:
         """Block the cycle loop until POST /authorize resolves auth_future."""
@@ -447,7 +459,10 @@ def _build_sop_callable(rt: SessionRuntime) -> Any:
             )
             return text, pacing_task
 
-        prompt = _sop_user_prompt(cycle_index, session.state, session.mission, rt.dispatches)
+        prompt = _sop_user_prompt(
+            cycle_index, session.state, session.mission, rt.dispatches,
+            last_cycle_delta=rt.last_cycle_delta,
+        )
         return await _run_paced_stream(
             AGENTS.sop, prompt, rt.out_queue.put,
             event_kind="sop_word", extra=extra,
@@ -499,6 +514,7 @@ def _build_drafter_llm_callable(rt: SessionRuntime) -> Any:
             catalog=catalog,
             forced_event=forced_event,
             dispatches=rt.dispatches,
+            recently_tried=list(rt.last_authorized),
         )
 
     return _drafter_llm
@@ -666,6 +682,17 @@ def _build_renderer_text_ready_hook(rt: SessionRuntime) -> Any:
     return _hook
 
 
+def _build_cycle_close_hook(rt: SessionRuntime) -> Any:
+    """Fires once per cycle with the aggregate delta (effects + events +
+    close + 2nd-pass). Stash on `rt.last_cycle_delta` so cycle N+1's SoP
+    prompt can lead with "what moved last cycle"."""
+
+    async def _hook(_cycle_index: int, aggregate_delta: dict) -> None:
+        rt.last_cycle_delta = aggregate_delta
+
+    return _hook
+
+
 # ───────────────────────── cycle loop ─────────────────────────
 
 
@@ -674,17 +701,7 @@ async def _run_session_loop(rt: SessionRuntime) -> None:
     assert AGENTS is not None
     mission = rt.session.mission
     await start_mission(rt.session, mission)
-    await rt.out_queue.put(
-        {
-            "event": "mission_started",
-            "mission_id": mission.id,
-            "mission_name": mission.name,
-            "codename": mission.codename,
-            "max_cycles": mission.max_cycles,
-            "agents": [{"id": a.id, "codename": a.codename, "file_number": a.file_number} for a in mission.agents],
-            "state": rt.session.state.qualities,
-        }
-    )
+    await rt.out_queue.put(_mission_started_payload(mission, rt.session.state.qualities))
     cycle_index = 1
     # Per-session callable bundle. Built once: the SoP / drafter LLM phase /
     # drafter emit phase / renderer / prefetch-hook closures all capture `rt`,
@@ -694,6 +711,7 @@ async def _run_session_loop(rt: SessionRuntime) -> None:
     drafter_emit_fn = _build_drafter_emit_callable(rt)
     renderer_fn = _build_renderer_callable(rt)
     on_renderer_text_ready_fn = _build_renderer_text_ready_hook(rt)
+    on_cycle_close_fn = _build_cycle_close_hook(rt)
     try:
         while True:
             active = await run_cycle(
@@ -706,7 +724,17 @@ async def _run_session_loop(rt: SessionRuntime) -> None:
                 emit=rt.out_queue.put,
                 await_authorization=rt.await_auth,
                 on_renderer_text_ready=on_renderer_text_ready_fn,
+                on_cycle_close=on_cycle_close_fn,
             )
+            # After the cycle's chosen option (if any) lands on the event log,
+            # extract its (archetype, agent) for the next cycle's RECENTLY
+            # TRIED drafter prompt. Keep the last 2 picks only.
+            last_auth = _last_authorized_pick(rt.session)
+            if last_auth is not None and (
+                not rt.last_authorized or rt.last_authorized[-1] != last_auth
+            ):
+                rt.last_authorized.append(last_auth)
+                rt.last_authorized = rt.last_authorized[-2:]
             if not active:
                 break
             # Gate the next cycle on the player clicking "Continue" — symmetric
@@ -734,12 +762,79 @@ async def _run_session_loop(rt: SessionRuntime) -> None:
 # ───────────────────────── endpoints ─────────────────────────
 
 
+class CastEntry(BaseModel):
+    """Player-facing cast descriptor surfaced to the frontend onboarding card.
+    Agents, the handler (player), the boss, and named opposition all ship —
+    the onboarding modal renders a roster so REDFIELD / MUNTEANU /
+    MERIWETHER are known names before they appear in option titles or SoP
+    memos."""
+
+    id: str
+    codename: str
+    role: str
+    file_number: str
+    situation: str
+
+
 class StartResponse(BaseModel):
     session_id: str
     mission_id: str
     mission_name: str
     codename: str
     max_cycles: int
+    opening_briefing: str
+    opening_prose: str
+    cast: list[CastEntry]
+
+
+def _cast_payload(mission: Mission) -> list[CastEntry]:
+    """Build the full-cast payload for the onboarding card. Pydantic models
+    serialise via `_json_default`'s `model_dump` branch — keeping these as
+    CastEntry (not raw dicts) lets `StartResponse.cast` reuse the same list
+    instead of rebuilding it."""
+    return [
+        CastEntry(
+            id=m.id,
+            codename=m.codename,
+            role=m.role,
+            file_number=m.file_number,
+            situation=m.situation,
+        )
+        for m in mission.cast
+    ]
+
+
+def _mission_started_payload(mission: Mission, state_qualities: dict) -> dict:
+    """Build the `mission_started` SSE payload. Includes the full cast and
+    the boss's opening briefing so the client's onboarding card can render
+    without a separate fetch. `agents` (agent-role only) stays for the
+    sidebar's roster which only cares about operatives with cover."""
+    return {
+        "event": "mission_started",
+        "mission_id": mission.id,
+        "mission_name": mission.name,
+        "codename": mission.codename,
+        "max_cycles": mission.max_cycles,
+        "agents": [
+            {"id": a.id, "codename": a.codename, "file_number": a.file_number}
+            for a in mission.agents
+        ],
+        "cast": _cast_payload(mission),
+        "opening_briefing": mission.opening_briefing,
+        "opening_prose": mission.opening_prose,
+        "state": state_qualities,
+    }
+
+
+def _last_authorized_pick(session: Session) -> tuple[int, str, str | None] | None:
+    """Pull the most recent (cycle_index, archetype, agent_id) from the
+    session event log. Used to populate `rt.last_authorized` for the next
+    cycle's RECENTLY TRIED drafter prompt. Returns None if no option has
+    been authorized yet."""
+    for ev in reversed(session.event_log):
+        if isinstance(ev, OptionAuthorized):
+            return (ev.cycle_index, ev.option.archetype, ev.option.agent)
+    return None
 
 
 class AuthorizeRequest(BaseModel):
@@ -785,6 +880,9 @@ async def mission_start() -> StartResponse:
         mission_name=MISSION.name,
         codename=MISSION.codename,
         max_cycles=MISSION.max_cycles,
+        opening_briefing=MISSION.opening_briefing,
+        opening_prose=MISSION.opening_prose,
+        cast=_cast_payload(MISSION),
     )
 
 

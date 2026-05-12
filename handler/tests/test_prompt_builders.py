@@ -561,38 +561,200 @@ def test_cast_block_renders_voice_details_when_present() -> None:
     assert "codename only; trusted by Control" in prompt
 
 
-def test_sop_user_prompt_prepends_briefing_on_cycle_1() -> None:
+def test_sop_user_prompt_no_longer_carries_opening_briefing() -> None:
+    """The cycle-1 opening_briefing was migrated out of the SoP prompt — it
+    now lives in the `mission_started` SSE / `StartResponse` payload so the
+    frontend onboarding card renders MERIWETHER's cable separately from
+    Operations Desk's State of Play memo. Regression guard: the briefing
+    must not leak back into the SoP prompt at any cycle index."""
     from handler.agents import _sop_user_prompt
     mission = Mission(
         **_basic_mission_kwargs(),
         opening_briefing="OPS: clean exfil only. Burn nothing.",
     )
     state = make_initial_state(mission)
-    prompt = _sop_user_prompt(cycle_index=1, state=state, mission=mission, dispatches=[])
-    assert "OPENING BRIEFING" in prompt
-    assert "clean exfil only" in prompt
+    for cycle_index in (1, 2, 6):
+        prompt = _sop_user_prompt(
+            cycle_index=cycle_index, state=state, mission=mission, dispatches=[]
+        )
+        assert "OPENING BRIEFING" not in prompt
+        assert "clean exfil only" not in prompt
 
 
-def test_sop_user_prompt_omits_briefing_after_cycle_1() -> None:
+# ───────────────────────── WHAT MOVED LAST CYCLE ─────────────────────────
+
+
+def test_what_moved_block_empty_for_no_delta() -> None:
+    """Cycle 1 has no prior cycle — the block must be omitted entirely."""
+    from handler.agents import _what_moved_block
+    mission = load_mission(_LYNX)
+    assert _what_moved_block(None, mission) == ""
+    assert _what_moved_block({}, mission) == ""
+
+
+def test_what_moved_block_renders_cover_transitions() -> None:
+    """A cycle that dropped LYNX's cover from `intact` to `degraded`
+    surfaces a single bullet naming the transition."""
+    from handler.agents import _what_moved_block
+    mission = load_mission(_LYNX)
+    block = _what_moved_block({"agent[LYNX].cover": (6, 4)}, mission)
+    assert "WHAT MOVED LAST CYCLE" in block
+    assert "LYNX: cover intact → cover degraded" in block
+
+
+def test_what_moved_block_omits_no_op_changes() -> None:
+    """A cover swing within the same bucket (8→7, both `intact`) produces
+    no narrative-level change and must be dropped — otherwise the SoP
+    would lead with a vacuous pivot every cycle."""
+    from handler.agents import _what_moved_block
+    mission = load_mission(_LYNX)
+    block = _what_moved_block({"agent[LYNX].cover": (8, 7)}, mission)
+    assert block == ""
+
+
+def test_what_moved_block_renders_clock_change() -> None:
+    from handler.agents import _what_moved_block
+    mission = load_mission(_LYNX)
+    # 4→3 crosses the bucket boundary into "narrowing".
+    block = _what_moved_block({"mission.cycles_remaining": (4, 3)}, mission)
+    assert "the window is narrowing" in block
+
+
+def test_what_moved_block_renders_extraction_stage_change() -> None:
+    from handler.agents import _what_moved_block
+    mission = load_mission(_LYNX)
+    block = _what_moved_block({"mission.extraction_stage": (0, 1)}, mission)
+    assert "the extraction papers are being moved into hand" in block
+
+
+def test_sop_user_prompt_threads_what_moved_block() -> None:
+    """The SoP user prompt builder reads `last_cycle_delta` and prepends
+    the WHAT MOVED block (cycle 2+ — cycle 1 still has no prior delta)."""
     from handler.agents import _sop_user_prompt
-    mission = Mission(
-        **_basic_mission_kwargs(),
-        opening_briefing="OPS: clean exfil only. Burn nothing.",
+    mission = load_mission(_LYNX)
+    state = make_initial_state(mission)
+    prompt = _sop_user_prompt(
+        cycle_index=2,
+        state=state,
+        mission=mission,
+        dispatches=[],
+        last_cycle_delta={"agent[LYNX].cover": (6, 4)},
     )
-    state = make_initial_state(mission)
-    prompt = _sop_user_prompt(cycle_index=2, state=state, mission=mission, dispatches=[])
-    assert "OPENING BRIEFING" not in prompt
-    assert "clean exfil only" not in prompt
+    assert "WHAT MOVED LAST CYCLE" in prompt
+    assert "LYNX: cover intact → cover degraded" in prompt
 
 
-def test_sop_user_prompt_omits_briefing_when_empty() -> None:
-    """Cycle 1 with no authored opening_briefing must not produce the
-    block (no empty heading)."""
-    from handler.agents import _sop_user_prompt
-    mission = Mission(**_basic_mission_kwargs())  # no opening_briefing
+# ───────────────────────── RECENTLY TRIED ─────────────────────────
+
+
+def test_recently_tried_block_renders_authorized_picks() -> None:
+    from handler.agents import _recently_tried_block
+    block = _recently_tried_block(
+        [(1, "DIVERSION_BY_AGENT", "LYNX"), (2, "DIVERSION_BY_AGENT", "KESTREL")]
+    )
+    assert "RECENTLY TRIED" in block
+    assert "C1: DIVERSION_BY_AGENT(LYNX)" in block
+    assert "C2: DIVERSION_BY_AGENT(KESTREL)" in block
+
+
+def test_recently_tried_block_unbound_archetype() -> None:
+    """HOLD has no agent — render without parens."""
+    from handler.agents import _recently_tried_block
+    block = _recently_tried_block([(1, "HOLD", None)])
+    assert "C1: HOLD" in block
+    assert "HOLD(" not in block
+
+
+def test_recently_tried_block_empty_when_none() -> None:
+    from handler.agents import _recently_tried_block
+    assert _recently_tried_block(None) == ""
+    assert _recently_tried_block([]) == ""
+
+
+def test_drafter_user_prompt_threads_recently_tried() -> None:
+    from handler.agents import _drafter_user_prompt
+    mission = load_mission(_LYNX)
     state = make_initial_state(mission)
-    prompt = _sop_user_prompt(cycle_index=1, state=state, mission=mission, dispatches=[])
-    assert "OPENING BRIEFING" not in prompt
+    prompt = _drafter_user_prompt(
+        cycle_index=2,
+        state=state,
+        mission=mission,
+        sop_text="(sop)",
+        catalog=[],
+        forced_event=None,
+        dispatches=[],
+        recently_tried=[(1, "DIVERSION_BY_AGENT", "LYNX")],
+    )
+    assert "RECENTLY TRIED" in prompt
+    assert "C1: DIVERSION_BY_AGENT(LYNX)" in prompt
+
+
+# ───────────────────────── describe_delta ─────────────────────────
+
+
+def test_describe_delta_filters_unchanged_descriptors() -> None:
+    """If the descriptor for `before` matches the descriptor for `after`
+    (a small swing within one bucket), the entry must be dropped — the
+    RESULT footer would otherwise show vacuous transitions."""
+    from handler.agents import describe_delta
+    mission = load_mission(_LYNX)
+    result = describe_delta({"agent[LYNX].cover": (8, 7)}, mission)
+    assert "agent[LYNX].cover" not in result
+
+
+def test_describe_delta_includes_meaningful_change() -> None:
+    from handler.agents import describe_delta
+    mission = load_mission(_LYNX)
+    result = describe_delta({"agent[LYNX].cover": (6, 4)}, mission)
+    assert result["agent[LYNX].cover"]["before"] == "cover intact"
+    assert result["agent[LYNX].cover"]["after"] == "cover degraded"
+
+
+def test_describe_delta_skips_transient_flags() -> None:
+    """`cover_protected` and other one-cycle flags have no authored
+    descriptor — they should not surface in the delta block."""
+    from handler.agents import describe_delta
+    mission = load_mission(_LYNX)
+    result = describe_delta(
+        {"agent[LYNX].cover_protected": (None, True)}, mission
+    )
+    assert result == {}
+
+
+# ───────────────────────── word-budget tightening ─────────────────────────
+
+
+def test_sop_system_prompt_has_tighter_word_budget() -> None:
+    """Word-budget tightening per the recent playtest review — SoP memos
+    came back at 120-180 words and felt verbose. New budget is ~60-110."""
+    mission = load_mission(_LYNX)
+    prompt = _sop_system_prompt(mission)
+    assert "60–110 words" in prompt
+    # The old budget must not regress in:
+    assert "120–180 words" not in prompt
+
+
+def test_drafter_system_prompt_has_tighter_option_prose_budget() -> None:
+    mission = load_mission(_LYNX)
+    prompt = _drafter_system_prompt(mission)
+    assert "12–20 words" in prompt
+    assert "15–25 words" not in prompt
+
+
+def test_renderer_system_prompt_has_tighter_dispatch_budget() -> None:
+    mission = load_mission(_LYNX)
+    prompt = _renderer_system_prompt(mission)
+    assert "60–110 words" in prompt
+    assert "90–180 words" not in prompt
+
+
+def test_drafter_system_prompt_mentions_recently_tried_rule() -> None:
+    """The drafter must be told to vary tonal range when RECENTLY TRIED is
+    provided — otherwise we get the same option set every cycle when state
+    is static."""
+    mission = load_mission(_LYNX)
+    prompt = _drafter_system_prompt(mission)
+    assert "RECENTLY TRIED" in prompt
 
 
 def test_renderer_user_prompt_includes_leans_when_provided() -> None:

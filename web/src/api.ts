@@ -31,6 +31,19 @@ export interface AgentMeta {
   file_number: string;
 }
 
+/** Full cast entry surfaced to the onboarding card. Covers agents,
+ * handler (player), boss, and opposition — the four roles the spec
+ * recognises. Agents also appear in `AgentMeta` for the sidebar, but
+ * the onboarding roster needs the broader set (REDFIELD, MUNTEANU,
+ * MERIWETHER) so they're known names before they appear in prose. */
+export interface CastMember {
+  id: string;
+  codename: string;
+  role: "agent" | "handler" | "boss" | "opposition" | "asset";
+  file_number: string;
+  situation: string;
+}
+
 export interface OptionPayload {
   archetype: string;
   agent: string | null;
@@ -43,6 +56,19 @@ export type Quality = number | string | boolean;
 export type GameState = Record<string, Quality>;
 export type Delta = Record<string, { before: Quality | null; after: Quality }>;
 
+/** Narrative descriptor for one quality in a cycle's delta. `before` is
+ * null on first-time quality writes (e.g. authored mission qualities
+ * surfacing for the first time); `agent_id` is the operative whose cover
+ * changed (e.g. "LYNX") or null for mission-scoped qualities. The pair
+ * always represents a *narrative* change — server-side filtering drops
+ * same-bucket swings. */
+export interface DeltaDescriptor {
+  before: string | null;
+  after: string | null;
+  agent_id: string | null;
+}
+export type DeltaDescriptors = Record<string, DeltaDescriptor>;
+
 // ─── REST endpoints ──────────────────────────────────────────────────────
 
 export interface StartResponse {
@@ -51,6 +77,9 @@ export interface StartResponse {
   mission_name: string;
   codename: string;
   max_cycles: number;
+  opening_briefing: string;
+  opening_prose: string;
+  cast: CastMember[];
 }
 
 export async function startMission(): Promise<StartResponse> {
@@ -94,7 +123,7 @@ export async function fetchState(session_id: string): Promise<StateResponse> {
 // ─── SSE event vocabulary (must match handler/main.py) ───────────────────
 
 export type SseEvent =
-  | { event: "mission_started"; mission_id: string; mission_name: string; codename: string; max_cycles: number; agents: AgentMeta[]; state: GameState }
+  | { event: "mission_started"; mission_id: string; mission_name: string; codename: string; max_cycles: number; agents: AgentMeta[]; cast: CastMember[]; opening_briefing: string; opening_prose: string; state: GameState }
   | { event: "cycle_opened"; cycle: number; state: GameState }
   | { event: "sop_word"; cycle: number; idx: number; word: string; is_last?: boolean }
   | { event: "option_started"; cycle: number; option_idx: number; archetype: string; agent: string | null; params: Record<string, string>; title: string; satisfies_event: string | null }
@@ -102,11 +131,11 @@ export type SseEvent =
   | { event: "options_complete"; cycle: number; count: number; has_forced_event: boolean; event_id: string | null; engine_fallback: boolean }
   | { event: "awaiting_auth" }
   | { event: "awaiting_continue"; cycle: number }
-  | { event: "effects_applied"; delta: Delta }
-  | { event: "events_fired"; events: string[]; delta: Delta }
+  | { event: "effects_applied"; delta: Delta; delta_descriptors?: DeltaDescriptors }
+  | { event: "events_fired"; events: string[]; delta: Delta; delta_descriptors?: DeltaDescriptors }
   | { event: "dispatch_started"; cycle: number; acting: string; archetype: string }
   | { event: "dispatch_word"; cycle: number; idx: number; word: string; acting: string; is_last?: boolean }
-  | { event: "cycle_closed"; cycle: number; state: GameState }
+  | { event: "cycle_closed"; cycle: number; state: GameState; delta_descriptors?: DeltaDescriptors }
   | { event: "mission_resolved"; outcome: string; summary: string; terminal_event: string; cycles_used: number; cycles_max: number; agents_lost: string[]; agents_alive: string[] }
   | { event: "session_closed" }
   | { event: "error"; code: string };

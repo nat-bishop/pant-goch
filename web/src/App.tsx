@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { DeskFrame } from "./components/DeskFrame";
 import { DispatchModal } from "./components/DispatchModal";
 import { DispatchOverlay } from "./components/DispatchOverlay";
+import { OnboardingCard } from "./components/OnboardingCard";
 import { OutcomeCard } from "./components/OutcomeCard";
 import { Paper } from "./components/Paper";
 import { useStream } from "./hooks/useStream";
@@ -27,6 +28,7 @@ export default function App() {
         <DispatchOverlay />
       </DeskFrame>
 
+      <OnboardingCard />
       <DispatchModal />
       <OutcomeCard />
 

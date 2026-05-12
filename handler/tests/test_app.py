@@ -65,6 +65,27 @@ def test_mission_start_returns_session_id(app_client: TestClient) -> None:
     assert body["max_cycles"] == 4
 
 
+def test_mission_start_returns_cast_and_briefing(app_client: TestClient) -> None:
+    """StartResponse carries the full cast + opening_briefing + opening_prose
+    so the onboarding card can render without a separate fetch. The tiny
+    mission has no briefing, so the field is the empty string; cast lists
+    both agents (and any handler/boss/opposition entries the mission
+    authored — tiny has none)."""
+    r = app_client.post("/mission/start")
+    body = r.json()
+    assert "opening_briefing" in body
+    assert "opening_prose" in body
+    assert isinstance(body["cast"], list)
+    cast_ids = {m["id"] for m in body["cast"]}
+    assert "ALPHA" in cast_ids
+    assert "BRAVO" in cast_ids
+    for member in body["cast"]:
+        assert "codename" in member
+        assert "role" in member
+        assert "file_number" in member
+        assert "situation" in member
+
+
 def test_state_returns_snapshot(app_client: TestClient) -> None:
     r = app_client.post("/mission/start")
     sid = r.json()["session_id"]

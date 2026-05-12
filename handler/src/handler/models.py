@@ -172,14 +172,20 @@ class CastMember(BaseModel):
     """A character in the mission. `role="agent"` is an operative deployed in
     the field (canonical id used in quality refs like `agent[LYNX].cover`);
     `role="handler"` is the player's in-fiction identity; `role="boss"` is
-    the player's superior; `role="opposition"` is a named antagonist. Only
-    role="agent" members get a `cover` quality injected by `make_initial_state`
-    and appear in archetype expansion / for_each_agent — non-agent members
-    are renderer-prompt content only."""
+    the player's superior; `role="opposition"` is a named antagonist;
+    `role="asset"` is an off-stage support character (sleeper, source,
+    contact) named in prose but never field-deployed — surfaces in the
+    onboarding roster and in renderer prompts but contributes no cover
+    quality and is not eligible for archetype expansion.
+
+    Only role="agent" members get a `cover` quality injected by
+    `make_initial_state` and appear in archetype expansion / for_each_agent
+    — all other roles are renderer-prompt content only.
+    """
 
     id: str = Field(min_length=1)  # canonical codename, e.g. "LYNX"
     codename: str = Field(min_length=1)  # display form, e.g. "Lynx"
-    role: Literal["agent", "handler", "boss", "opposition"] = "agent"
+    role: Literal["agent", "handler", "boss", "opposition", "asset"] = "agent"
     file_number: str = Field(default="")  # e.g. "19-X"
     voice_register: str = Field(default="")  # short character pitch
     voice_details: str = Field(default="")  # longer character notes for renderer

@@ -29,7 +29,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timezone
-from typing import Awaitable, Callable, Protocol
+from typing import Any, Awaitable, Callable, Protocol
 
 import logfire
 
@@ -141,6 +141,16 @@ class OnRendererTextReadyFn(Protocol):
         this to schedule cycle N+1's prefetch."""
 
 
+class OnCycleCloseFn(Protocol):
+    async def __call__(
+        self, cycle_index: int, aggregate_delta: dict[str, tuple[Any, Any]]
+    ) -> None:
+        """Fires after the full cycle (effects + events + close + 2nd-pass
+        passives) has applied. `aggregate_delta` is the merged delta across
+        all four phases — used by main.py to stash `rt.last_cycle_delta` so
+        the next cycle's SoP prompt can lead with "what moved last cycle"."""
+
+
 class Emitter(Protocol):
     """Sink for SSE-side events (separate from session.apply, which writes
     the canonical log). Provided by main.py so cycle.py can stream paced
@@ -150,6 +160,10 @@ class Emitter(Protocol):
 
 
 async def _noop_renderer_text_ready(_cycle_index: int) -> None:
+    return
+
+
+async def _noop_cycle_close(_cycle_index: int, _agg: dict[str, tuple[Any, Any]]) -> None:
     return
 
 
@@ -183,6 +197,7 @@ async def run_cycle(
     emit: Emitter,
     await_authorization: Callable[[], Awaitable[Option]],
     on_renderer_text_ready: OnRendererTextReadyFn = _noop_renderer_text_ready,
+    on_cycle_close: OnCycleCloseFn = _noop_cycle_close,
 ) -> bool:
     """Run one cycle. Returns True if the mission is still active, False on
     terminal (caller stops iterating).
@@ -194,7 +209,15 @@ async def run_cycle(
     `on_renderer_text_ready` is invoked after the renderer LLM produces its
     text AND state is final (tick_cycle_close + any timeout re-check done).
     Main.py uses this to schedule cycle N+1's prefetch.
+
+    `on_cycle_close` fires once with the cycle's aggregate delta (effects +
+    forced + passives + close + 2nd-pass passives merged). Main.py uses it
+    to stash `rt.last_cycle_delta` for the next cycle's SoP user prompt.
     """
+    # Local import — agents imports spine; cycle imports agents would cycle.
+    # Lazy is fine: we only need this helper inside the run_cycle body.
+    from .agents import describe_delta
+
     mission = session.mission
     state = session.state
     if state.outcome is not None:
@@ -208,6 +231,10 @@ async def run_cycle(
         # Snapshot state at cycle open. Renderer reads this back to compute
         # the tension band (4c) — magnitude of the cycle's cover swing.
         prior_state = snapshot(state)
+
+        # Aggregate delta across all four mutation phases this cycle.
+        # Populated below; passed to `on_cycle_close` at the end.
+        aggregate_delta: dict[str, tuple] = {}
 
         # ── cycle opened ──
         session.apply(CycleOpened(cycle_index=cycle_index))
@@ -272,7 +299,12 @@ async def run_cycle(
         session.apply(EffectsApplied(
             cycle_index=cycle_index, delta=delta, forced_event_id=satisfied_event_id,
         ))
-        await emit({"event": "effects_applied", "delta": _serialize_delta(delta)})
+        merge_delta_into(aggregate_delta, delta)
+        await emit({
+            "event": "effects_applied",
+            "delta": _serialize_delta(delta),
+            "delta_descriptors": describe_delta(delta, mission),
+        })
 
         made_progress = option_progresses_mission(delta, mission)
         fires, agg = fire_due_passive_events(state, mission, made_progress)
@@ -284,10 +316,12 @@ async def run_cycle(
                     fires=[(ev.id, agent_id, d) for (ev, agent_id, d) in fires],
                 )
             )
+            merge_delta_into(aggregate_delta, agg)
             await emit({
                 "event": "events_fired",
                 "events": [ev.id for (ev, _, _) in fires],
                 "delta": _serialize_delta(agg),
+                "delta_descriptors": describe_delta(agg, mission),
             })
 
         terminal = next(((ev, ag, d) for (ev, ag, d) in fires if ev.terminal), None)
@@ -325,6 +359,7 @@ async def run_cycle(
         # ── cycle close (deterministic; runs while pacing continues in bg) ──
         close_delta = tick_cycle_close(state)
         session.apply(CycleClosed(cycle_index=cycle_index, delta=close_delta))
+        merge_delta_into(aggregate_delta, close_delta)
 
         # Timeout terminal — check after cycles_remaining decrement. Re-run
         # the passive-event phase so `timeout` (a normal passive event) can
@@ -343,6 +378,7 @@ async def run_cycle(
                         fires=[(ev.id, agent_id, d) for (ev, agent_id, d) in fires2],
                     )
                 )
+                merge_delta_into(aggregate_delta, agg2)
                 t2 = next(((ev, ag, d) for (ev, ag, d) in fires2 if ev.terminal), None)
                 if t2 is not None:
                     t_event, _, _ = t2
@@ -351,6 +387,11 @@ async def run_cycle(
                     )
                     session.apply(MissionResolved(cycle_index=cycle_index, resolution=resolution))
                     terminal_resolved = _resolved_payload(resolution)
+
+        # Stash the full cycle delta so cycle N+1's SoP prompt can lead with
+        # "what moved last cycle". Fires regardless of terminal — even a
+        # terminal cycle has movement worth recording (for replay / debug).
+        await on_cycle_close(cycle_index, aggregate_delta)
 
         # Fire prefetch hook only if mission is still active. State is final
         # at this point (cycle_close + timeout re-check both done), so the
@@ -362,7 +403,17 @@ async def run_cycle(
         # signals — otherwise the client would see cycle_closed (or
         # mission_resolved) while still receiving dispatch_word events.
         await render_pacing
-        await emit({"event": "cycle_closed", "cycle": cycle_index, "state": state.qualities})
+        # `delta_descriptors` on cycle_closed carries the close-tick decrement
+        # (cycles_remaining). The dispatch overlay's RESULT footer accumulates
+        # effects_applied + events_fired + cycle_closed descriptors for the
+        # full picture; 2nd-pass passive deltas only fire on timeout and are
+        # handled via the mission_resolved card.
+        await emit({
+            "event": "cycle_closed",
+            "cycle": cycle_index,
+            "state": state.qualities,
+            "delta_descriptors": describe_delta(close_delta, mission),
+        })
         if terminal_resolved is not None:
             await emit(terminal_resolved)
             return False
