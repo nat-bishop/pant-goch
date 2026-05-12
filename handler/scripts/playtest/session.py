@@ -38,9 +38,7 @@ class CycleTrace:
     dispatch_text: str = ""
     dispatch_acting: str | None = None
     used_engine_fallback: bool = False
-    # `moment_id` keeps the LLM-facing wire term (engine SSE field name)
-    # — the value is an event id from `mission.events`.
-    forced_moment_id: str | None = None
+    forced_event_id: str | None = None
 
 
 # ───────────────────────── session record ─────────────────────────
@@ -149,7 +147,7 @@ async def run_session(
                                 "agent": ev.get("agent"),
                                 "params": ev.get("params", {}),
                                 "title": ev["title"],
-                                "satisfies_moment": ev.get("satisfies_moment"),
+                                "satisfies_event": ev.get("satisfies_event"),
                                 "prose": "",
                             }
                         )
@@ -159,8 +157,8 @@ async def run_session(
                             current_options_payload[idx]["prose"] += ev["word"]
                     elif kind == "options_complete" and current is not None:
                         current.options = list(current_options_payload)
-                        if ev.get("moment_id"):
-                            current.forced_moment_id = ev["moment_id"]
+                        if ev.get("event_id"):
+                            current.forced_event_id = ev["event_id"]
                         if ev.get("engine_fallback"):
                             current.used_engine_fallback = True
                     elif kind == "awaiting_auth" and current is not None:
@@ -169,7 +167,7 @@ async def run_session(
                             PickedOption(
                                 archetype=o["archetype"],
                                 agent=o.get("agent"),
-                                satisfies_moment=o.get("satisfies_moment"),
+                                satisfies_event=o.get("satisfies_event"),
                             )
                             for o in current.options
                         ]

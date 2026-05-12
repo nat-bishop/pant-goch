@@ -460,11 +460,9 @@ class Option(BaseModel):
     params: dict[str, str] = Field(default_factory=dict)
     title: str = Field(min_length=1)
     prose: str = Field(min_length=1)
-    # Id of the forced event this option satisfies, if any. The LLM-facing
-    # field name keeps the narrative word "moment" (the drafter prompt and
-    # system-prompt prefix speak of FORCED MOMENT); the engine reads it as
-    # an event id and looks the event up in `mission.events`.
-    satisfies_moment: str | None = None
+    # Id of the forced event this option satisfies, if any. Looked up against
+    # `mission.events` where `force_into_drafter=True`.
+    satisfies_event: str | None = None
 
 
 class OptionSet(BaseModel):

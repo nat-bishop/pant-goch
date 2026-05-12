@@ -3,10 +3,10 @@ archetype: "Protector"
 description: |
   Reluctant to spend cover. Avoids diversions that drop an agent below cover
   5. Prefers slow, safe paths (DEAD_DROP, HOLD when stalling is acceptable).
-  Refuses the kestrel_sacrifice moment — saves agents over mission outcomes.
+  Refuses the kestrel_sacrifice forced event — saves agents over mission outcomes.
 
 expected_outcome: win_lynx_extracted
-always_satisfy_forced_moments: false
+always_satisfy_forced_events: false
 
 priorities:
   RUN_EXFIL: 80

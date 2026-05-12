@@ -200,14 +200,17 @@ Each option carries:
   - `agent`: the bound agent id when the catalog entry has one, else null.
   - `params`: copy from the catalog entry's params.
   - `title`: ~6–10 words, imperative voice (e.g. "Run eastern exfil — now").
-  - `prose`: 2–3 sentences naming the action, the actor, the cost honestly.
-  - `satisfies_moment`: null, unless one option satisfies the FORCED MOMENT.
+  - `prose`: 1–2 sentences, ~15–25 words. The title already names the
+     action; the agent label already names who. Prose adds ONLY what the
+     title cannot: the cost, the risk, or the stake. No restating the
+     verb. No scene-setting. Read at a glance.
+  - `satisfies_event`: null, unless one option satisfies the FORCED EVENT.
 
 VALIDITY RULES (the engine REJECTS options that violate these):
 - `archetype` MUST be present in the VALID CATALOG you receive.
 - `agent` MUST match the catalog entry (or be null when entry has no agent).
-- If a FORCED MOMENT block is present this cycle, exactly ONE option must
-  set `satisfies_moment` to the moment id AND honor its rules.
+- If a FORCED EVENT block is present this cycle, exactly ONE option must
+  set `satisfies_event` to the event id AND honor its rules.
 - 3 or 4 options per cycle.
 
 PROSE RULES:
@@ -417,26 +420,25 @@ def _catalog_block(catalog: list[tuple[str, str | None, dict[str, str]]]) -> str
     return "\n".join(lines)
 
 
-def _forced_moment_block(event: Event | None) -> str:
-    """Render the FORCED MOMENT block for the drafter prompt. The prompt
-    label keeps the narrative word "moment" (stable system-prompt vocabulary,
-    KV-cache prefix); internally the input is an authored `Event` with
-    `force_into_drafter=True`.
+def _forced_event_block(event: Event | None) -> str:
+    """Render the FORCED EVENT block for the drafter prompt — the authored
+    `Event` with `force_into_drafter=True` whose `when:` predicate fires this
+    cycle.
     """
     if event is None:
-        return "(no forced moment this cycle.)"
+        return "(no forced event this cycle.)"
     return f"""\
-A FORCED MOMENT must appear among this cycle's options:
-  moment_id: {event.id}
+A FORCED EVENT must appear among this cycle's options:
+  event_id: {event.id}
   intent: {event.intent.strip()}
   must_communicate:
 {chr(10).join(f"    - {x}" for x in event.must_communicate)}
   must_not:
 {chr(10).join(f"    - {x}" for x in event.must_not)}
   tone: {event.tone}
-EXACTLY ONE option this cycle must set `satisfies_moment` = "{event.id}"
+EXACTLY ONE option this cycle must set `satisfies_event` = "{event.id}"
 and write prose that honors the rules above. The mechanical effect of the
-moment is engine-applied; you only write the prose situated in current state.
+event is engine-applied; you only write the prose situated in current state.
 """
 
 
@@ -499,7 +501,7 @@ VALID CATALOG (engine-computed; you MUST pick from this exact set):
 {_locked_block(state, mission)}ARCHETYPE INTENTS (for prose framing — these are NOT the player-facing prose):
 {archetype_intents}
 
-{_forced_moment_block(forced_event)}{retry}
+{_forced_event_block(forced_event)}{retry}
 Produce 3 or 4 options now.
 """
 
@@ -612,8 +614,8 @@ def validate_options(
     """Raise `DrafterValidationError` with a corrective message if the option
     set doesn't satisfy the constraints. Used by `draft_with_retries` to
     decide whether to retry. `forced_event_id` (if set) is the id of the
-    forced event that must appear as `Option.satisfies_moment` on exactly one
-    option (LLM-facing field name preserved).
+    forced event that must appear as `Option.satisfies_event` on exactly one
+    option.
     """
     problems: list[str] = []
     if not (3 <= len(options) <= 4):
@@ -630,11 +632,11 @@ def validate_options(
                 f"is not in the VALID CATALOG"
             )
     if forced_event_id is not None:
-        satisfiers = [o for o in options if o.satisfies_moment == forced_event_id]
+        satisfiers = [o for o in options if o.satisfies_event == forced_event_id]
         if len(satisfiers) != 1:
             problems.append(
-                f"forced moment {forced_event_id!r}: expected exactly 1 option "
-                f"with satisfies_moment={forced_event_id!r}, found {len(satisfiers)}"
+                f"forced event {forced_event_id!r}: expected exactly 1 option "
+                f"with satisfies_event={forced_event_id!r}, found {len(satisfiers)}"
             )
     if problems:
         raise DrafterValidationError("; ".join(problems))
@@ -657,7 +659,7 @@ def engine_fallback_options(
     - Fill from leftover catalog entries until 3–4 options exist.
 
     The validator requires 3–4 options and (when a forced event is active)
-    exactly one option with `satisfies_moment` set. The function preserves
+    exactly one option with `satisfies_event` set. The function preserves
     that contract whenever the catalog has enough variety.
     """
     options: list[Option] = []
@@ -684,8 +686,8 @@ def engine_fallback_options(
                     agent=ag,
                     params=params,
                     title=forced_event.id,
-                    prose=forced_event.intent.strip()[:240] or f"Honor the {forced_event.id} moment.",
-                    satisfies_moment=forced_event.id,
+                    prose=forced_event.intent.strip()[:240] or f"Honor the {forced_event.id} event.",
+                    satisfies_event=forced_event.id,
                 )
             )
 

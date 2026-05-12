@@ -527,7 +527,7 @@ def _build_drafter_emit_callable(rt: SessionRuntime) -> Any:
                     "agent": option.agent,
                     "params": option.params,
                     "title": option.title,
-                    "satisfies_moment": option.satisfies_moment,
+                    "satisfies_event": option.satisfies_event,
                 }
             )
             await paced_word_emitter(
@@ -541,8 +541,8 @@ def _build_drafter_emit_callable(rt: SessionRuntime) -> Any:
                 "event": "options_complete",
                 "cycle": cycle_index,
                 "count": len(options),
-                "has_forced_moment": forced_event_id is not None,
-                "moment_id": forced_event_id,
+                "has_forced_event": forced_event_id is not None,
+                "event_id": forced_event_id,
                 "engine_fallback": engine_fallback,
             }
         )

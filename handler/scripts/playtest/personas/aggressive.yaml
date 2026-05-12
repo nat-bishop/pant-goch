@@ -5,7 +5,7 @@ description: |
   movement. Goes for the exfil the moment stage 2 is reached.
 
 expected_outcome: win_lynx_extracted
-always_satisfy_forced_moments: true
+always_satisfy_forced_events: true
 
 priorities:
   RUN_EXFIL: 120
@@ -17,4 +17,4 @@ priorities:
   HOLD: -100
 
 quirks:
-  - "When forced moment fires, takes it without hesitation."
+  - "When forced event fires, takes it without hesitation."

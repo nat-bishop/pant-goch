@@ -18,7 +18,7 @@ Full design: `HANDLER_SPEC_V2.md`. Visual reference: `_mockups/handler-authorize
 └──────────┘            └─────────────┘         └──────────────┘
 ```
 
-- **handler** owns the deterministic engine (state, archetypes, moments, beats) and three stateless one-shot Pydantic AI agents per cycle:
+- **handler** owns the deterministic engine (state, archetypes, events) and three stateless one-shot Pydantic AI agents per cycle:
   - `SOP_AGENT` — `output_type=str`, streamed. Synthesises the State-of-Play memo at cycle open, in the Operations Desk voice (terse, declarative, third-party handler).
   - `DRAFTER_AGENT` — `NativeOutput(OptionSet)`. Produces 3–4 candidate courses of action from the engine-computed valid catalog. Validated server-side; retries 3× with corrective feedback then falls back to an engine-authored option set so the player never sees a broken cycle.
   - `RENDERER_AGENT` — `output_type=str`, streamed. Renders the field dispatch in the acting agent's voice (or Operations for HOLD).
@@ -63,19 +63,23 @@ make test                           # full unit suite (~3s)
 cd handler && uv run pytest         # same
 ```
 
-The suite covers the engine primitives (predicates, effects, archetypes, moments, beats, for_each_agent expansion), event union round-trip + fold equivalence with the live mutation path, mission YAML loading, and FastAPI endpoint shape. Live-llama integration tests go behind the `integration` marker; none are authored yet — add `test_cycle_integration.py` when you need one (use the `live_llama` fixture in `conftest.py`).
+The suite covers the engine primitives (predicates, effects, archetypes, events including forced / passive / terminal / for_each_agent shapes), log-entry union round-trip + fold equivalence with the live mutation path, mission YAML loading, and FastAPI endpoint shape. Live-llama integration tests go behind the `integration` marker; the in-tree `test_cycle_integration.py` uses stubbed agents and the `live_llama` fixture in `conftest.py` is available for live runs.
 
 ## Authoring a mission
 
-Missions live in `handler/missions/*.yaml`. The schema is `Mission` in `handler/src/handler/models.py`. The MVP example is `lynx_exfil.yaml` (7 archetypes, 1 moment, 5 beats, 2 dossiers).
+Missions live in `handler/missions/*.yaml`. The schema is `Mission` in `handler/src/handler/models.py`. The MVP example is `lynx_exfil.yaml` (7 archetypes, 6 events — one forced and five passive, 2 dossiers).
 
 Universal qualities are auto-injected from the schema (`mission.cycles_remaining` from `max_cycles`, `agent[<id>].cover` from each `AgentDossier.starting_cover`). Authored qualities go under `qualities:` — each entry carries the initial value AND the in-fiction descriptor in one block, so an author can't write one without the other.
 
-Predicates and effects use quality refs as opaque dotted strings — `mission.extraction_stage`, `agent[LYNX].cover`. Both may be authored as the explicit tagged-union dict form OR as short DSL strings: `when: "agent[$agent].cover > 0 and mission.extraction_stage == 1"` and `effects: ["agent[$agent].cover -= 2"]`. `$agent` (and other `$name` placeholders) are substituted at evaluation time for `for_each_agent` beats and `params:[agent]` archetypes.
+Predicates and effects use quality refs as opaque dotted strings — `mission.extraction_stage`, `agent[LYNX].cover`. Both may be authored as the explicit tagged-union dict form OR as short DSL strings: `when: "agent[$agent].cover > 0 and mission.extraction_stage == 1"` and `effects: ["agent[$agent].cover -= 2"]`. `$agent` (and other `$name` placeholders) are substituted at evaluation time for `for_each_agent` events and `params:[agent]` archetypes.
 
 Optional per-mission authoring: `standing_orders:` (a list of prose constraints injected into all three agent system prompts) and `dramatic_questions:` (predicate-gated framing the SoP leads with each cycle).
 
-Terminal beats need a `terminal: true` + `outcome_key:` that exists in the mission's `outcomes:` map; the validator catches mismatches at load time.
+Events under `events:` cover four shapes via flags:
+- `force_into_drafter: true` — surfaced to the drafter with LLM-facing prose constraints (`intent`, `must_communicate`, `must_not`, `tone`); fires when the player picks the satisfying option.
+- `terminal: true` + `outcome_key:` — ends the mission. The outcome_key must exist in `outcomes:`; the validator catches mismatches at load time.
+- `only_when_no_progress_this_cycle: true` — passive pressure that fires only on cycles where the authorized option didn't progress the mission.
+- `for_each_agent: true` — expands `$agent` over the mission's agents; pairs with `fires_at_most: once_per_agent` or `unlimited`.
 
 Point the sidecar at a non-default mission with `MISSION_PATH=/path/to/mission.yaml make sidecar`.
 
@@ -93,7 +97,7 @@ handler/
 ├── missions/           # authored mission YAMLs (lynx_exfil.yaml is MVP)
 ├── scripts/
 │   └── playtest/       # option-picker harness + personas + evaluators
-└── tests/              # unit suite (49 tests as of Phase 6)
+└── tests/              # unit suite (167 tests)
 
 web/                    # Vite + React + Tailwind. Single dark theme.
 ├── src/

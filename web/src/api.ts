@@ -36,7 +36,7 @@ export interface OptionPayload {
   agent: string | null;
   params: Record<string, string>;
   title: string;
-  satisfies_moment: string | null;
+  satisfies_event: string | null;
 }
 
 export type Quality = number | string | boolean;
@@ -97,9 +97,9 @@ export type SseEvent =
   | { event: "mission_started"; mission_id: string; mission_name: string; codename: string; max_cycles: number; agents: AgentMeta[]; state: GameState }
   | { event: "cycle_opened"; cycle: number; state: GameState }
   | { event: "sop_word"; cycle: number; idx: number; word: string; is_last?: boolean }
-  | { event: "option_started"; cycle: number; option_idx: number; archetype: string; agent: string | null; params: Record<string, string>; title: string; satisfies_moment: string | null }
+  | { event: "option_started"; cycle: number; option_idx: number; archetype: string; agent: string | null; params: Record<string, string>; title: string; satisfies_event: string | null }
   | { event: "option_word"; cycle: number; option_idx: number; idx: number; word: string; is_last?: boolean }
-  | { event: "options_complete"; cycle: number; count: number; has_forced_moment: boolean; moment_id: string | null; engine_fallback: boolean }
+  | { event: "options_complete"; cycle: number; count: number; has_forced_event: boolean; event_id: string | null; engine_fallback: boolean }
   | { event: "awaiting_auth" }
   | { event: "awaiting_continue"; cycle: number }
   | { event: "effects_applied"; delta: Delta }

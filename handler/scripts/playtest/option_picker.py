@@ -5,7 +5,7 @@ the best-scoring option. Pure function — no I/O, no LLM. Deterministic given
 the same persona + options.
 
 Heuristic:
-  1. If `always_satisfy_forced_moments` and one option carries `satisfies_moment`,
+  1. If `always_satisfy_forced_events` and one option carries `satisfies_event`,
      pick that option.
   2. Otherwise score = persona.priorities.get(option.archetype, 0). Pick max.
   3. Ties: break by first occurrence in the option list.
@@ -29,12 +29,12 @@ class PickedOption:
 
     archetype: str
     agent: str | None
-    satisfies_moment: str | None
+    satisfies_event: str | None
 
-    def __init__(self, archetype: str, agent: str | None, satisfies_moment: str | None) -> None:
+    def __init__(self, archetype: str, agent: str | None, satisfies_event: str | None) -> None:
         self.archetype = archetype
         self.agent = agent
-        self.satisfies_moment = satisfies_moment
+        self.satisfies_event = satisfies_event
 
 
 def pick(persona: PersonaSpec, options: Sequence[PickedOption]) -> int:
@@ -45,9 +45,9 @@ def pick(persona: PersonaSpec, options: Sequence[PickedOption]) -> int:
     if not options:
         raise ValueError("no options to pick from")
 
-    if persona.always_satisfy_forced_moments:
+    if persona.always_satisfy_forced_events:
         for i, opt in enumerate(options):
-            if opt.satisfies_moment:
+            if opt.satisfies_event:
                 return i
 
     best_idx = 0

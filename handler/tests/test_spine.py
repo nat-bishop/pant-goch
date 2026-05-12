@@ -165,7 +165,7 @@ def test_due_forced_events_fires_when_predicate_holds(mission, state):
 def test_apply_forced_event_effects_records_fire(mission, state):
     state.set_quality("mission.progress", 1)
     event = due_forced_events(state, mission)[0]
-    opt = Option(archetype="PUSH", title="t", prose="p", satisfies_moment="turning_point")
+    opt = Option(archetype="PUSH", title="t", prose="p", satisfies_event="turning_point")
     apply_forced_event_effects(state, event, opt)
     assert "turning_point" in state.fired
     assert state.get_quality("mission.progress") == 2  # 1 + 1

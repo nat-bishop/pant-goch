@@ -71,26 +71,26 @@ def no_engine_fallback(rec: SessionRecord) -> EvalResult:
     return EvalResult("no_engine_fallback", True)
 
 
-def moment_fired_when_eligible(rec: SessionRecord) -> EvalResult:
-    """If a forced moment appeared in any cycle, exactly one option satisfied
+def forced_event_satisfied_when_eligible(rec: SessionRecord) -> EvalResult:
+    """If a forced event appeared in any cycle, exactly one option satisfied
     it. (The engine validates this server-side; the evaluator double-checks
     the recorded trace.)"""
     failures: list[int] = []
     for c in rec.cycles:
-        if c.forced_moment_id is None:
+        if c.forced_event_id is None:
             continue
         satisfiers = [
-            o for o in c.options if o.get("satisfies_moment") == c.forced_moment_id
+            o for o in c.options if o.get("satisfies_event") == c.forced_event_id
         ]
         if len(satisfiers) != 1:
             failures.append(c.cycle_index)
     if failures:
         return EvalResult(
-            "moment_fired_when_eligible",
+            "forced_event_satisfied_when_eligible",
             False,
-            f"cycles with bad forced-moment counts: {failures}",
+            f"cycles with bad forced-event counts: {failures}",
         )
-    return EvalResult("moment_fired_when_eligible", True)
+    return EvalResult("forced_event_satisfied_when_eligible", True)
 
 
 def cycles_within_budget(rec: SessionRecord, max_cycles: int) -> EvalResult:
@@ -133,7 +133,7 @@ def run_all(rec: SessionRecord, *, expected_outcome: str | None, max_cycles: int
         terminal_reached(rec),
         expected_outcome_reached(rec, expected_outcome),
         cycles_within_budget(rec, max_cycles),
-        moment_fired_when_eligible(rec),
+        forced_event_satisfied_when_eligible(rec),
         options_tonal_spread(rec),
         no_engine_fallback(rec),
     ]

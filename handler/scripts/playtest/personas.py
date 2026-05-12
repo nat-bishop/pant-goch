@@ -21,9 +21,9 @@ YAML schema:
     DIVERSION_BY_AGENT: 30
     HOLD: -50
 
-  # When a forced moment appears in the option set, always pick the option
+  # When a forced event appears in the option set, always pick the option
   # that satisfies it (overrides priorities). Default true.
-  always_satisfy_forced_moments: true
+  always_satisfy_forced_events: true
 """
 from __future__ import annotations
 
@@ -40,7 +40,7 @@ class PersonaSpec:
     description: str
     priorities: dict[str, int]
     expected_outcome: str | None = None
-    always_satisfy_forced_moments: bool = True
+    always_satisfy_forced_events: bool = True
     quirks: list[str] = field(default_factory=list)
 
     @classmethod
@@ -52,7 +52,7 @@ class PersonaSpec:
             description=data["description"],
             priorities=dict(data.get("priorities", {})),
             expected_outcome=data.get("expected_outcome"),
-            always_satisfy_forced_moments=data.get("always_satisfy_forced_moments", True),
+            always_satisfy_forced_events=data.get("always_satisfy_forced_events", True),
             quirks=list(data.get("quirks", [])),
         )
 

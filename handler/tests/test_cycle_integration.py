@@ -54,7 +54,7 @@ def _stub_drafter_llm(rt):
             if (arch, agent) in seen:
                 continue
             seen.add((arch, agent))
-            satisfies = forced_event_id if (forced_event_id and not any(o.satisfies_moment for o in options)) else None
+            satisfies = forced_event_id if (forced_event_id and not any(o.satisfies_event for o in options)) else None
             options.append(
                 Option(
                     archetype=arch,
@@ -62,7 +62,7 @@ def _stub_drafter_llm(rt):
                     params=params,
                     title=f"Authorize {arch}",
                     prose=f"Take action {arch}.",
-                    satisfies_moment=satisfies,
+                    satisfies_event=satisfies,
                 )
             )
             if len(options) == 3:
@@ -84,7 +84,7 @@ def _stub_drafter_emit(rt):
                     "agent": option.agent,
                     "params": option.params,
                     "title": option.title,
-                    "satisfies_moment": option.satisfies_moment,
+                    "satisfies_event": option.satisfies_event,
                 }
             )
         await rt.out_queue.put(
@@ -92,8 +92,8 @@ def _stub_drafter_emit(rt):
                 "event": "options_complete",
                 "cycle": cycle_index,
                 "count": len(options),
-                "has_forced_moment": forced_event_id is not None,
-                "moment_id": forced_event_id,
+                "has_forced_event": forced_event_id is not None,
+                "event_id": forced_event_id,
                 "engine_fallback": engine_fallback,
             }
         )

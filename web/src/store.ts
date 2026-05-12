@@ -20,7 +20,7 @@ export interface OptionDraft {
   title: string;
   prose_words: string[];
   complete: boolean;
-  satisfies_moment: string | null;
+  satisfies_event: string | null;
 }
 
 export interface DispatchEntry {
@@ -245,7 +245,7 @@ export const useStore = create<Store>((set, get) => ({
           title: ev.title,
           prose_words: [],
           complete: false,
-          satisfies_moment: ev.satisfies_moment,
+          satisfies_event: ev.satisfies_event,
         };
         const options = [...c.options];
         options[ev.option_idx] = opt;
