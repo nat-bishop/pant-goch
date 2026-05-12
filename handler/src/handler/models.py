@@ -337,21 +337,32 @@ class Event(BaseModel):
                 f"Event {self.id!r}: for_each_agent=True requires "
                 f"fires_at_most='once_per_agent' or 'unlimited'"
             )
+        if self.fires_at_most == "once_per_agent" and not self.for_each_agent:
+            # `once_per_agent` is only meaningful when the event has an agent
+            # dimension to gate on — i.e. when `for_each_agent=True`.
+            raise ValueError(
+                f"Event {self.id!r}: fires_at_most='once_per_agent' requires "
+                f"for_each_agent=True"
+            )
         if self.force_into_drafter:
             # Forced events fire pre-effects via drafter selection; the passive
-            # post-effects flags have no engine semantics in that path.
-            if self.terminal:
+            # post-effects flags have no engine semantics in that path. The
+            # fires_at_most restriction also keeps the live spine mutation in
+            # sync with the fold-replay path (both append `event.id` to
+            # `state.fired` exactly once per authored event).
+            for attr in (
+                "terminal",
+                "for_each_agent",
+                "only_when_no_progress_this_cycle",
+            ):
+                if getattr(self, attr):
+                    raise ValueError(
+                        f"Event {self.id!r}: force_into_drafter cannot combine with {attr}"
+                    )
+            if self.fires_at_most != "once_per_mission":
                 raise ValueError(
-                    f"Event {self.id!r}: force_into_drafter cannot combine with terminal"
-                )
-            if self.for_each_agent:
-                raise ValueError(
-                    f"Event {self.id!r}: force_into_drafter cannot combine with for_each_agent"
-                )
-            if self.only_when_no_progress_this_cycle:
-                raise ValueError(
-                    f"Event {self.id!r}: force_into_drafter cannot combine with "
-                    f"only_when_no_progress_this_cycle"
+                    f"Event {self.id!r}: force_into_drafter=True requires "
+                    f"fires_at_most='once_per_mission' (forced events are one-shot)"
                 )
         return self
 

@@ -254,7 +254,7 @@ async def run_cycle(
         satisfied_event_id: str | None = None
         # `chosen.satisfies_moment` keeps the LLM-facing "moment" word in the
         # Option field name; its value is an event id from `mission.events`.
-        if chosen.satisfies_moment is not None and forced is not None:
+        if chosen.satisfies_moment is not None:
             for e in forced:
                 if e.id == chosen.satisfies_moment:
                     edelta = apply_forced_event_effects(state, e, chosen)

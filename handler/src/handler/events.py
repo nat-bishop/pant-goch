@@ -27,6 +27,7 @@ from typing import Annotated, Any, Literal, Union, assert_never
 from pydantic import BaseModel, Field
 
 from .models import MissionResolution, Option, State
+from .spine import per_agent_key
 
 
 # A delta is a map of quality_name -> (before, after).
@@ -170,7 +171,7 @@ def fold(state: State, event: Event) -> None:
         return  # observation only
     if isinstance(event, EffectsApplied):
         _apply_delta(state, event.delta)
-        if event.forced_event_id is not None and event.forced_event_id not in state.fired:
+        if event.forced_event_id is not None:
             state.fired.append(event.forced_event_id)
         return
     if isinstance(event, EventsFired):
@@ -178,7 +179,7 @@ def fold(state: State, event: Event) -> None:
             _apply_delta(state, delta)
             state.fired.append(event_id)
             if agent_id is not None:
-                state.fired_per_agent.append(f"{event_id}:{agent_id}")
+                state.fired_per_agent.append(per_agent_key(event_id, agent_id))
         return
     if isinstance(event, CycleClosed):
         _apply_delta(state, event.delta)

@@ -161,21 +161,17 @@ def valid_archetype_combinations(
 
 
 def due_forced_events(state: State, mission: Mission) -> list[Event]:
-    """Forced events whose `when` holds and haven't exhausted `fires_at_most`.
-    Filters `mission.events` to those with `force_into_drafter=True` — these
-    are surfaced to the drafter so one option this cycle must satisfy them.
+    """Forced events whose `when` holds and haven't already fired. Filters
+    `mission.events` to those with `force_into_drafter=True` — these are
+    surfaced to the drafter so one option this cycle must satisfy them.
+    The `_consistency` validator pins forced events to `fires_at_most="once_per_mission"`.
     """
-    out: list[Event] = []
-    for e in mission.events:
-        if not e.force_into_drafter:
-            continue
-        if e.fires_at_most == "once_per_mission" and e.id in state.fired:
-            continue
-        # `once_per_agent` on forced events is not exercised in MVP; the only
-        # MVP forced event (kestrel_sacrifice) fires once per mission.
-        if evaluate_predicate(state, e.when):
-            out.append(e)
-    return out
+    return [
+        e for e in mission.events
+        if e.force_into_drafter
+        and e.id not in state.fired
+        and evaluate_predicate(state, e.when)
+    ]
 
 
 # ───────────────────────── archetype application ─────────────────────────
@@ -236,15 +232,22 @@ def apply_forced_event_effects(
 # ───────────────────────── passive-event firing ─────────────────────────
 
 
+def per_agent_key(event_id: str, agent_id: str) -> str:
+    """Canonical key format for the `state.fired_per_agent` ledger. The live
+    spine write and the fold replay write both go through this helper so the
+    delimiter shape is single-source."""
+    return f"{event_id}:{agent_id}"
+
+
 def _event_fired_already(state: State, event: Event, agent_id: str | None) -> bool:
     if event.fires_at_most == "unlimited":
         return False
     if event.fires_at_most == "once_per_mission":
         return event.id in state.fired
-    # once_per_agent
-    if agent_id is None:
-        return event.id in state.fired
-    return f"{event.id}:{agent_id}" in state.fired_per_agent
+    # once_per_agent — the `_consistency` validator pins this to events with
+    # `for_each_agent=True`, so `agent_id` is always set on this path.
+    assert agent_id is not None, "once_per_agent event fired without agent_id"
+    return per_agent_key(event.id, agent_id) in state.fired_per_agent
 
 
 def merge_delta_into(
@@ -282,36 +285,31 @@ def fire_due_passive_events(
         if event.only_when_no_progress_this_cycle and made_progress:
             continue
 
-        if event.for_each_agent:
-            for agent in mission.agents:
-                if _event_fired_already(state, event, agent.id):
-                    continue
-                pred = substitute_predicate(event.when, {"agent": agent.id})
-                if not evaluate_predicate(state, pred):
-                    continue
-                effects = [substitute_effect(e, {"agent": agent.id}) for e in event.effects]
-                delta = _apply_many(state, effects)
-                state.fired_per_agent.append(f"{event.id}:{agent.id}")
-                # Also record in `state.fired` — predicates that just ask
-                # "did this event fire at all" don't care about the agent split.
-                state.fired.append(event.id)
-                if event.terminal and event.outcome_key is not None:
-                    state.outcome = event.outcome_key
-                fires.append((event, agent.id, delta))
-                merge_delta_into(aggregate, delta)
-                if event.terminal:
-                    break  # one terminal fire is enough
-        else:
-            if _event_fired_already(state, event, None):
+        # Non-`for_each_agent` events iterate once with no agent binding;
+        # `for_each_agent` events expand over the mission's agents. The body
+        # below is identical for both.
+        agent_ids: list[str | None] = (
+            [a.id for a in mission.agents] if event.for_each_agent else [None]
+        )
+
+        for agent_id in agent_ids:
+            if _event_fired_already(state, event, agent_id):
                 continue
-            if not evaluate_predicate(state, event.when):
+            placeholders = {"agent": agent_id} if agent_id is not None else {}
+            pred = substitute_predicate(event.when, placeholders)
+            if not evaluate_predicate(state, pred):
                 continue
-            delta = _apply_many(state, event.effects)
+            effects = [substitute_effect(e, placeholders) for e in event.effects]
+            delta = _apply_many(state, effects)
             state.fired.append(event.id)
+            if agent_id is not None:
+                state.fired_per_agent.append(per_agent_key(event.id, agent_id))
             if event.terminal and event.outcome_key is not None:
                 state.outcome = event.outcome_key
-            fires.append((event, None, delta))
+            fires.append((event, agent_id, delta))
             merge_delta_into(aggregate, delta)
+            if event.terminal:
+                break  # one terminal fire is enough
 
     return fires, aggregate
 
@@ -400,7 +398,7 @@ def derive_tension_band(prior_state: State | None, state: State) -> TensionBand:
     """Classify the magnitude of cover swing this cycle — a renderer-side
     signal so a quiet cycle reads measured and a sharp drop reads kinetic.
     `prior_state` is the state at the start of the cycle (before
-    archetype/moment/beat application); `state` is post-cycle.
+    archetype/event application); `state` is post-cycle.
     """
     if prior_state is None:
         return "steady"
