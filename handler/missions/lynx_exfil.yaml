@@ -24,20 +24,20 @@ opening_prose: |
   she was photographed at a meeting that should not have happened — Colonel
   MUNTEANU holds that file. KESTREL is in the same city on a separate
   reconnaissance, cover intact, paired with LYNX on the Vienna op two
-  winters back. Six cycles to get LYNX out before MUNTEANU names her.
+  winters back. Six days to get LYNX out before MUNTEANU names her.
 
 opening_briefing: |
   From: MERIWETHER, Director, Romanian Desk
   To: RAVEN, handler-of-record
   Re: OP. LYNX-EXFIL
 
-  You have six cycles.
+  You have six days.
 
   Forty-eight hours ago the resident's people photographed LYNX at a meet
   that should not have happened. The image is in the Bucharest file.
-  Counter-intel — Colonel MUNTEANU, name him plainly in your cables — has
-  not moved yet. He will. The sweep is tightening; once LYNX is named in
-  MUNTEANU's report the file closes.
+  Counter-intel — Colonel MUNTEANU, name him plainly in your reports — has
+  not moved yet. He will. The investigation is tightening; once LYNX is
+  named in MUNTEANU's report the file closes.
 
   The eastern train is clean. The Vienna network is offline; do not ask.
 
@@ -57,7 +57,7 @@ setting: |
   is Colonel MUNTEANU's directorate; the photographic file on LYNX is the
   driver of the tightening perimeter. The Vienna network is offline. The
   eastern train line is the planned extraction corridor — clean, for now.
-  REDFIELD, your fourteen-year sleeper, is the only access to the papers.
+  REDFIELD, your fourteen-year sleeper, is the only access to the documents.
 
 # Persistent prose constraints surfaced to all three agents' system prompts.
 # Use for facts the renderer/SoP/drafter must honour every cycle. Authored
@@ -69,28 +69,128 @@ standing_orders:
   - "MUNTEANU has not yet named LYNX in his report. Once he does, the file closes."
   - "Render MUNTEANU through absence and pressure — never put words in his mouth."
 
-# Per-state-shape SoP framing. Engine selects the first matching question
-# each cycle; SoP leads with it. Author from most-specific to most-general.
-dramatic_questions:
-  - when: "agent[LYNX].cover <= 2"
-    question: "LYNX is hours from collapse. What buys her one more cycle?"
-  - when: "agent[KESTREL].cover <= 4 and mission.cycles_remaining <= 2"
-    question: "Is KESTREL still useful, or do we cut her loose?"
-  - when: "mission.extraction_stage == 2 and mission.cycles_remaining <= 2"
-    question: "Run the train tonight, or hold one more cycle for clean lanes?"
-  - when: "mission.cycles_remaining <= 2"
-    question: "There is no longer time for caution."
-  # Stage-0 variants — rotate so a stage-stuck playthrough doesn't repeat
-  # the same opening line every cycle. Most-specific first.
-  - when: "mission.extraction_stage == 0 and event_fired:kestrel_warns_lynx"
-    question: "KESTREL paid for that warning. What did it buy us?"
-  - when: "mission.extraction_stage == 0 and mission.cycles_remaining <= 3"
-    question: "REDFIELD has been in place fourteen years. Spend him, or find another way?"
-  - when: "mission.extraction_stage == 0"
-    question: "Where do we surface the papers, and at what cost?"
-  # Stage-1 variant — the papers are moving but not yet placed.
-  - when: "mission.extraction_stage == 1"
-    question: "The papers are in motion. Who carries them, and at what cost?"
+# Per-cycle authored beats — observational fragments threaded into the
+# drafter's user prompt (framing color) and the log writer's leans
+# (foregrounding directive). Engine picks the highest-priority `when`-matching
+# unfired beat per cycle; the beat's id lands in `state.fired` so the same
+# fragment never surfaces twice. Lower `priority` fires first (matches Event.priority);
+# authored order breaks ties.
+#
+# Authoring discipline: each fragment is ONE example phrasing. The prompts
+# instruct the LLM to translate through the cycle's situation, not quote
+# verbatim — so write the fragment concrete enough to be evocative, generic
+# enough that any cycle in its predicate-space can carry it.
+beats:
+  # ─── Crisis register (priority 1 — highest) ───
+  - id: lynx_at_brink
+    when: "agent[LYNX].cover <= 2"
+    priority: 1
+    fragment: "LYNX is hours from collapse. Every move buys time at a cost we cannot yet name."
+
+  - id: kestrel_late_burn
+    when: "agent[KESTREL].cover <= 4 and mission.cycles_remaining <= 2"
+    priority: 1
+    fragment: "KESTREL has paid into this run already. The next move decides what she was paying for."
+
+  - id: train_or_wait
+    when: "mission.extraction_stage == 2 and mission.cycles_remaining <= 2"
+    priority: 1
+    fragment: "The train runs tonight either way. The only question is whose hand is on her shoulder when she boards."
+
+  - id: time_is_out
+    when: "mission.cycles_remaining <= 2"
+    priority: 2
+    fragment: "There is no longer time for caution. The deputy chief has stopped asking after RAVEN by name in the morning brief."
+
+  # ─── Reactive callbacks (priority 2 — fire when relevant events have landed) ───
+  - id: redfield_aftermath
+    when: "event_fired:burn_redfield"
+    priority: 2
+    fragment: "REDFIELD's wife was at the Piaţa Obor market this morning. Someone will tell her, eventually. Not us."
+
+  - id: kestrel_warning_aftermath
+    when: "event_fired:kestrel_warns_lynx"
+    priority: 2
+    fragment: "KESTREL paid in her own cover for that warning. The Vienna run cost her a back channel; this cost her a different one."
+
+  - id: kestrel_sacrifice_echo
+    when: "event_fired:kestrel_sacrifice"
+    priority: 2
+    fragment: "KESTREL chose. The case file will record what she chose; it will not record what she meant by it."
+
+  # ─── Stage 0 variants (priority 3 — keep cycle 1-3 framings distinct) ───
+  - id: photograph_in_drawer
+    when: "mission.extraction_stage == 0 and mission.cycles_remaining >= 4"
+    priority: 3
+    fragment: "The photograph is in a desk drawer MUNTEANU locks at midnight. We know which drawer. We do not know what time he leaves it open."
+
+  - id: redfield_fourteen_years
+    when: "mission.extraction_stage == 0 and mission.cycles_remaining <= 3"
+    priority: 3
+    fragment: "REDFIELD has been in place fourteen years. The file says he survived the '11 sweep; it does not say how."
+
+  - id: meriwether_silence
+    when: "mission.extraction_stage == 0 and mission.cycles_remaining <= 4"
+    priority: 4
+    fragment: "MERIWETHER has not cabled since the open. The deputy chief has."
+
+  - id: vienna_offline
+    when: "mission.extraction_stage == 0"
+    priority: 5
+    fragment: "The Vienna network is offline. Whatever LYNX needs, we surface it from the city she's already in."
+
+  - id: courier_coat
+    when: "mission.extraction_stage == 0"
+    priority: 6
+    fragment: "A brush pass last week left the smell of a particular cigarette on a courier's coat — a brand REDFIELD stopped buying in '22."
+
+  - id: documents_where
+    when: "mission.extraction_stage == 0"
+    priority: 7
+    fragment: "Where do we surface the documents, and at what cost? The file lists three answers; two of them end with a man we cannot replace."
+
+  # ─── Stage 1 variants (papers in motion) ───
+  - id: who_carries
+    when: "mission.extraction_stage == 1"
+    priority: 3
+    fragment: "The documents are in motion. The next pair of hands to hold them is the pair that pays for them."
+
+  - id: deaddrop_temptation
+    when: "mission.extraction_stage == 1 and agent[LYNX].cover <= 5"
+    priority: 3
+    fragment: "A dead drop is safer than a brush pass and slower than the directorate's morning briefing. LYNX has read that paragraph in the manual; so has MUNTEANU."
+
+  - id: train_loaders_shift
+    when: "mission.extraction_stage in 1..2"
+    priority: 4
+    fragment: "The eastern train's loaders changed shift assignments last Thursday. The file knows this. Nobody has asked why."
+
+  # ─── Stage 2 variants (safehouse confirmed) ───
+  - id: safehouse_quiet
+    when: "mission.extraction_stage == 2 and mission.cycles_remaining >= 3"
+    priority: 3
+    fragment: "The safehouse is a room above a tailor's shop. The tailor does not know who his upstairs tenants are. He thinks they are quiet."
+
+  - id: daughter_unspoken
+    when: "mission.extraction_stage == 2"
+    priority: 4
+    fragment: "LYNX has not seen her daughter in fourteen months. It is not in the file. RAVEN does not need the file to know it."
+
+  - id: kestrel_chooses
+    when: "mission.extraction_stage == 2 and agent[KESTREL].cover <= 6"
+    priority: 4
+    fragment: "KESTREL is upstream of the train, in a city she has burned a lane in before. She is calm enough to list things in threes."
+
+  # ─── Background ambient (priority 8 — last-resort framings) ───
+  - id: bucharest_winter_light
+    when: "mission.cycles_remaining >= 1"
+    priority: 8
+    fragment: "Bucharest in late winter: light fails at five. Most of the operation lives in the hour before it does."
+
+  - id: file_in_two_drawers
+    when: "mission.cycles_remaining >= 1"
+    priority: 9
+    fragment: "Two files exist on LYNX. Ours has a daughter in London. MUNTEANU's has a photograph. The two have not yet been read in the same room."
 
 cast:
   - id: LYNX
@@ -112,8 +212,8 @@ cast:
       she leaves unsaid.
     situation: |
       Inside the city on partial cover. Forty-eight hours since the
-      compromising photograph. The sweep has not yet moved on her but
-      MUNTEANU is reading the file. Her movement is constrained.
+      compromising photograph. The investigation has not yet moved on her
+      but MUNTEANU is reading the file. Her movement is constrained.
     starting_cover: 6
 
   - id: KESTREL
@@ -125,7 +225,7 @@ cast:
       Two years in service, improvises constantly. Older than LYNX, served
       a tour under RAVEN before LYNX existed in the file. The Vienna run
       cost her a back channel she still doesn't speak of. Knows LYNX has
-      a daughter; never names it in cables.
+      a daughter; never names it in reports.
 
       Voice: elaborate, justifying, present-tense; runs sentences long.
       Talks herself through situations on paper — justifies before it
@@ -168,7 +268,7 @@ cast:
       deputy chief at the morning brief.
 
       Voice: never decorates. Acknowledges nothing — even success is
-      "noted, RAVEN." Appears in cables at mission open and at mission
+      "noted, RAVEN." Appears in reports at mission open and at mission
       close; otherwise his presence is felt as pressure, not text.
 
   - id: REDFIELD
@@ -178,12 +278,13 @@ cast:
     voice_register: "never written in his own voice — REDFIELD is the man on the other end of the burn"
     voice_details: |
       Fourteen years in place in Bucharest. Belgrade contact who survived
-      the '11 sweep. Wife who does not know his real name. He is the only
-      access to the extraction papers, and contact costs him his life.
+      the '11 round-up. Wife who does not know his real name. He is the
+      only access to the extraction documents, and contact costs him his
+      life.
     situation: |
       Off-stage. The sleeper is in the file as a Bucharest civilian; the
-      file does not know he is yours. Activating him surfaces the papers
-      and ends him in one cycle.
+      file does not know he is yours. Activating him surfaces the documents
+      and ends him in one day.
 
   - id: MUNTEANU
     codename: Munteanu
@@ -194,7 +295,7 @@ cast:
       Colonel, Romanian counter-intelligence directorate. Forty-one.
       Holds the file with the compromising photograph of LYNX. Has not
       yet named her in his report — she is "the woman in the photograph"
-      in his cables, which is worse, because once he names her the file
+      in his reports, which is worse, because once he names her the file
       closes.
 
       Render him through absence and tightening: a courier route
@@ -208,33 +309,136 @@ cast:
 # entry only when overriding the built-in display.
 qualities:
   mission.extraction_stage:
-    initial: 0   # 0 unstarted, 1 papers, 2 location, 3 exfil
+    initial: 0   # 0 unstarted, 1 documents, 2 location, 3 exfil
     values:
-      "0": "the extraction papers have not yet been surfaced"
-      "1": "the extraction papers are being moved into hand"
+      "0": "the extraction documents have not yet been surfaced"
+      "1": "the extraction documents are being moved into hand"
       "2": "the safe-house is confirmed; LYNX is positioned for exfil"
       "3": "exfil is underway"
+
+  # Hidden — MUNTEANU's progress toward naming LYNX in his report (the loss
+  # condition the briefing literally promises). Never shown explicitly:
+  # `visible: false` skips it from OPERATION POSTURE bullets and from the
+  # RESULT footer. The drafter / log-writer see it only through the
+  # HIDDEN STATE TO HINT AT block, which rotates phrasing per cycle via the
+  # variants-per-band shape so the player can't phrase-decode the band.
+  #
+  # Tick rules: baseline +1 per cycle (see `opposition_advances`); +1 if
+  # LYNX drew attention this day; HOLD adds +1; ACTIVATE_SLEEPER adds +1
+  # (REDFIELD on the wire creates noise); DIVERSION_BY_AGENT subtracts 1
+  # (the bound agent peels him back).
+  mission.opposition.naming_progress:
+    initial: 2
+    visible: false
+    bands:
+      - threshold: 3
+        variants:
+          - "MUNTEANU is reading the file. He has not yet moved."
+          - "The directorate is quiet. The photograph is still in the drawer."
+          - "No new sweep activity on the streets LYNX walks."
+          - "The morning brief at the directorate ran short — nothing new in it."
+      - threshold: 6
+        variants:
+          - "The perimeter feels tighter than the file suggests. A face in a tram window LYNX did not name."
+          - "A courier route that worked yesterday is suddenly unavailable."
+          - "MUNTEANU's morning report ran long. Something is in it."
+          - "A name LYNX uses for a contact she has not used in months was overheard at a tram stop."
+      - threshold: 8
+        variants:
+          - "The sweep is tightening on streets LYNX has not yet visited."
+          - "A meeting LYNX did not attend that nobody arranged."
+          - "MUNTEANU's car was seen at an address no one in our file gave him."
+          - "Two of REDFIELD's brush-pass dead drops have been moved overnight."
+      - threshold: 10
+        variants:
+          - "A knock at the door of an apartment LYNX has never been to."
+          - "He is one step ahead now. The photograph has been shown to a name we did not give him."
+          - "MUNTEANU's people are at the eastern station already. They are not looking for a train."
 
 outcomes:
   win_lynx_extracted: "LYNX safely extracted via the eastern train route."
   loss_lynx_captured: "LYNX's cover collapsed before extraction. She was lost."
+  loss_lynx_named: "MUNTEANU named LYNX in his report. The file closed before the train moved."
   loss_timeout: "The window closed. The operation has been closed without resolution."
 
 archetypes:
   - id: ACTIVATE_SLEEPER_FOR_PAPERS
-    intent: "Activate the sleeper REDFIELD to surface the extraction papers."
+    intent: |
+      Activate the sleeper REDFIELD to surface the extraction documents.
+      Surfacing him creates noise the directorate will register.
     when: "mission.extraction_stage == 0"
     params: []
     effects:
       - "mission.extraction_stage = 1"
+      # Surfacing the sleeper creates noise — MUNTEANU's progress ticks.
+      - "mission.opposition.naming_progress += 1"
 
+  # Opposed check (clean / partial / failure against hidden naming_progress).
+  # The option's prose MUST name the gamble in-fiction — see the intent rule.
   - id: RETRIEVE_PAPERS_VIA_AGENT
-    intent: "Send the bound agent to physically pick up the papers — costs cover."
+    intent: |
+      Send the bound agent to physically pick up the documents. The
+      directorate may already be there — option prose MUST name that
+      gamble in-fiction (e.g. "if MUNTEANU is closer than the file
+      suggests, this puts her in his hand") without predicting the outcome.
     when: "mission.extraction_stage == 1 and agent[$agent].cover > 0"
     params: [agent]
     effects:
-      - "mission.extraction_stage = 2"
-      - "agent[$agent].cover -= 2"
+      # CLEAN (naming < 5): clean retrieval, -2 cover, stage advances.
+      - quality: mission.extraction_stage
+        value: 2
+        op: set
+        when: "mission.opposition.naming_progress < 5"
+        branch: clean
+      - quality: agent[$agent].cover
+        value: -2
+        op: add
+        when: "mission.opposition.naming_progress < 5"
+        branch: clean
+      # PARTIAL (5..7): seen but not named, -4 cover, stage advances,
+      # naming peels back by one as MUNTEANU's resources tilt.
+      - quality: mission.extraction_stage
+        value: 2
+        op: set
+        when: "mission.opposition.naming_progress in 5..7"
+        branch: partial
+      - quality: agent[$agent].cover
+        value: -4
+        op: add
+        when: "mission.opposition.naming_progress in 5..7"
+        branch: partial
+      - quality: mission.opposition.naming_progress
+        value: -1
+        op: add
+        when: "mission.opposition.naming_progress in 5..7"
+        branch: partial
+      # FAILURE (>= 8): MUNTEANU was already there. -6 cover, stage does
+      # NOT advance, REDFIELD compromised, naming snaps up by two.
+      - quality: agent[$agent].cover
+        value: -6
+        op: add
+        when: "mission.opposition.naming_progress >= 8"
+        branch: failure
+      - quality: mission.redfield_compromised
+        value: true
+        op: set
+        when: "mission.opposition.naming_progress >= 8"
+        branch: failure
+      - quality: mission.opposition.naming_progress
+        value: 2
+        op: add
+        when: "mission.opposition.naming_progress >= 8"
+        branch: failure
+    branch_leans:
+      clean:
+        - "the retrieval went the way it should — name one small detail the field is grateful for; do not over-name MUNTEANU's absence"
+      partial:
+        - "$agent was seen but not yet named — name what specifically tightened around them in the seconds after the hand-off"
+        - "the entry acknowledges the gamble paid out and what it cost the agent's posture going forward"
+      failure:
+        - "the entry is a REVELATION of what the previous day's memo only hinted at — MUNTEANU was already there"
+        - "name one specific sensory detail of the trap (the courier's wet coat, the tram conductor's tic, the door that was open when it should not have been) that prior days did NOT make explicit"
+        - "REDFIELD is in the directorate's hand now; do not narrate his fate, but do not pretend he is reachable"
 
   - id: DEAD_DROP_PAPERS
     intent: "Slower, safer alternative to direct retrieval. No cover hit but doesn't progress."
@@ -249,29 +453,79 @@ archetypes:
     effects:
       - "agent[LYNX].cover -= 1"
 
+  # Opposed check against hidden naming_progress. Clean = clean exit,
+  # partial = LYNX wins but KESTREL is the cost, failure = MUNTEANU named her
+  # on the platform — the new `lynx_named` terminal fires next passive pass.
   - id: RUN_EXFIL
-    intent: "Eastern train extraction. Terminal action — clears the mission."
+    intent: |
+      Eastern train extraction. Terminal action — clears the mission.
+      Option prose MUST name the gamble in-fiction (the directorate may be
+      at the platform already) without predicting outcome.
     when: "mission.extraction_stage == 2 and agent[LYNX].cover > 0"
     params: []
     effects:
-      # Two conditional branches per spec §5: clean exit costs less.
-      - "mission.extraction_stage = 3"
-      - "agent[LYNX].cover -= 2 if agent[LYNX].cover >= 5"
-      - "agent[LYNX].cover -= 4 if agent[LYNX].cover < 5"
+      # CLEAN (naming < 6): clean exit, -2 cover.
+      - quality: mission.extraction_stage
+        value: 3
+        op: set
+        when: "mission.opposition.naming_progress < 6"
+        branch: clean
+      - quality: agent[LYNX].cover
+        value: -2
+        op: add
+        when: "mission.opposition.naming_progress < 6"
+        branch: clean
+      # PARTIAL (6..8): LYNX makes the train but KESTREL is lost holding
+      # the perimeter. -4 cover, stage advances.
+      - quality: mission.extraction_stage
+        value: 3
+        op: set
+        when: "mission.opposition.naming_progress in 6..8"
+        branch: partial
+      - quality: agent[LYNX].cover
+        value: -4
+        op: add
+        when: "mission.opposition.naming_progress in 6..8"
+        branch: partial
+      - quality: agent[KESTREL].cover
+        value: 0
+        op: set
+        when: "mission.opposition.naming_progress in 6..8"
+        branch: partial
+      # FAILURE (>= 9): MUNTEANU was at the platform. Force naming = 10 so
+      # the `lynx_named` terminal fires on the next passive pass.
+      - quality: mission.opposition.naming_progress
+        value: 10
+        op: set
+        when: "mission.opposition.naming_progress >= 9"
+        branch: failure
+    branch_leans:
+      clean:
+        - "LYNX is on the train and the city is still in the windows — name one absence (REDFIELD, KESTREL, or the daughter she will see this week); do not have MERIWETHER speak"
+      partial:
+        - "KESTREL is the cost — name her one final time, glancingly, in the eastward sentence; no eulogy"
+        - "LYNX makes the train; the dispatch acknowledges what the perimeter cost"
+      failure:
+        - "MUNTEANU named LYNX on the platform — write the operations register; cold, brief; the file closes"
+        - "name the eastern train, and that LYNX is not on it"
 
   - id: DIVERSION_BY_AGENT
-    intent: "Bound agent draws counter-intel attention. Costly to them, protects LYNX one cycle."
+    intent: "Bound agent draws counter-intel attention. Costly to them, protects LYNX one day, and peels MUNTEANU's investigation back a step."
     when: "agent[$agent].cover > 1"
     params: [agent]
     effects:
       - "agent[$agent].cover -= 3"
       - "agent[LYNX].cover_protected = true"
+      # The diversion splits MUNTEANU's resources — naming progress ticks back.
+      - "mission.opposition.naming_progress -= 1"
 
   - id: HOLD
-    intent: "Take no action this cycle. Passive pressure beats fire; cover decays."
+    intent: "Take no action this day. Passive pressure beats fire; cover decays and MUNTEANU gains time we are not using."
     when: "mission.cycles_remaining >= 1"
     params: []
-    effects: []
+    effects:
+      # HOLD is *expensive* on the hidden clock — MUNTEANU has time we aren't.
+      - "mission.opposition.naming_progress += 1"
 
 # Authored events — one concept covering both forced (drafter-surfaced)
 # events and passive (post-authorization) events. The `force_into_drafter`
@@ -307,21 +561,21 @@ events:
       - "agent[LYNX].cover_protected = true"
 
   # Forced: burn the sleeper for fast intel. Early-mission. Surfaces the
-  # papers AND positions LYNX in one cycle, but costs REDFIELD's life. The
-  # player trades a man for a cycle of tempo.
+  # documents AND positions LYNX in one day, but costs REDFIELD's life. The
+  # player trades a man for a day of tempo.
   - id: burn_redfield
     force_into_drafter: true
     fires_at_most: once_per_mission
     when: "mission.extraction_stage == 0 and not event_fired:burn_redfield"
     intent: |
-      Burn the sleeper REDFIELD to surface the extraction papers and
-      position LYNX in one cycle. REDFIELD has been in place fourteen
-      years; he does not survive contact. Papers in hand and the
+      Burn the sleeper REDFIELD to surface the extraction documents and
+      position LYNX in one day. REDFIELD has been in place fourteen
+      years; he does not survive contact. Documents in hand and the
       safe-house confirmed by dispatch close. The cost is moral, not
       tactical — RAVEN is choosing to spend a man.
     must_communicate:
       - REDFIELD is named, and named as dead by the dispatch's close
-      - The papers are in LYNX's hand and the safe-house is confirmed
+      - The documents are in LYNX's hand and the safe-house is confirmed
       - RAVEN made this choice consciously
     must_not:
       - Frame REDFIELD as surviving, rescued, or merely lost
@@ -329,7 +583,7 @@ events:
       - Predict whether LYNX successfully extracts later
     tone: "solemn, terse, present-tense — the cost is moral, not tactical"
     lean_on:
-      - "REDFIELD is a man, not a function — fourteen years in place, a Belgrade contact who survived the '11 sweep, a wife who does not know his real name"
+      - "REDFIELD is a man, not a function — fourteen years in place, a Belgrade contact who survived the '11 round-up, a wife who does not know his real name"
       - "LYNX does not decorate her grief — name a single sensory detail (the smell of the courier's coat, the taste of metal) and let the rest stand"
       - "MUNTEANU is not yet named, but his pressure is what made this choice the only fast one"
     effects:
@@ -347,7 +601,7 @@ events:
     intent: |
       KESTREL surfaces just enough to warn LYNX directly — a brush pass
       at the tram stop, a courier note signed in a hand LYNX recognises.
-      KESTREL pays in cover; LYNX gains one cycle of protection. KESTREL
+      KESTREL pays in cover; LYNX gains one day of protection. KESTREL
       initiates the cost; RAVEN approves it.
     must_communicate:
       - KESTREL initiates the warning — it is her choice, not ordered
@@ -359,7 +613,7 @@ events:
       - Frame KESTREL as already burned (she is choosing the cost, not paying it all)
     tone: "intimate, terse — the moment is between two people who have done this before"
     lean_on:
-      - "KESTREL writes shorter sentences than usual this cycle — she is making a decision and her prose narrows around it"
+      - "KESTREL writes shorter sentences than usual this day — she is making a decision and her prose narrows around it"
       - "LYNX recognises the brush pass through one specific sensory detail; do not let her name what the warning says"
       - "name the Vienna run once, glancingly, without explanation — both agents know what it cost and the reader does not need to be told"
     effects:
@@ -386,6 +640,19 @@ events:
       - "the final dispatch is from the desk, in the Operations register — terse, declarative, no decoration"
       - "MUNTEANU has named her now; the file closes; do not show MUNTEANU directly"
       - "RAVEN's codename is on the cable header — the reader is told whose desk this lands on, no more"
+
+  # Terminal — MUNTEANU named LYNX in his report. Distinct loss path from
+  # `lynx_lost` (cover collapse). Fires when hidden naming_progress reaches
+  # 10 (either via accumulated baseline ticks or a failed RUN_EXFIL).
+  - id: lynx_named
+    terminal: true
+    outcome_key: loss_lynx_named
+    priority: 0
+    when: "mission.opposition.naming_progress >= 10"
+    lean_on:
+      - "the cable header is operations register — terse, declarative, no decoration"
+      - "MUNTEANU has named her in his report. The photograph has gone to the file's other side."
+      - "name the eastern train, and that LYNX is not on it"
 
   - id: timeout
     terminal: true
@@ -421,3 +688,17 @@ events:
       # blocks this cycle's decay on LYNX.
       - "agent[LYNX].cover -= 1 if not agent[LYNX].cover_protected == true"
       - "agent[KESTREL].cover -= 1 if agent[KESTREL].cover > 0"
+
+  # Baseline tick: +1 every non-terminal day. The second clause adds an
+  # extra +1 if LYNX is visibly exposed this cycle (cover <= 5, no protective
+  # cover) — inlined so we don't need a transient flag in state.qualities.
+  # Net rates per cycle with per-archetype modulation: HOLD = +2 to +3;
+  # DIVERSION(KESTREL) = 0 (the only clean stall); DIVERSION(LYNX) ≈ +1;
+  # ACTIVATE_SLEEPER = +2; other archetypes = +1.
+  - id: opposition_advances
+    fires_at_most: unlimited
+    priority: 5
+    when: "mission.extraction_stage < 3 and mission.opposition.naming_progress < 10"
+    effects:
+      - "mission.opposition.naming_progress += 1"
+      - "mission.opposition.naming_progress += 1 if agent[LYNX].cover <= 5 and not agent[LYNX].cover_protected == true"

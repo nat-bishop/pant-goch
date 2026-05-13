@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import { scrollToCycle } from "../lib/scroll";
 import { useStore } from "../store";
 
 interface Props {
@@ -9,11 +10,10 @@ interface Props {
 export function Sidebar({ open, onToggle }: Props) {
   const meta = useStore((s) => s.mission_meta);
   const state = useStore((s) => s.state);
-  const shorthands = useStore((s) => s.shorthands);
-  const openModal = useStore((s) => s.openModal);
-  const reversedShorthands = useMemo(
-    () => [...shorthands].reverse(),
-    [shorthands],
+  const inbox = useStore((s) => s.inbox);
+  const reversedEntries = useMemo(
+    () => [...inbox].reverse(),
+    [inbox],
   );
 
   if (!meta) {
@@ -35,7 +35,7 @@ export function Sidebar({ open, onToggle }: Props) {
       {open ? (
         <>
           <section className="rail-section">
-            <div className="rail-label">CYCLE</div>
+            <div className="rail-label">DAY</div>
             <div className="rail-cyc-row">
               <span className="rail-cyc-num">
                 {used + 1}/{meta.max_cycles}
@@ -63,16 +63,16 @@ export function Sidebar({ open, onToggle }: Props) {
 
           <section className="rail-section">
             <div className="rail-label">CASE FILE</div>
-            {reversedShorthands.length > 0 && (
+            {reversedEntries.length > 0 && (
               <div className="inbox-list">
-                {reversedShorthands.map((row) => (
+                {reversedEntries.map((row) => (
                   <button
                     key={row.cycle_index}
                     type="button"
                     className="inbox-item"
-                    onClick={() => openModal(row.cycle_index)}
+                    onClick={() => scrollToCycle(row.cycle_index)}
                   >
-                    <span className="inbox-snip">{row.shorthand}</span>
+                    <span className="inbox-snip">{row.title}</span>
                   </button>
                 ))}
               </div>
@@ -84,7 +84,7 @@ export function Sidebar({ open, onToggle }: Props) {
       ) : (
         <>
           <section className="rail-section">
-            <div className="rail-tag">CYC</div>
+            <div className="rail-tag">DAY</div>
             <div className="rail-cyc-row">
               <span className="rail-cyc-num">
                 {used + 1}/{meta.max_cycles}
@@ -103,7 +103,7 @@ export function Sidebar({ open, onToggle }: Props) {
           </section>
           <section className="rail-section">
             <div className="rail-tag">FIL</div>
-            {shorthands.length > 0 && (
+            {inbox.length > 0 && (
               <button
                 type="button"
                 className="inbox-chip"
@@ -112,7 +112,7 @@ export function Sidebar({ open, onToggle }: Props) {
                 aria-label="Open case file"
               >
                 <span className="inbox-chip-icon">✉</span>
-                <span className="inbox-chip-count">{shorthands.length}</span>
+                <span className="inbox-chip-count">{inbox.length}</span>
               </button>
             )}
           </section>

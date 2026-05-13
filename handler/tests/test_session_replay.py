@@ -65,7 +65,6 @@ def _emit_cycle_one(session, mission) -> None:
     opt = Option(
         archetype="SACRIFICE_BY_AGENT",
         agent="ALPHA",
-        params={"agent": "ALPHA"},
         title="t",
         prose="p",
     )
@@ -77,7 +76,7 @@ def _emit_cycle_one(session, mission) -> None:
             by_handler_at=datetime.now(timezone.utc),
         )
     )
-    delta = apply_archetype_effects(session.state, opt, mission)
+    delta, _branches = apply_archetype_effects(session.state, opt, mission)
     session.apply(EffectsApplied(cycle_index=1, delta=delta))
     close_delta = tick_cycle_close(session.state)
     session.apply(CycleClosed(cycle_index=1, delta=close_delta))

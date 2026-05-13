@@ -1,5 +1,5 @@
 """The cycle orchestration. One function (`run_cycle`) ties together the
-deterministic spine and the two LLM agents per HANDLER_SPEC_V2 §3:
+deterministic spine and the two LLM agents:
 
   i.   Drafter               (agents.drafter — stateless one-shot)
        ── player picks ──    (await session.await_authorization)
@@ -15,14 +15,11 @@ functions mutate session.state in place — that's the live path — but
 the emitted event carries the same delta so `fold()` reproduces the
 state during replay.
 
-Wall-clock optimisations (HANDLER_SPEC_V2 §11):
+Wall-clock optimisations:
   - The log writer's callable returns `(text, pacing_task)` so the cycle
     close can run while paced `entry_word` SSE events continue to the
     client in the background, and fires `on_log_text_ready` so `main.py`
     can schedule cycle N+1's prefetch.
-  - The shorthand call is fired internally by the log-writer callable
-    (in `main.py`); it runs in parallel with the pacing tail and emits an
-    `entry_shorthand` SSE event when ready.
 """
 from __future__ import annotations
 
@@ -60,6 +57,7 @@ from .spine import (
     fire_due_passive_events,
     merge_delta_into,
     option_progresses_mission,
+    select_beat,
     snapshot,
     tick_cycle_close,
     valid_archetype_combinations,
@@ -79,10 +77,15 @@ class DrafterLLMFn(Protocol):
         cycle_index: int,
         valid_catalog: list[tuple[str, str | None, dict[str, str]]],
         forced_event_id: str | None,
+        beat_fragment: str | None,
     ) -> tuple[list[Option], bool]:
         """LLM-only phase of the drafter. No SSE emission. Returns
         (options, engine_fallback). On engine_fallback=True the drafter
-        exhausted retries and the engine synthesised a fallback set."""
+        exhausted retries and the engine synthesised a fallback set.
+
+        `beat_fragment` is the cycle's selected beat fragment (if any). The
+        drafter renders it as a BEAT THIS DAY block — cycle framing color
+        that informs option authoring without prescribing outcomes."""
 
 
 class DrafterEmitFn(Protocol):
@@ -113,17 +116,12 @@ class LogWriterFn(Protocol):
         pacing_task continues emitting paced `entry_word` SSE events in
         the background.
 
-        Internally the callable also:
-        - Updates the session's accumulating `log_message_history` with
-          the just-rendered user+assistant pair (HANDLER_SPEC_V2 §8.2).
-        - Schedules the non-persisted shorthand follow-up call (§8.3)
-          which runs against the same agent + same history plus a
-          temporary "summarize that" turn, and emits an `entry_shorthand`
-          SSE event when complete.
+        Internally the callable also updates the session's accumulating
+        `log_message_history` with the just-rendered user+assistant pair.
 
         `prior_state` is the snapshot taken at cycle open, before any of
         this cycle's mutations applied. Used by the log-writer prompt to
-        compute the tension band (4c).
+        compute the tension band.
 
         `leans` is the (already prioritized + capped) list of free-form
         directives collected from this cycle's fired events."""
@@ -146,6 +144,24 @@ class Emitter(Protocol):
 
 async def _noop_log_text_ready(_cycle_index: int) -> None:
     return
+
+
+def fire_beat(state: State, mission: Mission):
+    """Select and fire one beat at cycle-open: appends the beat's id to
+    `state.fired` when `fires_at_most="once_per_mission"` so the same
+    observation never surfaces twice in a run. Returns the Beat (or None).
+
+    Called from `run_cycle` at cycle-open AND mirrored read-only from the
+    prefetch path via `spine.select_beat` (same result given the same state,
+    so the prefetched options and the live drafter both see the same beat
+    fragment). The single fire-site is here.
+    """
+    beat = select_beat(state, mission)
+    if beat is None:
+        return None
+    if beat.fires_at_most == "once_per_mission":
+        state.fired.append(beat.id)
+    return beat
 
 
 # ───────────────────────── start / await primitives ─────────────────────────
@@ -207,6 +223,12 @@ async def run_cycle(
         prior_state = snapshot(state)
 
         # ── cycle opened ──
+        # Fire the cycle's beat BEFORE the drafter so its fragment can frame
+        # the option set. Fire-once semantics live in `fire_beat` — the
+        # prefetch path called `select_beat` (read-only) against the same
+        # state, so the prefetched options were drafted with the same fragment.
+        beat = fire_beat(state, mission)
+        beat_fragment = beat.fragment if beat is not None else None
         session.apply(CycleOpened(cycle_index=cycle_index))
         await emit({"event": "cycle_opened", "cycle": cycle_index, "state": state.qualities})
 
@@ -216,7 +238,7 @@ async def run_cycle(
         forced_event_id = forced[0].id if forced else None
 
         options, engine_fallback = await drafter_llm(
-            session, cycle_index, catalog, forced_event_id
+            session, cycle_index, catalog, forced_event_id, beat_fragment
         )
         session.apply(
             OptionsDrafted(
@@ -240,7 +262,7 @@ async def run_cycle(
         )
 
         # ── ii. Effects + passive events ──
-        delta = apply_archetype_effects(state, chosen, mission)
+        delta, branches_taken = apply_archetype_effects(state, chosen, mission)
         satisfied_event_id: str | None = None
         satisfied_forced: Event | None = None
         if chosen.satisfies_event is not None:
@@ -260,9 +282,24 @@ async def run_cycle(
             "delta_descriptors": describe_delta(delta, mission),
         })
 
+        # If the authorized archetype fired one or more author-tagged
+        # branches (opposed-check shape — clean / partial / failure),
+        # collect the matching `branch_leans` for the log-writer prompt.
+        # `branches_taken` is typically empty or a single-element set.
+        branch_leans: list[str] = []
+        if branches_taken:
+            arch = mission.archetype(chosen.archetype)
+            for label in branches_taken:
+                branch_leans.extend(arch.branch_leans.get(label, []))
+
         made_progress = option_progresses_mission(delta, mission)
         fires, agg = fire_due_passive_events(state, mission, made_progress)
-        leans = _collect_leans(satisfied_forced, fires)
+        leans = _collect_leans(
+            satisfied_forced,
+            fires,
+            branch_leans=branch_leans,
+            beat_fragment=beat_fragment,
+        )
         if fires:
             session.apply(
                 EventsFired(
@@ -387,27 +424,41 @@ def _resolved_payload(resolution: MissionResolution) -> dict:
     }
 
 
-_LEAN_CAP = 4
+_LEAN_CAP = 6
 
 
 def _collect_leans(
     forced_event: Event | None,
     passive_fires: list,
+    *,
+    branch_leans: list[str] = (),
+    beat_fragment: str | None = None,
 ) -> list[str]:
     """Prioritize and cap the cycle's lean directives for the log writer.
 
-    Order: satisfied forced event → terminal passive events → non-terminal
-    passive events (already in priority order via `fire_due_passive_events`).
-    Capped at `_LEAN_CAP` to keep the prompt focused."""
+    Order: satisfied forced event → branch leans (opposed-check resolution
+    on the authorized archetype) → terminal passive events → non-terminal
+    passive events → beat fragment (cycle-open framing color).
+    Capped at `_LEAN_CAP` to keep the prompt focused.
+
+    Branch leans land early because they describe *the immediate outcome of
+    the just-authorized option* — the log writer needs them to write a reveal
+    on a failure branch vs a confirmation on a clean branch. The beat
+    fragment lands last as ambient framing — the writer can pull it in if
+    space allows.
+    """
     out: list[str] = []
     if forced_event is not None:
         out.extend(forced_event.lean_on)
+    out.extend(branch_leans)
     terminal_leans: list[str] = []
     nonterminal_leans: list[str] = []
     for (ev, _, _) in passive_fires:
         (terminal_leans if ev.terminal else nonterminal_leans).extend(ev.lean_on)
     out.extend(terminal_leans)
     out.extend(nonterminal_leans)
+    if beat_fragment:
+        out.append(beat_fragment)
     return out[:_LEAN_CAP]
 
 

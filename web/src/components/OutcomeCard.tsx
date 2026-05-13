@@ -42,7 +42,7 @@ export function OutcomeCard() {
 
         <div className="outcome-stats">
           <Stat
-            label="Cycles used"
+            label="Days used"
             value={`${outcome.cycles_used} / ${outcome.cycles_max}`}
           />
           <Stat

@@ -9,7 +9,8 @@ from handler.models import (
     CastMember,
     And_,
     Archetype,
-    DramaticQuestion,
+    Band,
+    Beat,
     Effect,
     Event,
     Mission,
@@ -313,37 +314,156 @@ def test_mission_qualities_universal_override_omits_initial() -> None:
     assert s.get_quality("agent[A].cover") == 5
 
 
-# ───────────────────────── DramaticQuestion ─────────────────────────
+# ───────────────────────── Beat ─────────────────────────
 
 
-def test_dramatic_question_requires_non_empty_question() -> None:
+def test_beat_requires_id_and_fragment() -> None:
     with pytest.raises(ValidationError):
-        DramaticQuestion(when=QualityGte(quality="x", value=0), question="")
+        Beat(id="", when=QualityGte(quality="x", value=0), fragment="x")
+    with pytest.raises(ValidationError):
+        Beat(id="x", when=QualityGte(quality="x", value=0), fragment="")
 
 
-def test_mission_dramatic_questions_default_empty() -> None:
+def test_beat_defaults() -> None:
+    b = Beat(id="x", when=QualityGte(quality="x", value=0), fragment="x")
+    assert b.priority == 0
+    assert b.fires_at_most == "once_per_mission"
+
+
+def test_mission_beats_default_empty() -> None:
     m = Mission(**_basic_mission_kwargs())
-    assert m.dramatic_questions == []
+    assert m.beats == []
     assert m.standing_orders == []
 
 
-def test_mission_with_dramatic_questions_and_standing_orders() -> None:
+def test_mission_with_beats_and_standing_orders() -> None:
     m = Mission(
         **_basic_mission_kwargs(),
         standing_orders=[
             "LYNX must not be photographed again.",
             "The Vienna network is offline.",
         ],
-        dramatic_questions=[
-            DramaticQuestion(
+        beats=[
+            Beat(
+                id="brink",
                 when=QualityLte(quality="agent[A].cover", value=2),
-                question="Is A still useful, or do we cut her loose?",
+                fragment="A is at the brink — every move buys time at a cost.",
             ),
         ],
     )
     assert len(m.standing_orders) == 2
-    assert len(m.dramatic_questions) == 1
-    assert "useful" in m.dramatic_questions[0].question
+    assert len(m.beats) == 1
+    assert "brink" in m.beats[0].fragment
+
+
+def test_mission_rejects_duplicate_beat_ids() -> None:
+    with pytest.raises(ValidationError) as exc:
+        Mission(
+            **_basic_mission_kwargs(),
+            beats=[
+                Beat(id="b", when=QualityGte(quality="x", value=0), fragment="f1"),
+                Beat(id="b", when=QualityGte(quality="x", value=0), fragment="f2"),
+            ],
+        )
+    assert "duplicate beat id" in str(exc.value)
+
+
+def test_mission_rejects_beat_id_colliding_with_event_id() -> None:
+    """Beats and events share the `state.fired` namespace — ids MUST be disjoint."""
+    with pytest.raises(ValidationError) as exc:
+        Mission(
+            **_basic_mission_kwargs(),
+            beats=[
+                Beat(id="end", when=QualityGte(quality="x", value=0), fragment="f"),
+            ],
+        )
+    assert "collides with an event id" in str(exc.value)
+
+
+# ───────────────────────── Quality.bands + visible (Phase 2) ─────────────────────────
+
+
+def test_quality_bands_validator_rejects_combos() -> None:
+    """Exactly one of buckets / values / bands; mixing fails."""
+    with pytest.raises(ValidationError):
+        Quality(
+            initial=0,
+            buckets=[(1.0, "a")],
+            bands=[Band(threshold=1.0, variants=["v"])],
+        )
+    with pytest.raises(ValidationError):
+        Quality(
+            initial=0,
+            values={"0": "a"},
+            bands=[Band(threshold=1.0, variants=["v"])],
+        )
+
+
+def test_quality_bands_visible_defaults_true() -> None:
+    q = Quality(initial=0, bands=[Band(threshold=10.0, variants=["v"])])
+    assert q.visible is True
+
+
+def test_quality_describe_variant_rotates_by_cycle_index() -> None:
+    """Same band, different cycle index → different variant. Deterministic
+    so test replay reproduces."""
+    q = Quality(
+        initial=0,
+        visible=False,
+        bands=[Band(threshold=5.0, variants=["v0", "v1", "v2"])],
+    )
+    assert q.describe_variant(3, 0) == "v0"
+    assert q.describe_variant(3, 1) == "v1"
+    assert q.describe_variant(3, 2) == "v2"
+    assert q.describe_variant(3, 3) == "v0"  # wraps
+
+
+def test_quality_describe_variant_returns_none_when_no_bands() -> None:
+    q = Quality(initial=0, buckets=[(5.0, "low")])
+    assert q.describe_variant(3, 0) is None
+
+
+def test_quality_describe_returns_first_variant_for_bands() -> None:
+    """The non-variant `describe()` falls back to bands[0].variants[0] so
+    callers without a cycle_index still get something."""
+    q = Quality(
+        initial=0,
+        bands=[Band(threshold=5.0, variants=["primary", "alt"])],
+    )
+    assert q.describe(3) == "primary"
+
+
+# ───────────────────────── Effect.branch + Archetype.branch_leans ─────────────────────────
+
+
+def test_effect_branch_defaults_none() -> None:
+    e = Effect(quality="x", value=1, op="add")
+    assert e.branch is None
+
+
+def test_effect_branch_roundtrip() -> None:
+    e = Effect(quality="x", value=1, op="add", branch="failure")
+    assert e.branch == "failure"
+    e2 = Effect.model_validate(e.model_dump())
+    assert e2.branch == "failure"
+
+
+def test_archetype_branch_leans_defaults_empty() -> None:
+    a = Archetype(id="X", when=QualityGte(quality="a", value=0))
+    assert a.branch_leans == {}
+
+
+def test_archetype_branch_leans_roundtrip() -> None:
+    a = Archetype(
+        id="X",
+        when=QualityGte(quality="a", value=0),
+        branch_leans={
+            "clean": ["lean 1"],
+            "failure": ["reveal", "name the trap"],
+        },
+    )
+    assert a.branch_leans["clean"] == ["lean 1"]
+    assert len(a.branch_leans["failure"]) == 2
 
 
 # ───────────────────────── generalised substitution ─────────────────────────

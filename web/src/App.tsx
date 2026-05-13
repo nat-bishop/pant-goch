@@ -1,6 +1,5 @@
 import { useEffect } from "react";
 import { DeskFrame } from "./components/DeskFrame";
-import { DispatchModal } from "./components/DispatchModal";
 import { OnboardingCard } from "./components/OnboardingCard";
 import { OutcomeCard } from "./components/OutcomeCard";
 import { Paper } from "./components/Paper";
@@ -27,7 +26,6 @@ export default function App() {
       </DeskFrame>
 
       <OnboardingCard />
-      <DispatchModal />
       <OutcomeCard />
 
       {error && (

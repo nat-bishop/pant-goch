@@ -1,4 +1,4 @@
-"""Unit tests for the drafter / log-writer / shorthand prompt builders.
+"""Unit tests for the drafter / log-writer prompt builders.
 
 The goal: prove the model NEVER sees a digit in the narrative state block,
 prove built-in cover/cycles buckets behave as authored, prove the system
@@ -17,15 +17,17 @@ from handler.agents import (
     _describe_authored_quality,
     _describe_cover,
     _describe_cycles,
-    _drafter_system_prompt,
-    _drafter_user_prompt,
-    _forced_event_block,
+    _forced_event_prose_block,
+    _forced_event_selector_block,
     _log_entries_block,
     _log_writer_system_prompt,
     _log_writer_user_prompt,
     _narrative_state_block,
+    _prose_writer_system_prompt,
+    _prose_writer_user_prompt,
     _recently_tried_block,
-    _shorthand_user_prompt,
+    _selector_system_prompt,
+    _selector_user_prompt,
     describe_delta,
 )
 from handler.mission_loader import load_mission
@@ -169,7 +171,7 @@ def test_narrative_state_block_emits_protected_cover_suffix() -> None:
     state = make_initial_state(mission)
     state.set_quality("agent[LYNX].cover_protected", True)
     block = _narrative_state_block(state, mission)
-    assert "under protective cover this cycle" in block
+    assert "under protective cover this day" in block
 
 
 def test_narrative_state_block_omits_fired_events() -> None:
@@ -190,7 +192,7 @@ def test_narrative_state_block_lynx_initial_reads_in_fiction() -> None:
     state = make_initial_state(mission)
     block = _narrative_state_block(state, mission)
     # The keystone descriptor for extraction_stage=0:
-    assert "the extraction papers have not yet been surfaced" in block
+    assert "the extraction documents have not yet been surfaced" in block
     # Cover descriptors for both agents:
     assert "LYNX: cover intact" in block
     assert "KESTREL: cover solid" in block
@@ -201,45 +203,42 @@ def test_narrative_state_block_lynx_initial_reads_in_fiction() -> None:
     assert "/" not in block
 
 
-# ───────────────────────── drafter system prompt voice rules ─────────────────────────
+# ───────────────────────── selector system prompt rules ─────────────────────────
 
 
-def test_drafter_system_prompt_forbids_numerics_and_game_vocab() -> None:
-    """Drafter option prose was leaking phrases like 'This begins the next
-    stage of the mission' — explicit rules forbid that register."""
-    mission = load_mission(_LYNX)
-    prompt = _drafter_system_prompt(mission)
-    assert "NEVER use numbers for state" in prompt
-    assert "NEVER use game/system vocabulary in option prose" in prompt
-    assert "begin/initiate the next stage" in prompt
-
-
-def test_drafter_system_prompt_mentions_recently_tried_rule() -> None:
-    """The drafter must be told to vary tonal range when RECENTLY TRIED is
-    provided — otherwise we get the same option set every cycle when state
+def test_selector_system_prompt_mentions_recently_tried_rule() -> None:
+    """The selector must be told to vary tonal range when RECENTLY TRIED is
+    provided — otherwise we get the same target set every cycle when state
     is static."""
     mission = load_mission(_LYNX)
-    prompt = _drafter_system_prompt(mission)
+    prompt = _selector_system_prompt(mission)
     assert "RECENTLY TRIED" in prompt
 
 
-def test_drafter_system_prompt_no_longer_references_sop() -> None:
-    """Regression guard: the drafter prompt must not mention the SoP memo —
-    that surface was dropped when the log writer became the single
-    post-resolution prose surface (HANDLER_SPEC_V2 §8.1)."""
+def test_selector_system_prompt_describes_target_token_format() -> None:
+    """The selector emits one of the catalog Literal tokens; the system
+    prompt teaches the encoding (`ARCHETYPE` / `ARCHETYPE:AGENT`)."""
     mission = load_mission(_LYNX)
-    prompt = _drafter_system_prompt(mission)
+    prompt = _selector_system_prompt(mission)
+    assert "ARCHETYPE:AGENT" in prompt
+
+
+def test_selector_system_prompt_no_longer_references_sop() -> None:
+    """Regression guard."""
+    mission = load_mission(_LYNX)
+    prompt = _selector_system_prompt(mission)
     assert "State of Play" not in prompt
     assert "SoP memo" not in prompt
 
 
-def test_drafter_user_prompt_uses_narrative_state_block() -> None:
-    """The drafter no longer sees raw `agent[X].cover: N / 10`. It sees the
-    same narrative posture lines the log writer sees."""
+def test_selector_user_prompt_uses_narrative_state_block() -> None:
+    """The selector sees the same narrative posture lines as the log writer —
+    no raw `agent[X].cover: N / 10`."""
     mission = load_mission(_LYNX)
     state = make_initial_state(mission)
-    prompt = _drafter_user_prompt(
+    prompt = _selector_user_prompt(
         cycle_index=1,
+        n=4,
         state=state,
         mission=mission,
         catalog=[],
@@ -247,15 +246,16 @@ def test_drafter_user_prompt_uses_narrative_state_block() -> None:
         log_entries=[],
     )
     assert "LYNX: cover intact" in prompt
-    assert "the extraction papers have not yet been surfaced" in prompt
+    assert "the extraction documents have not yet been surfaced" in prompt
     assert "agent[LYNX].cover: 6 / 10" not in prompt
 
 
-def test_drafter_user_prompt_threads_recently_tried() -> None:
+def test_selector_user_prompt_threads_recently_tried() -> None:
     mission = load_mission(_LYNX)
     state = make_initial_state(mission)
-    prompt = _drafter_user_prompt(
+    prompt = _selector_user_prompt(
         cycle_index=2,
+        n=4,
         state=state,
         mission=mission,
         catalog=[],
@@ -264,11 +264,11 @@ def test_drafter_user_prompt_threads_recently_tried() -> None:
         recently_tried=[(1, "DIVERSION_BY_AGENT", "LYNX")],
     )
     assert "RECENTLY TRIED" in prompt
-    assert "C1: DIVERSION_BY_AGENT(LYNX)" in prompt
+    assert "D1: DIVERSION_BY_AGENT(LYNX)" in prompt
 
 
-def test_drafter_user_prompt_carries_recent_log_entries() -> None:
-    """The drafter is stateless one-shot, so it relies on the last 2 log
+def test_selector_user_prompt_carries_recent_log_entries() -> None:
+    """The selector is stateless one-shot, so it relies on the last 2 log
     entries (passed as user-side context) for cross-cycle continuity."""
     mission = load_mission(_LYNX)
     state = make_initial_state(mission)
@@ -277,8 +277,9 @@ def test_drafter_user_prompt_carries_recent_log_entries() -> None:
         LogEntry(cycle_index=2, archetype="ACTIVATE_SLEEPER_FOR_PAPERS",
                  text="REDFIELD goes live."),
     ]
-    prompt = _drafter_user_prompt(
+    prompt = _selector_user_prompt(
         cycle_index=3,
+        n=4,
         state=state,
         mission=mission,
         catalog=[],
@@ -290,14 +291,97 @@ def test_drafter_user_prompt_carries_recent_log_entries() -> None:
     assert "RECENT CASE-FILE ENTRIES" in prompt
 
 
+def test_selector_user_prompt_renders_catalog_as_literal_tokens() -> None:
+    """The catalog block emits `ARCHETYPE` or `ARCHETYPE:AGENT` tokens — the
+    exact strings the grammar sampler's Literal will accept."""
+    mission = load_mission(_LYNX)
+    state = make_initial_state(mission)
+    catalog = [
+        ("HOLD", None, {}),
+        ("DIVERSION_BY_AGENT", "LYNX", {"agent": "LYNX"}),
+    ]
+    prompt = _selector_user_prompt(
+        cycle_index=1,
+        n=4,
+        state=state,
+        mission=mission,
+        catalog=catalog,
+        forced_event=None,
+        log_entries=[],
+    )
+    # Tokens appear without `archetype=` / `agent=` adornment.
+    assert "  - HOLD —" in prompt
+    assert "  - DIVERSION_BY_AGENT:LYNX —" in prompt
+    assert "archetype=HOLD agent=null" not in prompt
+
+
+# ───────────────────────── prose writer system + user prompt rules ─────────────────────────
+
+
+def test_prose_writer_system_prompt_forbids_numerics_and_game_vocab() -> None:
+    """The prose-writing rules moved from the (deleted) drafter prompt to the
+    prose writer."""
+    mission = load_mission(_LYNX)
+    prompt = _prose_writer_system_prompt(mission)
+    assert "NEVER use numbers for state" in prompt
+    assert "NEVER use game/system vocabulary in option prose" in prompt
+    assert "begin/initiate the next stage" in prompt
+
+
+def test_prose_writer_user_prompt_renders_slots_with_intents() -> None:
+    """The prose writer sees the selector-pinned slots with archetype intents
+    inline — that's the per-slot framing it uses to write the title/prose."""
+    mission = load_mission(_LYNX)
+    state = make_initial_state(mission)
+    slots: list[tuple[str, str | None, str | None]] = [
+        ("HOLD", None, None),
+        ("DIVERSION_BY_AGENT", "LYNX", None),
+    ]
+    prompt = _prose_writer_user_prompt(
+        cycle_index=1,
+        state=state,
+        mission=mission,
+        slots=slots,
+        forced_event=None,
+        log_entries=[],
+    )
+    assert "SLOTS TO WRITE PROSE FOR" in prompt
+    assert "1. HOLD —" in prompt
+    assert "2. DIVERSION_BY_AGENT:LYNX —" in prompt
+
+
+def test_prose_writer_user_prompt_marks_forced_event_carrier() -> None:
+    """When a slot carries a forced event, the prose-writer prompt flags it
+    visibly so the corresponding output slot's prose honors the constraints."""
+    mission = load_mission(_LYNX)
+    state = make_initial_state(mission)
+    slots: list[tuple[str, str | None, str | None]] = [
+        ("HOLD", None, None),
+        ("DIVERSION_BY_AGENT", "LYNX", "kestrel_sacrifice"),
+        ("PUSH", None, None),
+    ]
+    forced = next(e for e in mission.events if e.id == "kestrel_sacrifice")
+    prompt = _prose_writer_user_prompt(
+        cycle_index=1,
+        state=state,
+        mission=mission,
+        slots=slots,
+        forced_event=forced,
+        log_entries=[],
+    )
+    assert "[FORCED EVENT CARRIER]" in prompt
+    # Carrier index is 1-based in the prompt; slot #2 here.
+    assert "carrier is slot #2" in prompt
+
+
 # ───────────────────────── log entries block ─────────────────────────
 
 
 def test_log_entries_block_cycle_1_message() -> None:
     """No prior entries — the block reads as the explicit cycle-1 marker."""
     block = _log_entries_block([], limit=2)
-    assert "no prior cycles" in block
-    assert "cycle 1" in block
+    assert "no prior days" in block
+    assert "day 1" in block
 
 
 def test_log_entries_block_limits_to_last_n() -> None:
@@ -435,7 +519,7 @@ def test_log_writer_user_prompt_includes_leans_when_provided() -> None:
             "name LYNX's exhaustion at the window",
         ],
     )
-    assert "LEAN-ON THIS CYCLE" in prompt
+    assert "LEAN-ON THIS DAY" in prompt
     assert "foreground KESTREL" in prompt
     assert "exhaustion at the window" in prompt
 
@@ -475,30 +559,6 @@ def test_log_writer_user_prompt_carries_resolved_delta() -> None:
     assert "6 -> 3" in prompt
 
 
-# ───────────────────────── shorthand prompt ─────────────────────────
-
-
-def test_shorthand_user_prompt_includes_cycle_and_archetype() -> None:
-    option = Option(
-        archetype="DIVERSION_BY_AGENT",
-        agent="KESTREL",
-        title="K diverts",
-        prose="x",
-    )
-    prompt = _shorthand_user_prompt(3, option)
-    assert "C3" in prompt
-    assert "DIVERSION_BY_AGENT(KESTREL)" in prompt
-    assert "case-file index" in prompt
-
-
-def test_shorthand_user_prompt_unbound_archetype() -> None:
-    """HOLD-style archetypes (no bound agent) render without parens."""
-    option = Option(archetype="HOLD", agent=None, title="x", prose="y")
-    prompt = _shorthand_user_prompt(5, option)
-    assert "HOLD" in prompt
-    assert "HOLD(" not in prompt
-
-
 # ───────────────────────── recently tried ─────────────────────────
 
 
@@ -507,13 +567,13 @@ def test_recently_tried_block_renders_authorized_picks() -> None:
         [(1, "DIVERSION_BY_AGENT", "LYNX"), (2, "DIVERSION_BY_AGENT", "KESTREL")]
     )
     assert "RECENTLY TRIED" in block
-    assert "C1: DIVERSION_BY_AGENT(LYNX)" in block
-    assert "C2: DIVERSION_BY_AGENT(KESTREL)" in block
+    assert "D1: DIVERSION_BY_AGENT(LYNX)" in block
+    assert "D2: DIVERSION_BY_AGENT(KESTREL)" in block
 
 
 def test_recently_tried_block_unbound_archetype() -> None:
     block = _recently_tried_block([(1, "HOLD", None)])
-    assert "C1: HOLD" in block
+    assert "D1: HOLD" in block
     assert "HOLD(" not in block
 
 
@@ -522,12 +582,14 @@ def test_recently_tried_block_empty_when_none() -> None:
     assert _recently_tried_block([]) == ""
 
 
-# ───────────────────────── forced event drafter block ─────────────────────────
+# ───────────────────────── forced event blocks ─────────────────────────
 
 
-def test_forced_event_block_carries_must_communicate_and_must_not() -> None:
-    """The drafter's forced-event block surfaces intent + the prose rules so
-    one option can be authored to satisfy the event."""
+def test_forced_event_prose_block_carries_must_communicate_and_must_not() -> None:
+    """The prose writer's forced-event block surfaces intent + must_communicate
+    + must_not + tone — those are the prose constraints the carrier slot
+    must honor. (The selector's variant carries only id + intent — it
+    doesn't write prose.)"""
     event = Event(
         id="burn_redfield",
         force_into_drafter=True,
@@ -539,7 +601,7 @@ def test_forced_event_block_carries_must_communicate_and_must_not() -> None:
         must_not=["Frame REDFIELD as surviving"],
         tone="solemn, terse, present-tense",
     )
-    block = _forced_event_block(event)
+    block = _forced_event_prose_block(event, carrier_index=0)
     assert "burn_redfield" in block
     assert "Burn the sleeper REDFIELD" in block
     assert "named as dead" in block
@@ -547,9 +609,28 @@ def test_forced_event_block_carries_must_communicate_and_must_not() -> None:
     assert "solemn, terse" in block
 
 
-def test_forced_event_block_empty_when_no_event() -> None:
-    block = _forced_event_block(None)
+def test_forced_event_prose_block_empty_when_no_event() -> None:
+    block = _forced_event_prose_block(None, carrier_index=None)
     assert "no forced event" in block
+
+
+def test_forced_event_selector_block_carries_id_and_intent_only() -> None:
+    """The selector picks the carrier; it doesn't need the prose constraints."""
+    event = Event(
+        id="burn_redfield",
+        force_into_drafter=True,
+        when=EventFired(event="never_fires"),
+        intent="Burn the sleeper REDFIELD to surface the extraction papers.",
+        must_communicate=["REDFIELD is named"],
+        must_not=["Frame REDFIELD as surviving"],
+        tone="solemn",
+    )
+    block = _forced_event_selector_block(event)
+    assert "burn_redfield" in block
+    assert "Burn the sleeper REDFIELD" in block
+    # Prose constraints don't belong in the selector's view.
+    assert "must_communicate" not in block
+    assert "must_not" not in block
 
 
 # ───────────────────────── describe_delta ─────────────────────────
@@ -619,61 +700,74 @@ def test_describe_authored_quality_supports_label_prefix() -> None:
     )
 
 
-# ───────────────────────── validate_options ─────────────────────────
+# ───────────────────────── validate_selections ─────────────────────────
 
 
-def test_validate_options_accepts_valid_set() -> None:
-    """Happy path: 3 options with distinct catalog keys all pass."""
-    from handler.agents import validate_options
+def test_validate_selections_accepts_valid_set() -> None:
+    """Happy path: 3 slots with distinct catalog keys all pass."""
+    from handler.agents import validate_selections
     catalog = [
         ("DIVERSION_BY_AGENT", "KESTREL", {"agent": "KESTREL"}),
         ("DIVERSION_BY_AGENT", "LYNX", {"agent": "LYNX"}),
         ("HOLD", None, {}),
     ]
-    options = [
-        Option(
-            archetype="DIVERSION_BY_AGENT",
-            agent="KESTREL",
-            params={"agent": "KESTREL"},
-            title="K",
-            prose="kp",
-        ),
-        Option(
-            archetype="DIVERSION_BY_AGENT",
-            agent="LYNX",
-            params={"agent": "LYNX"},
-            title="L",
-            prose="lp",
-        ),
-        Option(archetype="HOLD", agent=None, params={}, title="H", prose="hp"),
+    slots = [
+        ("DIVERSION_BY_AGENT", "KESTREL", None),
+        ("DIVERSION_BY_AGENT", "LYNX", None),
+        ("HOLD", None, None),
     ]
-    validate_options(options, catalog, forced_event_id=None)  # no exception
+    validate_selections(slots, catalog, forced_event_id=None, n=3)  # no exception
 
 
-def test_validate_options_rejects_archetype_not_in_catalog() -> None:
-    from handler.agents import DrafterValidationError, validate_options
+def test_validate_selections_rejects_archetype_not_in_catalog() -> None:
+    from handler.agents import DrafterValidationError, validate_selections
     catalog = [("HOLD", None, {})]
-    options = [
-        Option(archetype="GHOST", agent=None, params={}, title="g", prose="g"),
-        Option(archetype="HOLD", agent=None, params={}, title="h", prose="h"),
-        Option(archetype="HOLD", agent=None, params={}, title="h2", prose="h2"),
+    slots = [
+        ("GHOST", None, None),
+        ("HOLD", None, None),
+        ("HOLD", None, None),
     ]
     with pytest.raises(DrafterValidationError, match="VALID CATALOG"):
-        validate_options(options, catalog, forced_event_id=None)
+        validate_selections(slots, catalog, forced_event_id=None, n=3)
 
 
-def test_validate_options_requires_forced_event_satisfier() -> None:
-    """When a forced event is active, exactly one option must carry
-    `satisfies_event = <event_id>`."""
-    from handler.agents import DrafterValidationError, validate_options
+def test_validate_selections_rejects_duplicate_targets() -> None:
+    """Two selections with the same (archetype, agent) pair are rejected —
+    duplicate options would render twice in the UI."""
+    from handler.agents import DrafterValidationError, validate_selections
     catalog = [
         ("HOLD", None, {}),
         ("PUSH", "LYNX", {"agent": "LYNX"}),
     ]
-    options = [
-        Option(archetype="HOLD", agent=None, params={}, title="h", prose="h"),
-        Option(archetype="PUSH", agent="LYNX", params={"agent": "LYNX"}, title="p", prose="p"),
-        Option(archetype="HOLD", agent=None, params={}, title="h2", prose="h2"),
+    slots = [
+        ("HOLD", None, None),
+        ("HOLD", None, None),  # duplicate
+        ("PUSH", "LYNX", None),
     ]
-    with pytest.raises(DrafterValidationError, match="expected exactly 1 option"):
-        validate_options(options, catalog, forced_event_id="must_fire")
+    with pytest.raises(DrafterValidationError, match="duplicate target"):
+        validate_selections(slots, catalog, forced_event_id=None, n=3)
+
+
+def test_validate_selections_requires_forced_event_carrier() -> None:
+    """When a forced event is active, exactly one slot must carry
+    `satisfies_event = <event_id>`."""
+    from handler.agents import DrafterValidationError, validate_selections
+    catalog = [
+        ("HOLD", None, {}),
+        ("PUSH", "LYNX", {"agent": "LYNX"}),
+    ]
+    slots = [
+        ("HOLD", None, None),
+        ("PUSH", "LYNX", None),
+        ("HOLD", None, None),
+    ]
+    with pytest.raises(DrafterValidationError, match="expected exactly 1 selection"):
+        validate_selections(slots, catalog, forced_event_id="must_fire", n=3)
+
+
+def test_validate_prose_rejects_count_mismatch() -> None:
+    from handler.agents import DrafterValidationError, validate_prose
+    from handler.models import OptionProse
+    prose = [OptionProse(title="t1", prose="p1"), OptionProse(title="t2", prose="p2")]
+    with pytest.raises(DrafterValidationError, match="prose count"):
+        validate_prose(prose, n=3)

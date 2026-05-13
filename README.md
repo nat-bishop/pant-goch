@@ -6,7 +6,7 @@ The player sits at a desk in a windowless room. Operations Desk drafts options e
 
 The game is LLM-native — the Operations Desk's drafting and the agents' dispatches are situated prose conditioned on world state. Mechanics, however, are fully deterministic and live in YAML. The LLM never decides outcomes.
 
-Full design: `HANDLER_SPEC_V2.md`. Visual reference: `_mockups/handler-authorize-desk.html`.
+Visual reference: `_mockups/handler-authorize-desk.html`.
 
 ## Architecture
 
@@ -109,7 +109,6 @@ web/                    # Vite + React + Tailwind. Single dark theme.
 │   └── index.css
 
 _mockups/               # design references (handler-authorize-desk.html is current)
-HANDLER_SPEC_V2.md      # authoritative design
 ```
 
 ## Troubleshooting

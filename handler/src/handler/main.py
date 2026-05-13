@@ -43,12 +43,9 @@ from dataclasses import replace
 from .agents import (
     AgentBundle,
     LogEntry,
-    LogShorthand,
-    _drafter_user_prompt,
     _log_writer_user_prompt,
-    _shorthand_user_prompt,
     build_agent_bundle,
-    draft_with_retries,
+    select_then_write_with_retries,
 )
 from .config import Settings
 from .cycle import run_cycle, start_mission
@@ -69,7 +66,7 @@ from .launcher import (
 from .mission_loader import MissionLoadError, load_mission
 from .models import Mission, Option, State
 from .session import Session, make_jsonl_persistor, make_session
-from .spine import due_forced_events, valid_archetype_combinations
+from .spine import due_forced_events, select_beat, valid_archetype_combinations
 
 
 _BOOT_SETTINGS = Settings()
@@ -142,14 +139,14 @@ class SessionRuntime:
     futures the cycle loop alternates between (auth = pause INSIDE a cycle
     waiting for the player's pick; continue = pause BETWEEN cycles waiting
     for the player to click through), the cycle task itself, and the
-    accumulating case-file artifacts (log_entries, log_shorthands,
-    log_message_history) for the log writer.
+    accumulating case-file artifacts (log_entries, log_message_history) for
+    the log writer.
 
-    Cross-cycle prefetch (HANDLER_SPEC_V2 §11 wall-clock optimisation): when
-    cycle N's log writer text is ready, a background task pre-runs cycle N+1's
-    drafter LLM call so options are ready by the time the player clicks
-    Continue. The drafter is stateless, so prefetching it is trivial.
-    Prefetched results are tagged with `prefetched_cycle_index`.
+    Cross-cycle prefetch (wall-clock optimisation): when cycle N's log writer
+    text is ready, a background task pre-runs cycle N+1's drafter LLM call
+    so options are ready by the time the player clicks Continue. The drafter
+    is stateless, so prefetching it is trivial. Prefetched results are
+    tagged with `prefetched_cycle_index`.
 
     `last_authorized` carries one-cycle context forward so the next cycle's
     drafter prompt can lead with "vary from what was recently tried".
@@ -161,14 +158,11 @@ class SessionRuntime:
     continue_future: asyncio.Future[None] | None = None
     current_options: list[Option] | None = None
     cycle_task: asyncio.Task | None = None
-    # Accumulating case-file artifacts (HANDLER_SPEC_V2 §8.2).
+    # Accumulating case-file artifacts.
     # `log_entries` — full prose per cycle. Drafter prompt pulls the last 2
     # for cross-cycle context (drafter is stateless one-shot). Frontend
     # caches the full text for the click-to-expand history UI.
     log_entries: list[LogEntry] = field(default_factory=list)
-    # `log_shorthands` — one-line history rows produced by the non-persisted
-    # shorthand follow-up call. Frontend lists these in the case-file panel.
-    log_shorthands: list[LogShorthand] = field(default_factory=list)
     # `log_message_history` — the log-writer agent's accumulating pydantic-ai
     # `message_history`. One user+assistant pair per cycle. The conversation
     # IS the case file. Initialized empty; grown by `_build_log_writer_callable`
@@ -180,9 +174,6 @@ class SessionRuntime:
     prefetched_options: list[Option] | None = None
     prefetched_engine_fallback: bool = False
     prefetch_task: asyncio.Task | None = None
-    # In-flight shorthand task for the current cycle. Held so session
-    # teardown can cancel it cleanly.
-    shorthand_task: asyncio.Task | None = None
     # Last 2 authorized picks as (cycle_index, archetype, agent_id|None).
     # Cycle N+1's drafter prompt reads this to vary tonal range. Updated by
     # `_run_session_loop` after each /authorize lands.
@@ -315,8 +306,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             for sid, rt in list(SESSIONS.items()):
                 if rt.cycle_task is not None and not rt.cycle_task.done():
                     rt.cycle_task.cancel()
-                if rt.shorthand_task is not None and not rt.shorthand_task.done():
-                    rt.shorthand_task.cancel()
             stop_llama(LLAMA_PROC)
 
 
@@ -404,11 +393,14 @@ async def paced_word_emitter(
 
 
 def _build_drafter_llm_callable(rt: SessionRuntime) -> Any:
-    """LLM-only phase of the drafter — runs `draft_with_retries` (or consumes
-    prefetched options). NO SSE emission; that's `_build_drafter_emit_callable`.
+    """LLM-only phase of the drafter — runs `select_then_write_with_retries`
+    (or consumes prefetched options). NO SSE emission; that's
+    `_build_drafter_emit_callable`.
 
-    Stateless one-shot per HANDLER_SPEC_V2 §8.1 / §8.4 — the drafter takes
-    `rt.log_entries` (last 2) as user-side context, not a message_history.
+    Two stateless one-shot LLM calls per cycle: the selector picks N catalog
+    targets + forced-event carrier, then the prose writer writes title/prose
+    for each pinned slot. Both take `rt.log_entries` (last 2) as user-side
+    context, not a message_history.
     """
 
     async def _drafter_llm(
@@ -416,6 +408,7 @@ def _build_drafter_llm_callable(rt: SessionRuntime) -> Any:
         cycle_index: int,
         catalog: list[tuple[str, str | None, dict[str, str]]],
         forced_event_id: str | None,
+        beat_fragment: str | None,
     ) -> tuple[list[Option], bool]:
         assert AGENTS is not None
 
@@ -430,13 +423,12 @@ def _build_drafter_llm_callable(rt: SessionRuntime) -> Any:
             rt.prefetched_engine_fallback = False
             return options, engine_fallback
 
-        forced_event = None
-        if forced_event_id is not None:
-            forced_event = next(
-                (e for e in session.mission.events if e.id == forced_event_id), None
-            )
-        return await draft_with_retries(
-            AGENTS.drafter,
+        forced_event = (
+            session.mission.event(forced_event_id) if forced_event_id else None
+        )
+        return await select_then_write_with_retries(
+            AGENTS.selector,
+            AGENTS.prose_writer,
             cycle_index=cycle_index,
             state=session.state,
             mission=session.mission,
@@ -444,6 +436,7 @@ def _build_drafter_llm_callable(rt: SessionRuntime) -> Any:
             forced_event=forced_event,
             log_entries=rt.log_entries,
             recently_tried=list(rt.last_authorized),
+            beat_fragment=beat_fragment,
         )
 
     return _drafter_llm
@@ -470,7 +463,6 @@ def _build_drafter_emit_callable(rt: SessionRuntime) -> Any:
                     "option_idx": option_idx,
                     "archetype": option.archetype,
                     "agent": option.agent,
-                    "params": option.params,
                     "title": option.title,
                     "satisfies_event": option.satisfies_event,
                 }
@@ -495,45 +487,11 @@ def _build_drafter_emit_callable(rt: SessionRuntime) -> Any:
     return _drafter_emit
 
 
-async def _run_shorthand_call(
-    rt: SessionRuntime,
-    cycle_index: int,
-    option: Option,
-    persistent_history: list[ModelMessage],
-) -> None:
-    """Run the non-persisted shorthand follow-up against the log-writer agent,
-    emit `entry_shorthand`, and append to `rt.log_shorthands`.
-
-    Per HANDLER_SPEC_V2 §8.3: same agent, same `message_history` (system +
-    every prior cycle's entry, INCLUDING the one just written), plus a
-    short "summarize that" user turn. The summarize-pair is DISCARDED —
-    `rt.log_message_history` is NOT mutated by this call."""
-    assert AGENTS is not None
-    prompt = _shorthand_user_prompt(cycle_index, option)
-    try:
-        with logfire.span("shorthand_call", cycle=cycle_index):
-            result = await AGENTS.log_writer.run(prompt, message_history=persistent_history)
-            text = result.output.strip()
-    except Exception as e:
-        log.warning("shorthand call failed (cycle %d): %s", cycle_index, e)
-        # Fallback: engine-authored row. Keeps the history UI populated.
-        agent_seg = f"({option.agent})" if option.agent else ""
-        text = f"C{cycle_index} — {option.archetype}{agent_seg}"
-    # Take first line only — model occasionally adds a trailing newline or
-    # extra commentary despite the prompt.
-    text = text.splitlines()[0].strip() if text else f"C{cycle_index} — {option.archetype}"
-    rt.log_shorthands.append(LogShorthand(cycle_index=cycle_index, shorthand=text))
-    await rt.out_queue.put(
-        {"event": "entry_shorthand", "cycle": cycle_index, "shorthand": text}
-    )
-
-
 def _build_log_writer_callable(rt: SessionRuntime) -> Any:
-    """Conversation-based log writer per HANDLER_SPEC_V2 §8.2. Streams the
-    cycle's case-file entry against `rt.log_message_history`, updates the
-    persistent history with the new user+assistant pair, appends a `LogEntry`
-    to `rt.log_entries`, and kicks off the non-persisted shorthand follow-up
-    (§8.3) as a background task.
+    """Conversation-based log writer. Streams the cycle's case-file entry
+    against `rt.log_message_history`, updates the persistent history with
+    the new user+assistant pair, and appends a `LogEntry` to
+    `rt.log_entries`.
 
     Returns `(text, pacing_task)` — the same shape as the older `RendererFn`,
     so cycle.py can continue scheduling the cycle-close + cross-cycle prefetch
@@ -545,7 +503,6 @@ def _build_log_writer_callable(rt: SessionRuntime) -> Any:
     - History updates happen synchronously inside the streaming generator —
       so prefetch (which fires before `await pacing_task`) sees the just-
       appended log entry in `rt.log_entries`.
-    - Shorthand fires as its own task and emits `entry_shorthand` when ready.
     """
 
     async def _log_writer(
@@ -620,19 +577,6 @@ def _build_log_writer_callable(rt: SessionRuntime) -> Any:
         pacing_task = asyncio.create_task(_stream_and_pace())
         text = await text_ready
 
-        # Schedule the shorthand follow-up. Runs in parallel with the
-        # remaining paced word emission + the cycle-close sequence; emits
-        # `entry_shorthand` when complete. Cancel any prior shorthand task
-        # that hasn't finished yet (shouldn't happen with the single-loop
-        # design, but defensive).
-        if rt.shorthand_task is not None and not rt.shorthand_task.done():
-            rt.shorthand_task.cancel()
-            with contextlib.suppress(BaseException):
-                await rt.shorthand_task
-        rt.shorthand_task = asyncio.create_task(
-            _run_shorthand_call(rt, cycle_index, option, list(rt.log_message_history))
-        )
-
         return text, pacing_task
 
     return _log_writer
@@ -664,8 +608,15 @@ async def prefetch_next_cycle(rt: SessionRuntime, next_cycle_index: int) -> None
         catalog = valid_archetype_combinations(state, mission)
         forced = due_forced_events(state, mission)
         forced_event = forced[0] if forced else None
-        options, fallback = await draft_with_retries(
-            AGENTS.drafter,
+        # Read-only peek at the beat the live cycle-open will fire. State is
+        # frozen between now and the player's /continue click — `select_beat`
+        # returns the same beat `fire_beat` will commit, so the prefetched
+        # options carry the same framing the live drafter would produce.
+        beat = select_beat(state, mission)
+        beat_fragment = beat.fragment if beat is not None else None
+        options, fallback = await select_then_write_with_retries(
+            AGENTS.selector,
+            AGENTS.prose_writer,
             cycle_index=next_cycle_index,
             state=state,
             mission=mission,
@@ -673,6 +624,7 @@ async def prefetch_next_cycle(rt: SessionRuntime, next_cycle_index: int) -> None
             forced_event=forced_event,
             log_entries=rt.log_entries,
             recently_tried=list(rt.last_authorized),
+            beat_fragment=beat_fragment,
         )
         rt.prefetched_options = options
         rt.prefetched_engine_fallback = fallback
@@ -752,16 +704,11 @@ async def _run_session_loop(rt: SessionRuntime) -> None:
         logfire.exception("session loop crashed", session_id=rt.session.id)
         await rt.out_queue.put({"event": "error", "code": "session_crashed"})
     finally:
-        # Cancel any in-flight prefetch / shorthand so they don't outlive
-        # the session.
+        # Cancel any in-flight prefetch so it doesn't outlive the session.
         if rt.prefetch_task is not None and not rt.prefetch_task.done():
             rt.prefetch_task.cancel()
             with contextlib.suppress(BaseException):
                 await rt.prefetch_task
-        if rt.shorthand_task is not None and not rt.shorthand_task.done():
-            rt.shorthand_task.cancel()
-            with contextlib.suppress(BaseException):
-                await rt.shorthand_task
         await rt.out_queue.put({"event": "session_closed"})
 
 

@@ -35,7 +35,6 @@ class CycleTrace:
     effects_delta: dict[str, Any] = field(default_factory=dict)
     events_fired: list[str] = field(default_factory=list)
     entry_text: str = ""
-    entry_shorthand: str = ""
     used_engine_fallback: bool = False
     forced_event_id: str | None = None
 
@@ -190,8 +189,6 @@ async def run_session(
                     elif kind == "entry_word" and current is not None:
                         if not ev.get("is_last"):
                             current.entry_text += ev["word"]
-                    elif kind == "entry_shorthand" and current is not None:
-                        current.entry_shorthand = ev.get("shorthand", "")
                     elif kind == "cycle_closed":
                         record.final_state = dict(ev.get("state", {}))
                     elif kind == "mission_resolved":

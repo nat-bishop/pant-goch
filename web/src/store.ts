@@ -25,7 +25,6 @@ export interface MissionMeta {
 export interface OptionDraft {
   archetype: string;
   agent: string | null;
-  params: Record<string, string>;
   title: string;
   prose_words: string[];
   complete: boolean;
@@ -33,22 +32,15 @@ export interface OptionDraft {
 }
 
 /** One past case-file entry — full prose. Held in the store so the
- * click-to-expand history modal can replay any cycle's entry without a
+ * case-file scroll can render any completed cycle inline without a
  * round-trip. */
 export interface LogEntryRecord {
   cycle_index: number;
   archetype: string;
+  title: string;
   text: string;
   delta: Delta;
-}
-
-/** One case-file history row — LLM-generated one-line shorthand for a cycle.
- * Server emits via `entry_shorthand` after the entry streams. Frontend
- * lists these in the case-file panel; clicking opens the full prose
- * (from `inbox` keyed by cycle_index). */
-export interface LogShorthandRecord {
-  cycle_index: number;
-  shorthand: string;
+  delta_descriptors: DeltaDescriptors;
 }
 
 export interface CycleState {
@@ -94,13 +86,9 @@ interface Store {
   cycle: CycleState | null;
   // Full prose per cycle. Click a case-file row to re-read any past cycle's entry.
   inbox: LogEntryRecord[];
-  // History row shorthands. Server fires `entry_shorthand` after each
-  // cycle's entry streams. Indexed by cycle_index — append-only.
-  shorthands: LogShorthandRecord[];
   outcome: Outcome | null;
   errorMessage: string | null;
   bootStarted: boolean;
-  modalDispatchIndex: number | null;
   // Onboarding modal — shown once at the start of a session, gated by user
   // dismissal. Reset on restart (no localStorage) so a replay is implicitly
   // first-time again.
@@ -110,8 +98,6 @@ interface Store {
   authorize: () => Promise<void>;
   continueCycle: () => Promise<void>;
   selectOption: (idx: number | null) => void;
-  openModal: (cycleIndex: number) => void;
-  closeModal: () => void;
   dismissOnboarding: () => void;
   handleEvent: (event: SseEvent) => void;
   reset: () => void;
@@ -164,11 +150,9 @@ const _store = create<Store>((set, get) => ({
   state: {},
   cycle: null,
   inbox: [],
-  shorthands: [],
   outcome: null,
   errorMessage: null,
   bootStarted: false,
-  modalDispatchIndex: null,
   onboardingDismissed: false,
 
   reset: () =>
@@ -178,10 +162,8 @@ const _store = create<Store>((set, get) => ({
       state: {},
       cycle: null,
       inbox: [],
-      shorthands: [],
       outcome: null,
       errorMessage: null,
-      modalDispatchIndex: null,
       bootStarted: false,
       onboardingDismissed: false,
     }),
@@ -250,9 +232,6 @@ const _store = create<Store>((set, get) => ({
     set({ cycle: { ...cycle, selected_option_index: next } });
   },
 
-  openModal: (cycleIndex) => set({ modalDispatchIndex: cycleIndex }),
-  closeModal: () => set({ modalDispatchIndex: null }),
-
   dismissOnboarding: () => set({ onboardingDismissed: true }),
 
   handleEvent: (ev) => {
@@ -283,7 +262,6 @@ const _store = create<Store>((set, get) => ({
         const opt: OptionDraft = {
           archetype: ev.archetype,
           agent: ev.agent,
-          params: ev.params,
           title: ev.title,
           prose_words: [],
           complete: false,
@@ -387,11 +365,17 @@ const _store = create<Store>((set, get) => ({
         if (ev.is_last) {
           // Finalise: build inbox entry from accumulated text.
           const text = c.entry_words.join("");
+          const title =
+            c.selected_option_index !== null
+              ? (c.options[c.selected_option_index]?.title ?? "")
+              : "";
           const entry: LogEntryRecord = {
             cycle_index: c.index,
             archetype: c.entry_archetype ?? "?",
+            title,
             text,
             delta: c.delta,
+            delta_descriptors: c.delta_descriptors,
           };
           set({
             cycle: { ...c, entry_complete: true },
@@ -404,19 +388,6 @@ const _store = create<Store>((set, get) => ({
             cycle: { ...c, entry_words: [...c.entry_words, ev.word] },
           });
         }
-        break;
-      }
-
-      case "entry_shorthand": {
-        // Append the case-file history row. No cycle guard — shorthands
-        // can land slightly after the cycle has rolled over (the LLM
-        // call runs in parallel with the cycle-close sequence).
-        set({
-          shorthands: [
-            ...get().shorthands,
-            { cycle_index: ev.cycle, shorthand: ev.shorthand },
-          ],
-        });
         break;
       }
 

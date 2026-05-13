@@ -31,28 +31,42 @@ def _completed_task() -> asyncio.Task:
 
 
 def _stub_drafter_llm(rt):
-    async def _drafter_llm(session, cycle_index, catalog, forced_event_id):
+    """Stub the two-phase drafter (selector → prose writer) end-to-end.
+
+    Mirrors `select_then_write_with_retries`'s contract: returns
+    `(options, engine_fallback)`. The selector phase is simulated by
+    catalog filtering + deterministic carrier choice; the prose phase by
+    canned `(title, prose)` pairs. No LLM is invoked.
+    """
+    async def _drafter_llm(session, cycle_index, catalog, forced_event_id, beat_fragment=None):
         # Sort PUSH first so /authorize index 0 reliably progresses the mission.
         ordered = sorted(catalog, key=lambda c: (0 if c[0] == "PUSH" else 1, c[0]))
-        options: list[Option] = []
+        # Phase 1 (selector): pick up to 3 slots, flag the first as forced-event carrier.
+        slots: list[tuple[str, str | None, str | None]] = []
         seen: set[tuple[str, str | None]] = set()
-        for (arch, agent, params) in ordered:
+        for (arch, agent, _params) in ordered:
             if (arch, agent) in seen:
                 continue
             seen.add((arch, agent))
-            satisfies = forced_event_id if (forced_event_id and not any(o.satisfies_event for o in options)) else None
-            options.append(
-                Option(
-                    archetype=arch,
-                    agent=agent,
-                    params=params,
-                    title=f"Authorize {arch}",
-                    prose=f"Take action {arch}.",
-                    satisfies_event=satisfies,
-                )
+            satisfies = (
+                forced_event_id
+                if (forced_event_id and not any(s[2] for s in slots))
+                else None
             )
-            if len(options) == 3:
+            slots.append((arch, agent, satisfies))
+            if len(slots) == 3:
                 break
+        # Phase 2 (prose writer): canned title + prose per slot.
+        options: list[Option] = [
+            Option(
+                archetype=arch,
+                agent=agent,
+                title=f"Authorize {arch}",
+                prose=f"Take action {arch}.",
+                satisfies_event=satisfies,
+            )
+            for (arch, agent, satisfies) in slots
+        ]
         return options, False
     return _drafter_llm
 
@@ -68,7 +82,6 @@ def _stub_drafter_emit(rt):
                     "option_idx": option_idx,
                     "archetype": option.archetype,
                     "agent": option.agent,
-                    "params": option.params,
                     "title": option.title,
                     "satisfies_event": option.satisfies_event,
                 }
@@ -105,18 +118,9 @@ def _stub_log_writer(rt):
         await rt.out_queue.put(
             {"event": "entry_word", "cycle": cycle_index, "idx": 0, "word": "", "is_last": True}
         )
-        from handler.agents import LogEntry, LogShorthand
+        from handler.agents import LogEntry
         rt.log_entries.append(
             LogEntry(cycle_index=cycle_index, archetype=option.archetype, text=text)
-        )
-        # Emit a synthetic shorthand event so the integration test can verify
-        # the entry_shorthand path lights up without hitting the real LLM.
-        shorthand = f"C{cycle_index} — {option.archetype} — stub consequence"
-        rt.log_shorthands.append(
-            LogShorthand(cycle_index=cycle_index, shorthand=shorthand)
-        )
-        await rt.out_queue.put(
-            {"event": "entry_shorthand", "cycle": cycle_index, "shorthand": shorthand}
         )
         return text, _completed_task()
     return _log_writer
@@ -249,7 +253,6 @@ def test_full_cycle_to_terminal(stubbed_client: TestClient) -> None:
     assert "options_complete" in kinds
     assert "effects_applied" in kinds
     assert "entry_started" in kinds
-    assert "entry_shorthand" in kinds
     assert "mission_resolved" in kinds
     # cycle_opened precedes effects_applied for the first cycle.
     assert kinds.index("cycle_opened") < kinds.index("effects_applied")

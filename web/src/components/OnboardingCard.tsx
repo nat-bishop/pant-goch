@@ -1,19 +1,20 @@
 import { useEffect } from "react";
 import { useStore } from "../store";
-import { StreamingText } from "./StreamingText";
+import { PacedReveal } from "./PacedReveal";
 import { usePacedWords } from "../hooks/usePacedWords";
 
-// Option B (see _mockups/handler-onboarding-options.html): the orientation
-// surface holds only what cycle 1 needs — the briefing, in voice, plus one
-// signpost sentence. Cast roster and meter glossary moved off this surface;
-// they'll surface in-play (dossier panel, HUD tooltips) when added.
+// Option B (see _mockups/handler-onboarding-options.html): orientation
+// surface holds only the briefing in voice plus one signpost line.
+// Roster and meter glossary live off this surface (dossier panel /
+// HUD tooltips).
 export function OnboardingCard() {
   const meta = useStore((s) => s.mission_meta);
   const dismissed = useStore((s) => s.onboardingDismissed);
   const dismiss = useStore((s) => s.dismissOnboarding);
 
   const briefing = meta?.opening_briefing?.trim() ?? "";
-  const { words, complete, flush } = usePacedWords(briefing);
+  const PACE_MS = 80;
+  const { tokens, flushed, complete, flush } = usePacedWords(briefing, PACE_MS);
 
   useEffect(() => {
     if (dismissed || !meta) return;
@@ -38,8 +39,6 @@ export function OnboardingCard() {
 
   if (dismissed || !meta) return null;
 
-  // Capture-phase so the briefing flushes before StreamingText's
-  // stopPropagation can prevent the click reaching this handler.
   return (
     <div
       className="scrim heavy"
@@ -57,11 +56,7 @@ export function OnboardingCard() {
         </header>
 
         <div className="onboarding-briefing-body">
-          <StreamingText
-            words={words}
-            complete={complete}
-            showCaret={!complete}
-          />
+          <PacedReveal tokens={tokens} flushed={flushed} paceMs={PACE_MS} />
         </div>
 
         <footer className="onboarding-foot">
@@ -74,7 +69,7 @@ export function OnboardingCard() {
             onClick={dismiss}
             disabled={!complete}
           >
-            Begin — cycle 1 ▸
+            Begin — day 1 ▸
           </button>
         </footer>
       </article>

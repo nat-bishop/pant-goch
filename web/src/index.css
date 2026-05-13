@@ -154,12 +154,6 @@ body {
   to   { transform: rotate(-2.5deg) scale(1); opacity: 1; }
 }
 
-/* Dispatch overlay entry — same warm-paper card slips in slightly rotated. */
-@keyframes dispatch-in {
-  from { transform: rotate(-6deg) translateY(-30px); opacity: 0; }
-  to   { transform: rotate(-0.6deg) translateY(0); opacity: 1; }
-}
-
 @keyframes hint-blink {
   0%, 100% { opacity: 0.4; }
   50%      { opacity: 1; }
@@ -434,14 +428,6 @@ body {
 }
 
 /* Inbox in rail (expanded) */
-.inbox-empty {
-  font-size: 10px;
-  color: var(--rail-faint);
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  font-style: italic;
-}
-
 .inbox-list { display: flex; flex-direction: column; gap: 4px; }
 .inbox-item {
   display: grid;
@@ -461,8 +447,6 @@ body {
   transition: color 120ms ease;
 }
 .inbox-item:hover { color: var(--rail-bright); }
-.inbox-cyc { color: var(--rail-mute); letter-spacing: 0.16em; }
-.inbox-from { color: var(--rail-bright); font-weight: 700; letter-spacing: 0.14em; }
 .inbox-snip {
   color: var(--rail-text);
   font-style: italic;
@@ -609,6 +593,42 @@ body {
   color: var(--ink-soft);
 }
 
+/* Cycle section — one per past or current cycle in the case-file scroll.
+   `current` reads as the active brief; `past` reads as an archived page.
+   Both anchor `scrollIntoView` targets via id="cycle-${n}". */
+.cycle-section { display: block; }
+.cycle-section.past {
+  margin-bottom: 38px;
+  /* Soft archived feel — past pages are read-only and a hair muted. */
+  opacity: 0.92;
+}
+.cycle-section.current { margin-bottom: 0; }
+
+/* Cycle divider — small Courier label between page breaks. Rules on either
+   side hairline-thin. Sits above each cycle's blocks. */
+.cycle-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 4px 0 18px;
+}
+.cycle-section.past + .cycle-section .cycle-divider,
+.cycle-section.past:not(:first-of-type) .cycle-divider { margin-top: 12px; }
+.cycle-divider-rule {
+  flex: 1;
+  height: 0;
+  border-top: 1px solid var(--rule-soft);
+}
+.cycle-divider-label {
+  font-family: "Courier Prime", monospace;
+  font-size: 10px;
+  letter-spacing: 0.28em;
+  color: var(--ink-soft);
+  text-transform: uppercase;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
 /* State of Play */
 .sop-block { margin: 0 0 24px; padding: 4px 0; }
 .sop-label {
@@ -695,10 +715,20 @@ body {
 .opts.has-sel .opt-row:not(.sel) { opacity: 0.34; }
 .opts.authorized .opt-row:not(.sel) { opacity: 0.18; }
 
-/* Authorize block — embedded in the paper */
+/* Authorize block — sticky-pinned to the bottom of the paper-wrap viewport.
+   margin-top: auto handles the short-document case (pins to the cream
+   sheet's bottom via the .paper-sheet flex column); position: sticky takes
+   over once cycles accumulate and the document scrolls. The paper background
+   occludes prose scrolling under, and the soft top rule gives a visual hand-
+   off so the auth row reads as separate from the streaming entry. */
 .auth {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
   margin-top: auto;
-  padding-top: 22px;
+  padding: 18px 0 14px;
+  background: var(--paper);
+  border-top: 1px solid var(--rule-soft);
   display: grid;
   grid-template-columns: 1fr auto;
   gap: 24px;
@@ -810,23 +840,8 @@ body {
   animation: hint-blink 2.4s ease infinite;
 }
 
-/* ─────────────────────────────────────────────────────────────────────
-   LIVE DISPATCH OVERLAY — warm paper card slipped over the desk
-   ───────────────────────────────────────────────────────────────────── */
-
-.dispatch-overlay {
-  position: absolute;
-  inset: 0;
-  background: rgba(10, 8, 4, 0.55);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 40px;
-  animation: overlay-fade 280ms ease;
-  z-index: 30;
-}
-/* Warm-paper card base — shared shell for the live dispatch overlay and
-   the past-dispatch reader. Variants set rotation/animation/sizing. */
+/* Warm-paper card base — shared shell for the onboarding card and any
+   future paper-card surfaces. Variants set rotation/animation/sizing. */
 .warm-paper-card {
   background: var(--paper-warm);
   background-image: var(--noise-coarse);
@@ -837,67 +852,6 @@ body {
   flex-direction: column;
   width: 100%;
 }
-
-.dispatch-card {
-  padding: 36px 44px;
-  max-width: 540px;
-  min-height: 360px;
-  transform: rotate(-0.6deg);
-  animation: dispatch-in 360ms cubic-bezier(0.2, 0.9, 0.3, 1.05);
-}
-.dispatch-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  padding-bottom: 10px;
-  border-bottom: 1px solid var(--ink);
-  margin-bottom: 16px;
-}
-.dispatch-tag {
-  font-family: "Courier Prime", monospace;
-  font-size: 10px;
-  letter-spacing: 0.32em;
-  font-weight: 700;
-  text-transform: uppercase;
-  color: var(--stamp);
-  border: 1.4px solid var(--stamp);
-  padding: 2px 8px;
-}
-.dispatch-meta {
-  font-family: "Courier Prime", monospace;
-  font-size: 10.5px;
-  letter-spacing: 0.12em;
-  color: var(--ink-soft);
-  text-transform: uppercase;
-}
-.dispatch-body {
-  flex: 1;
-  font-size: 14px;
-  line-height: 1.8;
-  color: var(--ink);
-  white-space: pre-wrap;
-}
-.dispatch-foot {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-top: 18px;
-  padding-top: 10px;
-  border-top: 1px dashed var(--ink-faint);
-  font-family: "Courier Prime", monospace;
-}
-.dispatch-hint {
-  font-size: 9.5px;
-  letter-spacing: 0.18em;
-  color: var(--ink-faint);
-  text-transform: uppercase;
-  animation: hint-blink 2.4s ease infinite;
-}
-
-/* ─────────────────────────────────────────────────────────────────────
-   PAST-DISPATCH READER — same warm-paper card without the live tilt,
-   FILE COPY corner stamp marks it as the archived version.
-   ───────────────────────────────────────────────────────────────────── */
 
 .scrim {
   position: fixed;
@@ -914,114 +868,6 @@ body {
 .scrim.heavy {
   background: rgba(5, 6, 4, 0.92);
   backdrop-filter: blur(4px);
-}
-
-.archive-card {
-  max-width: 620px;
-  /* Locked size so the card doesn't grow with the dispatch's length —
-     short and long dispatches render at the same dimensions. Body
-     scrolls when content exceeds the locked region (see .archive-body). */
-  height: 640px;
-  padding: 44px 52px 36px;
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  animation: paper-rise 0.5s var(--ease) both;
-}
-
-.archive-close {
-  position: absolute;
-  top: 18px;
-  right: 18px;
-  width: 30px;
-  height: 30px;
-  border: 1px solid var(--ink-soft);
-  background: transparent;
-  color: var(--ink-soft);
-  cursor: pointer;
-  font-family: "Courier Prime", monospace;
-  font-size: 16px;
-  line-height: 1;
-  transition: all 140ms ease;
-}
-.archive-close:hover {
-  background: var(--ink);
-  color: var(--paper);
-  border-color: var(--ink);
-}
-
-.archive-tag {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  font-family: "Courier Prime", monospace;
-  font-size: 10px;
-  letter-spacing: 0.32em;
-  font-weight: 700;
-  color: var(--stamp);
-  text-transform: uppercase;
-  margin-bottom: 10px;
-}
-.archive-tag-rule {
-  display: inline-block;
-  width: 24px;
-  height: 0;
-  border-top: 1px solid var(--stamp);
-}
-
-.archive-from {
-  font-family: "Newsreader", "Iowan Old Style", Georgia, serif;
-  font-size: 17px;
-  color: var(--ink);
-  margin-bottom: 4px;
-}
-.archive-from strong {
-  font-weight: 600;
-  letter-spacing: 0.04em;
-}
-
-.archive-route {
-  font-family: "Courier Prime", monospace;
-  font-size: 10.5px;
-  letter-spacing: 0.18em;
-  color: var(--ink-soft);
-  text-transform: uppercase;
-  padding-bottom: 14px;
-  margin-bottom: 22px;
-  border-bottom: 1px solid var(--rule);
-}
-
-.archive-body {
-  font-family: "Newsreader", "Iowan Old Style", Georgia, serif;
-  font-size: 14px;
-  line-height: 1.85;
-  color: var(--ink);
-  white-space: pre-wrap;
-  /* Take all remaining vertical space inside the locked archive-card and
-     scroll internally when the dispatch is long. Card stays a constant
-     640px regardless of how short or long this body is. */
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow-y: auto;
-}
-
-.archive-delta {
-  margin-top: 24px;
-  padding-top: 14px;
-  border-top: 1px dashed var(--ink-faint);
-  display: flex;
-  flex-wrap: wrap;
-  gap: 18px;
-  font-family: "Courier Prime", monospace;
-  font-size: 10.5px;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--ink-soft);
-}
-.archive-delta-key {
-  color: var(--stamp);
-  font-weight: 700;
-  margin-right: 6px;
 }
 
 /* ─────────────────────────────────────────────────────────────────────
@@ -1185,10 +1031,6 @@ body {
   line-height: 1.78;
   color: var(--ink);
   white-space: pre-wrap;
-  padding: 14px 18px;
-  border-left: 2px solid var(--stamp);
-  background: var(--stamp-bg);
-  cursor: text;
 }
 .onboarding-foot {
   display: flex;

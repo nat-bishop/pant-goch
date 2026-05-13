@@ -62,7 +62,7 @@ def test_fold_replay_matches_live_mutation(mission) -> None:
     re-fold a fresh state with the recorded event and assert equality."""
     live = make_initial_state(mission)
     opt = Option(archetype="PUSH", title="t", prose="p")
-    delta = apply_archetype_effects(live, opt, mission)
+    delta, _branches = apply_archetype_effects(live, opt, mission)
 
     replay = make_initial_state(mission)
     fold(replay, EffectsApplied(cycle_index=1, delta=delta))

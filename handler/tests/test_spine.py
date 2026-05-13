@@ -7,7 +7,7 @@ import pytest
 
 from handler.mission_loader import load_mission
 from handler.models import (
-    DramaticQuestion,
+    Beat,
     Mission,
     Option,
     QualityGte,
@@ -24,7 +24,7 @@ from handler.spine import (
     fire_due_passive_events,
     invalid_archetype_combinations,
     option_progresses_mission,
-    select_dramatic_question,
+    select_beat,
     snapshot,
     tick_cycle_close,
     valid_archetype_combinations,
@@ -90,20 +90,20 @@ def test_valid_archetype_combinations_respects_archetype_when(mission, state):
 
 def test_apply_archetype_effects_unbound(mission, state):
     opt = Option(archetype="PUSH", title="t", prose="p")
-    delta = apply_archetype_effects(state, opt, mission)
+    delta, branches = apply_archetype_effects(state, opt, mission)
     assert state.get_quality("mission.progress") == 1
     assert delta["mission.progress"] == (0, 1)
+    assert branches == set()  # PUSH has no branch-tagged effects
 
 
 def test_apply_archetype_effects_substitutes_agent(mission, state):
     opt = Option(
         archetype="SACRIFICE_BY_AGENT",
         agent="ALPHA",
-        params={"agent": "ALPHA"},
         title="t",
         prose="p",
     )
-    delta = apply_archetype_effects(state, opt, mission)
+    delta, _branches = apply_archetype_effects(state, opt, mission)
     # ALPHA cover: 5 → 3 (-2); progress: 0 → 1
     assert state.get_quality("agent[ALPHA].cover") == 3
     assert state.get_quality("mission.progress") == 1
@@ -111,7 +111,8 @@ def test_apply_archetype_effects_substitutes_agent(mission, state):
 
 
 def test_apply_archetype_effects_with_conditional_branches(state):
-    # The LYNX-Exfil mission's RUN_EXFIL is the canonical conditional case.
+    # The LYNX-Exfil mission's RUN_EXFIL is the canonical opposed-check case.
+    # Default initial state has naming_progress=2 (clean band, < 6).
     from pathlib import Path
     from handler.mission_loader import load_mission
 
@@ -120,15 +121,53 @@ def test_apply_archetype_effects_with_conditional_branches(state):
     s.set_quality("mission.extraction_stage", 2)
     s.set_quality("agent[LYNX].cover", 7)
     opt = Option(archetype="RUN_EXFIL", title="t", prose="p")
-    apply_archetype_effects(s, opt, m)
-    # Clean exit (cover ≥ 5) costs 2.
+    delta, branches = apply_archetype_effects(s, opt, m)
+    # Clean branch (naming_progress < 6): -2 cover, stage advances.
     assert s.get_quality("agent[LYNX].cover") == 5
     assert s.get_quality("mission.extraction_stage") == 3
+    assert branches == {"clean"}
+
+
+def test_apply_archetype_effects_partial_branch(state):
+    """Mid-band naming_progress (6..8) triggers the partial branch on
+    RUN_EXFIL — LYNX cover takes a -4 hit and KESTREL is the cost."""
+    from pathlib import Path
+    from handler.mission_loader import load_mission
+
+    m = load_mission(Path(__file__).resolve().parents[1] / "missions" / "lynx_exfil.yaml")
+    s = make_initial_state(m)
+    s.set_quality("mission.extraction_stage", 2)
+    s.set_quality("agent[LYNX].cover", 7)
+    s.set_quality("mission.opposition.naming_progress", 7)
+    opt = Option(archetype="RUN_EXFIL", title="t", prose="p")
+    delta, branches = apply_archetype_effects(s, opt, m)
+    assert s.get_quality("agent[LYNX].cover") == 3  # 7 - 4
+    assert s.get_quality("mission.extraction_stage") == 3
+    assert s.get_quality("agent[KESTREL].cover") == 0
+    assert branches == {"partial"}
+
+
+def test_apply_archetype_effects_failure_branch(state):
+    """High-band naming_progress (>= 9) on RUN_EXFIL forces naming = 10 so
+    the lynx_named terminal fires next passive pass. Cover unchanged in this
+    branch — the loss is the file closing, not LYNX collapsing in the field."""
+    from pathlib import Path
+    from handler.mission_loader import load_mission
+
+    m = load_mission(Path(__file__).resolve().parents[1] / "missions" / "lynx_exfil.yaml")
+    s = make_initial_state(m)
+    s.set_quality("mission.extraction_stage", 2)
+    s.set_quality("agent[LYNX].cover", 7)
+    s.set_quality("mission.opposition.naming_progress", 9)
+    opt = Option(archetype="RUN_EXFIL", title="t", prose="p")
+    delta, branches = apply_archetype_effects(s, opt, m)
+    assert s.get_quality("mission.opposition.naming_progress") == 10
+    assert branches == {"failure"}
 
 
 def test_cover_clamp_at_zero(mission, state):
     state.set_quality("agent[ALPHA].cover", 1)
-    opt = Option(archetype="SACRIFICE_BY_AGENT", agent="ALPHA", params={"agent": "ALPHA"}, title="t", prose="p")
+    opt = Option(archetype="SACRIFICE_BY_AGENT", agent="ALPHA", title="t", prose="p")
     apply_archetype_effects(state, opt, mission)
     # 1 + (-2) = -1, clamped to 0.
     assert state.get_quality("agent[ALPHA].cover") == 0
@@ -311,35 +350,82 @@ def test_derive_tension_band_sums_across_agents(mission, state):
     assert derive_tension_band(prior, state) == "crisis"
 
 
-# ───────────────────────── dramatic question selection ─────────────────────────
+# ───────────────────────── beat selection ─────────────────────────
 
 
-def test_select_dramatic_question_returns_first_match(mission, state):
-    """First matching predicate wins; author orders most-specific first."""
-    mission_with_qs = mission.model_copy(
+def test_select_beat_returns_highest_priority_match(mission, state):
+    """Lowest `priority` int wins among `when`-matching beats; authored
+    order breaks ties (handled by zip-with-enumerate in select_beat)."""
+    mission_with_beats = mission.model_copy(
         update={
-            "dramatic_questions": [
-                DramaticQuestion(
+            "beats": [
+                Beat(
+                    id="alpha_brink",
                     when=QualityLte(quality="agent[ALPHA].cover", value=2),
-                    question="Is ALPHA still useful?",
+                    fragment="ALPHA is at the brink.",
+                    priority=1,
                 ),
-                DramaticQuestion(
+                Beat(
+                    id="ambient",
                     when=QualityGte(quality="mission.cycles_remaining", value=1),
-                    question="What now?",
+                    fragment="The day is still open.",
+                    priority=5,
                 ),
             ]
         }
     )
-    # Cover=5 → first doesn't match, second does
-    assert select_dramatic_question(state, mission_with_qs) == "What now?"
-    # Drop cover → first now matches and short-circuits
+    # Cover=5 → brink doesn't match, ambient does
+    selected = select_beat(state, mission_with_beats)
+    assert selected is not None and selected.id == "ambient"
+    # Drop cover → brink matches and (priority=1) wins over ambient (priority=5)
     state.set_quality("agent[ALPHA].cover", 1)
-    assert select_dramatic_question(state, mission_with_qs) == "Is ALPHA still useful?"
+    selected = select_beat(state, mission_with_beats)
+    assert selected is not None and selected.id == "alpha_brink"
 
 
-def test_select_dramatic_question_returns_none_when_none_match(mission, state):
-    """No questions defined → None (caller falls back to plain SoP framing)."""
-    assert select_dramatic_question(state, mission) is None
+def test_select_beat_skips_already_fired(mission, state):
+    """Once a beat's id is in state.fired, it never re-selects (fire-once)."""
+    mission_with_beats = mission.model_copy(
+        update={
+            "beats": [
+                Beat(
+                    id="ambient",
+                    when=QualityGte(quality="mission.cycles_remaining", value=1),
+                    fragment="The day is open.",
+                    priority=5,
+                ),
+            ]
+        }
+    )
+    selected = select_beat(state, mission_with_beats)
+    assert selected is not None and selected.id == "ambient"
+    state.fired.append("ambient")
+    assert select_beat(state, mission_with_beats) is None
+
+
+def test_select_beat_unlimited_refires(mission, state):
+    """`fires_at_most="unlimited"` beats refire every cycle their predicate matches."""
+    mission_with_beats = mission.model_copy(
+        update={
+            "beats": [
+                Beat(
+                    id="ambient",
+                    when=QualityGte(quality="mission.cycles_remaining", value=1),
+                    fragment="The day is open.",
+                    priority=5,
+                    fires_at_most="unlimited",
+                ),
+            ]
+        }
+    )
+    state.fired.append("ambient")  # simulate prior fire — should NOT skip
+    selected = select_beat(state, mission_with_beats)
+    assert selected is not None and selected.id == "ambient"
+
+
+def test_select_beat_returns_none_when_none_match(mission, state):
+    """No beats defined → None (caller falls back gracefully)."""
+    assert select_beat(state, mission) is None
 
 
 # ───────────────────────── locked-archetype rationale ─────────────────────────

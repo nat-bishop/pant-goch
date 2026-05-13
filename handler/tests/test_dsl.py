@@ -249,14 +249,18 @@ def test_normalise_converts_string_effects_in_list() -> None:
     assert effects[1]["op"] == "set" and effects[1]["value"] == 2
 
 
-def test_normalise_recurses_into_dramatic_questions() -> None:
+def test_normalise_recurses_into_beats() -> None:
     raw = {
-        "dramatic_questions": [
-            {"when": "agent[LYNX].cover <= 2", "question": "Is LYNX still useful?"}
+        "beats": [
+            {
+                "id": "lynx_brink",
+                "when": "agent[LYNX].cover <= 2",
+                "fragment": "LYNX is hours from collapse.",
+            }
         ]
     }
     out = normalise_mission_dsl(raw)
-    assert out["dramatic_questions"][0]["when"]["kind"] == "quality_lte"
+    assert out["beats"][0]["when"]["kind"] == "quality_lte"
 
 
 def test_normalise_handles_effect_dict_with_inline_when() -> None:

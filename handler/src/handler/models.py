@@ -151,18 +151,30 @@ def iter_predicate_leaves(pred: "Predicate") -> Iterator["Predicate"]:
 # ───────────────────────── effects ─────────────────────────
 
 
+BranchLabel = Literal["clean", "partial", "failure"]
+
+
 class Effect(BaseModel):
     """One literal state mutation. `op` controls how `value` combines with the
     existing quality. `when` optionally gates the effect on a predicate; when
     set, the effect only fires if `when` holds at apply-time.
 
     For string qualities only `op: set` is meaningful — there is no add/max/min.
+
+    `branch` is an optional author-tag for opposed-check resolution. When an
+    archetype encodes three mutually-exclusive `if`-guarded effect branches
+    (clean / partial / failure) against a hidden quality, tagging each effect
+    with its `branch` lets the engine record which branch actually applied —
+    so `Archetype.branch_leans` can thread the matching renderer directives
+    into the log writer's leans. The label has no engine meaning beyond
+    "this effect belongs to the named branch"; resolution still uses `when`.
     """
 
     quality: str = Field(min_length=1)
     value: float | int | str | bool
     op: Literal["set", "add", "max", "min"] = "set"
     when: Predicate | None = None
+    branch: BranchLabel | None = None
 
 
 # ───────────────────────── authoring schemas ─────────────────────────
@@ -213,18 +225,32 @@ class CastMember(BaseModel):
         return self
 
 
+class Band(BaseModel):
+    """A bucket of variant phrasings keyed by an upper-bound threshold. Used
+    by hidden qualities (`Quality.bands`) so the drafter / log-writer surface
+    can rotate through different observational variants for the same band —
+    the band identifies the value's semantic level; the variant prevents the
+    phrasing from being phrase-decoded by the player across cycles.
+    """
+
+    threshold: float
+    variants: list[str] = Field(min_length=1)
+
+
 class Quality(BaseModel):
     """One authored quality — initial value plus the in-fiction descriptor
     used by the narrative state block. The single per-quality authoring unit;
     every entry in `Mission.qualities` is a `Quality`.
 
-    Use `buckets` for numeric qualities, `values` for discrete enums. Exactly
-    one MUST be non-empty — that requirement is what eliminates the older
-    "missing descriptor" footgun (initial value and descriptor are co-located,
-    so an author can't write one without the other).
+    Three descriptor shapes; exactly one MUST be set:
+      - `buckets` — numeric qualities with a single descriptor per band.
+        Walks list in authored order; first threshold >= value wins.
+      - `values` — discrete enums keyed by stringified value.
+      - `bands` — numeric qualities with multiple phrasing variants per band.
+        Use for hidden qualities (`visible=False`) where phrasing rotation
+        across cycles prevents the player from phrase-decoding the band.
 
-    Bucket lookup walks the list in authored order; the first bucket whose
-    `threshold` >= the actual value wins. Author bottom-up:
+    Bucket layout (bottom-up):
         buckets:
           - [0, "blown"]
           - [2, "compromised"]   # 1..2
@@ -238,6 +264,11 @@ class Quality(BaseModel):
     `label` (optional) prefixes every descriptor — e.g. label="extraction"
     yields "extraction: papers not yet surfaced".
 
+    `visible` (default True): when False, the quality is hidden from the
+    OPERATION POSTURE state block and the RESULT footer (`describe_delta`
+    skips invisible-quality entries). It surfaces only through the dedicated
+    hidden-state hint block in the drafter / log-writer user prompts.
+
     `initial` is omitted only for universal qualities the engine injects
     (`agent[*].cover`, `mission.cycles_remaining`); a `qualities:` entry for
     those exists purely to override the built-in display buckets.
@@ -246,48 +277,99 @@ class Quality(BaseModel):
     initial: float | int | str | None = None
     buckets: list[tuple[float, str]] = Field(default_factory=list)
     values: dict[str, str] = Field(default_factory=dict)
+    bands: list[Band] = Field(default_factory=list)
     label: str = ""
+    visible: bool = True
 
     @model_validator(mode="after")
     def _has_descriptor(self) -> "Quality":
-        if not self.buckets and not self.values:
+        set_count = sum(1 for x in (self.buckets, self.values, self.bands) if x)
+        if set_count == 0:
             raise ValueError(
-                "Quality: must set one of `buckets` or `values` (got neither). "
-                "Every quality must carry its narrative descriptor."
+                "Quality: must set one of `buckets`, `values`, or `bands` "
+                "(got none). Every quality must carry its narrative descriptor."
             )
-        if self.buckets and self.values:
+        if set_count > 1:
             raise ValueError(
-                "Quality: set EITHER `buckets` OR `values`, not both"
+                "Quality: set EXACTLY ONE of `buckets`, `values`, `bands`"
             )
         return self
+
+    def _match_band(self, value: float | int | str | bool) -> Band | None:
+        """Walk `bands` and return the first one whose threshold covers value.
+        Returns None for non-numeric values or when `bands` isn't set."""
+        if not self.bands or not isinstance(value, (int, float)) or isinstance(value, bool):
+            return None
+        for band in self.bands:
+            if value <= band.threshold:
+                return band
+        return None
+
+    def _label(self, body: str) -> str:
+        return f"{self.label}: {body}" if self.label else body
 
     def describe(self, value: float | int | str | bool) -> str | None:
         """Look up the descriptor for `value`. Returns None if no bucket/value
         matches (numeric value above all bucket thresholds, or string value
         absent from the values map). Callers fall back to built-ins or skip.
+
+        For `bands`-shaped qualities, returns the FIRST variant of the matching
+        band — callers wanting the rotated variant should call
+        `describe_variant(value, cycle_index)` instead.
         """
-        body: str | None = None
         if self.values:
             body = self.values.get(str(value))
         elif self.buckets and isinstance(value, (int, float)) and not isinstance(value, bool):
-            for threshold, descriptor in self.buckets:
-                if value <= threshold:
-                    body = descriptor
-                    break
-        if body is None:
+            body = next(
+                (descriptor for threshold, descriptor in self.buckets if value <= threshold),
+                None,
+            )
+        else:
+            band = self._match_band(value)
+            body = band.variants[0] if band is not None else None
+        return self._label(body) if body is not None else None
+
+    def describe_variant(
+        self, value: float | int | str | bool, cycle_index: int
+    ) -> str | None:
+        """Look up a rotated variant for `bands`-shaped qualities. Deterministic
+        by `(value's band, cycle_index)` so test replay is reproducible and the
+        same band visited across consecutive cycles surfaces different
+        phrasings. Returns None when `bands` isn't set or no band matches —
+        callers fall back to `describe(value)`.
+        """
+        band = self._match_band(value)
+        if band is None:
             return None
-        return f"{self.label}: {body}" if self.label else body
+        return self._label(band.variants[cycle_index % len(band.variants)])
 
 
-class DramaticQuestion(BaseModel):
-    """Author-written framing for a cycle: when the predicate matches, the SoP
-    leads with this question instead of summarising state. Selection walks the
-    mission's list in authored order and picks the first match — author from
-    most-specific to least-specific.
+class Beat(BaseModel):
+    """Author-written observational fragment threaded into a cycle's prompts
+    when its predicate matches. Replaces the older `DramaticQuestion`.
+
+    Selection is highest-priority (lowest `priority` int) authored-order winner
+    among `when`-matching beats that haven't already fired this mission.
+    On selection, the beat's `id` is appended to `state.fired` so the same
+    fragment never surfaces twice — fixing the audit §2b symptom of the same
+    framing reappearing every cycle.
+
+    `fragment` is the prose handed to the LLM. The drafter sees it as cycle
+    framing color; the log writer sees it as an additional lean directive.
+    Authors write the fragment as one *example* — the prompts instruct
+    translation through the cycle's specific situation, not verbatim quoting.
+
+    `fires_at_most`:
+      - "once_per_mission" (default): consume on fire, never repeats.
+      - "unlimited": legacy semantics — re-fires every cycle the predicate
+        matches. Use sparingly; the whole point of the rename is fire-once.
     """
 
+    id: str = Field(min_length=1)
     when: Predicate
-    question: str = Field(min_length=1)
+    fragment: str = Field(min_length=1)
+    priority: int = 0
+    fires_at_most: Literal["unlimited", "once_per_mission"] = "once_per_mission"
 
 
 class Archetype(BaseModel):
@@ -297,6 +379,12 @@ class Archetype(BaseModel):
 
     `params: ["agent"]` means: the drafter can choose any agent with cover > 0
     as the actor. The chosen agent is bound to `$agent` in `when` and `effects`.
+
+    `branch_leans` (optional): when this archetype's effects use the
+    `branch` author-tag (opposed-check shape — clean / partial / failure), the
+    engine records which branch fired and `cycle.py` threads the matching list
+    of directives into the log-writer's `LEAN-ON THIS DAY` block. This is how
+    a failure branch produces a reveal rather than a confirmation.
     """
 
     id: str = Field(min_length=1)
@@ -306,6 +394,10 @@ class Archetype(BaseModel):
     # Short descriptor of the archetype's intent. Surfaced to the drafter so
     # it can write prose that matches the mechanic. Not displayed to the player.
     intent: str = ""
+    # Per-branch renderer directives, keyed by branch label. Engine reads
+    # this AFTER effect application; only the keys for branches that fired
+    # contribute leans.
+    branch_leans: dict[BranchLabel, list[str]] = Field(default_factory=dict)
 
 
 class Event(BaseModel):
@@ -432,10 +524,12 @@ class Mission(BaseModel):
     # (e.g. "LYNX must not be photographed again", "the Vienna network is
     # offline"). Authored, no LLM in the loop.
     standing_orders: list[str] = Field(default_factory=list)
-    # Per-state-shape SoP framing. Engine selects the first matching question
-    # each cycle; SoP leads with it instead of summarising state. Author from
-    # most-specific predicate to most-general.
-    dramatic_questions: list[DramaticQuestion] = Field(default_factory=list)
+    # Per-state-shape authored fragments. The engine selects one beat per
+    # cycle (highest-priority `when`-matching unfired entry); it's threaded
+    # into the drafter's user prompt as framing color AND into the log
+    # writer's leans as a foregrounding directive. Fire-once by default so
+    # the same observation never surfaces twice in a run (audit §2b).
+    beats: list[Beat] = Field(default_factory=list)
     archetypes: list[Archetype] = Field(min_length=1)
     events: list[Event] = Field(min_length=1)
     # Cycle-1-only briefing prose. Prepended to the SoP user prompt on cycle 1
@@ -452,12 +546,23 @@ class Mission(BaseModel):
             (self.cast, "cast member"),
             (self.archetypes, "archetype"),
             (self.events, "event"),
+            (self.beats, "beat"),
         ):
             seen: set[str] = set()
             for item in collection:
                 if item.id in seen:
                     raise ValueError(f"duplicate {label} id: {item.id!r}")
                 seen.add(item.id)
+        # Beat ids share the `state.fired` namespace with event ids — keep
+        # them disjoint so an EventFired predicate doesn't accidentally match
+        # a beat fire (or vice versa).
+        event_ids = {e.id for e in self.events}
+        for beat in self.beats:
+            if beat.id in event_ids:
+                raise ValueError(
+                    f"beat id {beat.id!r} collides with an event id; both "
+                    f"share the fired-ledger namespace"
+                )
         # Outcome keys referenced by terminal events must be in `outcomes`.
         for event in self.events:
             if event.terminal and event.outcome_key not in self.outcomes:
@@ -511,19 +616,26 @@ class Mission(BaseModel):
                 return m
         raise KeyError(f"cast member {id!r} not in mission {self.id!r}")
 
+    def event(self, id: str) -> Event:
+        for e in self.events:
+            if e.id == id:
+                return e
+        raise KeyError(f"event {id!r} not in mission {self.id!r}")
+
 
 # ───────────────────────── drafter output ─────────────────────────
 
 
 class Option(BaseModel):
-    """One option the drafter offers the player. `archetype`, `agent`, `params`
-    drive deterministic resolution; `title` and `prose` are display-only —
-    they never influence state.
+    """One option the drafter offers the player. Assembled by the engine from
+    the selector's `(archetype, agent, satisfies_event)` slot + the prose
+    writer's `(title, prose)` pair. `archetype` and `agent` drive deterministic
+    resolution; `title` and `prose` are display-only — they never influence
+    state.
     """
 
     archetype: str = Field(min_length=1)
     agent: str | None = None
-    params: dict[str, str] = Field(default_factory=dict)
     title: str = Field(min_length=1)
     prose: str = Field(min_length=1)
     # Id of the forced event this option satisfies, if any. Looked up against
@@ -531,10 +643,14 @@ class Option(BaseModel):
     satisfies_event: str | None = None
 
 
-class OptionSet(BaseModel):
-    """Drafter structured output: 3–4 options per cycle."""
+class OptionProse(BaseModel):
+    """Prose-writer structured output for one slot. The engine pairs each
+    `OptionProse` (positionally) with a selector slot to build a final
+    `Option`. No catalog identifiers here — those are pinned by the engine
+    before this call runs."""
 
-    options: list[Option] = Field(min_length=3, max_length=4)
+    title: str = Field(min_length=1)
+    prose: str = Field(min_length=1)
 
 
 # ───────────────────────── runtime state ─────────────────────────
