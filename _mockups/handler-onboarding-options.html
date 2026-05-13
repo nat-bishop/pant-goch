@@ -1,0 +1,635 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HANDLER — Onboarding Options</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Courier+Prime:ital,wght@0,400;0,700;1,400;1,700&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --desk:          #14171b;
+    --desk-2:        #1a1e23;
+    --desk-rule:     #262a31;
+
+    --paper:         #eee5cd;
+    --paper-shade:   #d8cfb4;
+
+    --ink:           #1c1814;
+    --ink-soft:      #4a4438;
+    --ink-faint:     #837c6c;
+    --rule:          #b8af96;
+    --rule-soft:     #d6cdb0;
+
+    --chrome:        #b0a994;
+    --chrome-dim:    #75705f;
+
+    --stamp:         #7a1f18;
+    --stamp-soft:    #9a3a32;
+    --stamp-bg:      rgba(122, 31, 24, 0.06);
+
+    --shadow-paper:
+      0  1px  2px rgba(0, 0, 0, 0.30),
+      0 12px 28px rgba(0, 0, 0, 0.50),
+      0 40px 72px rgba(0, 0, 0, 0.40);
+
+    --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+
+  *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html, body {
+    min-height: 100vh;
+    background: var(--desk);
+    color: var(--chrome);
+    font-family: 'Courier Prime', 'Courier New', monospace;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  body {
+    background-image:
+      radial-gradient(ellipse 55% 55% at 50% 30%, rgba(200, 180, 120, 0.05) 0%, transparent 70%),
+      radial-gradient(ellipse 90% 60% at 50% 110%, rgba(0,0,0,0.6) 0%, transparent 60%);
+    padding: 56px 32px 96px;
+  }
+
+  /* page chrome */
+  .page-head {
+    max-width: 1480px;
+    margin: 0 auto 48px;
+    border-bottom: 1px solid var(--desk-rule);
+    padding-bottom: 22px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .page-eyebrow {
+    font-size: 10.5px;
+    letter-spacing: 0.36em;
+    color: var(--chrome-dim);
+    text-transform: uppercase;
+  }
+  .page-title {
+    font-size: 22px;
+    letter-spacing: 0.06em;
+    color: var(--chrome);
+    text-transform: uppercase;
+    font-weight: 700;
+  }
+  .page-note {
+    font-family: "Newsreader", Georgia, serif;
+    font-size: 14px;
+    color: var(--chrome-dim);
+    max-width: 720px;
+    line-height: 1.55;
+    margin-top: 6px;
+  }
+
+  /* options grid */
+  .options {
+    max-width: 1480px;
+    margin: 0 auto;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 56px 48px;
+  }
+  @media (max-width: 1280px) {
+    .options { grid-template-columns: minmax(0, 1fr); }
+  }
+
+  .option {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+  }
+  .option-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 12px;
+    font-size: 10.5px;
+    letter-spacing: 0.32em;
+    text-transform: uppercase;
+    color: var(--chrome-dim);
+  }
+  .option-tag b {
+    color: var(--stamp-soft);
+    font-weight: 700;
+    border: 1px solid var(--stamp-soft);
+    padding: 3px 10px;
+    letter-spacing: 0.32em;
+  }
+  .option-name {
+    font-size: 15px;
+    letter-spacing: 0.14em;
+    color: var(--chrome);
+    text-transform: uppercase;
+    font-weight: 700;
+  }
+  .option-blurb {
+    font-family: "Newsreader", Georgia, serif;
+    font-size: 13.5px;
+    line-height: 1.6;
+    color: var(--chrome-dim);
+    max-width: 56ch;
+    font-style: italic;
+  }
+
+  /* simulated desk surface behind each card */
+  .stage {
+    position: relative;
+    padding: 40px;
+    background: var(--desk-2);
+    border: 1px solid var(--desk-rule);
+    min-height: 580px;
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    overflow: hidden;
+  }
+  .stage::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(ellipse 55% 55% at 50% 25%, rgba(200, 180, 120, 0.05) 0%, transparent 70%);
+    pointer-events: none;
+  }
+  .stage::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(ellipse 100% 80% at 50% 50%, transparent 55%, rgba(0,0,0,0.55) 100%);
+    pointer-events: none;
+  }
+
+  /* ============================================================
+     Paper card — base shell shared by all options
+     ============================================================ */
+  .paper {
+    position: relative;
+    background: var(--paper);
+    color: var(--ink);
+    box-shadow: var(--shadow-paper);
+    width: 100%;
+    max-width: 560px;
+    padding: 36px 40px 28px;
+    z-index: 1;
+  }
+  .paper::before {
+    /* tiny paper grain */
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    opacity: 0.05;
+    mix-blend-mode: multiply;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+
+  .paper-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    padding-bottom: 12px;
+    border-bottom: 1.5px solid var(--ink);
+    font-family: "Courier Prime", monospace;
+  }
+  .paper-tag {
+    font-size: 11px;
+    letter-spacing: 0.36em;
+    font-weight: 700;
+    color: var(--stamp);
+    border: 1.4px solid var(--stamp);
+    padding: 3px 10px;
+    text-transform: uppercase;
+  }
+  .paper-codename {
+    font-size: 11px;
+    letter-spacing: 0.24em;
+    font-weight: 700;
+    color: var(--ink-soft);
+    text-transform: uppercase;
+  }
+
+  .briefing {
+    font-family: "Newsreader", Georgia, serif;
+    font-size: 14px;
+    line-height: 1.78;
+    color: var(--ink);
+    white-space: pre-wrap;
+    padding: 18px 4px 6px;
+  }
+  .briefing.framed {
+    padding: 16px 18px;
+    border-left: 2px solid var(--stamp);
+    background: var(--stamp-bg);
+  }
+
+  .paper-foot {
+    display: flex;
+    justify-content: flex-end;
+    padding-top: 18px;
+    margin-top: 16px;
+    border-top: 1px solid var(--ink-faint);
+    gap: 16px;
+    align-items: center;
+  }
+  .paper-foot-note {
+    font-family: "Newsreader", Georgia, serif;
+    font-size: 12.5px;
+    font-style: italic;
+    color: var(--ink-faint);
+    flex: 1;
+    line-height: 1.5;
+  }
+  .paper-btn {
+    font-family: "Courier Prime", monospace;
+    font-size: 11px;
+    letter-spacing: 0.28em;
+    font-weight: 700;
+    text-transform: uppercase;
+    color: var(--paper);
+    background: var(--ink);
+    border: none;
+    padding: 10px 18px;
+    cursor: pointer;
+    transition: background 0.15s var(--ease);
+  }
+  .paper-btn:hover { background: var(--stamp); }
+  .paper-btn-ghost {
+    background: transparent;
+    color: var(--ink);
+    border: 1px solid var(--ink-faint);
+  }
+  .paper-btn-ghost:hover { background: var(--ink); color: var(--paper); }
+
+  /* ============================================================
+     OPTION C — cable letterhead
+     ============================================================ */
+  .cable-head {
+    font-family: "Courier Prime", monospace;
+    font-size: 11.5px;
+    line-height: 1.85;
+    color: var(--ink);
+    padding-bottom: 18px;
+    margin-bottom: 4px;
+    border-bottom: 1px dashed var(--rule);
+    letter-spacing: 0.04em;
+  }
+  .cable-head .row {
+    display: grid;
+    grid-template-columns: 90px 1fr;
+    gap: 12px;
+  }
+  .cable-head .label {
+    color: var(--ink-faint);
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    font-size: 10px;
+    padding-top: 2px;
+  }
+  .cable-head .stamp-block {
+    position: absolute;
+    top: 26px;
+    right: 36px;
+    transform: rotate(-6deg);
+    border: 2px solid var(--stamp);
+    color: var(--stamp);
+    padding: 4px 10px;
+    font-size: 9.5px;
+    letter-spacing: 0.32em;
+    font-weight: 700;
+    text-transform: uppercase;
+    opacity: 0.78;
+  }
+  .cable-body {
+    font-family: "Newsreader", Georgia, serif;
+    font-size: 14px;
+    line-height: 1.78;
+    color: var(--ink);
+    white-space: pre-wrap;
+    padding: 18px 0 4px;
+  }
+  .cable-sign {
+    font-family: "Newsreader", Georgia, serif;
+    font-style: italic;
+    font-size: 14px;
+    color: var(--ink-soft);
+    padding-top: 8px;
+  }
+
+  /* ============================================================
+     OPTION D — progressive disclosure dossier
+     ============================================================ */
+  .dossier {
+    margin-top: 18px;
+    border-top: 1px solid var(--ink-faint);
+    padding-top: 14px;
+  }
+  .dossier-toggle {
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-family: "Courier Prime", monospace;
+    font-size: 10.5px;
+    letter-spacing: 0.28em;
+    font-weight: 700;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+    padding: 4px 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .dossier-toggle .caret {
+    display: inline-block;
+    transition: transform 0.18s var(--ease);
+  }
+  .dossier.open .caret { transform: rotate(90deg); }
+  .dossier-body {
+    overflow: hidden;
+    max-height: 0;
+    transition: max-height 0.25s var(--ease), margin-top 0.25s var(--ease);
+  }
+  .dossier.open .dossier-body {
+    max-height: 600px;
+    margin-top: 14px;
+  }
+  .roster {
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-family: "Courier Prime", monospace;
+  }
+  .roster li {
+    display: grid;
+    grid-template-columns: 96px 80px 1fr;
+    gap: 10px;
+    padding: 6px 0;
+    border-bottom: 1px dashed var(--rule-soft);
+    font-size: 11px;
+    align-items: baseline;
+  }
+  .roster li:last-child { border-bottom: none; }
+  .roster .id {
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    color: var(--ink);
+  }
+  .roster .role {
+    font-size: 9.5px;
+    letter-spacing: 0.18em;
+    color: var(--ink-soft);
+    text-transform: uppercase;
+  }
+  .roster .note {
+    font-family: "Newsreader", Georgia, serif;
+    font-style: italic;
+    font-size: 12px;
+    color: var(--ink-soft);
+  }
+
+  /* ============================================================
+     OPTION A — two-line minimum
+     ============================================================ */
+  .minimal-head {
+    text-align: center;
+    padding: 8px 0 20px;
+  }
+  .minimal-codename {
+    font-family: "Courier Prime", monospace;
+    font-size: 11px;
+    letter-spacing: 0.36em;
+    font-weight: 700;
+    color: var(--stamp);
+    text-transform: uppercase;
+  }
+  .minimal-title {
+    font-family: "Newsreader", Georgia, serif;
+    font-size: 22px;
+    letter-spacing: 0.04em;
+    color: var(--ink);
+    margin-top: 6px;
+    font-weight: 500;
+  }
+  .minimal-rule {
+    width: 36px;
+    height: 1px;
+    background: var(--ink);
+    margin: 14px auto 0;
+  }
+
+</style>
+</head>
+<body>
+
+<header class="page-head">
+  <div class="page-eyebrow">handler · onboarding redesign</div>
+  <div class="page-title">Opening panel — four options</div>
+  <p class="page-note">
+    Current card carries four jobs: meta-instruction, fiction hook, cast bible, meter
+    legend. Below: four cuts toward less-on-page-one. Each shows the same Op.
+    LYNX-EXFIL briefing as it would appear in production. Cast and meter glossary
+    are pushed off the orientation surface (to a dossier panel and HUD tooltips
+    respectively) unless otherwise noted.
+  </p>
+</header>
+
+<main class="options">
+
+  <!-- ============================================================
+       OPTION A — minimal: codename + briefing + button
+       ============================================================ -->
+  <section class="option">
+    <div class="option-tag"><b>A</b><span class="option-name">Minimum viable cable</span></div>
+    <p class="option-blurb">
+      Just the briefing. No "you are RAVEN" rules-frame, no roster, no meter
+      glossary. Title is the op codename — no "ORIENTATION" eyebrow. Player
+      learns the verb from cycle 1's draft, learns the cast by meeting them in
+      dispatches, learns the HUD by hovering.
+    </p>
+    <div class="stage">
+      <article class="paper">
+        <div class="minimal-head">
+          <div class="minimal-codename">Op. LYNX-EXFIL</div>
+          <div class="minimal-title">Bucharest, six cycles.</div>
+          <div class="minimal-rule"></div>
+        </div>
+
+        <div class="briefing">From: MERIWETHER, Director, Romanian Desk
+To: RAVEN, handler-of-record
+Re: OP. LYNX-EXFIL
+
+You have six cycles.
+
+Forty-eight hours ago the resident's people photographed LYNX at a meet that should not have happened. The image is in the Bucharest file. Counter-intel — Colonel MUNTEANU, name him plainly in your cables — has not moved yet. He will. The sweep is tightening; once LYNX is named in MUNTEANU's report the file closes.
+
+The eastern train is clean. The Vienna network is offline; do not ask.
+
+KESTREL is in the city on a separate reconnaissance, cover intact. She is yours to spend. Spend her carefully.
+
+Bring her home, RAVEN. Or do not. The choice is filed against your name.
+
+— M.</div>
+
+        <div class="paper-foot">
+          <span class="paper-foot-note"></span>
+          <button type="button" class="paper-btn">Begin ▸</button>
+        </div>
+      </article>
+    </div>
+  </section>
+
+
+  <!-- ============================================================
+       OPTION B — one in-fiction frame line
+       ============================================================ -->
+  <section class="option">
+    <div class="option-tag"><b>B</b><span class="option-name">Briefing + one signpost</span></div>
+    <p class="option-blurb">
+      Same briefing, but a single italic line above the Begin button names the
+      verb in voice: <em>Operations Desk will draft your options at the desk.
+      You authorize one.</em> Buys one sentence of mechanical clarity without
+      surfacing rules sections.
+    </p>
+    <div class="stage">
+      <article class="paper">
+        <header class="paper-head">
+          <span class="paper-tag">Orientation</span>
+          <span class="paper-codename">Op. LYNX-EXFIL</span>
+        </header>
+
+        <div class="briefing framed">From: MERIWETHER, Director, Romanian Desk
+To: RAVEN, handler-of-record
+Re: OP. LYNX-EXFIL
+
+You have six cycles.
+
+Forty-eight hours ago the resident's people photographed LYNX at a meet that should not have happened. The image is in the Bucharest file. Counter-intel — Colonel MUNTEANU, name him plainly in your cables — has not moved yet. He will. The sweep is tightening; once LYNX is named in MUNTEANU's report the file closes.
+
+The eastern train is clean. The Vienna network is offline; do not ask.
+
+KESTREL is in the city on a separate reconnaissance, cover intact. She is yours to spend. Spend her carefully.
+
+Bring her home, RAVEN. Or do not. The choice is filed against your name.
+
+— M.</div>
+
+        <div class="paper-foot">
+          <span class="paper-foot-note">
+            Operations Desk will draft your options at the desk. You authorize one.
+          </span>
+          <button type="button" class="paper-btn">Begin — cycle 1 ▸</button>
+        </div>
+      </article>
+    </div>
+  </section>
+
+
+  <!-- ============================================================
+       OPTION C — diegetic cable (no orientation chrome)
+       ============================================================ -->
+  <section class="option">
+    <div class="option-tag"><b>C</b><span class="option-name">Diegetic cable</span></div>
+    <p class="option-blurb">
+      The onboarding panel <em>is</em> the cable from MERIWETHER, on letterhead.
+      No "ORIENTATION" tag at all — you're not being onboarded, you're being
+      handed the file. Stamp in the corner, sender/recipient as a slug header,
+      sign-off in italics. The Begin button reads as an acknowledgement.
+    </p>
+    <div class="stage">
+      <article class="paper" style="position: relative;">
+        <div class="cable-head">
+          <div class="row"><span class="label">From</span><span>MERIWETHER · Director, Romanian Desk</span></div>
+          <div class="row"><span class="label">To</span><span>RAVEN · handler-of-record</span></div>
+          <div class="row"><span class="label">Re</span><span>OP. LYNX-EXFIL — 06 cycle window</span></div>
+          <div class="row"><span class="label">Filed</span><span>0612 Z · Bucharest desk</span></div>
+        </div>
+        <div class="stamp-block">Eyes Only · Raven</div>
+
+        <div class="cable-body">You have six cycles.
+
+Forty-eight hours ago the resident's people photographed LYNX at a meet that should not have happened. The image is in the Bucharest file. Counter-intel — Colonel MUNTEANU, name him plainly in your cables — has not moved yet. He will. The sweep is tightening; once LYNX is named in MUNTEANU's report the file closes.
+
+The eastern train is clean. The Vienna network is offline; do not ask.
+
+KESTREL is in the city on a separate reconnaissance, cover intact. She is yours to spend. Spend her carefully.
+
+Bring her home, RAVEN. Or do not. The choice is filed against your name.</div>
+
+        <div class="cable-sign">— M.</div>
+
+        <div class="paper-foot">
+          <span class="paper-foot-note">Sign for receipt; you take the file.</span>
+          <button type="button" class="paper-btn">Sign &amp; take the file ▸</button>
+        </div>
+      </article>
+    </div>
+  </section>
+
+
+  <!-- ============================================================
+       OPTION D — progressive disclosure dossier
+       ============================================================ -->
+  <section class="option">
+    <div class="option-tag"><b>D</b><span class="option-name">Briefing + collapsed dossier</span></div>
+    <p class="option-blurb">
+      For players who want it: the cast roster is still on this surface, but
+      collapsed behind a single line. Default state is briefing-only. The
+      curious can expand <em>▸ DOSSIER</em>; everyone else skips it. Meters
+      still move to HUD tooltips. Click the toggle below to expand.
+    </p>
+    <div class="stage">
+      <article class="paper">
+        <header class="paper-head">
+          <span class="paper-tag">Orientation</span>
+          <span class="paper-codename">Op. LYNX-EXFIL</span>
+        </header>
+
+        <div class="briefing framed">From: MERIWETHER, Director, Romanian Desk
+To: RAVEN, handler-of-record
+Re: OP. LYNX-EXFIL
+
+You have six cycles.
+
+Forty-eight hours ago the resident's people photographed LYNX at a meet that should not have happened. The image is in the Bucharest file. Counter-intel — Colonel MUNTEANU, name him plainly in your cables — has not moved yet. He will. The sweep is tightening; once LYNX is named in MUNTEANU's report the file closes.
+
+The eastern train is clean. The Vienna network is offline; do not ask.
+
+KESTREL is in the city on a separate reconnaissance, cover intact. She is yours to spend. Spend her carefully.
+
+Bring her home, RAVEN. Or do not. The choice is filed against your name.
+
+— M.</div>
+
+        <div class="dossier" id="dossier">
+          <button type="button" class="dossier-toggle" onclick="document.getElementById('dossier').classList.toggle('open')">
+            <span class="caret">▸</span><span>Dossier — who is in the field</span>
+          </button>
+          <div class="dossier-body">
+            <ul class="roster">
+              <li><span class="id">LYNX</span><span class="role">operative</span><span class="note">Deep cover, two years. Photographed at a meet that should not have happened.</span></li>
+              <li><span class="id">KESTREL</span><span class="role">operative</span><span class="note">In Bucharest on separate reconnaissance. Cover intact. Paired with LYNX on Vienna, two winters back.</span></li>
+              <li><span class="id">REDFIELD</span><span class="role">asset</span><span class="note">Fourteen-year sleeper. Only access to the papers.</span></li>
+              <li><span class="id">MERIWETHER</span><span class="role">boss</span><span class="note">Director, Romanian Desk. Treasury is pressing him; he is pressing you.</span></li>
+              <li><span class="id">MUNTEANU</span><span class="role">opposition</span><span class="note">Counter-intel colonel. Holds the photograph. Has not yet named LYNX in his report.</span></li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="paper-foot">
+          <span class="paper-foot-note">
+            Operations Desk will draft your options at the desk.
+          </span>
+          <button type="button" class="paper-btn">Begin — cycle 1 ▸</button>
+        </div>
+      </article>
+    </div>
+  </section>
+
+</main>
+
+</body>
+</html>

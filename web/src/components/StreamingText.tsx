@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type MouseEvent } from "react";
 
 interface Props {
   words: string[];
@@ -33,8 +33,13 @@ export function StreamingText({ words, className, showCaret, complete }: Props) 
     if (words.length === 0) setFlushed(false);
   }, [words.length]);
 
-  function flush() {
+  function flush(e: MouseEvent) {
     if (flushed || complete) return;
+    // Stop the click from bubbling to ancestors. Without this, clicking
+    // option prose to skip the streaming animation would also toggle the
+    // option row's selection (OptionsList's row-level onClick). Reveal is
+    // a passive UI affordance — it shouldn't commit gameplay decisions.
+    e.stopPropagation();
     setFlushed(true);
   }
 

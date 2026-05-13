@@ -1,10 +1,15 @@
 import { useEffect } from "react";
 import { useStore } from "../store";
+import { StreamingText } from "./StreamingText";
+import { usePacedWords } from "../hooks/usePacedWords";
 
 export function DispatchModal() {
   const modalIdx = useStore((s) => s.modalDispatchIndex);
   const inbox = useStore((s) => s.inbox);
   const closeModal = useStore((s) => s.closeModal);
+
+  const d = modalIdx === null ? null : inbox.find((x) => x.cycle_index === modalIdx);
+  const { words, complete, flush } = usePacedWords(d?.text ?? "");
 
   useEffect(() => {
     if (modalIdx === null) return;
@@ -19,9 +24,7 @@ export function DispatchModal() {
     };
   }, [modalIdx, closeModal]);
 
-  if (modalIdx === null) return null;
-  const d = inbox.find((x) => x.cycle_index === modalIdx);
-  if (!d) return null;
+  if (modalIdx === null || !d) return null;
 
   return (
     <div
@@ -32,7 +35,7 @@ export function DispatchModal() {
       role="dialog"
       aria-modal="true"
     >
-      <article className="warm-paper-card archive-card">
+      <article className="warm-paper-card archive-card" onClickCapture={flush}>
         <button
           type="button"
           className="archive-close"
@@ -55,7 +58,9 @@ export function DispatchModal() {
           C{d.cycle_index} · {d.archetype}
         </div>
 
-        <div className="archive-body">{d.text}</div>
+        <div className="archive-body">
+          <StreamingText words={words} complete={complete} showCaret={!complete} />
+        </div>
 
         {Object.keys(d.delta).length > 0 && (
           <div className="archive-delta">
