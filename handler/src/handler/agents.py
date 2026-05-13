@@ -709,7 +709,15 @@ def build_agent_bundle(model: OpenAIChatModel, mission: Mission) -> AgentBundle:
     pydantic-ai handles concurrent calls."""
     drafter = Agent(
         model=model,
-        output_type=NativeOutput(OptionSet),
+        # `strict=True` is REQUIRED — without it, pydantic-ai sends
+        # `response_format.json_schema.strict=false` and llama.cpp (via
+        # inferno or the bundled llama-server) treats the schema as a hint
+        # rather than a sampler-grammar constraint. Gemma then ignores the
+        # schema and produces markdown prose, the parser fails, and the
+        # drafter falls back to engine-authored options every cycle. See
+        # the logfire trace from 2026-05-13 for the smoking-gun comparison
+        # (strict=true → valid JSON, strict=false → markdown).
+        output_type=NativeOutput(OptionSet, strict=True),
         system_prompt=_drafter_system_prompt(mission),
     )
     log_writer = Agent(
