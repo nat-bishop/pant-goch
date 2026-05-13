@@ -52,12 +52,6 @@ class CycleOpened(BaseModel):
     cycle_index: int  # 1-based; CYC 01 / 06 maps to cycle_index=1
 
 
-class SopRendered(BaseModel):
-    kind: Literal["sop_rendered"] = "sop_rendered"
-    cycle_index: int
-    text: str
-
-
 class OptionsDrafted(BaseModel):
     kind: Literal["options_drafted"] = "options_drafted"
     cycle_index: int
@@ -74,12 +68,13 @@ class OptionAuthorized(BaseModel):
     by_handler_at: datetime
 
 
-class DispatchRendered(BaseModel):
-    """The acting agent's field report (or Operations for HOLD / terminal-on-timeout)."""
+class LogEntryAppended(BaseModel):
+    """The cycle's case-file entry, written by the log writer in Operations
+    voice after effects apply. Always Ops voice — voice multiplexing is gone
+    per HANDLER_SPEC_V2 §8.2."""
 
-    kind: Literal["dispatch_rendered"] = "dispatch_rendered"
+    kind: Literal["log_entry_appended"] = "log_entry_appended"
     cycle_index: int
-    acting: str  # agent id, or "operations" for HOLD / Ops-voiced dispatches
     archetype: str
     text: str
 
@@ -131,10 +126,9 @@ Event = Annotated[
     Union[
         MissionStarted,
         CycleOpened,
-        SopRendered,
         OptionsDrafted,
         OptionAuthorized,
-        DispatchRendered,
+        LogEntryAppended,
         EffectsApplied,
         EventsFired,
         CycleClosed,
@@ -167,7 +161,7 @@ def fold(state: State, event: Event) -> None:
         state.outcome = event.initial_state.outcome
         state.one_cycle_flags = dict(event.initial_state.one_cycle_flags)
         return
-    if isinstance(event, (CycleOpened, SopRendered, OptionsDrafted, OptionAuthorized, DispatchRendered)):
+    if isinstance(event, (CycleOpened, OptionsDrafted, OptionAuthorized, LogEntryAppended)):
         return  # observation only
     if isinstance(event, EffectsApplied):
         _apply_delta(state, event.delta)

@@ -9,7 +9,7 @@ Endpoints:
 The cycle loop runs as a background asyncio.Task per session, pushing events
 into the session's `out_queue`. The SSE endpoint consumes from the queue.
 `/authorize` resolves the cycle's pending `auth_future`, unblocking the loop
-to compute effects + render dispatch + advance to the next cycle.
+to compute effects + render the log entry + advance to the next cycle.
 """
 from __future__ import annotations
 
@@ -34,6 +34,7 @@ from logfire import ConsoleOptions
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+from pydantic_ai.messages import ModelMessage
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.profiles.openai import openai_model_profile
 from pydantic_ai.providers.openai import OpenAIProvider
@@ -41,18 +42,19 @@ from dataclasses import replace
 
 from .agents import (
     AgentBundle,
-    DispatchRecord,
+    LogEntry,
+    LogShorthand,
     _drafter_user_prompt,
-    _renderer_user_prompt,
-    _sop_user_prompt,
+    _log_writer_user_prompt,
+    _shorthand_user_prompt,
     build_agent_bundle,
     draft_with_retries,
 )
 from .config import Settings
 from .cycle import run_cycle, start_mission
 from .events import (
-    DispatchRendered,
     Event,
+    LogEntryAppended,
     MissionResolved,
     OptionAuthorized,
     OptionsDrafted,
@@ -99,6 +101,7 @@ logfire.instrument_pydantic(record="failure")
 logfire.instrument_httpx(capture_all=True)
 logging.getLogger().addHandler(logfire.LogfireLoggingHandler())
 
+log = logging.getLogger(__name__)
 LLM_LOGFIRE = logfire.with_tags("llm")
 
 
@@ -138,18 +141,18 @@ class SessionRuntime:
     """Per-session live state: the engine session, the SSE queue, the two
     futures the cycle loop alternates between (auth = pause INSIDE a cycle
     waiting for the player's pick; continue = pause BETWEEN cycles waiting
-    for the player to click through), the cycle task itself, and a rolling
-    buffer of past dispatches (for renderer voice anchoring).
+    for the player to click through), the cycle task itself, and the
+    accumulating case-file artifacts (log_entries, log_shorthands,
+    log_message_history) for the log writer.
 
     Cross-cycle prefetch (HANDLER_SPEC_V2 §11 wall-clock optimisation): when
-    cycle N's renderer LLM finishes, a background task pre-runs cycle N+1's
-    SoP + drafter LLM calls so they're ready by the time the player clicks
-    Continue. Results are tagged with `prefetched_cycle_index` so the SoP /
-    drafter callables only consume data meant for the cycle they're running.
+    cycle N's log writer text is ready, a background task pre-runs cycle N+1's
+    drafter LLM call so options are ready by the time the player clicks
+    Continue. The drafter is stateless, so prefetching it is trivial.
+    Prefetched results are tagged with `prefetched_cycle_index`.
 
-    `last_cycle_delta` and `last_authorized` carry one-cycle context forward
-    so the next cycle's SoP/drafter prompts can lead with "what moved last
-    cycle" and "vary from what was recently tried" respectively.
+    `last_authorized` carries one-cycle context forward so the next cycle's
+    drafter prompt can lead with "vary from what was recently tried".
     """
 
     session: Session
@@ -158,18 +161,28 @@ class SessionRuntime:
     continue_future: asyncio.Future[None] | None = None
     current_options: list[Option] | None = None
     cycle_task: asyncio.Task | None = None
-    dispatches: list[DispatchRecord] = field(default_factory=list)
-    # Cross-cycle prefetch fields — populated by `prefetch_next_cycle`,
-    # consumed by the SoP / drafter callables on the next run_cycle iteration.
+    # Accumulating case-file artifacts (HANDLER_SPEC_V2 §8.2).
+    # `log_entries` — full prose per cycle. Drafter prompt pulls the last 2
+    # for cross-cycle context (drafter is stateless one-shot). Frontend
+    # caches the full text for the click-to-expand history UI.
+    log_entries: list[LogEntry] = field(default_factory=list)
+    # `log_shorthands` — one-line history rows produced by the non-persisted
+    # shorthand follow-up call. Frontend lists these in the case-file panel.
+    log_shorthands: list[LogShorthand] = field(default_factory=list)
+    # `log_message_history` — the log-writer agent's accumulating pydantic-ai
+    # `message_history`. One user+assistant pair per cycle. The conversation
+    # IS the case file. Initialized empty; grown by `_build_log_writer_callable`
+    # after each cycle's stream completes.
+    log_message_history: list[ModelMessage] = field(default_factory=list)
+    # Cross-cycle drafter prefetch — populated by `prefetch_next_cycle`,
+    # consumed by the drafter LLM callable on the next run_cycle iteration.
     prefetched_cycle_index: int | None = None
-    prefetched_sop_text: str | None = None
     prefetched_options: list[Option] | None = None
     prefetched_engine_fallback: bool = False
     prefetch_task: asyncio.Task | None = None
-    # Cycle N's full aggregate delta (effects + events + close + 2nd pass),
-    # set by `on_cycle_close`. Cycle N+1's SoP user prompt reads this to
-    # lead with "what moved last cycle". None on cycle 1.
-    last_cycle_delta: dict[str, tuple[Any, Any]] | None = None
+    # In-flight shorthand task for the current cycle. Held so session
+    # teardown can cancel it cleanly.
+    shorthand_task: asyncio.Task | None = None
     # Last 2 authorized picks as (cycle_index, archetype, agent_id|None).
     # Cycle N+1's drafter prompt reads this to vary tonal range. Updated by
     # `_run_session_loop` after each /authorize lands.
@@ -192,10 +205,9 @@ class SessionRuntime:
             self.continue_future = None
 
     def _clear_prefetch(self) -> None:
-        """Reset all prefetch fields (after consumption, cancellation, or a
+        """Reset prefetch fields (after consumption, cancellation, or a
         stale-result discard)."""
         self.prefetched_cycle_index = None
-        self.prefetched_sop_text = None
         self.prefetched_options = None
         self.prefetched_engine_fallback = False
 
@@ -272,6 +284,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         model_name = "gemma-4-e4b"
         logfire.info("building model", model=model_name, base_url=api_url)
         base_profile = openai_model_profile(model_name)
+        # `openai_chat_send_back_thinking_parts=False` — required for Gemma 4
+        # multi-turn (see CLAUDE.md). The log writer's accumulating
+        # message_history makes this load-bearing: without it, pydantic-ai's
+        # default 'auto' round-trips ThinkingParts back into assistant
+        # content as <think>...</think> blocks and drift compounds every cycle.
         profile = replace(base_profile, openai_chat_send_back_thinking_parts=False)
         provider = OpenAIProvider(base_url=api_url, api_key="local")
         model = OpenAIChatModel(model_name, provider=provider, profile=profile)
@@ -298,6 +315,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             for sid, rt in list(SESSIONS.items()):
                 if rt.cycle_task is not None and not rt.cycle_task.done():
                     rt.cycle_task.cancel()
+                if rt.shorthand_task is not None and not rt.shorthand_task.done():
+                    rt.shorthand_task.cancel()
             stop_llama(LLAMA_PROC)
 
 
@@ -354,7 +373,7 @@ async def paced_word_emitter(
     full text.
 
     Designed for two call sites (HANDLER_SPEC_V2 §11 "Streaming architecture"):
-    1. SoP / Dispatch: `word_source = _words_from_stream(llm_stream)` — words
+    1. Log entry: `word_source = _words_from_stream(llm_stream)` — words
        emerge as the LLM produces them; the emitter throttles when the LLM
        outpaces the cadence and passes through when the LLM is slower.
     2. Drafter options: `word_source = _words_from_text(prose)` — full prose
@@ -381,109 +400,20 @@ async def paced_word_emitter(
     return full
 
 
-# ───────────────────────── agent call wrappers (the SopFn/DrafterFn/RendererFn shapes) ─────────────────────────
-
-
-async def _run_paced_stream(
-    agent: Any,
-    prompt: str,
-    emit: Callable[[dict], Awaitable[None]],
-    *,
-    event_kind: str,
-    extra: dict,
-) -> tuple[str, asyncio.Task]:
-    """Stream `agent.run_stream(prompt)` to the client as paced word events,
-    but resolve the full text the moment the LLM stream is exhausted — not
-    when pacing finishes. Returns `(text, pacing_task)` so the caller can
-    kick off downstream work (drafter LLM or cross-cycle prefetch) while
-    paced word emission continues in the background.
-    """
-    text_ready: asyncio.Future[str] = asyncio.get_event_loop().create_future()
-    buf: list[str] = []
-
-    async def _stream_and_pace() -> None:
-        try:
-            async with agent.run_stream(prompt) as result:
-
-                async def teed() -> AsyncIterator[str]:
-                    async for chunk in result.stream_text(delta=True):
-                        buf.append(chunk)
-                        yield chunk
-                    if not text_ready.done():
-                        text_ready.set_result("".join(buf))
-
-                await paced_word_emitter(
-                    _words_from_stream(teed()),
-                    emit,
-                    event_kind=event_kind,
-                    extra=extra,
-                )
-        except BaseException as e:
-            if not text_ready.done():
-                text_ready.set_exception(e)
-            raise
-
-    pacing_task = asyncio.create_task(_stream_and_pace())
-    text = await text_ready
-    return text, pacing_task
-
-
-def _build_sop_callable(rt: SessionRuntime) -> Any:
-    """Returns the SoP text as soon as the LLM finishes generating, and a
-    pacing_task that continues emitting paced `sop_word` SSE events in the
-    background. The caller can start the drafter LLM (which needs sop_text)
-    while pacing finishes — net wall-clock win equal to ~drafter LLM time.
-
-    If `rt.prefetched_sop_text` was populated by `prefetch_next_cycle` for
-    this cycle, skip the LLM call entirely and just pace the buffered text.
-    """
-
-    async def _sop(session: Session, cycle_index: int) -> tuple[str, asyncio.Task]:
-        assert AGENTS is not None
-        extra = {"cycle": cycle_index}
-
-        # Consume prefetched data if it's tagged for this cycle.
-        if (
-            rt.prefetched_cycle_index == cycle_index
-            and rt.prefetched_sop_text is not None
-        ):
-            text = rt.prefetched_sop_text
-            rt.prefetched_sop_text = None  # drafter still needs prefetched_options
-            pacing_task = asyncio.create_task(
-                paced_word_emitter(
-                    _words_from_text(text),
-                    rt.out_queue.put,
-                    event_kind="sop_word",
-                    extra=extra,
-                )
-            )
-            return text, pacing_task
-
-        prompt = _sop_user_prompt(
-            cycle_index, session.state, session.mission, rt.dispatches,
-            last_cycle_delta=rt.last_cycle_delta,
-        )
-        return await _run_paced_stream(
-            AGENTS.sop, prompt, rt.out_queue.put,
-            event_kind="sop_word", extra=extra,
-        )
-
-    return _sop
+# ───────────────────────── agent call wrappers (the DrafterFn / LogWriterFn shapes) ─────────────────────────
 
 
 def _build_drafter_llm_callable(rt: SessionRuntime) -> Any:
     """LLM-only phase of the drafter — runs `draft_with_retries` (or consumes
     prefetched options). NO SSE emission; that's `_build_drafter_emit_callable`.
 
-    Splitting LLM from emission lets `cycle.py` schedule this as a background
-    task while SoP pacing finishes, so options arrive at the client with no
-    idle gap after SoP.
+    Stateless one-shot per HANDLER_SPEC_V2 §8.1 / §8.4 — the drafter takes
+    `rt.log_entries` (last 2) as user-side context, not a message_history.
     """
 
     async def _drafter_llm(
         session: Session,
         cycle_index: int,
-        sop_text: str,
         catalog: list[tuple[str, str | None, dict[str, str]]],
         forced_event_id: str | None,
     ) -> tuple[list[Option], bool]:
@@ -510,10 +440,9 @@ def _build_drafter_llm_callable(rt: SessionRuntime) -> Any:
             cycle_index=cycle_index,
             state=session.state,
             mission=session.mission,
-            sop_text=sop_text,
             catalog=catalog,
             forced_event=forced_event,
-            dispatches=rt.dispatches,
+            log_entries=rt.log_entries,
             recently_tried=list(rt.last_authorized),
         )
 
@@ -566,73 +495,164 @@ def _build_drafter_emit_callable(rt: SessionRuntime) -> Any:
     return _drafter_emit
 
 
-def _build_renderer_callable(rt: SessionRuntime) -> Any:
-    """Returns the dispatch text as soon as the LLM finishes, and a
-    pacing_task that continues emitting paced `dispatch_word` SSE events.
-    Cycle.py uses the LLM-done signal to fire `on_renderer_text_ready`,
-    which schedules cycle N+1's prefetch — overlapping cycle N+1's LLM
-    work with cycle N's modal-display wall time.
+async def _run_shorthand_call(
+    rt: SessionRuntime,
+    cycle_index: int,
+    option: Option,
+    persistent_history: list[ModelMessage],
+) -> None:
+    """Run the non-persisted shorthand follow-up against the log-writer agent,
+    emit `entry_shorthand`, and append to `rt.log_shorthands`.
 
-    The dispatch is appended to `rt.dispatches` synchronously once text is
-    ready (before pacing finishes), so prefetch sees the just-rendered
-    dispatch when building cycle N+1's user prompts.
+    Per HANDLER_SPEC_V2 §8.3: same agent, same `message_history` (system +
+    every prior cycle's entry, INCLUDING the one just written), plus a
+    short "summarize that" user turn. The summarize-pair is DISCARDED —
+    `rt.log_message_history` is NOT mutated by this call."""
+    assert AGENTS is not None
+    prompt = _shorthand_user_prompt(cycle_index, option)
+    try:
+        with logfire.span("shorthand_call", cycle=cycle_index):
+            result = await AGENTS.log_writer.run(prompt, message_history=persistent_history)
+            text = result.output.strip()
+    except Exception as e:
+        log.warning("shorthand call failed (cycle %d): %s", cycle_index, e)
+        # Fallback: engine-authored row. Keeps the history UI populated.
+        agent_seg = f"({option.agent})" if option.agent else ""
+        text = f"C{cycle_index} — {option.archetype}{agent_seg}"
+    # Take first line only — model occasionally adds a trailing newline or
+    # extra commentary despite the prompt.
+    text = text.splitlines()[0].strip() if text else f"C{cycle_index} — {option.archetype}"
+    rt.log_shorthands.append(LogShorthand(cycle_index=cycle_index, shorthand=text))
+    await rt.out_queue.put(
+        {"event": "entry_shorthand", "cycle": cycle_index, "shorthand": text}
+    )
+
+
+def _build_log_writer_callable(rt: SessionRuntime) -> Any:
+    """Conversation-based log writer per HANDLER_SPEC_V2 §8.2. Streams the
+    cycle's case-file entry against `rt.log_message_history`, updates the
+    persistent history with the new user+assistant pair, appends a `LogEntry`
+    to `rt.log_entries`, and kicks off the non-persisted shorthand follow-up
+    (§8.3) as a background task.
+
+    Returns `(text, pacing_task)` — the same shape as the older `RendererFn`,
+    so cycle.py can continue scheduling the cycle-close + cross-cycle prefetch
+    while paced `entry_word` events stream to the client.
+
+    Wall-clock structure:
+    - Text resolves the moment the LLM stream is exhausted (via `text_ready`),
+      letting cycle.py advance past the await.
+    - History updates happen synchronously inside the streaming generator —
+      so prefetch (which fires before `await pacing_task`) sees the just-
+      appended log entry in `rt.log_entries`.
+    - Shorthand fires as its own task and emits `entry_shorthand` when ready.
     """
 
-    async def _render(
+    async def _log_writer(
         session: Session,
         cycle_index: int,
         option: Option,
         delta: dict,
-        acting: str,
-        prior_state,
+        prior_state: State,
         *,
         leans: list[str] = (),
     ) -> tuple[str, asyncio.Task]:
         assert AGENTS is not None
         await rt.out_queue.put(
             {
-                "event": "dispatch_started",
+                "event": "entry_started",
                 "cycle": cycle_index,
-                "acting": acting,
                 "archetype": option.archetype,
             }
         )
-        prompt = _renderer_user_prompt(
-            cycle_index, session.state, session.mission, option, delta, acting, rt.dispatches,
+        prompt = _log_writer_user_prompt(
+            cycle_index, session.state, session.mission, option, delta,
             prior_state=prior_state,
-            leans=leans,
+            leans=list(leans),
         )
-        text, pacing_task = await _run_paced_stream(
-            AGENTS.renderer, prompt, rt.out_queue.put,
-            event_kind="dispatch_word",
-            extra={"cycle": cycle_index, "acting": acting},
+
+        # Snapshot the persistent history at the start of this call. Used
+        # as `message_history` input to the stream; after the stream
+        # completes, `stream_result.all_messages()` gives us the updated
+        # full history (system + every cycle's entry, including this one).
+        history_in = list(rt.log_message_history)
+        text_ready: asyncio.Future[str] = asyncio.get_event_loop().create_future()
+        buf: list[str] = []
+
+        async def _stream_and_pace() -> None:
+            try:
+                async with AGENTS.log_writer.run_stream(
+                    prompt, message_history=history_in
+                ) as stream_result:
+
+                    async def teed() -> AsyncIterator[str]:
+                        async for chunk in stream_result.stream_text(delta=True):
+                            buf.append(chunk)
+                            yield chunk
+                        # Stream exhausted — text is complete. Append the
+                        # LogEntry and update message_history synchronously
+                        # so the prefetch hook (which fires before pacing
+                        # completes) sees the just-rendered entry. Then
+                        # resolve the future so cycle.py can advance.
+                        full_text = "".join(buf)
+                        rt.log_entries.append(
+                            LogEntry(
+                                cycle_index=cycle_index,
+                                archetype=option.archetype,
+                                text=full_text,
+                            )
+                        )
+                        rt.log_message_history = stream_result.all_messages()
+                        if not text_ready.done():
+                            text_ready.set_result(full_text)
+
+                    await paced_word_emitter(
+                        _words_from_stream(teed()),
+                        rt.out_queue.put,
+                        event_kind="entry_word",
+                        extra={"cycle": cycle_index},
+                    )
+            except BaseException as e:
+                if not text_ready.done():
+                    text_ready.set_exception(e)
+                raise
+
+        pacing_task = asyncio.create_task(_stream_and_pace())
+        text = await text_ready
+
+        # Schedule the shorthand follow-up. Runs in parallel with the
+        # remaining paced word emission + the cycle-close sequence; emits
+        # `entry_shorthand` when complete. Cancel any prior shorthand task
+        # that hasn't finished yet (shouldn't happen with the single-loop
+        # design, but defensive).
+        if rt.shorthand_task is not None and not rt.shorthand_task.done():
+            rt.shorthand_task.cancel()
+            with contextlib.suppress(BaseException):
+                await rt.shorthand_task
+        rt.shorthand_task = asyncio.create_task(
+            _run_shorthand_call(rt, cycle_index, option, list(rt.log_message_history))
         )
-        # Append synchronously so any prefetch kicked off by the renderer-done
-        # hook sees this dispatch in `rt.dispatches`.
-        rt.dispatches.append(
-            DispatchRecord(
-                cycle_index=cycle_index,
-                acting=acting,
-                archetype=option.archetype,
-                text=text,
-            )
-        )
+
         return text, pacing_task
 
-    return _render
+    return _log_writer
 
 
 # ───────────────────────── cross-cycle prefetch ─────────────────────────
 
 
 async def prefetch_next_cycle(rt: SessionRuntime, next_cycle_index: int) -> None:
-    """Run cycle N+1's SoP + drafter LLM calls in the background while the
-    player reads cycle N's dispatch modal. State is final after cycle N's
-    `tick_cycle_close` + timeout re-check; agents are stateless; the only
-    thing gating these calls is the /continue UI gate.
+    """Run cycle N+1's drafter LLM call in the background while the player
+    reads cycle N's log entry. State is final after cycle N's
+    `tick_cycle_close` + timeout re-check; the drafter is stateless; the only
+    thing gating its call is the /continue UI gate.
+
+    The drafter is stateless one-shot, so prefetching it is trivial. The log
+    writer is conversation-based and cannot be prefetched ahead of the
+    player's pick — we don't know the authorized option until /authorize.
 
     Results are stashed on `rt` (tagged with `next_cycle_index`) and consumed
-    by the SoP / drafter callables on the next `run_cycle` iteration.
+    by the drafter LLM callable on the next `run_cycle` iteration.
     """
     assert AGENTS is not None
     state = rt.session.state
@@ -641,10 +661,6 @@ async def prefetch_next_cycle(rt: SessionRuntime, next_cycle_index: int) -> None
     mission = rt.session.mission
 
     with logfire.span("prefetch_next_cycle", cycle_index=next_cycle_index):
-        sop_prompt = _sop_user_prompt(next_cycle_index, state, mission, rt.dispatches)
-        sop_result = await AGENTS.sop.run(sop_prompt)
-        rt.prefetched_sop_text = sop_result.output
-
         catalog = valid_archetype_combinations(state, mission)
         forced = due_forced_events(state, mission)
         forced_event = forced[0] if forced else None
@@ -653,17 +669,17 @@ async def prefetch_next_cycle(rt: SessionRuntime, next_cycle_index: int) -> None
             cycle_index=next_cycle_index,
             state=state,
             mission=mission,
-            sop_text=rt.prefetched_sop_text,
             catalog=catalog,
             forced_event=forced_event,
-            dispatches=rt.dispatches,
+            log_entries=rt.log_entries,
+            recently_tried=list(rt.last_authorized),
         )
         rt.prefetched_options = options
         rt.prefetched_engine_fallback = fallback
 
 
-def _build_renderer_text_ready_hook(rt: SessionRuntime) -> Any:
-    """Fires when cycle N's renderer LLM completes (state is final by the
+def _build_log_text_ready_hook(rt: SessionRuntime) -> Any:
+    """Fires when cycle N's log-writer LLM completes (state is final by the
     time cycle.py invokes it: tick_cycle_close + timeout re-check have run).
     Cancels any stale prefetch left over from earlier cycles, then schedules
     cycle N+1's prefetch in the background."""
@@ -682,17 +698,6 @@ def _build_renderer_text_ready_hook(rt: SessionRuntime) -> Any:
     return _hook
 
 
-def _build_cycle_close_hook(rt: SessionRuntime) -> Any:
-    """Fires once per cycle with the aggregate delta (effects + events +
-    close + 2nd-pass). Stash on `rt.last_cycle_delta` so cycle N+1's SoP
-    prompt can lead with "what moved last cycle"."""
-
-    async def _hook(_cycle_index: int, aggregate_delta: dict) -> None:
-        rt.last_cycle_delta = aggregate_delta
-
-    return _hook
-
-
 # ───────────────────────── cycle loop ─────────────────────────
 
 
@@ -703,28 +708,24 @@ async def _run_session_loop(rt: SessionRuntime) -> None:
     await start_mission(rt.session, mission)
     await rt.out_queue.put(_mission_started_payload(mission, rt.session.state.qualities))
     cycle_index = 1
-    # Per-session callable bundle. Built once: the SoP / drafter LLM phase /
-    # drafter emit phase / renderer / prefetch-hook closures all capture `rt`,
-    # so we don't need to rebuild them every iteration.
-    sop_fn = _build_sop_callable(rt)
+    # Per-session callable bundle. Built once: the drafter LLM phase / drafter
+    # emit phase / log writer / prefetch-hook closures all capture `rt`, so
+    # we don't need to rebuild them every iteration.
     drafter_llm_fn = _build_drafter_llm_callable(rt)
     drafter_emit_fn = _build_drafter_emit_callable(rt)
-    renderer_fn = _build_renderer_callable(rt)
-    on_renderer_text_ready_fn = _build_renderer_text_ready_hook(rt)
-    on_cycle_close_fn = _build_cycle_close_hook(rt)
+    log_writer_fn = _build_log_writer_callable(rt)
+    on_log_text_ready_fn = _build_log_text_ready_hook(rt)
     try:
         while True:
             active = await run_cycle(
                 rt.session,
                 cycle_index,
-                sop=sop_fn,
                 drafter_llm=drafter_llm_fn,
                 drafter_emit=drafter_emit_fn,
-                renderer=renderer_fn,
+                log_writer=log_writer_fn,
                 emit=rt.out_queue.put,
                 await_authorization=rt.await_auth,
-                on_renderer_text_ready=on_renderer_text_ready_fn,
-                on_cycle_close=on_cycle_close_fn,
+                on_log_text_ready=on_log_text_ready_fn,
             )
             # After the cycle's chosen option (if any) lands on the event log,
             # extract its (archetype, agent) for the next cycle's RECENTLY
@@ -739,7 +740,7 @@ async def _run_session_loop(rt: SessionRuntime) -> None:
                 break
             # Gate the next cycle on the player clicking "Continue" — symmetric
             # with the in-cycle auth gate. Cycle N+1's LLM work is already in
-            # flight via the prefetch task scheduled by `on_renderer_text_ready`,
+            # flight via the prefetch task scheduled by `on_log_text_ready`,
             # so this gate now only waits on the player, not on LLM latency.
             await rt.out_queue.put({"event": "awaiting_continue", "cycle": cycle_index})
             await rt.await_continue()
@@ -751,11 +752,16 @@ async def _run_session_loop(rt: SessionRuntime) -> None:
         logfire.exception("session loop crashed", session_id=rt.session.id)
         await rt.out_queue.put({"event": "error", "code": "session_crashed"})
     finally:
-        # Cancel any in-flight prefetch so it doesn't outlive the session.
+        # Cancel any in-flight prefetch / shorthand so they don't outlive
+        # the session.
         if rt.prefetch_task is not None and not rt.prefetch_task.done():
             rt.prefetch_task.cancel()
             with contextlib.suppress(BaseException):
                 await rt.prefetch_task
+        if rt.shorthand_task is not None and not rt.shorthand_task.done():
+            rt.shorthand_task.cancel()
+            with contextlib.suppress(BaseException):
+                await rt.shorthand_task
         await rt.out_queue.put({"event": "session_closed"})
 
 
@@ -766,8 +772,8 @@ class CastEntry(BaseModel):
     """Player-facing cast descriptor surfaced to the frontend onboarding card.
     Agents, the handler (player), the boss, and named opposition all ship —
     the onboarding modal renders a roster so REDFIELD / MUNTEANU /
-    MERIWETHER are known names before they appear in option titles or SoP
-    memos."""
+    MERIWETHER are known names before they appear in option titles or log
+    entries."""
 
     id: str
     codename: str

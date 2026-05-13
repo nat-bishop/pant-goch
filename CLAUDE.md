@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-HANDLER — single-player spy game. One verb: **authorize one of 3–4 options per cycle**. Three stateless LLM agents per cycle (SoP memo, drafter, dispatch renderer). Mechanics are deterministic and authored in YAML; the LLM never decides outcomes.
+HANDLER — single-player spy game. One verb: **authorize one of 3–4 options per cycle**. Two LLM agents per session: a stateless one-shot drafter (3–4 options per cycle) and a conversation-based Operations-voice log writer (one entry per cycle, post-resolution, appended to a growing case file). Mechanics are deterministic and authored in YAML; the LLM never decides outcomes.
 
 **Design doc:** `HANDLER_SPEC_V2.md`. **Stack / run / test:** `README.md`. **Visual ref:** `_mockups/handler-authorize-desk.html`.
 
@@ -12,9 +12,11 @@ These are things you wouldn't discover quickly by reading the code. Honour them.
 
 - **One `Event` model, shape-selected by flags.** `force_into_drafter=True` = drafter-surfaced decision point with prose constraints (intent/must_communicate/must_not/tone). Otherwise passive: `terminal`, `only_when_no_progress_this_cycle`, or a plain reactive predicate. `for_each_agent=True` is passive-only and expands `$agent`. `Event._consistency` enforces the mutual exclusions — read it once.
 
-- **Agents are stateless one-shot — no `message_history` between cycles.** State mutates between calls; multi-turn would force the model to defend prior assistant turns against state that has since changed. Continuity is carried by explicitly passing the last 1–2 dispatches in user-side context (same-agent preference for the renderer per spec §8.3). Don't reintroduce conversation history threading.
+- **Drafter is stateless one-shot; log writer is conversation-based.** The drafter has no `message_history` — option-drafting is a per-cycle enumeration where prior assistant turns would just be stale option sets. The log writer accumulates one user+assistant pair per cycle; the conversation IS the case file. Voice multiplexing (the reason all three agents were stateless in the older design) is gone — single Operations voice across every entry, so multi-turn coherence holds. Continuity for the drafter is carried by explicitly passing the last 2 log entries in user-side context.
 
-- **Prompt structure is `[stable system prefix] + [dynamic user suffix]`.** The system prompt is baked once at `build_agent_bundle(model, mission)` — voice, dossiers, mission framing, rules. The user prompt carries this-cycle context. Required for KV-cache hits on llama-server's prefix cache. Don't flatten the two together.
+- **Shorthand for history rows is a non-persisted same-agent call.** After the log writer streams an entry, a second call runs against the same `message_history` (system + every cycle's entry, plus a short "summarize this" user message) to produce the case-file shorthand row. The summarize-pair is DISCARDED — do not append it to the persistent history, or every future cycle would see meta-summarize chatter polluting context.
+
+- **Prompt structure is `[stable system prefix] + [dynamic user suffix]` for the drafter.** The drafter's system prompt is baked once at `build_agent_bundle(model, mission)` — voice, dossiers, mission framing, rules. Its user prompt carries this-cycle context. Required for KV-cache hits on llama-server's prefix cache. The log writer has a stable system prefix too, but its dynamic suffix is delivered as pydantic-ai `message_history` (not a flat user prompt). Don't flatten either model's structure.
 
 - **Word-pacing is server-side.** `paced_word_emitter` in `main.py` throttles to ≥80 ms between emissions. Frontend appends words as they arrive; `<StreamingText>` only animates fade-in. Pacing on the client forfeits server flow-control over slow LLM moments and breaks "one source of timing truth."
 
@@ -24,14 +26,14 @@ These are things you wouldn't discover quickly by reading the code. Honour them.
 
 - **`MissionStarted` carries a fresh `make_initial_state` snapshot, not a `model_copy` of `session.state`.** Otherwise fold() during replay aliases the live qualities dict.
 
-- **`OpenAIModelProfile(openai_chat_send_back_thinking_parts=False)`** is set in `main.py`'s lifespan. Without it, pydantic-ai's default 'auto' round-trips `ThinkingPart`s back into prior assistant `content` as `<think>...</think>` blocks, violating Gemma 4's multi-turn rule.
+- **`OpenAIModelProfile(openai_chat_send_back_thinking_parts=False)`** is set in `main.py`'s lifespan. Without it, pydantic-ai's default 'auto' round-trips `ThinkingPart`s back into prior assistant `content` as `<think>...</think>` blocks, violating Gemma 4's multi-turn rule. The log writer's accumulating `message_history` makes this load-bearing — without the profile, drift compounds every cycle.
 
 ## Don't "clean up" without reading the call-site comment
 
 Each of these has an inline `# Why:` at the call site:
 
 - `launcher.py` — `--jinja` always required (Gemma chat template). `--flash-attn on`, `--batch-size 512 --ubatch-size 512` are non-negotiable. KV cache stays fp16 (q8_0 is ~2.5× slower for short outputs per `bench_kv_compare`).
-- `agents.py` — the three `system_prompt`s are the stable-prefix half of the KV-friendly structure. User prompts (`_sop_user_prompt`, `_drafter_user_prompt`, `_renderer_user_prompt`) carry only dynamic content. Don't merge them.
+- `agents.py` — `_drafter_system_prompt` and `_log_writer_system_prompt` are the stable-prefix half of the KV-friendly structure. The drafter pairs with `_drafter_user_prompt` (dynamic content as a single user message). The log writer pairs with `_log_writer_user_prompt` (cycle inputs as the user side of one turn in an accumulating `message_history`) and `_shorthand_user_prompt` (the non-persisted follow-up that produces the case-file row). Don't merge system and user surfaces.
 - `web/index.html` — Courier Prime via Google Fonts CDN. Single dark theme — no FOUC theme script.
 
 ## Inferno gateway (dev-mode opt-in)

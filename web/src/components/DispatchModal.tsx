@@ -1,5 +1,4 @@
 import { useEffect } from "react";
-import { displayActor, OPERATIONS_ACTOR } from "../api";
 import { useStore } from "../store";
 
 export function DispatchModal() {
@@ -23,9 +22,6 @@ export function DispatchModal() {
   if (modalIdx === null) return null;
   const d = inbox.find((x) => x.cycle_index === modalIdx);
   if (!d) return null;
-
-  const isOps = d.acting === OPERATIONS_ACTOR;
-  const role = isOps ? "Station log" : "Field dispatch";
 
   return (
     <div
@@ -53,12 +49,7 @@ export function DispatchModal() {
 
         <div className="archive-tag">
           <span className="archive-tag-rule" />
-          <span>
-            {role} · cycle {d.cycle_index}
-          </span>
-        </div>
-        <div className="archive-from">
-          from <strong>{displayActor(d.acting)}</strong>
+          <span>Case-file entry · cycle {d.cycle_index}</span>
         </div>
         <div className="archive-route">
           C{d.cycle_index} · {d.archetype}

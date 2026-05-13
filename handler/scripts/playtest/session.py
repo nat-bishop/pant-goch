@@ -29,14 +29,13 @@ class CycleTrace:
     by `run_session` as events flow in."""
 
     cycle_index: int
-    sop_text: str = ""
     options: list[dict[str, Any]] = field(default_factory=list)
     chosen_index: int | None = None
     chosen_archetype: str | None = None
     effects_delta: dict[str, Any] = field(default_factory=dict)
     events_fired: list[str] = field(default_factory=list)
-    dispatch_text: str = ""
-    dispatch_acting: str | None = None
+    entry_text: str = ""
+    entry_shorthand: str = ""
     used_engine_fallback: bool = False
     forced_event_id: str | None = None
 
@@ -136,9 +135,6 @@ async def run_session(
                         current = CycleTrace(cycle_index=ev["cycle"])
                         record.cycles.append(current)
                         current_options_payload = []
-                    elif kind == "sop_word" and current is not None:
-                        if not ev.get("is_last"):
-                            current.sop_text += ev["word"]
                     elif kind == "option_started" and current is not None:
                         current_options_payload.append(
                             {
@@ -187,11 +183,15 @@ async def run_session(
                         current.effects_delta = ev.get("delta", {})
                     elif kind == "events_fired" and current is not None:
                         current.events_fired.extend(ev.get("events", []))
-                    elif kind == "dispatch_started" and current is not None:
-                        current.dispatch_acting = ev.get("acting")
-                    elif kind == "dispatch_word" and current is not None:
+                    elif kind == "entry_started" and current is not None:
+                        # archetype is on the event but mirrors the authorized
+                        # option already captured above — nothing extra to track.
+                        pass
+                    elif kind == "entry_word" and current is not None:
                         if not ev.get("is_last"):
-                            current.dispatch_text += ev["word"]
+                            current.entry_text += ev["word"]
+                    elif kind == "entry_shorthand" and current is not None:
+                        current.entry_shorthand = ev.get("shorthand", "")
                     elif kind == "cycle_closed":
                         record.final_state = dict(ev.get("state", {}))
                     elif kind == "mission_resolved":

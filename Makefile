@@ -22,6 +22,7 @@ help:
 	@echo "  make llama-playtest      Run engine llama-server with 16 slots — pair with 'make playtest'"
 	@echo "  make llama-eval          Run eval llama-server (Qwen 35B-A3B on :8081)"
 	@echo "  make sidecar             Run Python sidecar, externally-managed llama (terminal 2)"
+	@echo "  make sidecar-inferno     Run Python sidecar against inferno (skips bundled llama)"
 	@echo "  make web                 Run Vite dev server (terminal 3)"
 	@echo "  make test                Run pytest"
 	@echo "  make typecheck           Run TS typecheck on web/"
@@ -77,6 +78,12 @@ llama-eval: $(EVAL_MODEL)
 .PHONY: sidecar
 sidecar:
 	cd handler && LAUNCH_LLAMA=false uv run python -m handler
+
+# Inferno mode: skip bundled llama, route pydantic-ai at inferno's /v1.
+# Requires inferno running on :7770.
+.PHONY: sidecar-inferno
+sidecar-inferno:
+	cd handler && SMALLVILLE_USE_INFERNO=1 uv run python -m handler
 
 .PHONY: web
 web:

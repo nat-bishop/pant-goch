@@ -12,7 +12,6 @@ event-driven test, and the runtime queue carries the same information.
 from __future__ import annotations
 
 import asyncio
-import json
 from pathlib import Path
 
 import pytest
@@ -25,27 +24,14 @@ _TINY_PATH = str(Path(__file__).parent / "fixtures" / "tiny_mission.yaml")
 
 
 def _completed_task() -> asyncio.Task:
-    """Fills the `pacing_task` slot in the stub SoP / renderer return value.
-    Stubs have no pacing to do — the real callables overlap LLM and pacing,
-    stubs just hand back an already-resolving task."""
+    """Fills the `pacing_task` slot in the stub log-writer return value.
+    The real callable overlaps LLM streaming and pacing; the stub just
+    hands back an already-resolving task."""
     return asyncio.create_task(asyncio.sleep(0))
 
 
-def _stub_sop(rt):
-    async def _sop(session, cycle_index):
-        text = f"State of play for cycle {cycle_index}. Resources nominal."
-        await rt.out_queue.put(
-            {"event": "sop_word", "cycle": cycle_index, "idx": 0, "word": text}
-        )
-        await rt.out_queue.put(
-            {"event": "sop_word", "cycle": cycle_index, "idx": 1, "word": "", "is_last": True}
-        )
-        return text, _completed_task()
-    return _sop
-
-
 def _stub_drafter_llm(rt):
-    async def _drafter_llm(session, cycle_index, sop_text, catalog, forced_event_id):
+    async def _drafter_llm(session, cycle_index, catalog, forced_event_id):
         # Sort PUSH first so /authorize index 0 reliably progresses the mission.
         ordered = sorted(catalog, key=lambda c: (0 if c[0] == "PUSH" else 1, c[0]))
         options: list[Option] = []
@@ -100,33 +86,45 @@ def _stub_drafter_emit(rt):
     return _drafter_emit
 
 
-def _stub_renderer(rt):
-    async def _render(session, cycle_index, option, delta, acting, prior_state, *, leans=()):
-        # Accumulate every leans payload the renderer receives across the
+def _stub_log_writer(rt):
+    async def _log_writer(
+        session, cycle_index, option, delta, prior_state,
+        *, leans=(),
+    ):
+        # Accumulate every leans payload the log writer receives across the
         # session so tests can assert that lean_on directives thread through
-        # from fired events into the renderer call. Each entry is the list
-        # of resolved lean lines for one cycle's dispatch.
+        # from fired events into the call. Each entry is the list of resolved
+        # lean lines for one cycle's entry.
         if not hasattr(rt, "lean_history"):
             rt.lean_history = []
         rt.lean_history.append(list(leans))
-        text = f"Dispatch for cycle {cycle_index} ({acting}, {option.archetype})."
+        text = f"Case-file entry for cycle {cycle_index} ({option.archetype})."
         await rt.out_queue.put(
-            {"event": "dispatch_started", "cycle": cycle_index, "acting": acting, "archetype": option.archetype}
+            {"event": "entry_started", "cycle": cycle_index, "archetype": option.archetype}
         )
         await rt.out_queue.put(
-            {"event": "dispatch_word", "cycle": cycle_index, "idx": 0, "word": "", "acting": acting, "is_last": True}
+            {"event": "entry_word", "cycle": cycle_index, "idx": 0, "word": "", "is_last": True}
         )
-        from handler.agents import DispatchRecord
-        rt.dispatches.append(
-            DispatchRecord(cycle_index=cycle_index, acting=acting, archetype=option.archetype, text=text)
+        from handler.agents import LogEntry, LogShorthand
+        rt.log_entries.append(
+            LogEntry(cycle_index=cycle_index, archetype=option.archetype, text=text)
+        )
+        # Emit a synthetic shorthand event so the integration test can verify
+        # the entry_shorthand path lights up without hitting the real LLM.
+        shorthand = f"C{cycle_index} — {option.archetype} — stub consequence"
+        rt.log_shorthands.append(
+            LogShorthand(cycle_index=cycle_index, shorthand=shorthand)
+        )
+        await rt.out_queue.put(
+            {"event": "entry_shorthand", "cycle": cycle_index, "shorthand": shorthand}
         )
         return text, _completed_task()
-    return _render
+    return _log_writer
 
 
-def _stub_renderer_text_ready_hook(rt):
+def _stub_log_text_ready_hook(rt):
     """Disable cross-cycle prefetch in this integration test — prefetch would
-    try to hit `AGENTS.sop.run` against the (non-booted) llama-server. The
+    try to hit the drafter agent against the (non-booted) llama-server. The
     cycle orchestration is what we're testing here; prefetch correctness is
     verified separately."""
     async def _hook(_cycle_index: int) -> None:
@@ -140,11 +138,10 @@ def stubbed_client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.setenv("MISSION_PATH", _TINY_PATH)
     from handler import main as _main
     monkeypatch.setattr(_main, "EXTERNAL_LLAMA_PROBE_TIMEOUT_SECONDS", 0.1)
-    monkeypatch.setattr(_main, "_build_sop_callable", _stub_sop)
     monkeypatch.setattr(_main, "_build_drafter_llm_callable", _stub_drafter_llm)
     monkeypatch.setattr(_main, "_build_drafter_emit_callable", _stub_drafter_emit)
-    monkeypatch.setattr(_main, "_build_renderer_callable", _stub_renderer)
-    monkeypatch.setattr(_main, "_build_renderer_text_ready_hook", _stub_renderer_text_ready_hook)
+    monkeypatch.setattr(_main, "_build_log_writer_callable", _stub_log_writer)
+    monkeypatch.setattr(_main, "_build_log_text_ready_hook", _stub_log_text_ready_hook)
     monkeypatch.setattr(_main, "WORD_PACE_S", 0.0)
     with TestClient(_main.app) as client:
         yield client
@@ -220,7 +217,6 @@ def test_full_cycle_to_terminal(stubbed_client: TestClient) -> None:
 
         # Now wait for either awaiting_continue (cycle ended, mission active)
         # or mission_resolved (terminal). Pump until one of those events lands.
-        terminated = False
         for _ in range(200):
             _pump(stubbed_client)
             while not rt.out_queue.empty():
@@ -228,7 +224,6 @@ def test_full_cycle_to_terminal(stubbed_client: TestClient) -> None:
                 all_events.append(ev)
                 if ev.get("event") == "mission_resolved":
                     resolved = ev
-                    terminated = True
             if resolved is not None:
                 break
             if rt.continue_future is not None and not rt.continue_future.done():
@@ -253,6 +248,8 @@ def test_full_cycle_to_terminal(stubbed_client: TestClient) -> None:
     assert "cycle_opened" in kinds
     assert "options_complete" in kinds
     assert "effects_applied" in kinds
+    assert "entry_started" in kinds
+    assert "entry_shorthand" in kinds
     assert "mission_resolved" in kinds
     # cycle_opened precedes effects_applied for the first cycle.
     assert kinds.index("cycle_opened") < kinds.index("effects_applied")
@@ -262,11 +259,11 @@ def test_full_cycle_to_terminal(stubbed_client: TestClient) -> None:
     assert s["outcome"] is not None
 
 
-def test_forced_event_lean_threads_to_renderer(stubbed_client: TestClient) -> None:
+def test_forced_event_lean_threads_to_log_writer(stubbed_client: TestClient) -> None:
     """The tiny mission's `turning_point` forced event carries
     `lean_on: ["test lean directive for ALPHA"]`. When the drafter stub
     surfaces that event and the player authorizes the satisfying option,
-    the renderer must receive that lean line."""
+    the log writer must receive that lean line."""
     from handler import main as _main
 
     r = stubbed_client.post("/mission/start")
@@ -296,11 +293,11 @@ def test_forced_event_lean_threads_to_renderer(stubbed_client: TestClient) -> No
         stubbed_client.post(f"/mission/{sid}/continue")
 
     assert resolved is not None
-    # The turning_point lean must have surfaced in at least one renderer call.
+    # The turning_point lean must have surfaced in at least one log-writer call.
     all_leans = [line for batch in getattr(rt, "lean_history", []) for line in batch]
     assert "test lean directive for ALPHA" in all_leans, (
         f"expected the tiny mission's forced-event lean to thread through "
-        f"to the renderer; got lean_history={getattr(rt, 'lean_history', [])}"
+        f"to the log writer; got lean_history={getattr(rt, 'lean_history', [])}"
     )
 
 

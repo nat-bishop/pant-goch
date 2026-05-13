@@ -35,26 +35,29 @@ There is no other player input. No free-text composition. No multi-step decision
 
 ## 3. The Cycle
 
-Every cycle has the same shape. Three LLM calls and one player click:
+Every cycle has the same shape. Two LLM phases (the drafter, plus the log writer's main + shorthand calls) and one player click:
 
 ```
 ─── CYCLE OPEN ───────────────────────────────────
-  i.   STATE OF PLAY MEMO        (LLM: Operations voice)
-       Synthesis of where things stand. Looks forward.
-  ↓
-  ii.  OPTIONS DRAFTED           (LLM: Operations voice)
+  i.   OPTIONS DRAFTED           (LLM: stateless one-shot, Ops voice)
        3–4 candidate courses of action, tagged with
        (archetype, agent, params), with prose paragraphs.
   ↓
   ── PLAYER PICKS ──             (player click)
   ↓
-  iii. EFFECTS APPLY             (engine, deterministic)
+  ii.  EFFECTS APPLY             (engine, deterministic)
        Authored archetype effects mutate state.
-       Beats fire on any newly-satisfied predicates.
+       Events fire on any newly-satisfied predicates.
   ↓
-  iv.  DISPATCH                  (LLM: acting agent voice)
-       Field report from the named agent, in voice.
-       Reflects the resolved state delta.
+  iii. LOG ENTRY                 (LLM: conversation-based, Ops voice)
+       One entry appended to the growing case file.
+       Two-beat prose: the angle of the authored choice,
+       then the resolution and cost in the world.
+  ↓
+  iv.  SHORTHAND                 (LLM: same agent, non-persisted)
+       One-line row for the history index. Same agent,
+       same message_history + a "summarize that" turn;
+       the summarize-pair is discarded after the call.
 ─── CYCLE CLOSE ──────────────────────────────────
 ```
 
@@ -335,35 +338,18 @@ Passive pressure beats are how "doing nothing" becomes a real cost. The HOLD arc
 
 ## 8. LLM Contracts
 
-Three LLM agents per cycle. Each is a separate call with a strict input/output contract.
+Two LLM agents per session. The drafter is a stateless one-shot call per cycle; the log writer is a conversation-based agent that accumulates one user+assistant pair per cycle (plus a non-persisted shorthand follow-up).
 
-### 8.1 SoP Synthesizer (Operations voice)
-
-**Purpose:** synthesize the current situation into a forward-looking memo at cycle open.
-
-**Input:**
-- Narrative state block (cycles, agent covers, mission progress — translated to in-fiction descriptors; never raw numerics)
-- Recent dispatches (last 2–3, for narrative continuity)
-- Mission metadata (mission name, framing, setting, per-agent situation)
-
-**Output:** 1–3 paragraphs of prose in Operations Desk voice. Looks forward. Names the threat, the resources, what hasn't moved.
-
-**Constraints:**
-- Voice: third-party intelligence handler, terse, declarative
-- No options proposed (that's the drafter's job)
-- No outcome prediction
-- MUST reference state narratively, not numerically. No "cover at 7", no "six cycles remaining", no "extraction stage two". No game/system vocabulary ("cover level", "cycles remaining", "extraction stage", "operational security points"). The user-prompt CURRENT STATE block is pre-rendered into in-fiction descriptors via `Mission.quality_descriptors` (e.g. "LYNX: cover intact", "the extraction papers have not yet been surfaced", "the window is tightening"); the memo mirrors that register.
-
-### 8.2 Drafter (Operations voice)
+### 8.1 Drafter (Operations voice, stateless one-shot)
 
 **Purpose:** produce 3–4 candidate options for this cycle.
 
 **Input:**
-- Full state
+- Full state (narrative descriptors; never raw numerics)
 - Catalog of currently-valid (archetype, agent) combinations (engine-computed)
 - Agent dossiers
-- The SoP memo from this cycle
-- Any forced moment template (with `intent`, `must_communicate`, `must_not`, `tone`)
+- Last 2 log entries (for cross-cycle context)
+- Any forced event template (with `intent`, `must_communicate`, `must_not`, `tone`)
 
 **Output:** 3–4 options, each with structured tags + prose paragraph:
 
@@ -385,73 +371,80 @@ Three LLM agents per cycle. Each is a separate call with a strict input/output c
 **Constraints:**
 - Tags MUST reference valid archetypes from the input catalog
 - Agent MUST be valid for the archetype's params
-- If a moment is forced, one option MUST satisfy that moment template
+- If a forced event is active, exactly one option MUST satisfy it
 - Prose MUST telegraph the option's shape honestly: action, agent involved, cost, risk
 - Prose MUST NOT predict the outcome ("LYNX will escape")
 - Prose MUST NOT contradict current state
 - Option set should span tonal range: at least one safe-but-slow, one fast-but-risky
 
-### 8.3 Dispatch Renderer (Acting agent voice)
+### 8.2 Log Writer (Operations voice, conversation-based)
 
-**Purpose:** render the field dispatch in the acting agent's voice after effects have applied.
+**Purpose:** render the cycle's case-file entry after effects have applied. Each entry is appended to a growing log; the conversation history IS the case file.
 
-**Input:**
-- The authorized option (archetype, agent, params, prose)
-- The state delta produced by resolution (which qualities changed and by how much)
-- Acting agent's dossier (voice, register, personality)
-- Recent dispatch context (last 1–2 dispatches for continuity — prefer prior dispatches from the same acting agent when available, for voice anchoring)
+**Architecture:** one pydantic-ai agent per session, held on `SessionRuntime.log_message_history`. Each cycle, the user message names the cycle inputs (authorized option + resolved delta + current state) and the assistant writes the entry; the resulting `result.all_messages()` replaces the persistent history.
 
-**Output:** 1–4 paragraphs of prose in the acting agent's voice.
+**Input (per cycle, as the new user turn):**
+- Cycle index, max_cycles
+- The authorized option (archetype, agent, params, title, prose)
+- Resolved state delta (raw magnitudes — so the prose can reflect that a -3 cover drop is significant)
+- Current state (narrative descriptors — what the world looks like NOW)
+- Prior-state snapshot (for tension-band derivation)
+- Per-cycle leans collected from fired events
+- TONE BAND derived from act phase
+
+**Output:** ~80–140 words of Operations-voice prose, structured as two paragraphs:
+- ¶1 — the angle of the authored option: what's being attempted, the operational read, the constraints in play.
+- ¶2 — the resolution: what landed, the cost in the world, a single closing observational beat.
 
 **Constraints:**
-- Voice: the acting agent's authored register
-- MUST honor the resolved state delta (if cover dropped 3, the prose reflects what cost that)
-- MUST NOT introduce new facts inconsistent with state
-- MAY include first-person justification, color, character
-- For HOLD: dispatch is in Operations voice (no acting agent), describing what counter-intel did during the holding cycle
+- Voice: third-party intelligence handler, terse, declarative, present tense. No first-person. No agent voice multiplexing.
+- MUST honor the resolved state delta. A dispatch that contradicts the delta is a prompt bug, not an alternate outcome.
+- MUST NOT introduce facts inconsistent with state.
+- MUST NOT predict the next cycle. The entry reports what just happened.
+- NEVER use numbers ("cover at 4", "two cycles remaining") or game vocabulary ("cover level", "extraction stage", "cycles remaining"). The CURRENT STATE block is pre-rendered into in-fiction descriptors — mirror that register.
+- The entry sits inside an accumulating case file. Don't re-cover earlier cycles' ground; the previous entries are already in your conversation history.
 
-### 8.4 Stateless contract — no message_history
+### 8.3 Shorthand (same agent, non-persisted follow-up)
 
-**All three agents are stateless one-shot calls.** No pydantic-ai `message_history` is passed between cycles. Each cycle is a fresh prompt; nothing leaks across calls implicitly.
+**Purpose:** produce the one-line history-index row for the cycle entry that was just written.
 
-The decision rests on four concrete properties of the system:
+**Architecture:** a second call against the SAME log-writer agent, with `message_history` equal to the just-updated persistent history (system prompt + every cycle's entry, including the one just written), plus a short user message asking for the shorthand. The summarize user+assistant pair is **discarded** — never appended to the persistent history. KV-cache stays warm; long-term memory stays clean.
 
-1. **State mutates between calls.** The engine applies archetype effects and beat effects between LLM calls. If a prior dispatch (as an assistant turn) framed KESTREL as "composed," and the engine then drops her cover to 3/10 before the next renderer call, multi-turn forces the model to reconcile its own prior framing against the new state. LLMs weight content in their own assistant turns differently from user-supplied content — the prior framing acts as a sticky conclusion the model owes consistency to. One-shot eliminates the reconciliation: current state is the only authoritative input; recent dispatches are passed as user-side context, which the model treats as facts to integrate rather than positions to defend.
+**Output:** a one-line shorthand of the form `C{n} — {archetype} — {≤8-word consequence}`. Terse, no quotes, no period.
 
-2. **The three jobs are semantically discrete.** SoP synthesizes current state. Drafter enumerates valid options. Renderer narrates a state delta in a specific agent's voice. None is a "response to" the prior call. Multi-turn implies a thread of reasoning that doesn't exist between these tasks. (Smallville's chat agent needed rolling history because it was an actual conversation with the player; none of Handler's agents are.)
+### 8.4 Statefulness contract
 
-3. **Voice multiplexing on the renderer.** The renderer's voice changes per cycle — LYNX, KESTREL, or Operations (for HOLD). A unified message history would be "you said X as LYNX, you said Y as KESTREL, now say Z as LYNX" — incoherent as a conversation. Each render is a discrete prose task in a specific voice.
+**Drafter: stateless one-shot.** No `message_history`. Per-cycle enumeration is not a conversation — prior assistant turns would just be stale option sets the model would feel obliged to vary or echo.
 
-4. **Bounded inputs.** One-shot input size is bounded by current state plus a small fixed history window. No compaction module, no token-budget spiral, no rolling-history processor to maintain.
+**Log writer: conversation-based.** One pydantic-ai agent per session; one user+assistant pair per cycle accumulates in `log_message_history`. This deliberately departs from a blanket stateless rule for three concrete reasons:
 
-**Continuity across cycles** (voice consistency, narrative coherence) is preserved by **explicitly passing context in the prompt**: the last 1–2 dispatches as `recent_dispatches` (with same-agent preference for the renderer, per §8.3), the agent dossier, the current state. We control exactly what the LLM sees.
+1. **Single Operations voice.** Voice multiplexing (the older "renderer in LYNX voice this cycle, KESTREL voice next") is gone — every entry is Operations Desk register. Multi-turn coherence holds because there's no voice to switch between.
+2. **The conversation IS the artifact.** A case file is exactly an accumulating record. Modeling it as conversation history matches the fiction structurally and gives the model voice anchoring on its own prior entries for free.
+3. **KV-cache reuse.** The persistent history grows linearly, but the entire prior conversation is a cached prefix; each new turn's marginal cost is just the new turn. The shorthand follow-up benefits from the same warm prefix.
 
-**Voice consistency caveat.** The strongest empirical argument for multi-turn would be voice anchoring for the renderer when rendering the same agent across cycles — models do anchor on their own prior voice when given assistant-turn history. We accept the one-shot cost here and mitigate with (a) detailed voice register in the dossier, (b) same-agent recent dispatches in user-side context. If playtest shows voice drift that prompt engineering can't fix, a targeted hybrid is available: pass prior same-agent dispatches as faux-assistant turns *to the renderer only*. That is few-shot anchoring, not a real conversation, and SoP + drafter remain one-shot. Do not adopt the hybrid speculatively — only if observed drift demands it.
+**Continuity for the drafter** is preserved by explicitly passing the last 2 log entries in user-side context. **Continuity for the log writer** is preserved structurally — the model reads its own prior entries directly.
 
-**Prompt structure for caching.** Each agent's prompt is built as `[stable prefix] + [dynamic suffix]`:
-- *Prefix:* agent role, voice register, dossiers, mission framing, valid-archetype catalog template — everything that does not change within a mission.
-- *Suffix:* current state, recent dispatches, this-cycle context (the SoP memo for the drafter, the resolved option + delta for the renderer).
+**Risk and mitigation: prior-turn defence under state churn.** State mutates between log-writer calls; if cycle 3's entry framed cover as "intact" and cycle 5 has state-decay reducing it to "compromised," the model might defend its prior framing against the new state block. Mitigations:
+- The cycle-N user message names the CURRENT STATE explicitly in narrative descriptors before asking for prose. The model treats user-supplied state as authoritative.
+- The system prompt says: "Your prior entries describe what was true THEN. The current state block is what's true NOW. Reflect the present, don't defend the past."
+- `OpenAIModelProfile(openai_chat_send_back_thinking_parts=False)` is required (set in main.py lifespan) — without it, pydantic-ai's default round-trips `ThinkingPart`s back into assistant content as `<think>` blocks, which Gemma 4 then anchors on across turns.
 
-This structure is cache-friendly for any LLM with prefix-prompt caching and reduces prompt-processing time on local llama via KV-cache hits on the stable prefix. Concatenating everything into one flat prompt forfeits both. Implementers must preserve this split.
+If observed drift demands further mitigation, the targeted fallback is to truncate `log_message_history` to the last N entries before each call — preserving voice anchoring while dropping the deepest stale framings. Don't adopt the truncation speculatively; only if playtest shows actual prior-turn defence problems.
 
-**Practical consequences:**
-- No compaction module to write or maintain.
-- Input size bounded by current state + fixed history window.
-- Reproducible outputs: same state in, same prompt out (modulo sampling temperature).
-- Easier debugging: when a dispatch reads wrong, the prompt that produced it is one self-contained artifact.
-
-In pydantic-ai terms: each agent is invoked as `agent.run(prompt)` with no `message_history` argument. Each agent is a stateless prompt template plus a structured output schema.
+**Prompt structure for caching.**
+- *Drafter:* `[stable system prefix] + [dynamic user prompt]`. System prompt baked once at `build_agent_bundle`. Concatenating into one flat prompt forfeits KV-cache hits.
+- *Log writer:* `[stable system prefix] + [accumulating message_history]`. System prompt baked once. Each cycle's `user/assistant` pair is appended to history; the entire prior conversation is cache-prefix. The shorthand call adds one ephemeral turn at the tail that's discarded after the response.
 
 ### 8.5 Engine/LLM responsibility split
 
-Independent of the one-shot decision in §8.4, the architecture commits to a clean split: **the engine decides outcomes; the LLM writes prose.** Outcomes are computed deterministically from option tags by the engine via `apply_archetype_effects`, `apply_moment_effects`, and `apply_beat_effects` (§12). The LLM never mutates state and never decides whether a beat fires, whether a moment triggers, or what an effect resolves to.
+Independent of the statefulness decisions in §8.4, the architecture commits to a clean split: **the engine decides outcomes; the LLM writes prose.** Outcomes are computed deterministically from option tags by the engine via `apply_archetype_effects`, `apply_forced_event_effects`, and `fire_due_passive_events` (§12). The LLM never mutates state and never decides whether an event fires, whether a forced event triggers, or what an effect resolves to.
 
 Consequences across the design:
-- Moments (§6) carry fixed mechanical effects; the LLM writes situated prose around the effect, never the effect itself.
-- Beats (§7) fire on engine predicate evaluation, not LLM judgment.
-- Renderer dispatches (§8.3) must honor the resolved state delta — a dispatch that contradicts the delta is a prompt bug, not an alternate outcome.
+- Forced events (§6) carry fixed mechanical effects; the LLM writes situated prose around the effect, never the effect itself.
+- Passive events (§7) fire on engine predicate evaluation, not LLM judgment.
+- Log entries (§8.2) must honor the resolved state delta — an entry that contradicts the delta is a prompt bug, not an alternate outcome.
 
-This is a property of the *system*, not of any single agent's prompt structure. It would hold under multi-turn just as it holds under one-shot; §8.4 is justified on its own mechanical grounds, not on this principle.
+This is a property of the *system*, not of any single agent's prompt structure. It would hold under any combination of stateless or stateful agents; §8.4 is justified on its own grounds.
 
 ---
 
@@ -467,8 +460,12 @@ The frontend displays four regions:
 │ Extraction stage  ●─●─○    2/3                 │
 └────────────────────────────────────────────────┘
 
-┌─ STATE OF PLAY (cycle open) ───────────────────┐
-│ [LLM-rendered Operations memo, this cycle]     │
+┌─ CURRENT CYCLE (pinned) ───────────────────────┐
+│ [LLM-streamed log entry, two-beat prose]       │
+│                                                │
+│ RESULT                                         │
+│  LYNX: cover intact → cover degraded           │
+│  the window is tightening                      │
 └────────────────────────────────────────────────┘
 
 ┌─ OPTIONS ──────────────────────────────────────┐
@@ -479,12 +476,16 @@ The frontend displays four regions:
 │                              [ Authorize ▸ ]   │
 └────────────────────────────────────────────────┘
 
-┌─ INBOX (past dispatches, scrollable) ──────────┐
-│ Cycle 3 — KESTREL — "..."                      │
-│ Cycle 2 — KESTREL — "..."                      │
-│ Cycle 1 — Operations (sleeper activation) — "."│
+┌─ CASE FILE (history shorthands, scrollable) ───┐
+│ C3 — DIVERSION_BY_AGENT — KESTREL bought lanes │
+│ C2 — RETRIEVE_PAPERS_VIA_AGENT — papers warm   │
+│ C1 — ACTIVATE_SLEEPER_FOR_PAPERS — sleeper up  │
 └────────────────────────────────────────────────┘
 ```
+
+The CURRENT CYCLE panel is pinned: each cycle's log entry streams into it (replacing the previous cycle's content), then the RESULT footer renders inline once `cycle_closed` arrives. The CASE FILE list is the accumulating LLM-shorthand history; click a row to expand it to the full prose of that cycle.
+
+There is no modal scrim. The dispatch overlay from the older design is gone — the log writer's entry is always pinned, not transient.
 
 On terminal: the final dispatch appears, then transitions to an outcome card:
 
@@ -567,7 +568,7 @@ world_attention_tightens       passive, decays cover when no progress
 - 1 moment template
 - 5 beats
 - 2 agent dossiers
-- ~3 LLM prompt templates (SoP synthesizer, drafter, renderer)
+- ~3 LLM prompt templates (drafter system, log-writer system, shorthand follow-up)
 
 This is a small content surface. Authoring time: 1–2 days for tuned content; rebalancing iterations expected during playtest.
 
@@ -581,8 +582,8 @@ This is a small content surface. Authoring time: 1–2 days for tuned content; r
 - Two agents: LYNX, KESTREL
 - Six cycles maximum
 - One authored moment
-- Three LLM calls per cycle (SoP, drafter, renderer)
-- Frontend: state panel, SoP memo, options panel, inbox, outcome card
+- Three LLM calls per cycle (drafter, log-writer entry, log-writer shorthand)
+- Frontend: state panel, current-cycle panel, options panel, case-file list, outcome card
 - Backend: engine + scenario + LLM agents wired through llama-server
 - No persistence across missions (single-mission MVP — persistence model designed for, not exercised)
 
@@ -601,12 +602,13 @@ The verb works at MVP if:
 
 1. A test player completes the mission without instruction.
 2. The player can articulate, after one playthrough, what each option's tradeoffs were.
-3. The State of Play memo correctly synthesizes the case at every cycle (no contradictions, no repetitions of dispatch text verbatim).
-4. The dispatch reflects the resolved state delta in voice.
+3. The log entry reads in Operations voice, with the two-beat structure visible (angle + resolution), no contradictions, no agent-voice slippage.
+4. The entry reflects the resolved state delta — a -3 cover drop reads as significant in the prose.
 5. The option set tonally varies cycle to cycle (drafter doesn't produce 3 equivalent options).
 6. The sacrifice moment fires when its predicate is met, surfaces in the option menu, and produces situation-aware prose.
-7. The mission resolves cleanly on terminal — final dispatch + outcome card render correctly.
-8. The player wants to replay (signal of engagement) OR can articulate why they don't (signal of design issue).
+7. The mission resolves cleanly on terminal — final log entry + outcome card render correctly.
+8. The case-file history shorthands read as a coherent narrative when scrolled.
+9. The player wants to replay (signal of engagement) OR can articulate why they don't (signal of design issue).
 
 The verb fails if:
 
@@ -614,6 +616,7 @@ The verb fails if:
 - The player says "the prose didn't match what happened"
 - The drafter produces options the engine rejects (tag invalid)
 - Same-state replays produce indistinguishable option sets
+- The log writer defends prior-cycle framings against current state (cycle 5's entry insists cover is "intact" because cycle 3's was)
 
 ---
 
@@ -702,8 +705,8 @@ These are implementation-level questions that don't change the design but need a
 
 1. **State persistence representation.** SQLite, in-memory, JSON file? MVP can be in-memory per-session.
 2. **Drafter retry on schema violation.** If the drafter outputs an option with an invalid archetype tag, how many retries before falling back to a hand-authored "default" option set? Probably 1 retry, then fall back.
-3. **SoP memo on cycle 1.** Does the very first SoP memo render before any dispatches exist? (Yes — it should set up the mission's opening situation.)
-4. **End-screen dispatch voice.** On a loss-by-timeout, who writes the final dispatch? Operations Desk, probably ("the operation has been closed without resolution").
+3. **Cycle 1 log entry.** The very first log entry runs after the player authorizes cycle 1's option — there is no pre-authorize prose. Cycle 1 framing lives in the onboarding card (mission opening_briefing) and the option prose itself.
+4. **End-screen log voice.** On a loss-by-timeout, the final log entry is Operations voice (same as every other cycle) — no separate "terminal voice."
 5. **Beat firing order within a cycle.** If two beats become satisfied by the same option's effects, what order do they fire? Authored priority field on each beat, or deterministic by ID order. Doesn't matter much for MVP.
 
 ---
@@ -730,9 +733,7 @@ fired_moments: []
 
 **Engine checks moments:** `kestrel_sacrifice` predicate: cover ≤ 5? No (it's 7). Moment does not fire.
 
-**SoP synthesizer call:** outputs ~150 words in Operations voice describing current situation.
-
-**Drafter call:** receives state + valid archetypes + dossiers + SoP memo. Outputs 4 options:
+**Drafter call:** receives state + valid archetypes + dossiers + last 2 log entries. Outputs 4 options:
 
 ```
 i. Have LYNX move to the tertiary safehouse alone.
@@ -774,9 +775,11 @@ agent[KESTREL].cover: 3
 mission.extraction_stage: 2
 ```
 
-**Renderer call:** receives the option (DIVERSION_BY_AGENT, KESTREL), state delta (KESTREL -3, LYNX +1 then -1, etc), KESTREL's dossier. Outputs ~150 words in KESTREL's voice describing the diversion and its cost.
+**Log-writer call:** appends a user turn naming the option (DIVERSION_BY_AGENT, KESTREL), state delta (KESTREL -3, LYNX +1 then -1, etc), and current state to the session's `log_message_history`. The assistant writes ~120 words in Operations voice — ¶1 frames the diversion as the read on counter-intel pressure and the choice to spend KESTREL's cover for LYNX's lanes; ¶2 names what landed (KESTREL exposed, LYNX's path clear for one cycle, world attention tightening regardless).
 
-**Inbox updated. Cycle ends. Cycle 4 begins.**
+**Shorthand call:** same agent, same `message_history` plus a short "summarize that" user turn. Returns `C3 — DIVERSION_BY_AGENT — KESTREL bought lanes at heavy cost`. The summarize-pair is discarded; only the entry-pair persists.
+
+**Case-file row appended. Pinned cycle panel ready for cycle 4. Cycle 4 begins.**
 
 ---
 

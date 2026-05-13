@@ -5,14 +5,7 @@ import { StreamingText } from "./StreamingText";
 const ROMAN = ["i.", "ii.", "iii.", "iv."];
 const SLOT_INDICES = [0, 1, 2, 3];
 
-interface Props {
-  /** Forwarded from Paper so the call site can gate behavior; currently
-   * unused inside the list because the parent .opts-block already fades
-   * the whole block in (no per-row stagger). */
-  visible: boolean;
-}
-
-export function OptionsList(_: Props) {
+export function OptionsList() {
   const cycle = useStore((s) => s.cycle);
   const authorized = cycle?.authorized ?? false;
   const awaitingAuth = cycle?.awaiting_auth ?? false;

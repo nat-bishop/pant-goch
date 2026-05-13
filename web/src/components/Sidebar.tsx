@@ -1,5 +1,4 @@
 import { useMemo } from "react";
-import { displayActor } from "../api";
 import { useStore } from "../store";
 
 interface Props {
@@ -10,9 +9,12 @@ interface Props {
 export function Sidebar({ open, onToggle }: Props) {
   const meta = useStore((s) => s.mission_meta);
   const state = useStore((s) => s.state);
-  const inbox = useStore((s) => s.inbox);
+  const shorthands = useStore((s) => s.shorthands);
   const openModal = useStore((s) => s.openModal);
-  const reversedInbox = useMemo(() => [...inbox].reverse(), [inbox]);
+  const reversedShorthands = useMemo(
+    () => [...shorthands].reverse(),
+    [shorthands],
+  );
 
   if (!meta) {
     return (
@@ -60,19 +62,17 @@ export function Sidebar({ open, onToggle }: Props) {
           </section>
 
           <section className="rail-section">
-            <div className="rail-label">INBOX</div>
-            {reversedInbox.length > 0 && (
+            <div className="rail-label">CASE FILE</div>
+            {reversedShorthands.length > 0 && (
               <div className="inbox-list">
-                {reversedInbox.map((d) => (
+                {reversedShorthands.map((row) => (
                   <button
-                    key={`${d.cycle_index}-${d.acting}`}
+                    key={row.cycle_index}
                     type="button"
                     className="inbox-item"
-                    onClick={() => openModal(d.cycle_index)}
+                    onClick={() => openModal(row.cycle_index)}
                   >
-                    <span className="inbox-cyc">C{d.cycle_index}</span>
-                    <span className="inbox-from">{displayActor(d.acting)}</span>
-                    <span className="inbox-snip">"{d.text.slice(0, 60)}…"</span>
+                    <span className="inbox-snip">{row.shorthand}</span>
                   </button>
                 ))}
               </div>
@@ -102,17 +102,17 @@ export function Sidebar({ open, onToggle }: Props) {
             })}
           </section>
           <section className="rail-section">
-            <div className="rail-tag">INB</div>
-            {inbox.length > 0 && (
+            <div className="rail-tag">FIL</div>
+            {shorthands.length > 0 && (
               <button
                 type="button"
                 className="inbox-chip"
                 onClick={onToggle}
-                title="Open inbox"
-                aria-label="Open inbox"
+                title="Open case file"
+                aria-label="Open case file"
               >
                 <span className="inbox-chip-icon">✉</span>
-                <span className="inbox-chip-count">{inbox.length}</span>
+                <span className="inbox-chip-count">{shorthands.length}</span>
               </button>
             )}
           </section>

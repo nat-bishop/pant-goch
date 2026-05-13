@@ -1,10 +1,10 @@
-"""Unit tests for the SoP/renderer prompt builders — specifically the
-narrative-state translation that replaces raw `id: value` dumps.
+"""Unit tests for the drafter / log-writer / shorthand prompt builders.
 
 The goal: prove the model NEVER sees a digit in the narrative state block,
 prove built-in cover/cycles buckets behave as authored, prove the system
-prompts now forbid the old numeric voice, and prove the drafter's mechanical
-state block is untouched (it needs the numerics)."""
+prompts forbid the numeric/system-vocabulary voice, and prove the drafter's
+mechanical catalog block stays untouched (it needs the keys).
+"""
 from __future__ import annotations
 
 import re
@@ -13,21 +13,29 @@ from pathlib import Path
 import pytest
 
 from handler.agents import (
+    LogEntry,
     _describe_authored_quality,
     _describe_cover,
     _describe_cycles,
     _drafter_system_prompt,
     _drafter_user_prompt,
+    _forced_event_block,
+    _log_entries_block,
+    _log_writer_system_prompt,
+    _log_writer_user_prompt,
     _narrative_state_block,
-    _renderer_system_prompt,
-    _sop_system_prompt,
+    _recently_tried_block,
+    _shorthand_user_prompt,
+    describe_delta,
 )
 from handler.mission_loader import load_mission
 from handler.models import (
-    CastMember,
     Archetype,
+    CastMember,
     Event,
+    EventFired,
     Mission,
+    Option,
     Quality,
     QualityGte,
     State,
@@ -86,7 +94,6 @@ def test_describe_cover_mission_override_wins() -> None:
             )
         },
     )
-    # 0 hits the first bucket; 5 falls into the second.
     assert _describe_cover(0, mission, "A") == "ALPHA DOWN"
     assert _describe_cover(5, mission, "A") == "ALPHA UP"
 
@@ -109,8 +116,6 @@ def test_describe_cycles_built_in_buckets(
     remaining: int, total: int, expected: str
 ) -> None:
     mission = load_mission(_TINY)
-    # _describe_cycles uses the ratio remaining/total, not the mission's
-    # max_cycles, so passing `total` is enough.
     assert _describe_cycles(remaining, total, mission) == expected
 
 
@@ -118,7 +123,7 @@ def test_describe_cycles_built_in_buckets(
 
 
 def test_narrative_state_block_emits_no_digits() -> None:
-    """The core invariant: a player-facing memo can't say 'six cycles' or
+    """The core invariant: a player-facing entry can't say 'six cycles' or
     'cover six' if the prompt never carries a digit."""
     mission = load_mission(_TINY)
     state = make_initial_state(mission)
@@ -168,8 +173,8 @@ def test_narrative_state_block_emits_protected_cover_suffix() -> None:
 
 
 def test_narrative_state_block_omits_fired_events() -> None:
-    """The fired-event ledger reads like a log line — strip it from the SoP
-    context entirely (the recent-dispatch block carries continuity)."""
+    """The fired-event ledger reads like a log line — strip it from the
+    prompt context entirely."""
     mission = load_mission(_TINY)
     state = make_initial_state(mission)
     state.fired.append("some_event")
@@ -180,8 +185,7 @@ def test_narrative_state_block_omits_fired_events() -> None:
 
 def test_narrative_state_block_lynx_initial_reads_in_fiction() -> None:
     """Smoke test on the real mission: confirm the cycle-1 LYNX block contains
-    the in-fiction grounding we authored and none of the meta language the
-    user reported."""
+    the in-fiction grounding we authored and none of the meta language."""
     mission = load_mission(_LYNX)
     state = make_initial_state(mission)
     block = _narrative_state_block(state, mission)
@@ -195,557 +199,19 @@ def test_narrative_state_block_lynx_initial_reads_in_fiction() -> None:
     # And the meta language MUST NOT appear:
     assert "cycles_remaining" not in block
     assert "/" not in block
-    assert "out of" not in block
 
 
-# ───────────────────────── SoP system prompt voice rules ─────────────────────────
-
-
-def test_sop_system_prompt_forbids_numerics_rule_present() -> None:
-    mission = load_mission(_LYNX)
-    prompt = _sop_system_prompt(mission)
-    assert "NEVER use numbers for state" in prompt
-    assert "NEVER use game/system vocabulary" in prompt
-
-
-def test_sop_system_prompt_drops_old_numeric_permission() -> None:
-    """Regression guard against re-introducing the line that explicitly
-    licensed dashboard voice."""
-    mission = load_mission(_LYNX)
-    prompt = _sop_system_prompt(mission)
-    assert "May reference state numerically" not in prompt
-
-
-def test_sop_system_prompt_includes_authored_setting() -> None:
-    mission = load_mission(_LYNX)
-    prompt = _sop_system_prompt(mission)
-    assert "SETTING:" in prompt
-    assert "Bucharest" in prompt  # from lynx_exfil.yaml setting
-
-
-def test_sop_system_prompt_omits_setting_when_unauthored() -> None:
-    """tiny_mission.yaml has no `setting:` field — the SETTING section
-    should not appear in the prompt."""
-    mission = load_mission(_TINY)
-    prompt = _sop_system_prompt(mission)
-    assert "SETTING:" not in prompt
-
-
-def test_sop_system_prompt_includes_agent_situation_when_authored() -> None:
-    mission = load_mission(_LYNX)
-    prompt = _sop_system_prompt(mission)
-    assert "Situation:" in prompt
-    assert "Forty-eight hours since the" in prompt  # from LYNX situation
-
-
-# ───────────────────────── renderer system prompt voice rules ─────────────────────────
-
-
-def test_renderer_system_prompt_forbids_numerics_rule_present() -> None:
-    mission = load_mission(_LYNX)
-    prompt = _renderer_system_prompt(mission)
-    assert "NEVER use numbers for state" in prompt
-    assert "NEVER use game/system vocabulary" in prompt
-
-
-# ───────────────────────── drafter voice rules ─────────────────────────
+# ───────────────────────── drafter system prompt voice rules ─────────────────────────
 
 
 def test_drafter_system_prompt_forbids_numerics_and_game_vocab() -> None:
     """Drafter option prose was leaking phrases like 'This begins the next
-    stage of the mission' — explicit rules now forbid that register."""
+    stage of the mission' — explicit rules forbid that register."""
     mission = load_mission(_LYNX)
     prompt = _drafter_system_prompt(mission)
     assert "NEVER use numbers for state" in prompt
     assert "NEVER use game/system vocabulary in option prose" in prompt
-    # The specific phrase the user flagged is called out by example so the
-    # model sees it as forbidden:
     assert "begin/initiate the next stage" in prompt
-
-
-def test_drafter_user_prompt_uses_narrative_state_block() -> None:
-    """The drafter no longer sees raw `agent[X].cover: N / 10`. It sees the
-    same narrative posture lines SoP/renderer see."""
-    mission = load_mission(_LYNX)
-    state = make_initial_state(mission)
-    prompt = _drafter_user_prompt(
-        cycle_index=1,
-        state=state,
-        mission=mission,
-        sop_text="(test SoP body)",
-        catalog=[],
-        forced_event=None,
-        dispatches=[],
-    )
-    # narrative descriptors present:
-    assert "LYNX: cover intact" in prompt
-    assert "the extraction papers have not yet been surfaced" in prompt
-    # raw quality dump absent:
-    assert "agent[LYNX].cover: 6 / 10" not in prompt
-    assert "cycles_remaining: 6 / 6" not in prompt
-
-
-# ───────────────────────── authored descriptor helper ─────────────────────────
-
-
-def test_describe_authored_quality_returns_none_when_unauthored() -> None:
-    mission = load_mission(_TINY)
-    assert _describe_authored_quality("mission.totally_unknown", 0, mission) is None
-
-
-# ───────────────────────── prompt enrichment signals ─────────────────────────
-
-
-def _mission_with_signals() -> Mission:
-    """Mission carrying every signal the enrichment plumbing reads."""
-    from handler.models import DramaticQuestion, QualityLte
-    return Mission(
-        id="m",
-        name="m",
-        max_cycles=6,
-        cast=[
-            CastMember(id="A", codename="A", starting_cover=8),
-            CastMember(id="B", codename="B", starting_cover=8),
-        ],
-        archetypes=[
-            Archetype(id="X", when=QualityGte(quality="a", value=0)),
-            # Locked for the 'cycle 1' state — no agent has cover 0 etc.
-            Archetype(id="ENDGAME", when=QualityGte(quality="mission.stage", value=2)),
-        ],
-        events=[
-            Event(id="end", terminal=True, outcome_key="w", when=QualityGte(quality="x", value=0))
-        ],
-        outcomes={"w": ""},
-        qualities={"mission.stage": Quality(initial=0, values={"0": "untested", "1": "live", "2": "done"})},
-        standing_orders=["LYNX must not be photographed again."],
-        dramatic_questions=[
-            DramaticQuestion(
-                when=QualityGte(quality="mission.cycles_remaining", value=1),
-                question="What now?",
-            ),
-        ],
-    )
-
-
-def test_sop_system_prompt_includes_standing_orders_block() -> None:
-    mission = _mission_with_signals()
-    prompt = _sop_system_prompt(mission)
-    assert "STANDING ORDERS" in prompt
-    assert "LYNX must not be photographed again" in prompt
-
-
-def test_drafter_system_prompt_includes_standing_orders_block() -> None:
-    mission = _mission_with_signals()
-    prompt = _drafter_system_prompt(mission)
-    assert "STANDING ORDERS" in prompt
-
-
-def test_renderer_system_prompt_includes_end_on_a_beat_rule() -> None:
-    mission = _mission_with_signals()
-    prompt = _renderer_system_prompt(mission)
-    assert "End on a single short observational sentence" in prompt
-    assert "TONE BAND" in prompt
-
-
-def test_renderer_system_prompt_includes_standing_orders_block() -> None:
-    mission = _mission_with_signals()
-    prompt = _renderer_system_prompt(mission)
-    assert "STANDING ORDERS" in prompt
-
-
-def test_system_prompts_omit_standing_orders_block_when_empty() -> None:
-    """Authors with no standing orders shouldn't see the heading at all."""
-    mission = load_mission(_TINY)
-    assert "STANDING ORDERS" not in _sop_system_prompt(mission)
-    assert "STANDING ORDERS" not in _drafter_system_prompt(mission)
-    assert "STANDING ORDERS" not in _renderer_system_prompt(mission)
-
-
-def test_sop_user_prompt_includes_act_phase_and_dramatic_question() -> None:
-    mission = _mission_with_signals()
-    state = make_initial_state(mission)
-    from handler.agents import _sop_user_prompt
-    prompt = _sop_user_prompt(cycle_index=1, state=state, mission=mission, dispatches=[])
-    assert "ACT PHASE: setup" in prompt
-    assert "DRAMATIC QUESTION" in prompt
-    assert "What now?" in prompt
-
-
-def test_sop_user_prompt_omits_dramatic_question_when_no_match() -> None:
-    """When no dramatic question matches (or none are authored), the DQ block
-    is omitted entirely. The act phase still appears unconditionally."""
-    mission = load_mission(_TINY)  # tiny mission authors no dramatic_questions
-    state = make_initial_state(mission)
-    from handler.agents import _sop_user_prompt
-    prompt = _sop_user_prompt(cycle_index=1, state=state, mission=mission, dispatches=[])
-    assert "DRAMATIC QUESTION" not in prompt
-    assert "ACT PHASE:" in prompt
-
-
-def test_drafter_user_prompt_includes_locked_block() -> None:
-    """ENDGAME requires stage>=2 which isn't met — must appear in LOCKED block."""
-    mission = _mission_with_signals()
-    state = make_initial_state(mission)
-    prompt = _drafter_user_prompt(
-        cycle_index=1,
-        state=state,
-        mission=mission,
-        sop_text="(test sop)",
-        catalog=[],
-        forced_event=None,
-        dispatches=[],
-    )
-    assert "LOCKED THIS CYCLE" in prompt
-    assert "ENDGAME" in prompt
-    assert "ACT PHASE:" in prompt
-
-
-def test_drafter_user_prompt_omits_locked_block_when_empty() -> None:
-    """tiny mission has only 3 archetypes, all available at cycle 1 — no LOCKED block."""
-    mission = load_mission(_TINY)
-    state = make_initial_state(mission)
-    prompt = _drafter_user_prompt(
-        cycle_index=1,
-        state=state,
-        mission=mission,
-        sop_text="(test sop)",
-        catalog=[],
-        forced_event=None,
-        dispatches=[],
-    )
-    assert "LOCKED THIS CYCLE" not in prompt
-
-
-def test_renderer_user_prompt_includes_act_phase_tone_and_tension() -> None:
-    """Renderer prompt surfaces all three per-cycle tonal signals."""
-    from handler.agents import _renderer_user_prompt
-    from handler.models import Option
-    mission = load_mission(_LYNX)
-    prior = make_initial_state(mission)
-    state = make_initial_state(mission)
-    state.set_quality("agent[LYNX].cover", 4)  # -2 swing → escalating
-    option = Option(
-        archetype="HOLD",
-        agent=None,
-        title="Hold position",
-        prose="Take no action this cycle.",
-    )
-    prompt = _renderer_user_prompt(
-        cycle_index=1,
-        state=state,
-        mission=mission,
-        option=option,
-        delta={"agent[LYNX].cover": (6, 4)},
-        acting="operations",
-        dispatches=[],
-        prior_state=prior,
-    )
-    assert "ACT PHASE:" in prompt
-    assert "TONE BAND:" in prompt
-    assert "TENSION" in prompt
-    # 2-point swing → escalating (per spine logic).
-    assert "escalating" in prompt
-
-
-def test_renderer_user_prompt_tension_steady_when_no_prior() -> None:
-    """If prior_state is None the band defaults to steady."""
-    from handler.agents import _renderer_user_prompt
-    from handler.models import Option
-    mission = load_mission(_LYNX)
-    state = make_initial_state(mission)
-    option = Option(archetype="HOLD", agent=None, title="x", prose="y")
-    prompt = _renderer_user_prompt(
-        cycle_index=1,
-        state=state,
-        mission=mission,
-        option=option,
-        delta={},
-        acting="operations",
-        dispatches=[],
-        prior_state=None,
-    )
-    assert "steady" in prompt
-
-
-# ───────────────────────── cast block + briefing + leans ─────────────────────────
-
-
-def _basic_mission_kwargs() -> dict:
-    return dict(
-        id="t",
-        name="t",
-        max_cycles=2,
-        cast=[CastMember(id="A", codename="A", starting_cover=5)],
-        archetypes=[Archetype(id="X", when=QualityGte(quality="a", value=0))],
-        events=[
-            Event(
-                id="end",
-                terminal=True,
-                outcome_key="w",
-                when=QualityGte(quality="x", value=0),
-            )
-        ],
-        outcomes={"w": ""},
-    )
-
-
-def _mission_with_handler() -> Mission:
-    return Mission(
-        id="m",
-        name="m",
-        codename="TEST-CODE",
-        max_cycles=4,
-        cast=[
-            CastMember(
-                id="ALPHA",
-                codename="Alpha",
-                role="agent",
-                voice_register="agent register",
-                starting_cover=6,
-            ),
-            CastMember(
-                id="RAVEN",
-                codename="Raven",
-                role="handler",
-                voice_register="handler register",
-                voice_details="codename only; trusted by Control",
-            ),
-            CastMember(
-                id="CONTROL",
-                codename="Control",
-                role="boss",
-                voice_register="boss register",
-            ),
-            CastMember(
-                id="VOLKOV",
-                codename="Volkov",
-                role="opposition",
-                voice_register="opposition register",
-            ),
-        ],
-        archetypes=[Archetype(id="X", when=QualityGte(quality="a", value=0))],
-        events=[
-            Event(
-                id="end",
-                terminal=True,
-                outcome_key="w",
-                when=QualityGte(quality="x", value=0),
-            )
-        ],
-        outcomes={"w": ""},
-    )
-
-
-def test_cast_block_renders_role_label_for_non_agents() -> None:
-    mission = _mission_with_handler()
-    prompt = _renderer_system_prompt(mission)
-    assert "RAVEN (handler" in prompt
-    assert "CONTROL (boss" in prompt
-    assert "VOLKOV (opposition" in prompt
-
-
-def test_cast_block_omits_role_label_for_agents() -> None:
-    """Agent entries keep the legacy `(file N, codename 'X')` shape so the
-    KV-cache prefix is stable for agent-only missions."""
-    mission = _mission_with_handler()
-    prompt = _renderer_system_prompt(mission)
-    # Agent role does NOT prefix "(agent;" before the file/codename parens.
-    assert "ALPHA (agent" not in prompt
-    # But the agent IS in the cast block:
-    assert "ALPHA" in prompt
-
-
-def test_cast_block_renders_voice_details_when_present() -> None:
-    mission = _mission_with_handler()
-    prompt = _renderer_system_prompt(mission)
-    assert "codename only; trusted by Control" in prompt
-
-
-def test_sop_user_prompt_no_longer_carries_opening_briefing() -> None:
-    """The cycle-1 opening_briefing was migrated out of the SoP prompt — it
-    now lives in the `mission_started` SSE / `StartResponse` payload so the
-    frontend onboarding card renders MERIWETHER's cable separately from
-    Operations Desk's State of Play memo. Regression guard: the briefing
-    must not leak back into the SoP prompt at any cycle index."""
-    from handler.agents import _sop_user_prompt
-    mission = Mission(
-        **_basic_mission_kwargs(),
-        opening_briefing="OPS: clean exfil only. Burn nothing.",
-    )
-    state = make_initial_state(mission)
-    for cycle_index in (1, 2, 6):
-        prompt = _sop_user_prompt(
-            cycle_index=cycle_index, state=state, mission=mission, dispatches=[]
-        )
-        assert "OPENING BRIEFING" not in prompt
-        assert "clean exfil only" not in prompt
-
-
-# ───────────────────────── WHAT MOVED LAST CYCLE ─────────────────────────
-
-
-def test_what_moved_block_empty_for_no_delta() -> None:
-    """Cycle 1 has no prior cycle — the block must be omitted entirely."""
-    from handler.agents import _what_moved_block
-    mission = load_mission(_LYNX)
-    assert _what_moved_block(None, mission) == ""
-    assert _what_moved_block({}, mission) == ""
-
-
-def test_what_moved_block_renders_cover_transitions() -> None:
-    """A cycle that dropped LYNX's cover from `intact` to `degraded`
-    surfaces a single bullet naming the transition."""
-    from handler.agents import _what_moved_block
-    mission = load_mission(_LYNX)
-    block = _what_moved_block({"agent[LYNX].cover": (6, 4)}, mission)
-    assert "WHAT MOVED LAST CYCLE" in block
-    assert "LYNX: cover intact → cover degraded" in block
-
-
-def test_what_moved_block_omits_no_op_changes() -> None:
-    """A cover swing within the same bucket (8→7, both `intact`) produces
-    no narrative-level change and must be dropped — otherwise the SoP
-    would lead with a vacuous pivot every cycle."""
-    from handler.agents import _what_moved_block
-    mission = load_mission(_LYNX)
-    block = _what_moved_block({"agent[LYNX].cover": (8, 7)}, mission)
-    assert block == ""
-
-
-def test_what_moved_block_renders_clock_change() -> None:
-    from handler.agents import _what_moved_block
-    mission = load_mission(_LYNX)
-    # 4→3 crosses the bucket boundary into "narrowing".
-    block = _what_moved_block({"mission.cycles_remaining": (4, 3)}, mission)
-    assert "the window is narrowing" in block
-
-
-def test_what_moved_block_renders_extraction_stage_change() -> None:
-    from handler.agents import _what_moved_block
-    mission = load_mission(_LYNX)
-    block = _what_moved_block({"mission.extraction_stage": (0, 1)}, mission)
-    assert "the extraction papers are being moved into hand" in block
-
-
-def test_sop_user_prompt_threads_what_moved_block() -> None:
-    """The SoP user prompt builder reads `last_cycle_delta` and prepends
-    the WHAT MOVED block (cycle 2+ — cycle 1 still has no prior delta)."""
-    from handler.agents import _sop_user_prompt
-    mission = load_mission(_LYNX)
-    state = make_initial_state(mission)
-    prompt = _sop_user_prompt(
-        cycle_index=2,
-        state=state,
-        mission=mission,
-        dispatches=[],
-        last_cycle_delta={"agent[LYNX].cover": (6, 4)},
-    )
-    assert "WHAT MOVED LAST CYCLE" in prompt
-    assert "LYNX: cover intact → cover degraded" in prompt
-
-
-# ───────────────────────── RECENTLY TRIED ─────────────────────────
-
-
-def test_recently_tried_block_renders_authorized_picks() -> None:
-    from handler.agents import _recently_tried_block
-    block = _recently_tried_block(
-        [(1, "DIVERSION_BY_AGENT", "LYNX"), (2, "DIVERSION_BY_AGENT", "KESTREL")]
-    )
-    assert "RECENTLY TRIED" in block
-    assert "C1: DIVERSION_BY_AGENT(LYNX)" in block
-    assert "C2: DIVERSION_BY_AGENT(KESTREL)" in block
-
-
-def test_recently_tried_block_unbound_archetype() -> None:
-    """HOLD has no agent — render without parens."""
-    from handler.agents import _recently_tried_block
-    block = _recently_tried_block([(1, "HOLD", None)])
-    assert "C1: HOLD" in block
-    assert "HOLD(" not in block
-
-
-def test_recently_tried_block_empty_when_none() -> None:
-    from handler.agents import _recently_tried_block
-    assert _recently_tried_block(None) == ""
-    assert _recently_tried_block([]) == ""
-
-
-def test_drafter_user_prompt_threads_recently_tried() -> None:
-    from handler.agents import _drafter_user_prompt
-    mission = load_mission(_LYNX)
-    state = make_initial_state(mission)
-    prompt = _drafter_user_prompt(
-        cycle_index=2,
-        state=state,
-        mission=mission,
-        sop_text="(sop)",
-        catalog=[],
-        forced_event=None,
-        dispatches=[],
-        recently_tried=[(1, "DIVERSION_BY_AGENT", "LYNX")],
-    )
-    assert "RECENTLY TRIED" in prompt
-    assert "C1: DIVERSION_BY_AGENT(LYNX)" in prompt
-
-
-# ───────────────────────── describe_delta ─────────────────────────
-
-
-def test_describe_delta_filters_unchanged_descriptors() -> None:
-    """If the descriptor for `before` matches the descriptor for `after`
-    (a small swing within one bucket), the entry must be dropped — the
-    RESULT footer would otherwise show vacuous transitions."""
-    from handler.agents import describe_delta
-    mission = load_mission(_LYNX)
-    result = describe_delta({"agent[LYNX].cover": (8, 7)}, mission)
-    assert "agent[LYNX].cover" not in result
-
-
-def test_describe_delta_includes_meaningful_change() -> None:
-    from handler.agents import describe_delta
-    mission = load_mission(_LYNX)
-    result = describe_delta({"agent[LYNX].cover": (6, 4)}, mission)
-    assert result["agent[LYNX].cover"]["before"] == "cover intact"
-    assert result["agent[LYNX].cover"]["after"] == "cover degraded"
-
-
-def test_describe_delta_skips_transient_flags() -> None:
-    """`cover_protected` and other one-cycle flags have no authored
-    descriptor — they should not surface in the delta block."""
-    from handler.agents import describe_delta
-    mission = load_mission(_LYNX)
-    result = describe_delta(
-        {"agent[LYNX].cover_protected": (None, True)}, mission
-    )
-    assert result == {}
-
-
-# ───────────────────────── word-budget tightening ─────────────────────────
-
-
-def test_sop_system_prompt_has_tighter_word_budget() -> None:
-    """Word-budget tightening per the recent playtest review — SoP memos
-    came back at 120-180 words and felt verbose. New budget is ~60-110."""
-    mission = load_mission(_LYNX)
-    prompt = _sop_system_prompt(mission)
-    assert "60–110 words" in prompt
-    # The old budget must not regress in:
-    assert "120–180 words" not in prompt
-
-
-def test_drafter_system_prompt_has_tighter_option_prose_budget() -> None:
-    mission = load_mission(_LYNX)
-    prompt = _drafter_system_prompt(mission)
-    assert "12–20 words" in prompt
-    assert "15–25 words" not in prompt
-
-
-def test_renderer_system_prompt_has_tighter_dispatch_budget() -> None:
-    mission = load_mission(_LYNX)
-    prompt = _renderer_system_prompt(mission)
-    assert "60–110 words" in prompt
-    assert "90–180 words" not in prompt
 
 
 def test_drafter_system_prompt_mentions_recently_tried_rule() -> None:
@@ -757,20 +223,212 @@ def test_drafter_system_prompt_mentions_recently_tried_rule() -> None:
     assert "RECENTLY TRIED" in prompt
 
 
-def test_renderer_user_prompt_includes_leans_when_provided() -> None:
-    from handler.agents import _renderer_user_prompt
-    from handler.models import Option
+def test_drafter_system_prompt_no_longer_references_sop() -> None:
+    """Regression guard: the drafter prompt must not mention the SoP memo —
+    that surface was dropped when the log writer became the single
+    post-resolution prose surface (HANDLER_SPEC_V2 §8.1)."""
+    mission = load_mission(_LYNX)
+    prompt = _drafter_system_prompt(mission)
+    assert "State of Play" not in prompt
+    assert "SoP memo" not in prompt
+
+
+def test_drafter_user_prompt_uses_narrative_state_block() -> None:
+    """The drafter no longer sees raw `agent[X].cover: N / 10`. It sees the
+    same narrative posture lines the log writer sees."""
+    mission = load_mission(_LYNX)
+    state = make_initial_state(mission)
+    prompt = _drafter_user_prompt(
+        cycle_index=1,
+        state=state,
+        mission=mission,
+        catalog=[],
+        forced_event=None,
+        log_entries=[],
+    )
+    assert "LYNX: cover intact" in prompt
+    assert "the extraction papers have not yet been surfaced" in prompt
+    assert "agent[LYNX].cover: 6 / 10" not in prompt
+
+
+def test_drafter_user_prompt_threads_recently_tried() -> None:
+    mission = load_mission(_LYNX)
+    state = make_initial_state(mission)
+    prompt = _drafter_user_prompt(
+        cycle_index=2,
+        state=state,
+        mission=mission,
+        catalog=[],
+        forced_event=None,
+        log_entries=[],
+        recently_tried=[(1, "DIVERSION_BY_AGENT", "LYNX")],
+    )
+    assert "RECENTLY TRIED" in prompt
+    assert "C1: DIVERSION_BY_AGENT(LYNX)" in prompt
+
+
+def test_drafter_user_prompt_carries_recent_log_entries() -> None:
+    """The drafter is stateless one-shot, so it relies on the last 2 log
+    entries (passed as user-side context) for cross-cycle continuity."""
+    mission = load_mission(_LYNX)
+    state = make_initial_state(mission)
+    entries = [
+        LogEntry(cycle_index=1, archetype="HOLD", text="No move; the window holds."),
+        LogEntry(cycle_index=2, archetype="ACTIVATE_SLEEPER_FOR_PAPERS",
+                 text="REDFIELD goes live."),
+    ]
+    prompt = _drafter_user_prompt(
+        cycle_index=3,
+        state=state,
+        mission=mission,
+        catalog=[],
+        forced_event=None,
+        log_entries=entries,
+    )
+    assert "REDFIELD goes live" in prompt
+    assert "the window holds" in prompt
+    assert "RECENT CASE-FILE ENTRIES" in prompt
+
+
+# ───────────────────────── log entries block ─────────────────────────
+
+
+def test_log_entries_block_cycle_1_message() -> None:
+    """No prior entries — the block reads as the explicit cycle-1 marker."""
+    block = _log_entries_block([], limit=2)
+    assert "no prior cycles" in block
+    assert "cycle 1" in block
+
+
+def test_log_entries_block_limits_to_last_n() -> None:
+    """With more entries than the limit, only the tail is rendered."""
+    entries = [
+        LogEntry(cycle_index=1, archetype="A", text="First."),
+        LogEntry(cycle_index=2, archetype="B", text="Second."),
+        LogEntry(cycle_index=3, archetype="C", text="Third."),
+    ]
+    block = _log_entries_block(entries, limit=2)
+    assert "First" not in block
+    assert "Second" in block
+    assert "Third" in block
+
+
+# ───────────────────────── log writer system prompt ─────────────────────────
+
+
+def test_log_writer_system_prompt_voice_and_rules() -> None:
+    mission = load_mission(_LYNX)
+    prompt = _log_writer_system_prompt(mission)
+    # Voice register
+    assert "Operations Desk" in prompt
+    assert "Terse, declarative" in prompt
+    # Numeric / game-vocab guard
+    assert "NEVER use numbers for state" in prompt
+    assert "NEVER use game/system vocabulary" in prompt
+
+
+def test_log_writer_system_prompt_describes_two_beat_structure() -> None:
+    mission = load_mission(_LYNX)
+    prompt = _log_writer_system_prompt(mission)
+    assert "Two short paragraphs" in prompt
+    assert "ANGLE" in prompt
+    assert "RESOLUTION" in prompt
+
+
+def test_log_writer_system_prompt_frames_conversation_continuity() -> None:
+    """The system prompt must instruct the model NOT to defend prior framings
+    when state has moved — the key mitigation against multi-turn drift."""
+    mission = load_mission(_LYNX)
+    prompt = _log_writer_system_prompt(mission)
+    assert "ongoing case file" in prompt
+    assert "Do not defend past framings" in prompt
+
+
+def test_log_writer_system_prompt_includes_authored_setting() -> None:
+    mission = load_mission(_LYNX)
+    prompt = _log_writer_system_prompt(mission)
+    assert "SETTING:" in prompt
+    assert "Bucharest" in prompt  # lynx_exfil.yaml setting
+
+
+def test_log_writer_system_prompt_omits_setting_when_unauthored() -> None:
+    """tiny_mission.yaml has no `setting:` field."""
+    mission = load_mission(_TINY)
+    prompt = _log_writer_system_prompt(mission)
+    assert "SETTING:" not in prompt
+
+
+def test_log_writer_system_prompt_no_first_person_or_acting_voice() -> None:
+    """Voice multiplexing is gone (HANDLER_SPEC_V2 §8.2). The log-writer
+    system prompt must not instruct the model to switch voices per cycle.
+    (The agent dossiers may mention first-person as their authored voice
+    register — that's data about the cast, not an instruction to the model.)"""
+    mission = load_mission(_LYNX)
+    prompt = _log_writer_system_prompt(mission)
+    # The voice instruction at the top of the prompt establishes
+    # "third-party" Operations Desk voice — the inverse of first-person.
+    assert "third-party intelligence handler" in prompt
+    # The old `ACTING is X — write FIRST-PERSON in...` instruction must be gone.
+    assert "ACTING is" not in prompt
+    assert "Write FIRST-PERSON" not in prompt
+    assert "first-person" not in prompt[: prompt.index("MISSION CAST")].lower()
+
+
+# ───────────────────────── log writer user prompt ─────────────────────────
+
+
+def test_log_writer_user_prompt_includes_act_phase_tone_and_tension() -> None:
+    """Log-writer user prompt surfaces all three per-cycle tonal signals."""
+    mission = load_mission(_LYNX)
+    prior = make_initial_state(mission)
+    state = make_initial_state(mission)
+    state.set_quality("agent[LYNX].cover", 4)  # -2 swing → escalating
+    option = Option(
+        archetype="HOLD",
+        agent=None,
+        title="Hold position",
+        prose="Take no action this cycle.",
+    )
+    prompt = _log_writer_user_prompt(
+        cycle_index=1,
+        state=state,
+        mission=mission,
+        option=option,
+        delta={"agent[LYNX].cover": (6, 4)},
+        prior_state=prior,
+    )
+    assert "ACT PHASE:" in prompt
+    assert "TONE BAND:" in prompt
+    assert "TENSION" in prompt
+    assert "escalating" in prompt
+
+
+def test_log_writer_user_prompt_tension_steady_when_no_prior() -> None:
+    """If prior_state is None the band defaults to steady."""
     mission = load_mission(_LYNX)
     state = make_initial_state(mission)
     option = Option(archetype="HOLD", agent=None, title="x", prose="y")
-    prompt = _renderer_user_prompt(
+    prompt = _log_writer_user_prompt(
         cycle_index=1,
         state=state,
         mission=mission,
         option=option,
         delta={},
-        acting="operations",
-        dispatches=[],
+        prior_state=None,
+    )
+    assert "steady" in prompt
+
+
+def test_log_writer_user_prompt_includes_leans_when_provided() -> None:
+    mission = load_mission(_LYNX)
+    state = make_initial_state(mission)
+    option = Option(archetype="HOLD", agent=None, title="x", prose="y")
+    prompt = _log_writer_user_prompt(
+        cycle_index=1,
+        state=state,
+        mission=mission,
+        option=option,
+        delta={},
         prior_state=None,
         leans=[
             "foreground KESTREL's grief for her daughter",
@@ -782,24 +440,153 @@ def test_renderer_user_prompt_includes_leans_when_provided() -> None:
     assert "exhaustion at the window" in prompt
 
 
-def test_renderer_user_prompt_omits_lean_block_when_empty() -> None:
+def test_log_writer_user_prompt_omits_lean_block_when_empty() -> None:
     """Default — no leans, no block at all (no empty heading)."""
-    from handler.agents import _renderer_user_prompt
-    from handler.models import Option
     mission = load_mission(_LYNX)
     state = make_initial_state(mission)
     option = Option(archetype="HOLD", agent=None, title="x", prose="y")
-    prompt = _renderer_user_prompt(
+    prompt = _log_writer_user_prompt(
         cycle_index=1,
         state=state,
         mission=mission,
         option=option,
         delta={},
-        acting="operations",
-        dispatches=[],
         prior_state=None,
     )
     assert "LEAN-ON THIS CYCLE" not in prompt
+
+
+def test_log_writer_user_prompt_carries_resolved_delta() -> None:
+    """The model needs the raw delta to honour magnitudes — a -3 cover drop
+    is significant; -4 is catastrophic."""
+    mission = load_mission(_LYNX)
+    state = make_initial_state(mission)
+    option = Option(archetype="HOLD", agent=None, title="x", prose="y")
+    prompt = _log_writer_user_prompt(
+        cycle_index=1,
+        state=state,
+        mission=mission,
+        option=option,
+        delta={"agent[LYNX].cover": (6, 3)},
+        prior_state=None,
+    )
+    assert "RESOLVED STATE DELTA" in prompt
+    assert "agent[LYNX].cover" in prompt
+    assert "6 -> 3" in prompt
+
+
+# ───────────────────────── shorthand prompt ─────────────────────────
+
+
+def test_shorthand_user_prompt_includes_cycle_and_archetype() -> None:
+    option = Option(
+        archetype="DIVERSION_BY_AGENT",
+        agent="KESTREL",
+        title="K diverts",
+        prose="x",
+    )
+    prompt = _shorthand_user_prompt(3, option)
+    assert "C3" in prompt
+    assert "DIVERSION_BY_AGENT(KESTREL)" in prompt
+    assert "case-file index" in prompt
+
+
+def test_shorthand_user_prompt_unbound_archetype() -> None:
+    """HOLD-style archetypes (no bound agent) render without parens."""
+    option = Option(archetype="HOLD", agent=None, title="x", prose="y")
+    prompt = _shorthand_user_prompt(5, option)
+    assert "HOLD" in prompt
+    assert "HOLD(" not in prompt
+
+
+# ───────────────────────── recently tried ─────────────────────────
+
+
+def test_recently_tried_block_renders_authorized_picks() -> None:
+    block = _recently_tried_block(
+        [(1, "DIVERSION_BY_AGENT", "LYNX"), (2, "DIVERSION_BY_AGENT", "KESTREL")]
+    )
+    assert "RECENTLY TRIED" in block
+    assert "C1: DIVERSION_BY_AGENT(LYNX)" in block
+    assert "C2: DIVERSION_BY_AGENT(KESTREL)" in block
+
+
+def test_recently_tried_block_unbound_archetype() -> None:
+    block = _recently_tried_block([(1, "HOLD", None)])
+    assert "C1: HOLD" in block
+    assert "HOLD(" not in block
+
+
+def test_recently_tried_block_empty_when_none() -> None:
+    assert _recently_tried_block(None) == ""
+    assert _recently_tried_block([]) == ""
+
+
+# ───────────────────────── forced event drafter block ─────────────────────────
+
+
+def test_forced_event_block_carries_must_communicate_and_must_not() -> None:
+    """The drafter's forced-event block surfaces intent + the prose rules so
+    one option can be authored to satisfy the event."""
+    event = Event(
+        id="burn_redfield",
+        force_into_drafter=True,
+        when=EventFired(event="never_fires"),
+        intent="Burn the sleeper REDFIELD to surface the extraction papers.",
+        must_communicate=[
+            "REDFIELD is named, and named as dead by the dispatch's close",
+        ],
+        must_not=["Frame REDFIELD as surviving"],
+        tone="solemn, terse, present-tense",
+    )
+    block = _forced_event_block(event)
+    assert "burn_redfield" in block
+    assert "Burn the sleeper REDFIELD" in block
+    assert "named as dead" in block
+    assert "Frame REDFIELD as surviving" in block
+    assert "solemn, terse" in block
+
+
+def test_forced_event_block_empty_when_no_event() -> None:
+    block = _forced_event_block(None)
+    assert "no forced event" in block
+
+
+# ───────────────────────── describe_delta ─────────────────────────
+
+
+def test_describe_delta_filters_unchanged_descriptors() -> None:
+    """If the descriptor for `before` matches the descriptor for `after`
+    (a small swing within one bucket), the entry must be dropped — the
+    RESULT footer would otherwise show vacuous transitions."""
+    mission = load_mission(_LYNX)
+    result = describe_delta({"agent[LYNX].cover": (8, 7)}, mission)
+    assert "agent[LYNX].cover" not in result
+
+
+def test_describe_delta_includes_meaningful_change() -> None:
+    mission = load_mission(_LYNX)
+    result = describe_delta({"agent[LYNX].cover": (6, 4)}, mission)
+    assert result["agent[LYNX].cover"]["before"] == "cover intact"
+    assert result["agent[LYNX].cover"]["after"] == "cover degraded"
+
+
+def test_describe_delta_skips_transient_flags() -> None:
+    """`cover_protected` and other one-cycle flags have no authored
+    descriptor — they should not surface in the delta block."""
+    mission = load_mission(_LYNX)
+    result = describe_delta(
+        {"agent[LYNX].cover_protected": (None, True)}, mission
+    )
+    assert result == {}
+
+
+# ───────────────────────── authored descriptor helper ─────────────────────────
+
+
+def test_describe_authored_quality_returns_none_when_unauthored() -> None:
+    mission = load_mission(_TINY)
+    assert _describe_authored_quality("mission.totally_unknown", 0, mission) is None
 
 
 def test_describe_authored_quality_supports_label_prefix() -> None:
@@ -830,3 +617,63 @@ def test_describe_authored_quality_supports_label_prefix() -> None:
         _describe_authored_quality("mission.stage", 0, mission)
         == "extraction: papers not yet surfaced"
     )
+
+
+# ───────────────────────── validate_options ─────────────────────────
+
+
+def test_validate_options_accepts_valid_set() -> None:
+    """Happy path: 3 options with distinct catalog keys all pass."""
+    from handler.agents import validate_options
+    catalog = [
+        ("DIVERSION_BY_AGENT", "KESTREL", {"agent": "KESTREL"}),
+        ("DIVERSION_BY_AGENT", "LYNX", {"agent": "LYNX"}),
+        ("HOLD", None, {}),
+    ]
+    options = [
+        Option(
+            archetype="DIVERSION_BY_AGENT",
+            agent="KESTREL",
+            params={"agent": "KESTREL"},
+            title="K",
+            prose="kp",
+        ),
+        Option(
+            archetype="DIVERSION_BY_AGENT",
+            agent="LYNX",
+            params={"agent": "LYNX"},
+            title="L",
+            prose="lp",
+        ),
+        Option(archetype="HOLD", agent=None, params={}, title="H", prose="hp"),
+    ]
+    validate_options(options, catalog, forced_event_id=None)  # no exception
+
+
+def test_validate_options_rejects_archetype_not_in_catalog() -> None:
+    from handler.agents import DrafterValidationError, validate_options
+    catalog = [("HOLD", None, {})]
+    options = [
+        Option(archetype="GHOST", agent=None, params={}, title="g", prose="g"),
+        Option(archetype="HOLD", agent=None, params={}, title="h", prose="h"),
+        Option(archetype="HOLD", agent=None, params={}, title="h2", prose="h2"),
+    ]
+    with pytest.raises(DrafterValidationError, match="VALID CATALOG"):
+        validate_options(options, catalog, forced_event_id=None)
+
+
+def test_validate_options_requires_forced_event_satisfier() -> None:
+    """When a forced event is active, exactly one option must carry
+    `satisfies_event = <event_id>`."""
+    from handler.agents import DrafterValidationError, validate_options
+    catalog = [
+        ("HOLD", None, {}),
+        ("PUSH", "LYNX", {"agent": "LYNX"}),
+    ]
+    options = [
+        Option(archetype="HOLD", agent=None, params={}, title="h", prose="h"),
+        Option(archetype="PUSH", agent="LYNX", params={"agent": "LYNX"}, title="p", prose="p"),
+        Option(archetype="HOLD", agent=None, params={}, title="h2", prose="h2"),
+    ]
+    with pytest.raises(DrafterValidationError, match="expected exactly 1 option"):
+        validate_options(options, catalog, forced_event_id="must_fire")

@@ -7,7 +7,6 @@ import type {
   GameState,
   SseEvent,
 } from "./api";
-import { OPERATIONS_ACTOR } from "./api";
 import * as api from "./api";
 
 // ─── domain shapes ───────────────────────────────────────────────────────
@@ -33,36 +32,45 @@ export interface OptionDraft {
   satisfies_event: string | null;
 }
 
-export interface DispatchEntry {
+/** One past case-file entry — full prose. Held in the store so the
+ * click-to-expand history modal can replay any cycle's entry without a
+ * round-trip. */
+export interface LogEntryRecord {
   cycle_index: number;
-  acting: string;
   archetype: string;
   text: string;
   delta: Delta;
 }
 
+/** One case-file history row — LLM-generated one-line shorthand for a cycle.
+ * Server emits via `entry_shorthand` after the entry streams. Frontend
+ * lists these in the case-file panel; clicking opens the full prose
+ * (from `inbox` keyed by cycle_index). */
+export interface LogShorthandRecord {
+  cycle_index: number;
+  shorthand: string;
+}
+
 export interface CycleState {
   index: number;
-  sop_words: string[];
-  sop_complete: boolean;
   options: OptionDraft[];
   options_complete: boolean;
   selected_option_index: number | null;
   awaiting_auth: boolean;
   authorized: boolean;
-  // Dispatch streaming: present after authorize, until the dispatch completes.
-  dispatch_acting: string | null;
-  dispatch_archetype: string | null;
-  dispatch_words: string[];
-  dispatch_complete: boolean;
+  // Log entry streaming: present after authorize, until the entry completes.
+  entry_archetype: string | null;
+  entry_words: string[];
+  entry_complete: boolean;
   // True after the server emits `awaiting_continue` — engine is paused
   // between cycles waiting for the player to click through.
   awaiting_continue: boolean;
-  // Latest cycle delta (effects + events merged) — surfaced to the dispatch modal.
+  // Latest cycle delta (effects + events merged) — surfaced to the current-
+  // cycle panel for the RESULT footer.
   delta: Delta;
   // Accumulated narrative-descriptor map across the cycle's mutation phases
   // (effects_applied + events_fired + cycle_closed). Powers the RESULT
-  // footer in the dispatch overlay: a one-line "what just moved" summary
+  // footer in the current-cycle panel: a one-line "what just moved" summary
   // pulled from server-side `_describe_*` helpers. Filtered: same-bucket
   // swings (e.g. 8→7 cover, both 'intact') don't surface.
   delta_descriptors: DeltaDescriptors;
@@ -84,7 +92,11 @@ interface Store {
   mission_meta: MissionMeta | null;
   state: GameState;
   cycle: CycleState | null;
-  inbox: DispatchEntry[];
+  // Full prose per cycle. Click a case-file row to re-read any past cycle's entry.
+  inbox: LogEntryRecord[];
+  // History row shorthands. Server fires `entry_shorthand` after each
+  // cycle's entry streams. Indexed by cycle_index — append-only.
+  shorthands: LogShorthandRecord[];
   outcome: Outcome | null;
   errorMessage: string | null;
   bootStarted: boolean;
@@ -110,17 +122,14 @@ interface Store {
 function newCycle(index: number): CycleState {
   return {
     index,
-    sop_words: [],
-    sop_complete: false,
     options: [],
     options_complete: false,
     selected_option_index: null,
     awaiting_auth: false,
     authorized: false,
-    dispatch_acting: null,
-    dispatch_archetype: null,
-    dispatch_words: [],
-    dispatch_complete: false,
+    entry_archetype: null,
+    entry_words: [],
+    entry_complete: false,
     awaiting_continue: false,
     delta: {},
     delta_descriptors: {},
@@ -155,6 +164,7 @@ const _store = create<Store>((set, get) => ({
   state: {},
   cycle: null,
   inbox: [],
+  shorthands: [],
   outcome: null,
   errorMessage: null,
   bootStarted: false,
@@ -168,6 +178,7 @@ const _store = create<Store>((set, get) => ({
       state: {},
       cycle: null,
       inbox: [],
+      shorthands: [],
       outcome: null,
       errorMessage: null,
       modalDispatchIndex: null,
@@ -207,9 +218,9 @@ const _store = create<Store>((set, get) => ({
     try {
       await api.authorize(session_id, cycle.selected_option_index);
       // Re-read after the await — the server may have streamed
-      // `dispatch_started`/`effects_applied` while we were awaiting the
+      // `entry_started`/`effects_applied` while we were awaiting the
       // /authorize response, and a stale-cycle spread here would clobber
-      // those SSE-driven fields (dispatch_acting, delta, etc.).
+      // those SSE-driven fields (entry_archetype, delta, etc.).
       const latest = get().cycle;
       if (!latest) return;
       set({
@@ -265,17 +276,6 @@ const _store = create<Store>((set, get) => ({
       case "cycle_opened":
         set({ cycle: newCycle(ev.cycle), state: ev.state });
         break;
-
-      case "sop_word": {
-        const c = get().cycle;
-        if (!c || c.index !== ev.cycle) return;
-        if (ev.is_last) {
-          set({ cycle: { ...c, sop_complete: true } });
-        } else {
-          set({ cycle: { ...c, sop_words: [...c.sop_words, ev.word] } });
-        }
-        break;
-      }
 
       case "option_started": {
         const c = get().cycle;
@@ -367,52 +367,63 @@ const _store = create<Store>((set, get) => ({
         break;
       }
 
-      case "dispatch_started": {
+      case "entry_started": {
         const c = get().cycle;
         if (!c || c.index !== ev.cycle) return;
         set({
           cycle: {
             ...c,
-            dispatch_acting: ev.acting,
-            dispatch_archetype: ev.archetype,
-            dispatch_words: [],
-            dispatch_complete: false,
+            entry_archetype: ev.archetype,
+            entry_words: [],
+            entry_complete: false,
           },
         });
         break;
       }
 
-      case "dispatch_word": {
+      case "entry_word": {
         const c = get().cycle;
         if (!c || c.index !== ev.cycle) return;
         if (ev.is_last) {
           // Finalise: build inbox entry from accumulated text.
-          const text = c.dispatch_words.join("");
-          const entry: DispatchEntry = {
+          const text = c.entry_words.join("");
+          const entry: LogEntryRecord = {
             cycle_index: c.index,
-            acting: c.dispatch_acting ?? OPERATIONS_ACTOR,
-            archetype: c.dispatch_archetype ?? "?",
+            archetype: c.entry_archetype ?? "?",
             text,
             delta: c.delta,
           };
           set({
-            cycle: { ...c, dispatch_complete: true },
+            cycle: { ...c, entry_complete: true },
             inbox: [...get().inbox, entry],
             // Apply cycle delta to global state — covers + extraction_stage etc.
             state: applyDeltaToState(get().state, c.delta),
           });
         } else {
           set({
-            cycle: { ...c, dispatch_words: [...c.dispatch_words, ev.word] },
+            cycle: { ...c, entry_words: [...c.entry_words, ev.word] },
           });
         }
+        break;
+      }
+
+      case "entry_shorthand": {
+        // Append the case-file history row. No cycle guard — shorthands
+        // can land slightly after the cycle has rolled over (the LLM
+        // call runs in parallel with the cycle-close sequence).
+        set({
+          shorthands: [
+            ...get().shorthands,
+            { cycle_index: ev.cycle, shorthand: ev.shorthand },
+          ],
+        });
         break;
       }
 
       case "cycle_closed": {
         const c = get().cycle;
         // Accumulate the cycle-close descriptors (cycles_remaining tick) into
-        // the dispatch's RESULT footer if the cycle is still on-screen.
+        // the current-cycle panel's RESULT footer if the cycle is still on-screen.
         if (c && ev.delta_descriptors && Object.keys(ev.delta_descriptors).length > 0) {
           set({
             state: ev.state,

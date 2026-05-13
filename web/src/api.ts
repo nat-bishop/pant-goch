@@ -13,14 +13,6 @@ async function ensureOk(r: Response, op: string): Promise<void> {
 
 // ─── shared types ────────────────────────────────────────────────────────
 
-/** Sentinel `acting` value used when a dispatch comes from Operations rather
- * than a field agent. Matches the server's payload string. */
-export const OPERATIONS_ACTOR = "operations";
-
-export function displayActor(acting: string): string {
-  return acting === OPERATIONS_ACTOR ? "OPS" : acting;
-}
-
 export function isWinOutcome(outcomeKey: string): boolean {
   return outcomeKey.startsWith("win_");
 }
@@ -125,7 +117,6 @@ export async function fetchState(session_id: string): Promise<StateResponse> {
 export type SseEvent =
   | { event: "mission_started"; mission_id: string; mission_name: string; codename: string; max_cycles: number; agents: AgentMeta[]; cast: CastMember[]; opening_briefing: string; opening_prose: string; state: GameState }
   | { event: "cycle_opened"; cycle: number; state: GameState }
-  | { event: "sop_word"; cycle: number; idx: number; word: string; is_last?: boolean }
   | { event: "option_started"; cycle: number; option_idx: number; archetype: string; agent: string | null; params: Record<string, string>; title: string; satisfies_event: string | null }
   | { event: "option_word"; cycle: number; option_idx: number; idx: number; word: string; is_last?: boolean }
   | { event: "options_complete"; cycle: number; count: number; has_forced_event: boolean; event_id: string | null; engine_fallback: boolean }
@@ -133,8 +124,9 @@ export type SseEvent =
   | { event: "awaiting_continue"; cycle: number }
   | { event: "effects_applied"; delta: Delta; delta_descriptors?: DeltaDescriptors }
   | { event: "events_fired"; events: string[]; delta: Delta; delta_descriptors?: DeltaDescriptors }
-  | { event: "dispatch_started"; cycle: number; acting: string; archetype: string }
-  | { event: "dispatch_word"; cycle: number; idx: number; word: string; acting: string; is_last?: boolean }
+  | { event: "entry_started"; cycle: number; archetype: string }
+  | { event: "entry_word"; cycle: number; idx: number; word: string; is_last?: boolean }
+  | { event: "entry_shorthand"; cycle: number; shorthand: string }
   | { event: "cycle_closed"; cycle: number; state: GameState; delta_descriptors?: DeltaDescriptors }
   | { event: "mission_resolved"; outcome: string; summary: string; terminal_event: string; cycles_used: number; cycles_max: number; agents_lost: string[]; agents_alive: string[] }
   | { event: "session_closed" }

@@ -12,9 +12,9 @@ import pytest
 from handler.events import (
     CycleClosed,
     CycleOpened,
-    DispatchRendered,
     EffectsApplied,
     EventsFired,
+    LogEntryAppended,
     MissionStarted,
     OptionAuthorized,
     OptionsDrafted,
@@ -45,7 +45,7 @@ def agents_stub(mission):
     # OpenAIChatModel + pydantic-ai stack.
     from types import SimpleNamespace
 
-    return SimpleNamespace(sop=None, drafter=None, renderer=None, mission=mission)
+    return SimpleNamespace(drafter=None, log_writer=None, mission=mission)
 
 
 def _emit_cycle_one(session, mission) -> None:

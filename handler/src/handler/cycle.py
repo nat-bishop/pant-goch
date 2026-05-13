@@ -1,11 +1,10 @@
 """The cycle orchestration. One function (`run_cycle`) ties together the
-deterministic spine and the three LLM agents per HANDLER_SPEC_V2 §3:
+deterministic spine and the two LLM agents per HANDLER_SPEC_V2 §3:
 
-  i.   SoP synthesizer       (agents.sop)
-  ii.  Drafter               (agents.drafter)
+  i.   Drafter               (agents.drafter — stateless one-shot)
        ── player picks ──    (await session.await_authorization)
-  iii. Effects + events      (spine.apply_* + spine.fire_due_passive_events)
-  iv.  Dispatch renderer     (agents.renderer)
+  ii.  Effects + events      (spine.apply_* + spine.fire_due_passive_events)
+  iii. Log writer            (agents.log_writer — conversation-based)
        ── cycle close ──     (spine.tick_cycle_close)
 
 This module is the ONLY orchestration code. `spine.py` is pure; `cycle.py`
@@ -17,33 +16,33 @@ the emitted event carries the same delta so `fold()` reproduces the
 state during replay.
 
 Wall-clock optimisations (HANDLER_SPEC_V2 §11):
-  - The SoP callable returns `(text, pacing_task)` so the drafter LLM can
-    start the moment SoP's LLM stream is exhausted, while paced sop_word
-    SSE events continue to the client in the background.
-  - The renderer callable does the same for `dispatch_word` pacing, and
-    fires `on_renderer_text_ready` so `main.py` can schedule cycle N+1's
-    prefetch while cycle N's dispatch is still pacing to the modal.
+  - The log writer's callable returns `(text, pacing_task)` so the cycle
+    close can run while paced `entry_word` SSE events continue to the
+    client in the background, and fires `on_log_text_ready` so `main.py`
+    can schedule cycle N+1's prefetch.
+  - The shorthand call is fired internally by the log-writer callable
+    (in `main.py`); it runs in parallel with the pacing tail and emits an
+    `entry_shorthand` SSE event when ready.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
 from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable, Protocol
+from typing import Awaitable, Callable, Protocol
 
 import logfire
 
 from .events import (
     CycleClosed,
     CycleOpened,
-    DispatchRendered,
     EffectsApplied,
     EventsFired,
+    LogEntryAppended,
     MissionResolved,
     MissionStarted,
     OptionAuthorized,
     OptionsDrafted,
-    SopRendered,
 )
 from .models import (
     Event,
@@ -73,21 +72,11 @@ log = logging.getLogger(__name__)
 # ───────────────────────── agent + emitter protocols ─────────────────────────
 
 
-class SopFn(Protocol):
-    async def __call__(
-        self, session: Session, cycle_index: int
-    ) -> tuple[str, asyncio.Task]:
-        """Render the State-of-Play memo. Returns (full text, pacing_task).
-        Text resolves as soon as the LLM stream is exhausted; pacing_task
-        continues emitting paced `sop_word` SSE events in the background."""
-
-
 class DrafterLLMFn(Protocol):
     async def __call__(
         self,
         session: Session,
         cycle_index: int,
-        sop_text: str,
         valid_catalog: list[tuple[str, str | None, dict[str, str]]],
         forced_event_id: str | None,
     ) -> tuple[list[Option], bool]:
@@ -108,47 +97,43 @@ class DrafterEmitFn(Protocol):
         option_word ×N events, terminated by options_complete."""
 
 
-class RendererFn(Protocol):
+class LogWriterFn(Protocol):
     async def __call__(
         self,
         session: Session,
         cycle_index: int,
         option: Option,
         delta: dict,
-        acting: str,
         prior_state: State,
         *,
         leans: list[str] = (),
     ) -> tuple[str, asyncio.Task]:
-        """Render the field dispatch. Returns (full text, pacing_task).
-        Same shape as SopFn — text resolves on LLM-done so the caller can
-        kick off cross-cycle prefetch while pacing continues.
+        """Append the cycle's case-file entry. Returns (full text,
+        pacing_task). Text resolves the moment the LLM stream is exhausted;
+        pacing_task continues emitting paced `entry_word` SSE events in
+        the background.
+
+        Internally the callable also:
+        - Updates the session's accumulating `log_message_history` with
+          the just-rendered user+assistant pair (HANDLER_SPEC_V2 §8.2).
+        - Schedules the non-persisted shorthand follow-up call (§8.3)
+          which runs against the same agent + same history plus a
+          temporary "summarize that" turn, and emits an `entry_shorthand`
+          SSE event when complete.
 
         `prior_state` is the snapshot taken at cycle open, before any of
-        this cycle's mutations applied. Used by the renderer prompt to
-        compute the tension band (4c) — magnitude of the cycle's cover swing.
+        this cycle's mutations applied. Used by the log-writer prompt to
+        compute the tension band (4c).
 
         `leans` is the (already prioritized + capped) list of free-form
-        renderer directives collected from this cycle's fired events. Each
-        entry is a plain-language line ("foreground KESTREL's grief..."),
-        injected into the user prompt verbatim."""
+        directives collected from this cycle's fired events."""
 
 
-class OnRendererTextReadyFn(Protocol):
+class OnLogTextReadyFn(Protocol):
     async def __call__(self, cycle_index: int) -> None:
-        """Fires once cycle N's renderer LLM has produced its text AND state
-        is final (tick_cycle_close + timeout re-check done). main.py uses
-        this to schedule cycle N+1's prefetch."""
-
-
-class OnCycleCloseFn(Protocol):
-    async def __call__(
-        self, cycle_index: int, aggregate_delta: dict[str, tuple[Any, Any]]
-    ) -> None:
-        """Fires after the full cycle (effects + events + close + 2nd-pass
-        passives) has applied. `aggregate_delta` is the merged delta across
-        all four phases — used by main.py to stash `rt.last_cycle_delta` so
-        the next cycle's SoP prompt can lead with "what moved last cycle"."""
+        """Fires once cycle N's log-writer LLM has produced its text AND
+        state is final (tick_cycle_close + timeout re-check done). main.py
+        uses this to schedule cycle N+1's prefetch."""
 
 
 class Emitter(Protocol):
@@ -159,11 +144,7 @@ class Emitter(Protocol):
     async def __call__(self, payload: dict) -> None: ...
 
 
-async def _noop_renderer_text_ready(_cycle_index: int) -> None:
-    return
-
-
-async def _noop_cycle_close(_cycle_index: int, _agg: dict[str, tuple[Any, Any]]) -> None:
+async def _noop_log_text_ready(_cycle_index: int) -> None:
     return
 
 
@@ -190,14 +171,12 @@ async def run_cycle(
     session: Session,
     cycle_index: int,
     *,
-    sop: SopFn,
     drafter_llm: DrafterLLMFn,
     drafter_emit: DrafterEmitFn,
-    renderer: RendererFn,
+    log_writer: LogWriterFn,
     emit: Emitter,
     await_authorization: Callable[[], Awaitable[Option]],
-    on_renderer_text_ready: OnRendererTextReadyFn = _noop_renderer_text_ready,
-    on_cycle_close: OnCycleCloseFn = _noop_cycle_close,
+    on_log_text_ready: OnLogTextReadyFn = _noop_log_text_ready,
 ) -> bool:
     """Run one cycle. Returns True if the mission is still active, False on
     terminal (caller stops iterating).
@@ -206,16 +185,11 @@ async def run_cycle(
     POST /authorize, validates the picked option against `options`, and
     returns the resolved `Option` (which carries the prose from drafter).
 
-    `on_renderer_text_ready` is invoked after the renderer LLM produces its
+    `on_log_text_ready` is invoked after the log-writer LLM produces its
     text AND state is final (tick_cycle_close + any timeout re-check done).
     Main.py uses this to schedule cycle N+1's prefetch.
-
-    `on_cycle_close` fires once with the cycle's aggregate delta (effects +
-    forced + passives + close + 2nd-pass passives merged). Main.py uses it
-    to stash `rt.last_cycle_delta` for the next cycle's SoP user prompt.
     """
     # Local import — agents imports spine; cycle imports agents would cycle.
-    # Lazy is fine: we only need this helper inside the run_cycle body.
     from .agents import describe_delta
 
     mission = session.mission
@@ -228,41 +202,22 @@ async def run_cycle(
         cycle_index=cycle_index,
         mission=mission.id,
     ):
-        # Snapshot state at cycle open. Renderer reads this back to compute
+        # Snapshot state at cycle open. Log writer reads this back to compute
         # the tension band (4c) — magnitude of the cycle's cover swing.
         prior_state = snapshot(state)
-
-        # Aggregate delta across all four mutation phases this cycle.
-        # Populated below; passed to `on_cycle_close` at the end.
-        aggregate_delta: dict[str, tuple] = {}
 
         # ── cycle opened ──
         session.apply(CycleOpened(cycle_index=cycle_index))
         await emit({"event": "cycle_opened", "cycle": cycle_index, "state": state.qualities})
 
-        # ── i. SoP synthesizer ──
-        # Returns text the moment the LLM stream is exhausted; pacing_task
-        # continues emitting paced sop_word events to the client in the bg.
-        sop_text, sop_pacing = await sop(session, cycle_index)
-        session.apply(SopRendered(cycle_index=cycle_index, text=sop_text))
-
-        # ── ii. Drafter (with optional forced event) ──
+        # ── i. Drafter (with optional forced event) ──
         catalog = valid_archetype_combinations(state, mission)
         forced = due_forced_events(state, mission)
         forced_event_id = forced[0].id if forced else None
 
-        # Run drafter LLM in parallel with SoP pacing. The drafter only needs
-        # sop_text (the LLM output), not the paced emission, so it can start
-        # as soon as the LLM finishes generating.
-        drafter_task = asyncio.create_task(
-            drafter_llm(session, cycle_index, sop_text, catalog, forced_event_id)
+        options, engine_fallback = await drafter_llm(
+            session, cycle_index, catalog, forced_event_id
         )
-
-        # Wait for SoP pacing to finish before showing options — keeps the
-        # reading order (SoP, then options) intact on the client.
-        await sop_pacing
-
-        options, engine_fallback = await drafter_task
         session.apply(
             OptionsDrafted(
                 cycle_index=cycle_index,
@@ -284,7 +239,7 @@ async def run_cycle(
             )
         )
 
-        # ── iii. Effects + passive events ──
+        # ── ii. Effects + passive events ──
         delta = apply_archetype_effects(state, chosen, mission)
         satisfied_event_id: str | None = None
         satisfied_forced: Event | None = None
@@ -299,7 +254,6 @@ async def run_cycle(
         session.apply(EffectsApplied(
             cycle_index=cycle_index, delta=delta, forced_event_id=satisfied_event_id,
         ))
-        merge_delta_into(aggregate_delta, delta)
         await emit({
             "event": "effects_applied",
             "delta": _serialize_delta(delta),
@@ -316,7 +270,6 @@ async def run_cycle(
                     fires=[(ev.id, agent_id, d) for (ev, agent_id, d) in fires],
                 )
             )
-            merge_delta_into(aggregate_delta, agg)
             await emit({
                 "event": "events_fired",
                 "events": [ev.id for (ev, _, _) in fires],
@@ -327,39 +280,36 @@ async def run_cycle(
         terminal = next(((ev, ag, d) for (ev, ag, d) in fires if ev.terminal), None)
         if terminal is not None:
             t_event, _, _ = terminal
-            # ── terminal dispatch (still rendered, in appropriate voice) ──
-            acting = _acting_for(chosen)
-            text, render_pacing = await renderer(
-                session, cycle_index, chosen, delta, acting, prior_state, leans=leans,
+            # ── terminal log entry (still rendered, in Operations voice) ──
+            text, log_pacing = await log_writer(
+                session, cycle_index, chosen, delta, prior_state, leans=leans,
             )
             session.apply(
-                DispatchRendered(
-                    cycle_index=cycle_index, acting=acting, archetype=chosen.archetype, text=text,
+                LogEntryAppended(
+                    cycle_index=cycle_index, archetype=chosen.archetype, text=text,
                 )
             )
             resolution = _build_resolution(mission, state, t_event.id, t_event.outcome_key or "")
             session.apply(MissionResolved(cycle_index=cycle_index, resolution=resolution))
-            # Wait for dispatch pacing so the client sees the full final
-            # dispatch before mission_resolved hits.
-            await render_pacing
+            # Wait for pacing so the client sees the full final entry before
+            # mission_resolved hits.
+            await log_pacing
             await emit(_resolved_payload(resolution))
             return False
 
-        # ── iv. Dispatch ──
-        acting = _acting_for(chosen)
-        text, render_pacing = await renderer(
-            session, cycle_index, chosen, delta, acting, prior_state, leans=leans,
+        # ── iii. Log writer ──
+        text, log_pacing = await log_writer(
+            session, cycle_index, chosen, delta, prior_state, leans=leans,
         )
         session.apply(
-            DispatchRendered(
-                cycle_index=cycle_index, acting=acting, archetype=chosen.archetype, text=text,
+            LogEntryAppended(
+                cycle_index=cycle_index, archetype=chosen.archetype, text=text,
             )
         )
 
         # ── cycle close (deterministic; runs while pacing continues in bg) ──
         close_delta = tick_cycle_close(state)
         session.apply(CycleClosed(cycle_index=cycle_index, delta=close_delta))
-        merge_delta_into(aggregate_delta, close_delta)
 
         # Timeout terminal — check after cycles_remaining decrement. Re-run
         # the passive-event phase so `timeout` (a normal passive event) can
@@ -367,7 +317,7 @@ async def run_cycle(
         # those already had their chance on the first pass this cycle.
         #
         # State mutations happen here synchronously; the matching SSE emit
-        # (mission_resolved) is deferred below until dispatch pacing finishes.
+        # (mission_resolved) is deferred below until log pacing finishes.
         terminal_resolved: dict | None = None
         if state.outcome is None:
             fires2, agg2 = fire_due_passive_events(state, mission, made_progress=True)
@@ -378,7 +328,6 @@ async def run_cycle(
                         fires=[(ev.id, agent_id, d) for (ev, agent_id, d) in fires2],
                     )
                 )
-                merge_delta_into(aggregate_delta, agg2)
                 t2 = next(((ev, ag, d) for (ev, ag, d) in fires2 if ev.terminal), None)
                 if t2 is not None:
                     t_event, _, _ = t2
@@ -388,26 +337,21 @@ async def run_cycle(
                     session.apply(MissionResolved(cycle_index=cycle_index, resolution=resolution))
                     terminal_resolved = _resolved_payload(resolution)
 
-        # Stash the full cycle delta so cycle N+1's SoP prompt can lead with
-        # "what moved last cycle". Fires regardless of terminal — even a
-        # terminal cycle has movement worth recording (for replay / debug).
-        await on_cycle_close(cycle_index, aggregate_delta)
-
         # Fire prefetch hook only if mission is still active. State is final
         # at this point (cycle_close + timeout re-check both done), so the
-        # prefetched SoP/drafter will see the correct cycle N+1 starting state.
+        # prefetched drafter will see the correct cycle N+1 starting state.
         if terminal_resolved is None:
-            await on_renderer_text_ready(cycle_index)
+            await on_log_text_ready(cycle_index)
 
-        # Wait for dispatch pacing to finish before emitting any cycle-close
+        # Wait for log pacing to finish before emitting any cycle-close
         # signals — otherwise the client would see cycle_closed (or
-        # mission_resolved) while still receiving dispatch_word events.
-        await render_pacing
+        # mission_resolved) while still receiving entry_word events.
+        await log_pacing
         # `delta_descriptors` on cycle_closed carries the close-tick decrement
-        # (cycles_remaining). The dispatch overlay's RESULT footer accumulates
-        # effects_applied + events_fired + cycle_closed descriptors for the
-        # full picture; 2nd-pass passive deltas only fire on timeout and are
-        # handled via the mission_resolved card.
+        # (cycles_remaining). The current-cycle panel's RESULT footer
+        # accumulates effects_applied + events_fired + cycle_closed descriptors
+        # for the full picture; 2nd-pass passive deltas only fire on timeout
+        # and are handled via the mission_resolved card.
         await emit({
             "event": "cycle_closed",
             "cycle": cycle_index,
@@ -443,14 +387,6 @@ def _resolved_payload(resolution: MissionResolution) -> dict:
     }
 
 
-def _acting_for(option: Option) -> str:
-    """Decide whose voice renders the dispatch. Bound agents → that agent;
-    HOLD and unbound archetypes → 'operations'. See HANDLER_SPEC_V2 §8.3."""
-    if option.agent is not None:
-        return option.agent
-    return "operations"
-
-
 _LEAN_CAP = 4
 
 
@@ -458,7 +394,7 @@ def _collect_leans(
     forced_event: Event | None,
     passive_fires: list,
 ) -> list[str]:
-    """Prioritize and cap the cycle's lean directives for the renderer.
+    """Prioritize and cap the cycle's lean directives for the log writer.
 
     Order: satisfied forced event → terminal passive events → non-terminal
     passive events (already in priority order via `fire_due_passive_events`).

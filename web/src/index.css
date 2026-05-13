@@ -627,16 +627,7 @@ body {
   white-space: pre-line;
 }
 
-/* Options block — gated until SoP completes */
 .opts-block {
-  opacity: 0;
-  transform: translateY(8px);
-  transition: opacity 460ms ease, transform 460ms ease;
-  pointer-events: none;
-}
-.opts-block.in {
-  opacity: 1;
-  transform: none;
   pointer-events: auto;
 }
 .opts-label {
