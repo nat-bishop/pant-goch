@@ -1,0 +1,2509 @@
+warning: in the working copy of 'handler/tests/test_dsl.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'handler/tests/test_events.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'handler/tests/test_models.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'handler/tests/test_session_replay.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'handler/tests/test_spine.py', LF will be replaced by CRLF the next time Git touches it
+diff --git a/handler/missions/lynx_exfil.yaml b/handler/missions/lynx_exfil.yaml
+index 365464e..84956d7 100644
+--- a/handler/missions/lynx_exfil.yaml
++++ b/handler/missions/lynx_exfil.yaml
+@@ -24,20 +24,20 @@ opening_prose: |
+   she was photographed at a meeting that should not have happened — Colonel
+   MUNTEANU holds that file. KESTREL is in the same city on a separate
+   reconnaissance, cover intact, paired with LYNX on the Vienna op two
+-  winters back. Six cycles to get LYNX out before MUNTEANU names her.
++  winters back. Six days to get LYNX out before MUNTEANU names her.
+ 
+ opening_briefing: |
+   From: MERIWETHER, Director, Romanian Desk
+   To: RAVEN, handler-of-record
+   Re: OP. LYNX-EXFIL
+ 
+-  You have six cycles.
++  You have six days.
+ 
+   Forty-eight hours ago the resident's people photographed LYNX at a meet
+   that should not have happened. The image is in the Bucharest file.
+-  Counter-intel — Colonel MUNTEANU, name him plainly in your cables — has
+-  not moved yet. He will. The sweep is tightening; once LYNX is named in
+-  MUNTEANU's report the file closes.
++  Counter-intel — Colonel MUNTEANU, name him plainly in your reports — has
++  not moved yet. He will. The investigation is tightening; once LYNX is
++  named in MUNTEANU's report the file closes.
+ 
+   The eastern train is clean. The Vienna network is offline; do not ask.
+ 
+@@ -57,7 +57,7 @@ setting: |
+   is Colonel MUNTEANU's directorate; the photographic file on LYNX is the
+   driver of the tightening perimeter. The Vienna network is offline. The
+   eastern train line is the planned extraction corridor — clean, for now.
+-  REDFIELD, your fourteen-year sleeper, is the only access to the papers.
++  REDFIELD, your fourteen-year sleeper, is the only access to the documents.
+ 
+ # Persistent prose constraints surfaced to all three agents' system prompts.
+ # Use for facts the renderer/SoP/drafter must honour every cycle. Authored
+@@ -69,28 +69,128 @@ standing_orders:
+   - "MUNTEANU has not yet named LYNX in his report. Once he does, the file closes."
+   - "Render MUNTEANU through absence and pressure — never put words in his mouth."
+ 
+-# Per-state-shape SoP framing. Engine selects the first matching question
+-# each cycle; SoP leads with it. Author from most-specific to most-general.
+-dramatic_questions:
+-  - when: "agent[LYNX].cover <= 2"
+-    question: "LYNX is hours from collapse. What buys her one more cycle?"
+-  - when: "agent[KESTREL].cover <= 4 and mission.cycles_remaining <= 2"
+-    question: "Is KESTREL still useful, or do we cut her loose?"
+-  - when: "mission.extraction_stage == 2 and mission.cycles_remaining <= 2"
+-    question: "Run the train tonight, or hold one more cycle for clean lanes?"
+-  - when: "mission.cycles_remaining <= 2"
+-    question: "There is no longer time for caution."
+-  # Stage-0 variants — rotate so a stage-stuck playthrough doesn't repeat
+-  # the same opening line every cycle. Most-specific first.
+-  - when: "mission.extraction_stage == 0 and event_fired:kestrel_warns_lynx"
+-    question: "KESTREL paid for that warning. What did it buy us?"
+-  - when: "mission.extraction_stage == 0 and mission.cycles_remaining <= 3"
+-    question: "REDFIELD has been in place fourteen years. Spend him, or find another way?"
+-  - when: "mission.extraction_stage == 0"
+-    question: "Where do we surface the papers, and at what cost?"
+-  # Stage-1 variant — the papers are moving but not yet placed.
+-  - when: "mission.extraction_stage == 1"
+-    question: "The papers are in motion. Who carries them, and at what cost?"
++# Per-cycle authored beats — observational fragments threaded into the
++# drafter's user prompt (framing color) and the log writer's leans
++# (foregrounding directive). Engine picks the highest-priority `when`-matching
++# unfired beat per cycle; the beat's id lands in `state.fired` so the same
++# fragment never surfaces twice. Lower `priority` fires first (matches Event.priority);
++# authored order breaks ties.
++#
++# Authoring discipline: each fragment is ONE example phrasing. The prompts
++# instruct the LLM to translate through the cycle's situation, not quote
++# verbatim — so write the fragment concrete enough to be evocative, generic
++# enough that any cycle in its predicate-space can carry it.
++beats:
++  # ─── Crisis register (priority 1 — highest) ───
++  - id: lynx_at_brink
++    when: "agent[LYNX].cover <= 2"
++    priority: 1
++    fragment: "LYNX is hours from collapse. Every move buys time at a cost we cannot yet name."
++
++  - id: kestrel_late_burn
++    when: "agent[KESTREL].cover <= 4 and mission.cycles_remaining <= 2"
++    priority: 1
++    fragment: "KESTREL has paid into this run already. The next move decides what she was paying for."
++
++  - id: train_or_wait
++    when: "mission.extraction_stage == 2 and mission.cycles_remaining <= 2"
++    priority: 1
++    fragment: "The train runs tonight either way. The only question is whose hand is on her shoulder when she boards."
++
++  - id: time_is_out
++    when: "mission.cycles_remaining <= 2"
++    priority: 2
++    fragment: "There is no longer time for caution. The deputy chief has stopped asking after RAVEN by name in the morning brief."
++
++  # ─── Reactive callbacks (priority 2 — fire when relevant events have landed) ───
++  - id: redfield_aftermath
++    when: "event_fired:burn_redfield"
++    priority: 2
++    fragment: "REDFIELD's wife was at the Piaţa Obor market this morning. Someone will tell her, eventually. Not us."
++
++  - id: kestrel_warning_aftermath
++    when: "event_fired:kestrel_warns_lynx"
++    priority: 2
++    fragment: "KESTREL paid in her own cover for that warning. The Vienna run cost her a back channel; this cost her a different one."
++
++  - id: kestrel_sacrifice_echo
++    when: "event_fired:kestrel_sacrifice"
++    priority: 2
++    fragment: "KESTREL chose. The case file will record what she chose; it will not record what she meant by it."
++
++  # ─── Stage 0 variants (priority 3 — keep cycle 1-3 framings distinct) ───
++  - id: photograph_in_drawer
++    when: "mission.extraction_stage == 0 and mission.cycles_remaining >= 4"
++    priority: 3
++    fragment: "The photograph is in a desk drawer MUNTEANU locks at midnight. We know which drawer. We do not know what time he leaves it open."
++
++  - id: redfield_fourteen_years
++    when: "mission.extraction_stage == 0 and mission.cycles_remaining <= 3"
++    priority: 3
++    fragment: "REDFIELD has been in place fourteen years. The file says he survived the '11 sweep; it does not say how."
++
++  - id: meriwether_silence
++    when: "mission.extraction_stage == 0 and mission.cycles_remaining <= 4"
++    priority: 4
++    fragment: "MERIWETHER has not cabled since the open. The deputy chief has."
++
++  - id: vienna_offline
++    when: "mission.extraction_stage == 0"
++    priority: 5
++    fragment: "The Vienna network is offline. Whatever LYNX needs, we surface it from the city she's already in."
++
++  - id: courier_coat
++    when: "mission.extraction_stage == 0"
++    priority: 6
++    fragment: "A brush pass last week left the smell of a particular cigarette on a courier's coat — a brand REDFIELD stopped buying in '22."
++
++  - id: documents_where
++    when: "mission.extraction_stage == 0"
++    priority: 7
++    fragment: "Where do we surface the documents, and at what cost? The file lists three answers; two of them end with a man we cannot replace."
++
++  # ─── Stage 1 variants (papers in motion) ───
++  - id: who_carries
++    when: "mission.extraction_stage == 1"
++    priority: 3
++    fragment: "The documents are in motion. The next pair of hands to hold them is the pair that pays for them."
++
++  - id: deaddrop_temptation
++    when: "mission.extraction_stage == 1 and agent[LYNX].cover <= 5"
++    priority: 3
++    fragment: "A dead drop is safer than a brush pass and slower than the directorate's morning briefing. LYNX has read that paragraph in the manual; so has MUNTEANU."
++
++  - id: train_loaders_shift
++    when: "mission.extraction_stage in 1..2"
++    priority: 4
++    fragment: "The eastern train's loaders changed shift assignments last Thursday. The file knows this. Nobody has asked why."
++
++  # ─── Stage 2 variants (safehouse confirmed) ───
++  - id: safehouse_quiet
++    when: "mission.extraction_stage == 2 and mission.cycles_remaining >= 3"
++    priority: 3
++    fragment: "The safehouse is a room above a tailor's shop. The tailor does not know who his upstairs tenants are. He thinks they are quiet."
++
++  - id: daughter_unspoken
++    when: "mission.extraction_stage == 2"
++    priority: 4
++    fragment: "LYNX has not seen her daughter in fourteen months. It is not in the file. RAVEN does not need the file to know it."
++
++  - id: kestrel_chooses
++    when: "mission.extraction_stage == 2 and agent[KESTREL].cover <= 6"
++    priority: 4
++    fragment: "KESTREL is upstream of the train, in a city she has burned a lane in before. She is calm enough to list things in threes."
++
++  # ─── Background ambient (priority 8 — last-resort framings) ───
++  - id: bucharest_winter_light
++    when: "mission.cycles_remaining >= 1"
++    priority: 8
++    fragment: "Bucharest in late winter: light fails at five. Most of the operation lives in the hour before it does."
++
++  - id: file_in_two_drawers
++    when: "mission.cycles_remaining >= 1"
++    priority: 9
++    fragment: "Two files exist on LYNX. Ours has a daughter in London. MUNTEANU's has a photograph. The two have not yet been read in the same room."
+ 
+ cast:
+   - id: LYNX
+@@ -112,8 +212,8 @@ cast:
+       she leaves unsaid.
+     situation: |
+       Inside the city on partial cover. Forty-eight hours since the
+-      compromising photograph. The sweep has not yet moved on her but
+-      MUNTEANU is reading the file. Her movement is constrained.
++      compromising photograph. The investigation has not yet moved on her
++      but MUNTEANU is reading the file. Her movement is constrained.
+     starting_cover: 6
+ 
+   - id: KESTREL
+@@ -125,7 +225,7 @@ cast:
+       Two years in service, improvises constantly. Older than LYNX, served
+       a tour under RAVEN before LYNX existed in the file. The Vienna run
+       cost her a back channel she still doesn't speak of. Knows LYNX has
+-      a daughter; never names it in cables.
++      a daughter; never names it in reports.
+ 
+       Voice: elaborate, justifying, present-tense; runs sentences long.
+       Talks herself through situations on paper — justifies before it
+@@ -168,7 +268,7 @@ cast:
+       deputy chief at the morning brief.
+ 
+       Voice: never decorates. Acknowledges nothing — even success is
+-      "noted, RAVEN." Appears in cables at mission open and at mission
++      "noted, RAVEN." Appears in reports at mission open and at mission
+       close; otherwise his presence is felt as pressure, not text.
+ 
+   - id: REDFIELD
+@@ -178,12 +278,13 @@ cast:
+     voice_register: "never written in his own voice — REDFIELD is the man on the other end of the burn"
+     voice_details: |
+       Fourteen years in place in Bucharest. Belgrade contact who survived
+-      the '11 sweep. Wife who does not know his real name. He is the only
+-      access to the extraction papers, and contact costs him his life.
++      the '11 round-up. Wife who does not know his real name. He is the
++      only access to the extraction documents, and contact costs him his
++      life.
+     situation: |
+       Off-stage. The sleeper is in the file as a Bucharest civilian; the
+-      file does not know he is yours. Activating him surfaces the papers
+-      and ends him in one cycle.
++      file does not know he is yours. Activating him surfaces the documents
++      and ends him in one day.
+ 
+   - id: MUNTEANU
+     codename: Munteanu
+@@ -194,7 +295,7 @@ cast:
+       Colonel, Romanian counter-intelligence directorate. Forty-one.
+       Holds the file with the compromising photograph of LYNX. Has not
+       yet named her in his report — she is "the woman in the photograph"
+-      in his cables, which is worse, because once he names her the file
++      in his reports, which is worse, because once he names her the file
+       closes.
+ 
+       Render him through absence and tightening: a courier route
+@@ -208,33 +309,136 @@ cast:
+ # entry only when overriding the built-in display.
+ qualities:
+   mission.extraction_stage:
+-    initial: 0   # 0 unstarted, 1 papers, 2 location, 3 exfil
++    initial: 0   # 0 unstarted, 1 documents, 2 location, 3 exfil
+     values:
+-      "0": "the extraction papers have not yet been surfaced"
+-      "1": "the extraction papers are being moved into hand"
++      "0": "the extraction documents have not yet been surfaced"
++      "1": "the extraction documents are being moved into hand"
+       "2": "the safe-house is confirmed; LYNX is positioned for exfil"
+       "3": "exfil is underway"
+ 
++  # Hidden — MUNTEANU's progress toward naming LYNX in his report (the loss
++  # condition the briefing literally promises). Never shown explicitly:
++  # `visible: false` skips it from OPERATION POSTURE bullets and from the
++  # RESULT footer. The drafter / log-writer see it only through the
++  # HIDDEN STATE TO HINT AT block, which rotates phrasing per cycle via the
++  # variants-per-band shape so the player can't phrase-decode the band.
++  #
++  # Tick rules: baseline +1 per cycle (see `opposition_advances`); +1 if
++  # LYNX drew attention this day; HOLD adds +1; ACTIVATE_SLEEPER adds +1
++  # (REDFIELD on the wire creates noise); DIVERSION_BY_AGENT subtracts 1
++  # (the bound agent peels him back).
++  mission.opposition.naming_progress:
++    initial: 2
++    visible: false
++    bands:
++      - threshold: 3
++        variants:
++          - "MUNTEANU is reading the file. He has not yet moved."
++          - "The directorate is quiet. The photograph is still in the drawer."
++          - "No new sweep activity on the streets LYNX walks."
++          - "The morning brief at the directorate ran short — nothing new in it."
++      - threshold: 6
++        variants:
++          - "The perimeter feels tighter than the file suggests. A face in a tram window LYNX did not name."
++          - "A courier route that worked yesterday is suddenly unavailable."
++          - "MUNTEANU's morning report ran long. Something is in it."
++          - "A name LYNX uses for a contact she has not used in months was overheard at a tram stop."
++      - threshold: 8
++        variants:
++          - "The sweep is tightening on streets LYNX has not yet visited."
++          - "A meeting LYNX did not attend that nobody arranged."
++          - "MUNTEANU's car was seen at an address no one in our file gave him."
++          - "Two of REDFIELD's brush-pass dead drops have been moved overnight."
++      - threshold: 10
++        variants:
++          - "A knock at the door of an apartment LYNX has never been to."
++          - "He is one step ahead now. The photograph has been shown to a name we did not give him."
++          - "MUNTEANU's people are at the eastern station already. They are not looking for a train."
++
+ outcomes:
+   win_lynx_extracted: "LYNX safely extracted via the eastern train route."
+   loss_lynx_captured: "LYNX's cover collapsed before extraction. She was lost."
++  loss_lynx_named: "MUNTEANU named LYNX in his report. The file closed before the train moved."
+   loss_timeout: "The window closed. The operation has been closed without resolution."
+ 
+ archetypes:
+   - id: ACTIVATE_SLEEPER_FOR_PAPERS
+-    intent: "Activate the sleeper REDFIELD to surface the extraction papers."
++    intent: |
++      Activate the sleeper REDFIELD to surface the extraction documents.
++      Surfacing him creates noise the directorate will register.
+     when: "mission.extraction_stage == 0"
+     params: []
+     effects:
+       - "mission.extraction_stage = 1"
++      # Surfacing the sleeper creates noise — MUNTEANU's progress ticks.
++      - "mission.opposition.naming_progress += 1"
+ 
++  # Opposed check (clean / partial / failure against hidden naming_progress).
++  # The option's prose MUST name the gamble in-fiction — see the intent rule.
+   - id: RETRIEVE_PAPERS_VIA_AGENT
+-    intent: "Send the bound agent to physically pick up the papers — costs cover."
++    intent: |
++      Send the bound agent to physically pick up the documents. The
++      directorate may already be there — option prose MUST name that
++      gamble in-fiction (e.g. "if MUNTEANU is closer than the file
++      suggests, this puts her in his hand") without predicting the outcome.
+     when: "mission.extraction_stage == 1 and agent[$agent].cover > 0"
+     params: [agent]
+     effects:
+-      - "mission.extraction_stage = 2"
+-      - "agent[$agent].cover -= 2"
++      # CLEAN (naming < 5): clean retrieval, -2 cover, stage advances.
++      - quality: mission.extraction_stage
++        value: 2
++        op: set
++        when: "mission.opposition.naming_progress < 5"
++        branch: clean
++      - quality: agent[$agent].cover
++        value: -2
++        op: add
++        when: "mission.opposition.naming_progress < 5"
++        branch: clean
++      # PARTIAL (5..7): seen but not named, -4 cover, stage advances,
++      # naming peels back by one as MUNTEANU's resources tilt.
++      - quality: mission.extraction_stage
++        value: 2
++        op: set
++        when: "mission.opposition.naming_progress in 5..7"
++        branch: partial
++      - quality: agent[$agent].cover
++        value: -4
++        op: add
++        when: "mission.opposition.naming_progress in 5..7"
++        branch: partial
++      - quality: mission.opposition.naming_progress
++        value: -1
++        op: add
++        when: "mission.opposition.naming_progress in 5..7"
++        branch: partial
++      # FAILURE (>= 8): MUNTEANU was already there. -6 cover, stage does
++      # NOT advance, REDFIELD compromised, naming snaps up by two.
++      - quality: agent[$agent].cover
++        value: -6
++        op: add
++        when: "mission.opposition.naming_progress >= 8"
++        branch: failure
++      - quality: mission.redfield_compromised
++        value: true
++        op: set
++        when: "mission.opposition.naming_progress >= 8"
++        branch: failure
++      - quality: mission.opposition.naming_progress
++        value: 2
++        op: add
++        when: "mission.opposition.naming_progress >= 8"
++        branch: failure
++    branch_leans:
++      clean:
++        - "the retrieval went the way it should — name one small detail the field is grateful for; do not over-name MUNTEANU's absence"
++      partial:
++        - "$agent was seen but not yet named — name what specifically tightened around them in the seconds after the hand-off"
++        - "the entry acknowledges the gamble paid out and what it cost the agent's posture going forward"
++      failure:
++        - "the entry is a REVELATION of what the previous day's memo only hinted at — MUNTEANU was already there"
++        - "name one specific sensory detail of the trap (the courier's wet coat, the tram conductor's tic, the door that was open when it should not have been) that prior days did NOT make explicit"
++        - "REDFIELD is in the directorate's hand now; do not narrate his fate, but do not pretend he is reachable"
+ 
+   - id: DEAD_DROP_PAPERS
+     intent: "Slower, safer alternative to direct retrieval. No cover hit but doesn't progress."
+@@ -249,29 +453,79 @@ archetypes:
+     effects:
+       - "agent[LYNX].cover -= 1"
+ 
++  # Opposed check against hidden naming_progress. Clean = clean exit,
++  # partial = LYNX wins but KESTREL is the cost, failure = MUNTEANU named her
++  # on the platform — the new `lynx_named` terminal fires next passive pass.
+   - id: RUN_EXFIL
+-    intent: "Eastern train extraction. Terminal action — clears the mission."
++    intent: |
++      Eastern train extraction. Terminal action — clears the mission.
++      Option prose MUST name the gamble in-fiction (the directorate may be
++      at the platform already) without predicting outcome.
+     when: "mission.extraction_stage == 2 and agent[LYNX].cover > 0"
+     params: []
+     effects:
+-      # Two conditional branches per spec §5: clean exit costs less.
+-      - "mission.extraction_stage = 3"
+-      - "agent[LYNX].cover -= 2 if agent[LYNX].cover >= 5"
+-      - "agent[LYNX].cover -= 4 if agent[LYNX].cover < 5"
++      # CLEAN (naming < 6): clean exit, -2 cover.
++      - quality: mission.extraction_stage
++        value: 3
++        op: set
++        when: "mission.opposition.naming_progress < 6"
++        branch: clean
++      - quality: agent[LYNX].cover
++        value: -2
++        op: add
++        when: "mission.opposition.naming_progress < 6"
++        branch: clean
++      # PARTIAL (6..8): LYNX makes the train but KESTREL is lost holding
++      # the perimeter. -4 cover, stage advances.
++      - quality: mission.extraction_stage
++        value: 3
++        op: set
++        when: "mission.opposition.naming_progress in 6..8"
++        branch: partial
++      - quality: agent[LYNX].cover
++        value: -4
++        op: add
++        when: "mission.opposition.naming_progress in 6..8"
++        branch: partial
++      - quality: agent[KESTREL].cover
++        value: 0
++        op: set
++        when: "mission.opposition.naming_progress in 6..8"
++        branch: partial
++      # FAILURE (>= 9): MUNTEANU was at the platform. Force naming = 10 so
++      # the `lynx_named` terminal fires on the next passive pass.
++      - quality: mission.opposition.naming_progress
++        value: 10
++        op: set
++        when: "mission.opposition.naming_progress >= 9"
++        branch: failure
++    branch_leans:
++      clean:
++        - "LYNX is on the train and the city is still in the windows — name one absence (REDFIELD, KESTREL, or the daughter she will see this week); do not have MERIWETHER speak"
++      partial:
++        - "KESTREL is the cost — name her one final time, glancingly, in the eastward sentence; no eulogy"
++        - "LYNX makes the train; the dispatch acknowledges what the perimeter cost"
++      failure:
++        - "MUNTEANU named LYNX on the platform — write the operations register; cold, brief; the file closes"
++        - "name the eastern train, and that LYNX is not on it"
+ 
+   - id: DIVERSION_BY_AGENT
+-    intent: "Bound agent draws counter-intel attention. Costly to them, protects LYNX one cycle."
++    intent: "Bound agent draws counter-intel attention. Costly to them, protects LYNX one day, and peels MUNTEANU's investigation back a step."
+     when: "agent[$agent].cover > 1"
+     params: [agent]
+     effects:
+       - "agent[$agent].cover -= 3"
+       - "agent[LYNX].cover_protected = true"
++      # The diversion splits MUNTEANU's resources — naming progress ticks back.
++      - "mission.opposition.naming_progress -= 1"
+ 
+   - id: HOLD
+-    intent: "Take no action this cycle. Passive pressure beats fire; cover decays."
++    intent: "Take no action this day. Passive pressure beats fire; cover decays and MUNTEANU gains time we are not using."
+     when: "mission.cycles_remaining >= 1"
+     params: []
+-    effects: []
++    effects:
++      # HOLD is *expensive* on the hidden clock — MUNTEANU has time we aren't.
++      - "mission.opposition.naming_progress += 1"
+ 
+ # Authored events — one concept covering both forced (drafter-surfaced)
+ # events and passive (post-authorization) events. The `force_into_drafter`
+@@ -307,21 +561,21 @@ events:
+       - "agent[LYNX].cover_protected = true"
+ 
+   # Forced: burn the sleeper for fast intel. Early-mission. Surfaces the
+-  # papers AND positions LYNX in one cycle, but costs REDFIELD's life. The
+-  # player trades a man for a cycle of tempo.
++  # documents AND positions LYNX in one day, but costs REDFIELD's life. The
++  # player trades a man for a day of tempo.
+   - id: burn_redfield
+     force_into_drafter: true
+     fires_at_most: once_per_mission
+     when: "mission.extraction_stage == 0 and not event_fired:burn_redfield"
+     intent: |
+-      Burn the sleeper REDFIELD to surface the extraction papers and
+-      position LYNX in one cycle. REDFIELD has been in place fourteen
+-      years; he does not survive contact. Papers in hand and the
++      Burn the sleeper REDFIELD to surface the extraction documents and
++      position LYNX in one day. REDFIELD has been in place fourteen
++      years; he does not survive contact. Documents in hand and the
+       safe-house confirmed by dispatch close. The cost is moral, not
+       tactical — RAVEN is choosing to spend a man.
+     must_communicate:
+       - REDFIELD is named, and named as dead by the dispatch's close
+-      - The papers are in LYNX's hand and the safe-house is confirmed
++      - The documents are in LYNX's hand and the safe-house is confirmed
+       - RAVEN made this choice consciously
+     must_not:
+       - Frame REDFIELD as surviving, rescued, or merely lost
+@@ -329,7 +583,7 @@ events:
+       - Predict whether LYNX successfully extracts later
+     tone: "solemn, terse, present-tense — the cost is moral, not tactical"
+     lean_on:
+-      - "REDFIELD is a man, not a function — fourteen years in place, a Belgrade contact who survived the '11 sweep, a wife who does not know his real name"
++      - "REDFIELD is a man, not a function — fourteen years in place, a Belgrade contact who survived the '11 round-up, a wife who does not know his real name"
+       - "LYNX does not decorate her grief — name a single sensory detail (the smell of the courier's coat, the taste of metal) and let the rest stand"
+       - "MUNTEANU is not yet named, but his pressure is what made this choice the only fast one"
+     effects:
+@@ -347,7 +601,7 @@ events:
+     intent: |
+       KESTREL surfaces just enough to warn LYNX directly — a brush pass
+       at the tram stop, a courier note signed in a hand LYNX recognises.
+-      KESTREL pays in cover; LYNX gains one cycle of protection. KESTREL
++      KESTREL pays in cover; LYNX gains one day of protection. KESTREL
+       initiates the cost; RAVEN approves it.
+     must_communicate:
+       - KESTREL initiates the warning — it is her choice, not ordered
+@@ -359,7 +613,7 @@ events:
+       - Frame KESTREL as already burned (she is choosing the cost, not paying it all)
+     tone: "intimate, terse — the moment is between two people who have done this before"
+     lean_on:
+-      - "KESTREL writes shorter sentences than usual this cycle — she is making a decision and her prose narrows around it"
++      - "KESTREL writes shorter sentences than usual this day — she is making a decision and her prose narrows around it"
+       - "LYNX recognises the brush pass through one specific sensory detail; do not let her name what the warning says"
+       - "name the Vienna run once, glancingly, without explanation — both agents know what it cost and the reader does not need to be told"
+     effects:
+@@ -387,6 +641,19 @@ events:
+       - "MUNTEANU has named her now; the file closes; do not show MUNTEANU directly"
+       - "RAVEN's codename is on the cable header — the reader is told whose desk this lands on, no more"
+ 
++  # Terminal — MUNTEANU named LYNX in his report. Distinct loss path from
++  # `lynx_lost` (cover collapse). Fires when hidden naming_progress reaches
++  # 10 (either via accumulated baseline ticks or a failed RUN_EXFIL).
++  - id: lynx_named
++    terminal: true
++    outcome_key: loss_lynx_named
++    priority: 0
++    when: "mission.opposition.naming_progress >= 10"
++    lean_on:
++      - "the cable header is operations register — terse, declarative, no decoration"
++      - "MUNTEANU has named her in his report. The photograph has gone to the file's other side."
++      - "name the eastern train, and that LYNX is not on it"
++
+   - id: timeout
+     terminal: true
+     outcome_key: loss_timeout
+@@ -421,3 +688,31 @@ events:
+       # blocks this cycle's decay on LYNX.
+       - "agent[LYNX].cover -= 1 if not agent[LYNX].cover_protected == true"
+       - "agent[KESTREL].cover -= 1 if agent[KESTREL].cover > 0"
++
++  # Reaction: LYNX is exposed enough this day for MUNTEANU's people to
++  # register her movements. Sets a transient flag the baseline tick reads
++  # below; the flag is cleared at cycle close via `tick_cycle_close`-style
++  # one-cycle semantics (we set it as a plain quality and rely on it being
++  # rewritten each cycle — see opposition_advances's gating).
++  - id: lynx_drew_attention
++    fires_at_most: unlimited
++    priority: 4
++    when: "agent[LYNX].cover <= 5 and not agent[LYNX].cover_protected == true and mission.extraction_stage < 3"
++    effects:
++      - "mission.lynx_drew_attention = true"
++
++  # Baseline: MUNTEANU advances every non-terminal day. +1 baseline, +1 more
++  # if LYNX drew attention this cycle. Together with the per-archetype
++  # modulation (HOLD +1, DIVERSION -1, ACTIVATE_SLEEPER +1, RETRIEVE/RUN
++  # branches on conditions), this is what reshapes the incentive landscape:
++  # HOLD is now expensive on the hidden clock; DIVERSION(KESTREL) is the
++  # cleanest way to stall MUNTEANU; LYNX cover drops accelerate the chase.
++  - id: opposition_advances
++    fires_at_most: unlimited
++    priority: 5
++    when: "mission.extraction_stage < 3 and mission.opposition.naming_progress < 10"
++    effects:
++      - "mission.opposition.naming_progress += 1"
++      - "mission.opposition.naming_progress += 1 if mission.lynx_drew_attention == true"
++      # Reset the transient flag so it doesn't carry into the next day.
++      - "mission.lynx_drew_attention = false"
+diff --git a/handler/src/handler/agents.py b/handler/src/handler/agents.py
+index 7b68e65..e28573b 100644
+--- a/handler/src/handler/agents.py
++++ b/handler/src/handler/agents.py
+@@ -1,4 +1,4 @@
+-"""LLM agents — two agents per HANDLER_SPEC_V2 §8.
++"""LLM agents — two agents per session.
+ 
+ - `DRAFTER_AGENT` — produces 3–4 candidate options per cycle, structured
+   `OptionSet` output, Operations voice. **Stateless one-shot** — each call
+@@ -7,22 +7,20 @@
+   apply, Operations voice (str output, streamed). **Conversation-based** —
+   one pydantic-ai agent per session whose `message_history` accumulates
+   one user+assistant pair per cycle. The conversation IS the case file.
+-  After each entry, a non-persisted shorthand call runs against the same
+-  agent + history to produce the history-row one-liner.
+ 
+-Why the split (HANDLER_SPEC_V2 §8.4): the drafter's job is per-cycle
+-enumeration — prior assistant turns would just be stale option sets the
+-model would feel obliged to vary or echo. The log writer's job is keeping
+-a coherent case-file voice — multi-turn coherence works because every
+-entry is the same Operations register.
++Why the split: the drafter's job is per-cycle enumeration — prior assistant
++turns would just be stale option sets the model would feel obliged to vary
++or echo. The log writer's job is keeping a coherent case-file voice —
++multi-turn coherence works because every entry is the same Operations
++register.
+ 
+-Prompt structure (KV-cache friendly per §8.4):
++Prompt structure (KV-cache friendly):
+   Drafter:    [stable system prompt] + [dynamic user prompt]
+   Log writer: [stable system prompt] + [accumulating message_history]
+ 
+ The system prompts are baked at `build_agent_bundle(model, mission)` time —
+ once per mission load. User prompts are built per call by
+-`_drafter_user_prompt`, `_log_writer_user_prompt`, `_shorthand_user_prompt`.
++`_drafter_user_prompt` and `_log_writer_user_prompt`.
+ 
+ This module has NO direct LLM call sites. `cycle.py` wraps the agent runs
+ into the `DrafterFn`/`LogWriterFn` protocols; `main.py` wires up the paced
+@@ -59,7 +57,7 @@ from .spine import (
+ _TONE_BAND: dict[ActPhase, str] = {
+     "setup":        "measured — the operation is establishing; cadence is unhurried, observation precedes action",
+     "complication": "kinetic — the operation is in motion; sentences shorter, moves are observed and named",
+-    "climax":       "urgent — decisive cycles; verbs land, hesitation reads as cost",
++    "climax":       "urgent — decisive days; verbs land, hesitation reads as cost",
+     "crisis":       "spare — collapse is one mistake away; cut everything that isn't load-bearing",
+ }
+ 
+@@ -83,16 +81,6 @@ class LogEntry:
+     text: str
+ 
+ 
+-@dataclass
+-class LogShorthand:
+-    """The one-line case-file row for a cycle entry. Generated by a separate
+-    non-persisted LLM call against the same log-writer agent. Held in
+-    session memory for the frontend's history panel."""
+-
+-    cycle_index: int
+-    shorthand: str
+-
+-
+ # ───────────────────────── bundle ─────────────────────────
+ 
+ 
+@@ -183,7 +171,7 @@ def _standing_orders_block(mission: Mission) -> str:
+     agent system prompts so the log writer and drafter honour them every
+     cycle. Empty when the mission authored none."""
+     return _bullet_block(
+-        "STANDING ORDERS (honour every cycle — do not contradict):",
++        "STANDING ORDERS (honour every day — do not contradict):",
+         list(mission.standing_orders),
+     )
+ 
+@@ -192,7 +180,7 @@ def _leans_block(leans: Sequence[str]) -> str:
+     """Per-cycle log-writer directives collected by `cycle._collect_leans`
+     from the cycle's fired events. Injected verbatim — author wrote them."""
+     return _bullet_block(
+-        "LEAN-ON THIS CYCLE (honour these — they tell you what to "
++        "LEAN-ON THIS DAY (honour these — they tell you what to "
+         "foreground in the prose):",
+         list(leans),
+     )
+@@ -201,7 +189,7 @@ def _leans_block(leans: Sequence[str]) -> str:
+ def _drafter_system_prompt(mission: Mission) -> str:
+     return f"""\
+ You are Operations Desk drafting candidate courses of action for {mission.codename}.
+-Each cycle you produce 3–4 OPTIONS the Handler can authorize.
++Each day you produce 3–4 OPTIONS the Handler can authorize.
+ 
+ VOICE: {_VOICE_OPERATIONS}
+ 
+@@ -225,9 +213,9 @@ Each option carries:
+ VALIDITY RULES (the engine REJECTS options that violate these):
+ - `archetype` MUST be present in the VALID CATALOG you receive.
+ - `agent` MUST match the catalog entry (or be null when entry has no agent).
+-- If a FORCED EVENT block is present this cycle, exactly ONE option must
++- If a FORCED EVENT block is present this day, exactly ONE option must
+   set `satisfies_event` to the event id AND honor its rules.
+-- 3 or 4 options per cycle.
++- 3 or 4 options per day.
+ 
+ PROSE RULES:
+ - Telegraph cost honestly. If an option costs cover, the prose names it
+@@ -235,40 +223,59 @@ PROSE RULES:
+   "-3 cover" and NOT "drops cover level to four").
+ - Span tonal range: at least one safe-but-slow option, one fast-but-risky.
+ - When RECENTLY TRIED is provided, your option set MUST span a different
+-  tonal range than the prior cycle's: a different bound agent, a different
++  tonal range than the prior day's: a different bound agent, a different
+   cost shape, or a different point on the safe-↔-risky axis. Do not propose
+   the same (archetype, agent) pair the player just authorized.
+ - NEVER predict outcomes. NEVER fabricate state that isn't in the user prompt.
+-- NEVER use numbers for state. No "cover six", no "six cycles remaining",
++- NEVER use numbers for state. No "cover six", no "six days remaining",
+   no "stage two", no percentages, no out-of-ten scoring.
+ - NEVER use game/system vocabulary in option prose. No "the next stage of
+-  the mission", no "extraction stage", no "cycles remaining", no "mission
++  the mission", no "extraction stage", no "days remaining", no "mission
+   timer", no "cover level", no "begin/initiate the next stage". Write
+   inside the fiction: name the action's effect on the operative, the
+   city, the threat — not on the mechanical model.
+ - The CURRENT STATE block describes state in narrative terms (e.g.
+   "LYNX: cover intact"). Mirror that register in option prose.
+ - HOLD options frame doing nothing as a real cost — passive pressure decays cover.
++
++OPPOSED ARCHETYPES (when an ARCHETYPE INTENT explicitly says the option prose
++MUST name a gamble in-fiction): the option's outcome depends on state the
++player cannot fully see. Describe what is at risk — name the gamble — but
++DO NOT predict which way it lands. Example phrasing: "if MUNTEANU is closer
++than the file suggests, this puts her in his hand."
++
++BEAT THIS DAY (when supplied): the user prompt may carry one beat fragment
++— an authored observation about the cycle's specific situation. Treat it as
++framing color for the option set: at least one option should hold the
++emotional or operational weight the beat names. Do not surface the beat's
++phrasing verbatim in option titles or prose; let it inform the cost / risk
++language naturally.
++
++HIDDEN STATE HINTS (when supplied): the user prompt may carry observational
++hints about state the player cannot see directly. Treat them as ground
++truth — your option framing should reflect the implied pressure — but do
++NOT name the hidden state by its game term, and do not quote the hint
++verbatim. Translate through cost / risk.
+ """
+ 
+ 
+ def _log_writer_system_prompt(mission: Mission) -> str:
+     return f"""\
+ You are Operations Desk. You write the case-file log for {mission.codename}.
+-Every cycle, after the Handler authorizes an option and the engine resolves
++Every day, after the Handler authorizes an option and the engine resolves
+ its effects, you append one entry to the file.
+ 
+ VOICE: third-party intelligence handler writing a situated case record.
+ Terse, declarative, present-tense. You report on what is happening on the
+-ground — the city, the sweep, the operatives' postures, the threats they
+-face. You write in the register of a real intelligence brief.
++ground — the city, the investigation, the operatives' postures, the threats
++they face. You write in the register of a real intelligence brief.
+ 
+ You are writing into an ongoing case file. Your previous entries appear in
+-your conversation history. Do not re-cover earlier cycles' ground; the
++your conversation history. Do not re-cover earlier days' ground; the
+ reader has them. Build on what came before.
+ 
+ Your prior entries describe what was true THEN. The current state block
+-in each cycle's user message is what is true NOW. Reflect the present.
++in each day's user message is what is true NOW. Reflect the present.
+ Do not defend past framings against present state — when state has moved,
+ the new entry names the move.
+ 
+@@ -278,7 +285,7 @@ MISSION:
+ MISSION CAST:
+ {_cast_block(mission.cast)}
+ {_standing_orders_block(mission)}
+-ENTRY SHAPE (every cycle):
++ENTRY SHAPE (every day):
+ Two short paragraphs. ~80–140 words total.
+   - ¶1 — the ANGLE: what was authorized, the operational read on why it
+     matters, the constraints in play. Frame the move, not the verb.
+@@ -289,27 +296,20 @@ Two short paragraphs. ~80–140 words total.
+ RULES:
+ - Honor the RESOLVED STATE DELTA. If cover dropped 3, the prose reflects
+   what cost that. If a forced event fired, the entry names that consequence.
+-- Adopt the TONE BAND given each cycle (measured / kinetic / urgent / spare)
++- Adopt the TONE BAND given each day (measured / kinetic / urgent / spare)
+   — sentence rhythm must match the current dramatic register.
+-- NEVER use numbers for state. No "cover six", no "six cycles remaining",
++- NEVER use numbers for state. No "cover six", no "six days remaining",
+   no "stage two", no percentages, no out-of-ten scoring.
+ - NEVER use game/system vocabulary ("cover level", "extraction stage",
+-  "cycles remaining"). The CURRENT STATE block describes state in narrative
++  "days remaining"). The CURRENT STATE block describes state in narrative
+   terms — mirror that register. The RESOLVED STATE DELTA gives mechanical
+   magnitudes you MUST honor (a -2 cover drop is significant; a -4 drop is
+   catastrophic), but write the felt consequence on the ground, not the
+   integer.
+ - MUST NOT introduce facts inconsistent with state.
+-- MUST NOT predict the next cycle. The entry reports what just happened.
++- MUST NOT predict the next day. The entry reports what just happened.
+ - NEVER propose options (that is the drafter's job).
+ - Output the prose only — no headings, no labels, no preamble.
+-
+-When a SHORTHAND is requested (a follow-up turn asks you to summarize the
+-entry you just wrote into one line for the case-file index), respond with
+-exactly one line of the form:
+-  C{{n}} — {{ARCHETYPE}} — {{≤8-word consequence}}
+-No quotes, no period, terse. The consequence names the operational
+-upshot, not the prose flavor.
+ """
+ 
+ 
+@@ -469,12 +469,15 @@ def describe_delta(delta: DeltaMap, mission: Mission) -> dict[str, dict[str, str
+     "LYNX") or None for mission-scoped qualities — the client uses it to
+     prefix the RESULT line without re-parsing the quality ref.
+ 
+-    Drops entries whose descriptors are absent or unchanged — the result is
+-    only the moves with a *narrative* signal, suitable for the client-facing
+-    RESULT footer (via SSE).
++    Drops entries whose descriptors are absent or unchanged. Also drops
++    deltas for qualities marked `visible=False` so hidden state never
++    surfaces in the client-facing RESULT footer.
+     """
+     out: dict[str, dict[str, str | None]] = {}
+     for quality, (before, after) in delta.items():
++        quality_def = mission.qualities.get(quality)
++        if quality_def is not None and not quality_def.visible:
++            continue
+         before_desc, after_desc = describe_quality_pair(quality, before, after, mission)
+         if before_desc is None and after_desc is None:
+             continue
+@@ -490,7 +493,12 @@ def describe_delta(delta: DeltaMap, mission: Mission) -> dict[str, dict[str, str
+ 
+ def _narrative_state_block(state: State, mission: Mission) -> str:
+     """In-fiction state summary for the drafter and log writer. No raw
+-    numerics, no raw quality ids, no fired-event ledger noise."""
++    numerics, no raw quality ids, no fired-event ledger noise.
++
++    Qualities with `visible=False` are SKIPPED from both AGENT POSTURES and
++    OPERATION POSTURE. They surface only through `_hidden_state_hint_block`
++    so the player gets observational hints instead of explicit state lines.
++    """
+     lines: list[str] = []
+     cycles_raw = state.get_quality("mission.cycles_remaining")
+     cycles = int(cycles_raw) if isinstance(cycles_raw, (int, float)) and not isinstance(cycles_raw, bool) else 0
+@@ -501,12 +509,15 @@ def _narrative_state_block(state: State, mission: Mission) -> str:
+         cover = int(cover_raw) if isinstance(cover_raw, (int, float)) and not isinstance(cover_raw, bool) else 0
+         descriptor = _describe_cover(cover, mission, agent.id)
+         protected = state.get_quality(f"agent[{agent.id}].cover_protected")
+-        suffix = " (under protective cover this cycle)" if protected else ""
++        suffix = " (under protective cover this day)" if protected else ""
+         lines.append(f"  - {agent.id}: {descriptor}{suffix}")
+     authored_lines: list[str] = []
+     for q, v in state.qualities.items():
+         if not q.startswith("mission.") or q == "mission.cycles_remaining":
+             continue
++        quality_def = mission.qualities.get(q)
++        if quality_def is not None and not quality_def.visible:
++            continue  # hidden — surfaces only via _hidden_state_hint_block
+         described = _describe_authored_quality(q, v, mission)
+         if described is not None:
+             authored_lines.append(f"  - {described}")
+@@ -516,16 +527,45 @@ def _narrative_state_block(state: State, mission: Mission) -> str:
+     return "\n".join(lines)
+ 
+ 
++def _hidden_state_hint_block(
++    state: State, mission: Mission, cycle_index: int
++) -> str:
++    """Render the HIDDEN STATE TO HINT AT block for the drafter / log-writer
++    user prompts. For each `Quality` authored with `visible=False` and
++    `bands:`, pick the rotated variant for the current value + cycle index.
++
++    The system-prompt directive tells the LLM to translate the variant
++    through the cycle's situation, never quote it verbatim. Authoring
++    discipline: variants are *examples* the model paraphrases, not lines.
++    """
++    lines: list[str] = []
++    for q_name, q_def in mission.qualities.items():
++        if q_def.visible or not q_def.bands:
++            continue
++        value = state.get_quality(q_name)
++        if value is None:
++            continue
++        variant = q_def.describe_variant(value, cycle_index)
++        if variant is not None:
++            lines.append(variant)
++    return _bullet_block(
++        "HIDDEN STATE TO HINT AT (surface this through one observation; "
++        "never name the underlying state directly, never assign it a number "
++        "or label; the reader must infer):",
++        lines,
++    )
++
++
+ def _log_entries_block(entries: list[LogEntry], limit: int) -> str:
+     """Render the recent log-entries block for the drafter's user prompt.
+     The log writer reads its history from pydantic-ai's message_history —
+     this block exists for the drafter, which is stateless one-shot."""
+     if not entries:
+-        return "(no prior cycles — this is cycle 1.)"
++        return "(no prior days — this is day 1.)"
+     chunk = entries[-limit:]
+     parts: list[str] = []
+     for d in chunk:
+-        parts.append(f"--- Cycle {d.cycle_index} — {d.archetype}")
++        parts.append(f"--- Day {d.cycle_index} — {d.archetype}")
+         parts.append(d.text.strip())
+         parts.append("")
+     return "\n".join(parts).rstrip()
+@@ -545,9 +585,9 @@ def _forced_event_block(event: Event | None) -> str:
+     cycle.
+     """
+     if event is None:
+-        return "(no forced event this cycle.)"
++        return "(no forced event this day.)"
+     return f"""\
+-A FORCED EVENT must appear among this cycle's options:
++A FORCED EVENT must appear among this day's options:
+   event_id: {event.id}
+   intent: {event.intent.strip()}
+   must_communicate:
+@@ -555,7 +595,7 @@ A FORCED EVENT must appear among this cycle's options:
+   must_not:
+ {chr(10).join(f"    - {x}" for x in event.must_not)}
+   tone: {event.tone}
+-EXACTLY ONE option this cycle must set `satisfies_event` = "{event.id}"
++EXACTLY ONE option this day must set `satisfies_event` = "{event.id}"
+ and write prose that honors the rules above. The mechanical effect of the
+ event is engine-applied; you only write the prose situated in current state.
+ """
+@@ -573,7 +613,7 @@ def _locked_block(
+         for arch_id, agent_id, reason in invalid_archetype_combinations(state, mission)
+     ]
+     return _bullet_block(
+-        "LOCKED THIS CYCLE (use as context for option framing — do NOT propose these):",
++        "LOCKED THIS DAY (use as context for option framing — do NOT propose these):",
+         lines,
+         leading_blank=False,
+     )
+@@ -586,7 +626,7 @@ def _recently_tried_block(
+     (cycle_index, archetype, agent_id_or_None) tuples. Empty for cycle 1.
+     Drafter is told to span a different tonal range from these picks."""
+     lines = [
+-        f"C{cycle_idx}: {archetype}({agent_id})" if agent_id else f"C{cycle_idx}: {archetype}"
++        f"D{cycle_idx}: {archetype}({agent_id})" if agent_id else f"D{cycle_idx}: {archetype}"
+         for cycle_idx, archetype, agent_id in (recently_tried or [])
+     ]
+     return _bullet_block(
+@@ -598,6 +638,19 @@ def _recently_tried_block(
+     )
+ 
+ 
++def _beat_block(beat_fragment: str | None) -> str:
++    """Render the BEAT THIS DAY block. Empty when no beat fired this cycle.
++    The fragment is one example phrasing — the system-prompt rule directs the
++    LLM to use it as framing color, not to surface verbatim."""
++    if not beat_fragment:
++        return ""
++    return _bullet_block(
++        "BEAT THIS DAY (cycle framing — let it inform tone / risk emphasis "
++        "without quoting verbatim):",
++        [beat_fragment.strip()],
++    )
++
++
+ def _drafter_user_prompt(
+     cycle_index: int,
+     state: State,
+@@ -608,6 +661,7 @@ def _drafter_user_prompt(
+     *,
+     retry_feedback: str | None = None,
+     recently_tried: Sequence[tuple[int, str, str | None]] | None = None,
++    beat_fragment: str | None = None,
+ ) -> str:
+     archetype_intents = "\n".join(
+         f"  - {a.id}: {a.intent}" for a in mission.archetypes
+@@ -623,7 +677,7 @@ ACT PHASE: {act_phase}
+ 
+ CURRENT STATE:
+ {_narrative_state_block(state, mission)}
+-
++{_hidden_state_hint_block(state, mission, cycle_index)}{_beat_block(beat_fragment)}
+ RECENT CASE-FILE ENTRIES (last 2):
+ {_log_entries_block(log_entries, limit=2)}
+ 
+@@ -661,11 +715,11 @@ def _log_writer_user_prompt(
+     tension_band = derive_tension_band(prior_state, state)
+ 
+     return f"""\
+-Cycle {cycle_index} of {mission.max_cycles}. Append the next case-file entry.
++Day {cycle_index} of {mission.max_cycles}. Append the next case-file entry.
+ 
+ ACT PHASE: {act_phase}
+ TONE BAND: {tone_band}
+-TENSION (this cycle's cover swing): {tension_band}
++TENSION (this day's cover swing): {tension_band}
+ {_leans_block(leans)}
+ AUTHORIZED OPTION:
+   archetype: {option.archetype}
+@@ -673,33 +727,16 @@ AUTHORIZED OPTION:
+   title: {option.title}
+   prose (the option as offered): {option.prose}
+ 
+-RESOLVED STATE DELTA (this cycle's mutations — honor these magnitudes):
++RESOLVED STATE DELTA (this day's mutations — honor these magnitudes):
+ {delta_str}
+ 
+ CURRENT STATE (after delta — narrative, mirror this register):
+ {_narrative_state_block(state, mission)}
+-
++{_hidden_state_hint_block(state, mission, cycle_index)}
+ Write the entry now. Two paragraphs: angle, then resolution.
+ """
+ 
+ 
+-def _shorthand_user_prompt(cycle_index: int, option: Option) -> str:
+-    """The follow-up turn that asks the log writer to summarize the entry it
+-    just wrote into one case-file row. Runs against the same agent + same
+-    message_history (system + every cycle's entry, INCLUDING the one just
+-    written) — and is NOT persisted back into the history."""
+-    agent_seg = f"({option.agent})" if option.agent else ""
+-    return f"""\
+-Summarize the entry you just wrote as one line for the case-file index.
+-
+-Format exactly:
+-  C{cycle_index} — {option.archetype}{agent_seg} — {{≤8-word consequence}}
+-
+-The consequence names the operational upshot, not the prose flavor.
+-No quotes, no period. Output the single line, nothing else.
+-"""
+-
+-
+ # ───────────────────────── factory ─────────────────────────
+ 
+ 
+@@ -830,7 +867,7 @@ def engine_fallback_options(
+                 agent=ag,
+                 params=params,
+                 title="Hold position",
+-                prose="Take no action this cycle. Both agents stay put. The situation tightens.",
++                prose="Take no action this day. Both agents stay put. The situation tightens.",
+             )
+         )
+         break
+@@ -885,6 +922,7 @@ async def draft_with_retries(
+     log_entries: list[LogEntry],
+     max_retries: int = 3,
+     recently_tried: Sequence[tuple[int, str, str | None]] | None = None,
++    beat_fragment: str | None = None,
+ ) -> tuple[list[Option], bool]:
+     """Call the drafter up to `max_retries + 1` times. Each failure feeds the
+     validator's complaints back into the next prompt as `retry_feedback`. If
+@@ -898,6 +936,7 @@ async def draft_with_retries(
+             cycle_index, state, mission, catalog, forced_event, log_entries,
+             retry_feedback=last_error,
+             recently_tried=recently_tried,
++            beat_fragment=beat_fragment,
+         )
+         with logfire.span("drafter_call", attempt=attempts + 1):
+             try:
+diff --git a/handler/src/handler/cycle.py b/handler/src/handler/cycle.py
+index 04e2786..9e47020 100644
+--- a/handler/src/handler/cycle.py
++++ b/handler/src/handler/cycle.py
+@@ -1,5 +1,5 @@
+ """The cycle orchestration. One function (`run_cycle`) ties together the
+-deterministic spine and the two LLM agents per HANDLER_SPEC_V2 §3:
++deterministic spine and the two LLM agents:
+ 
+   i.   Drafter               (agents.drafter — stateless one-shot)
+        ── player picks ──    (await session.await_authorization)
+@@ -15,14 +15,11 @@ functions mutate session.state in place — that's the live path — but
+ the emitted event carries the same delta so `fold()` reproduces the
+ state during replay.
+ 
+-Wall-clock optimisations (HANDLER_SPEC_V2 §11):
++Wall-clock optimisations:
+   - The log writer's callable returns `(text, pacing_task)` so the cycle
+     close can run while paced `entry_word` SSE events continue to the
+     client in the background, and fires `on_log_text_ready` so `main.py`
+     can schedule cycle N+1's prefetch.
+-  - The shorthand call is fired internally by the log-writer callable
+-    (in `main.py`); it runs in parallel with the pacing tail and emits an
+-    `entry_shorthand` SSE event when ready.
+ """
+ from __future__ import annotations
+ 
+@@ -60,6 +57,7 @@ from .spine import (
+     fire_due_passive_events,
+     merge_delta_into,
+     option_progresses_mission,
++    select_beat,
+     snapshot,
+     tick_cycle_close,
+     valid_archetype_combinations,
+@@ -79,10 +77,15 @@ class DrafterLLMFn(Protocol):
+         cycle_index: int,
+         valid_catalog: list[tuple[str, str | None, dict[str, str]]],
+         forced_event_id: str | None,
++        beat_fragment: str | None,
+     ) -> tuple[list[Option], bool]:
+         """LLM-only phase of the drafter. No SSE emission. Returns
+         (options, engine_fallback). On engine_fallback=True the drafter
+-        exhausted retries and the engine synthesised a fallback set."""
++        exhausted retries and the engine synthesised a fallback set.
++
++        `beat_fragment` is the cycle's selected beat fragment (if any). The
++        drafter renders it as a BEAT THIS DAY block — cycle framing color
++        that informs option authoring without prescribing outcomes."""
+ 
+ 
+ class DrafterEmitFn(Protocol):
+@@ -113,17 +116,12 @@ class LogWriterFn(Protocol):
+         pacing_task continues emitting paced `entry_word` SSE events in
+         the background.
+ 
+-        Internally the callable also:
+-        - Updates the session's accumulating `log_message_history` with
+-          the just-rendered user+assistant pair (HANDLER_SPEC_V2 §8.2).
+-        - Schedules the non-persisted shorthand follow-up call (§8.3)
+-          which runs against the same agent + same history plus a
+-          temporary "summarize that" turn, and emits an `entry_shorthand`
+-          SSE event when complete.
++        Internally the callable also updates the session's accumulating
++        `log_message_history` with the just-rendered user+assistant pair.
+ 
+         `prior_state` is the snapshot taken at cycle open, before any of
+         this cycle's mutations applied. Used by the log-writer prompt to
+-        compute the tension band (4c).
++        compute the tension band.
+ 
+         `leans` is the (already prioritized + capped) list of free-form
+         directives collected from this cycle's fired events."""
+@@ -148,6 +146,24 @@ async def _noop_log_text_ready(_cycle_index: int) -> None:
+     return
+ 
+ 
++def fire_beat(state: State, mission: Mission):
++    """Select and fire one beat at cycle-open: appends the beat's id to
++    `state.fired` when `fires_at_most="once_per_mission"` so the same
++    observation never surfaces twice in a run. Returns the Beat (or None).
++
++    Called from `run_cycle` at cycle-open AND mirrored read-only from the
++    prefetch path via `spine.select_beat` (same result given the same state,
++    so the prefetched options and the live drafter both see the same beat
++    fragment). The single fire-site is here.
++    """
++    beat = select_beat(state, mission)
++    if beat is None:
++        return None
++    if beat.fires_at_most == "once_per_mission":
++        state.fired.append(beat.id)
++    return beat
++
++
+ # ───────────────────────── start / await primitives ─────────────────────────
+ 
+ 
+@@ -207,6 +223,12 @@ async def run_cycle(
+         prior_state = snapshot(state)
+ 
+         # ── cycle opened ──
++        # Fire the cycle's beat BEFORE the drafter so its fragment can frame
++        # the option set. Fire-once semantics live in `fire_beat` — the
++        # prefetch path called `select_beat` (read-only) against the same
++        # state, so the prefetched options were drafted with the same fragment.
++        beat = fire_beat(state, mission)
++        beat_fragment = beat.fragment if beat is not None else None
+         session.apply(CycleOpened(cycle_index=cycle_index))
+         await emit({"event": "cycle_opened", "cycle": cycle_index, "state": state.qualities})
+ 
+@@ -216,7 +238,7 @@ async def run_cycle(
+         forced_event_id = forced[0].id if forced else None
+ 
+         options, engine_fallback = await drafter_llm(
+-            session, cycle_index, catalog, forced_event_id
++            session, cycle_index, catalog, forced_event_id, beat_fragment
+         )
+         session.apply(
+             OptionsDrafted(
+@@ -240,7 +262,7 @@ async def run_cycle(
+         )
+ 
+         # ── ii. Effects + passive events ──
+-        delta = apply_archetype_effects(state, chosen, mission)
++        delta, branches_taken = apply_archetype_effects(state, chosen, mission)
+         satisfied_event_id: str | None = None
+         satisfied_forced: Event | None = None
+         if chosen.satisfies_event is not None:
+@@ -260,9 +282,24 @@ async def run_cycle(
+             "delta_descriptors": describe_delta(delta, mission),
+         })
+ 
++        # If the authorized archetype fired one or more author-tagged
++        # branches (opposed-check shape — clean / partial / failure),
++        # collect the matching `branch_leans` for the log-writer prompt.
++        # `branches_taken` is typically empty or a single-element set.
++        branch_leans: list[str] = []
++        if branches_taken:
++            arch = mission.archetype(chosen.archetype)
++            for label in branches_taken:
++                branch_leans.extend(arch.branch_leans.get(label, []))
++
+         made_progress = option_progresses_mission(delta, mission)
+         fires, agg = fire_due_passive_events(state, mission, made_progress)
+-        leans = _collect_leans(satisfied_forced, fires)
++        leans = _collect_leans(
++            satisfied_forced,
++            fires,
++            branch_leans=branch_leans,
++            beat_fragment=beat_fragment,
++        )
+         if fires:
+             session.apply(
+                 EventsFired(
+@@ -387,27 +424,41 @@ def _resolved_payload(resolution: MissionResolution) -> dict:
+     }
+ 
+ 
+-_LEAN_CAP = 4
++_LEAN_CAP = 6
+ 
+ 
+ def _collect_leans(
+     forced_event: Event | None,
+     passive_fires: list,
++    *,
++    branch_leans: list[str] = (),
++    beat_fragment: str | None = None,
+ ) -> list[str]:
+     """Prioritize and cap the cycle's lean directives for the log writer.
+ 
+-    Order: satisfied forced event → terminal passive events → non-terminal
+-    passive events (already in priority order via `fire_due_passive_events`).
+-    Capped at `_LEAN_CAP` to keep the prompt focused."""
++    Order: satisfied forced event → branch leans (opposed-check resolution
++    on the authorized archetype) → terminal passive events → non-terminal
++    passive events → beat fragment (cycle-open framing color).
++    Capped at `_LEAN_CAP` to keep the prompt focused.
++
++    Branch leans land early because they describe *the immediate outcome of
++    the just-authorized option* — the log writer needs them to write a reveal
++    on a failure branch vs a confirmation on a clean branch. The beat
++    fragment lands last as ambient framing — the writer can pull it in if
++    space allows.
++    """
+     out: list[str] = []
+     if forced_event is not None:
+         out.extend(forced_event.lean_on)
++    out.extend(branch_leans)
+     terminal_leans: list[str] = []
+     nonterminal_leans: list[str] = []
+     for (ev, _, _) in passive_fires:
+         (terminal_leans if ev.terminal else nonterminal_leans).extend(ev.lean_on)
+     out.extend(terminal_leans)
+     out.extend(nonterminal_leans)
++    if beat_fragment:
++        out.append(beat_fragment)
+     return out[:_LEAN_CAP]
+ 
+ 
+diff --git a/handler/src/handler/main.py b/handler/src/handler/main.py
+index 2317882..fd920a6 100644
+--- a/handler/src/handler/main.py
++++ b/handler/src/handler/main.py
+@@ -43,10 +43,8 @@ from dataclasses import replace
+ from .agents import (
+     AgentBundle,
+     LogEntry,
+-    LogShorthand,
+     _drafter_user_prompt,
+     _log_writer_user_prompt,
+-    _shorthand_user_prompt,
+     build_agent_bundle,
+     draft_with_retries,
+ )
+@@ -69,7 +67,7 @@ from .launcher import (
+ from .mission_loader import MissionLoadError, load_mission
+ from .models import Mission, Option, State
+ from .session import Session, make_jsonl_persistor, make_session
+-from .spine import due_forced_events, valid_archetype_combinations
++from .spine import due_forced_events, select_beat, valid_archetype_combinations
+ 
+ 
+ _BOOT_SETTINGS = Settings()
+@@ -142,14 +140,14 @@ class SessionRuntime:
+     futures the cycle loop alternates between (auth = pause INSIDE a cycle
+     waiting for the player's pick; continue = pause BETWEEN cycles waiting
+     for the player to click through), the cycle task itself, and the
+-    accumulating case-file artifacts (log_entries, log_shorthands,
+-    log_message_history) for the log writer.
++    accumulating case-file artifacts (log_entries, log_message_history) for
++    the log writer.
+ 
+-    Cross-cycle prefetch (HANDLER_SPEC_V2 §11 wall-clock optimisation): when
+-    cycle N's log writer text is ready, a background task pre-runs cycle N+1's
+-    drafter LLM call so options are ready by the time the player clicks
+-    Continue. The drafter is stateless, so prefetching it is trivial.
+-    Prefetched results are tagged with `prefetched_cycle_index`.
++    Cross-cycle prefetch (wall-clock optimisation): when cycle N's log writer
++    text is ready, a background task pre-runs cycle N+1's drafter LLM call
++    so options are ready by the time the player clicks Continue. The drafter
++    is stateless, so prefetching it is trivial. Prefetched results are
++    tagged with `prefetched_cycle_index`.
+ 
+     `last_authorized` carries one-cycle context forward so the next cycle's
+     drafter prompt can lead with "vary from what was recently tried".
+@@ -161,14 +159,11 @@ class SessionRuntime:
+     continue_future: asyncio.Future[None] | None = None
+     current_options: list[Option] | None = None
+     cycle_task: asyncio.Task | None = None
+-    # Accumulating case-file artifacts (HANDLER_SPEC_V2 §8.2).
++    # Accumulating case-file artifacts.
+     # `log_entries` — full prose per cycle. Drafter prompt pulls the last 2
+     # for cross-cycle context (drafter is stateless one-shot). Frontend
+     # caches the full text for the click-to-expand history UI.
+     log_entries: list[LogEntry] = field(default_factory=list)
+-    # `log_shorthands` — one-line history rows produced by the non-persisted
+-    # shorthand follow-up call. Frontend lists these in the case-file panel.
+-    log_shorthands: list[LogShorthand] = field(default_factory=list)
+     # `log_message_history` — the log-writer agent's accumulating pydantic-ai
+     # `message_history`. One user+assistant pair per cycle. The conversation
+     # IS the case file. Initialized empty; grown by `_build_log_writer_callable`
+@@ -180,9 +175,6 @@ class SessionRuntime:
+     prefetched_options: list[Option] | None = None
+     prefetched_engine_fallback: bool = False
+     prefetch_task: asyncio.Task | None = None
+-    # In-flight shorthand task for the current cycle. Held so session
+-    # teardown can cancel it cleanly.
+-    shorthand_task: asyncio.Task | None = None
+     # Last 2 authorized picks as (cycle_index, archetype, agent_id|None).
+     # Cycle N+1's drafter prompt reads this to vary tonal range. Updated by
+     # `_run_session_loop` after each /authorize lands.
+@@ -315,8 +307,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+             for sid, rt in list(SESSIONS.items()):
+                 if rt.cycle_task is not None and not rt.cycle_task.done():
+                     rt.cycle_task.cancel()
+-                if rt.shorthand_task is not None and not rt.shorthand_task.done():
+-                    rt.shorthand_task.cancel()
+             stop_llama(LLAMA_PROC)
+ 
+ 
+@@ -416,6 +406,7 @@ def _build_drafter_llm_callable(rt: SessionRuntime) -> Any:
+         cycle_index: int,
+         catalog: list[tuple[str, str | None, dict[str, str]]],
+         forced_event_id: str | None,
++        beat_fragment: str | None,
+     ) -> tuple[list[Option], bool]:
+         assert AGENTS is not None
+ 
+@@ -444,6 +435,7 @@ def _build_drafter_llm_callable(rt: SessionRuntime) -> Any:
+             forced_event=forced_event,
+             log_entries=rt.log_entries,
+             recently_tried=list(rt.last_authorized),
++            beat_fragment=beat_fragment,
+         )
+ 
+     return _drafter_llm
+@@ -495,45 +487,11 @@ def _build_drafter_emit_callable(rt: SessionRuntime) -> Any:
+     return _drafter_emit
+ 
+ 
+-async def _run_shorthand_call(
+-    rt: SessionRuntime,
+-    cycle_index: int,
+-    option: Option,
+-    persistent_history: list[ModelMessage],
+-) -> None:
+-    """Run the non-persisted shorthand follow-up against the log-writer agent,
+-    emit `entry_shorthand`, and append to `rt.log_shorthands`.
+-
+-    Per HANDLER_SPEC_V2 §8.3: same agent, same `message_history` (system +
+-    every prior cycle's entry, INCLUDING the one just written), plus a
+-    short "summarize that" user turn. The summarize-pair is DISCARDED —
+-    `rt.log_message_history` is NOT mutated by this call."""
+-    assert AGENTS is not None
+-    prompt = _shorthand_user_prompt(cycle_index, option)
+-    try:
+-        with logfire.span("shorthand_call", cycle=cycle_index):
+-            result = await AGENTS.log_writer.run(prompt, message_history=persistent_history)
+-            text = result.output.strip()
+-    except Exception as e:
+-        log.warning("shorthand call failed (cycle %d): %s", cycle_index, e)
+-        # Fallback: engine-authored row. Keeps the history UI populated.
+-        agent_seg = f"({option.agent})" if option.agent else ""
+-        text = f"C{cycle_index} — {option.archetype}{agent_seg}"
+-    # Take first line only — model occasionally adds a trailing newline or
+-    # extra commentary despite the prompt.
+-    text = text.splitlines()[0].strip() if text else f"C{cycle_index} — {option.archetype}"
+-    rt.log_shorthands.append(LogShorthand(cycle_index=cycle_index, shorthand=text))
+-    await rt.out_queue.put(
+-        {"event": "entry_shorthand", "cycle": cycle_index, "shorthand": text}
+-    )
+-
+-
+ def _build_log_writer_callable(rt: SessionRuntime) -> Any:
+-    """Conversation-based log writer per HANDLER_SPEC_V2 §8.2. Streams the
+-    cycle's case-file entry against `rt.log_message_history`, updates the
+-    persistent history with the new user+assistant pair, appends a `LogEntry`
+-    to `rt.log_entries`, and kicks off the non-persisted shorthand follow-up
+-    (§8.3) as a background task.
++    """Conversation-based log writer. Streams the cycle's case-file entry
++    against `rt.log_message_history`, updates the persistent history with
++    the new user+assistant pair, and appends a `LogEntry` to
++    `rt.log_entries`.
+ 
+     Returns `(text, pacing_task)` — the same shape as the older `RendererFn`,
+     so cycle.py can continue scheduling the cycle-close + cross-cycle prefetch
+@@ -545,7 +503,6 @@ def _build_log_writer_callable(rt: SessionRuntime) -> Any:
+     - History updates happen synchronously inside the streaming generator —
+       so prefetch (which fires before `await pacing_task`) sees the just-
+       appended log entry in `rt.log_entries`.
+-    - Shorthand fires as its own task and emits `entry_shorthand` when ready.
+     """
+ 
+     async def _log_writer(
+@@ -620,19 +577,6 @@ def _build_log_writer_callable(rt: SessionRuntime) -> Any:
+         pacing_task = asyncio.create_task(_stream_and_pace())
+         text = await text_ready
+ 
+-        # Schedule the shorthand follow-up. Runs in parallel with the
+-        # remaining paced word emission + the cycle-close sequence; emits
+-        # `entry_shorthand` when complete. Cancel any prior shorthand task
+-        # that hasn't finished yet (shouldn't happen with the single-loop
+-        # design, but defensive).
+-        if rt.shorthand_task is not None and not rt.shorthand_task.done():
+-            rt.shorthand_task.cancel()
+-            with contextlib.suppress(BaseException):
+-                await rt.shorthand_task
+-        rt.shorthand_task = asyncio.create_task(
+-            _run_shorthand_call(rt, cycle_index, option, list(rt.log_message_history))
+-        )
+-
+         return text, pacing_task
+ 
+     return _log_writer
+@@ -664,6 +608,12 @@ async def prefetch_next_cycle(rt: SessionRuntime, next_cycle_index: int) -> None
+         catalog = valid_archetype_combinations(state, mission)
+         forced = due_forced_events(state, mission)
+         forced_event = forced[0] if forced else None
++        # Read-only peek at the beat the live cycle-open will fire. State is
++        # frozen between now and the player's /continue click — `select_beat`
++        # returns the same beat `fire_beat` will commit, so the prefetched
++        # options carry the same framing the live drafter would produce.
++        beat = select_beat(state, mission)
++        beat_fragment = beat.fragment if beat is not None else None
+         options, fallback = await draft_with_retries(
+             AGENTS.drafter,
+             cycle_index=next_cycle_index,
+@@ -673,6 +623,7 @@ async def prefetch_next_cycle(rt: SessionRuntime, next_cycle_index: int) -> None
+             forced_event=forced_event,
+             log_entries=rt.log_entries,
+             recently_tried=list(rt.last_authorized),
++            beat_fragment=beat_fragment,
+         )
+         rt.prefetched_options = options
+         rt.prefetched_engine_fallback = fallback
+@@ -752,16 +703,11 @@ async def _run_session_loop(rt: SessionRuntime) -> None:
+         logfire.exception("session loop crashed", session_id=rt.session.id)
+         await rt.out_queue.put({"event": "error", "code": "session_crashed"})
+     finally:
+-        # Cancel any in-flight prefetch / shorthand so they don't outlive
+-        # the session.
++        # Cancel any in-flight prefetch so it doesn't outlive the session.
+         if rt.prefetch_task is not None and not rt.prefetch_task.done():
+             rt.prefetch_task.cancel()
+             with contextlib.suppress(BaseException):
+                 await rt.prefetch_task
+-        if rt.shorthand_task is not None and not rt.shorthand_task.done():
+-            rt.shorthand_task.cancel()
+-            with contextlib.suppress(BaseException):
+-                await rt.shorthand_task
+         await rt.out_queue.put({"event": "session_closed"})
+ 
+ 
+diff --git a/handler/src/handler/models.py b/handler/src/handler/models.py
+index f9c5376..8d954e4 100644
+--- a/handler/src/handler/models.py
++++ b/handler/src/handler/models.py
+@@ -157,12 +157,21 @@ class Effect(BaseModel):
+     set, the effect only fires if `when` holds at apply-time.
+ 
+     For string qualities only `op: set` is meaningful — there is no add/max/min.
++
++    `branch` is an optional author-tag for opposed-check resolution. When an
++    archetype encodes three mutually-exclusive `if`-guarded effect branches
++    (clean / partial / failure) against a hidden quality, tagging each effect
++    with its `branch` lets the engine record which branch actually applied —
++    so `Archetype.branch_leans` can thread the matching renderer directives
++    into the log writer's leans. The label has no engine meaning beyond
++    "this effect belongs to the named branch"; resolution still uses `when`.
+     """
+ 
+     quality: str = Field(min_length=1)
+     value: float | int | str | bool
+     op: Literal["set", "add", "max", "min"] = "set"
+     when: Predicate | None = None
++    branch: Literal["clean", "partial", "failure"] | None = None
+ 
+ 
+ # ───────────────────────── authoring schemas ─────────────────────────
+@@ -213,18 +222,32 @@ class CastMember(BaseModel):
+         return self
+ 
+ 
++class Band(BaseModel):
++    """A bucket of variant phrasings keyed by an upper-bound threshold. Used
++    by hidden qualities (`Quality.bands`) so the drafter / log-writer surface
++    can rotate through different observational variants for the same band —
++    the band identifies the value's semantic level; the variant prevents the
++    phrasing from being phrase-decoded by the player across cycles.
++    """
++
++    threshold: float
++    variants: list[str] = Field(min_length=1)
++
++
+ class Quality(BaseModel):
+     """One authored quality — initial value plus the in-fiction descriptor
+     used by the narrative state block. The single per-quality authoring unit;
+     every entry in `Mission.qualities` is a `Quality`.
+ 
+-    Use `buckets` for numeric qualities, `values` for discrete enums. Exactly
+-    one MUST be non-empty — that requirement is what eliminates the older
+-    "missing descriptor" footgun (initial value and descriptor are co-located,
+-    so an author can't write one without the other).
++    Three descriptor shapes; exactly one MUST be set:
++      - `buckets` — numeric qualities with a single descriptor per band.
++        Walks list in authored order; first threshold >= value wins.
++      - `values` — discrete enums keyed by stringified value.
++      - `bands` — numeric qualities with multiple phrasing variants per band.
++        Use for hidden qualities (`visible=False`) where phrasing rotation
++        across cycles prevents the player from phrase-decoding the band.
+ 
+-    Bucket lookup walks the list in authored order; the first bucket whose
+-    `threshold` >= the actual value wins. Author bottom-up:
++    Bucket layout (bottom-up):
+         buckets:
+           - [0, "blown"]
+           - [2, "compromised"]   # 1..2
+@@ -238,6 +261,11 @@ class Quality(BaseModel):
+     `label` (optional) prefixes every descriptor — e.g. label="extraction"
+     yields "extraction: papers not yet surfaced".
+ 
++    `visible` (default True): when False, the quality is hidden from the
++    OPERATION POSTURE state block and the RESULT footer (`describe_delta`
++    skips invisible-quality entries). It surfaces only through the dedicated
++    hidden-state hint block in the drafter / log-writer user prompts.
++
+     `initial` is omitted only for universal qualities the engine injects
+     (`agent[*].cover`, `mission.cycles_remaining`); a `qualities:` entry for
+     those exists purely to override the built-in display buckets.
+@@ -246,18 +274,21 @@ class Quality(BaseModel):
+     initial: float | int | str | None = None
+     buckets: list[tuple[float, str]] = Field(default_factory=list)
+     values: dict[str, str] = Field(default_factory=dict)
++    bands: list[Band] = Field(default_factory=list)
+     label: str = ""
++    visible: bool = True
+ 
+     @model_validator(mode="after")
+     def _has_descriptor(self) -> "Quality":
+-        if not self.buckets and not self.values:
++        set_count = sum(1 for x in (self.buckets, self.values, self.bands) if x)
++        if set_count == 0:
+             raise ValueError(
+-                "Quality: must set one of `buckets` or `values` (got neither). "
+-                "Every quality must carry its narrative descriptor."
++                "Quality: must set one of `buckets`, `values`, or `bands` "
++                "(got none). Every quality must carry its narrative descriptor."
+             )
+-        if self.buckets and self.values:
++        if set_count > 1:
+             raise ValueError(
+-                "Quality: set EITHER `buckets` OR `values`, not both"
++                "Quality: set EXACTLY ONE of `buckets`, `values`, `bands`"
+             )
+         return self
+ 
+@@ -265,6 +296,10 @@ class Quality(BaseModel):
+         """Look up the descriptor for `value`. Returns None if no bucket/value
+         matches (numeric value above all bucket thresholds, or string value
+         absent from the values map). Callers fall back to built-ins or skip.
++
++        For `bands`-shaped qualities, returns the FIRST variant of the matching
++        band — callers wanting the rotated variant should call
++        `describe_variant(value, cycle_index)` instead.
+         """
+         body: str | None = None
+         if self.values:
+@@ -274,20 +309,59 @@ class Quality(BaseModel):
+                 if value <= threshold:
+                     body = descriptor
+                     break
++        elif self.bands and isinstance(value, (int, float)) and not isinstance(value, bool):
++            for band in self.bands:
++                if value <= band.threshold:
++                    body = band.variants[0]
++                    break
+         if body is None:
+             return None
+         return f"{self.label}: {body}" if self.label else body
+ 
+-
+-class DramaticQuestion(BaseModel):
+-    """Author-written framing for a cycle: when the predicate matches, the SoP
+-    leads with this question instead of summarising state. Selection walks the
+-    mission's list in authored order and picks the first match — author from
+-    most-specific to least-specific.
++    def describe_variant(
++        self, value: float | int | str | bool, cycle_index: int
++    ) -> str | None:
++        """Look up a rotated variant for `bands`-shaped qualities. Deterministic
++        by `(value's band, cycle_index)` so test replay is reproducible and the
++        same band visited across consecutive cycles surfaces different
++        phrasings. Returns None when `bands` isn't set or no band matches —
++        callers fall back to `describe(value)`.
++        """
++        if not self.bands or not isinstance(value, (int, float)) or isinstance(value, bool):
++            return None
++        for band in self.bands:
++            if value <= band.threshold:
++                variant = band.variants[cycle_index % len(band.variants)]
++                return f"{self.label}: {variant}" if self.label else variant
++        return None
++
++
++class Beat(BaseModel):
++    """Author-written observational fragment threaded into a cycle's prompts
++    when its predicate matches. Replaces the older `DramaticQuestion`.
++
++    Selection is highest-priority (lowest `priority` int) authored-order winner
++    among `when`-matching beats that haven't already fired this mission.
++    On selection, the beat's `id` is appended to `state.fired` so the same
++    fragment never surfaces twice — fixing the audit §2b symptom of the same
++    framing reappearing every cycle.
++
++    `fragment` is the prose handed to the LLM. The drafter sees it as cycle
++    framing color; the log writer sees it as an additional lean directive.
++    Authors write the fragment as one *example* — the prompts instruct
++    translation through the cycle's specific situation, not verbatim quoting.
++
++    `fires_at_most`:
++      - "once_per_mission" (default): consume on fire, never repeats.
++      - "unlimited": legacy semantics — re-fires every cycle the predicate
++        matches. Use sparingly; the whole point of the rename is fire-once.
+     """
+ 
++    id: str = Field(min_length=1)
+     when: Predicate
+-    question: str = Field(min_length=1)
++    fragment: str = Field(min_length=1)
++    priority: int = 0
++    fires_at_most: Literal["unlimited", "once_per_mission"] = "once_per_mission"
+ 
+ 
+ class Archetype(BaseModel):
+@@ -297,6 +371,12 @@ class Archetype(BaseModel):
+ 
+     `params: ["agent"]` means: the drafter can choose any agent with cover > 0
+     as the actor. The chosen agent is bound to `$agent` in `when` and `effects`.
++
++    `branch_leans` (optional): when this archetype's effects use the
++    `branch` author-tag (opposed-check shape — clean / partial / failure), the
++    engine records which branch fired and `cycle.py` threads the matching list
++    of directives into the log-writer's `LEAN-ON THIS DAY` block. This is how
++    a failure branch produces a reveal rather than a confirmation.
+     """
+ 
+     id: str = Field(min_length=1)
+@@ -306,6 +386,10 @@ class Archetype(BaseModel):
+     # Short descriptor of the archetype's intent. Surfaced to the drafter so
+     # it can write prose that matches the mechanic. Not displayed to the player.
+     intent: str = ""
++    # Per-branch renderer directives, keyed by branch label. Engine reads
++    # this AFTER effect application; only the keys for branches that fired
++    # contribute leans. Keys may be any subset of {"clean", "partial", "failure"}.
++    branch_leans: dict[str, list[str]] = Field(default_factory=dict)
+ 
+ 
+ class Event(BaseModel):
+@@ -432,10 +516,12 @@ class Mission(BaseModel):
+     # (e.g. "LYNX must not be photographed again", "the Vienna network is
+     # offline"). Authored, no LLM in the loop.
+     standing_orders: list[str] = Field(default_factory=list)
+-    # Per-state-shape SoP framing. Engine selects the first matching question
+-    # each cycle; SoP leads with it instead of summarising state. Author from
+-    # most-specific predicate to most-general.
+-    dramatic_questions: list[DramaticQuestion] = Field(default_factory=list)
++    # Per-state-shape authored fragments. The engine selects one beat per
++    # cycle (highest-priority `when`-matching unfired entry); it's threaded
++    # into the drafter's user prompt as framing color AND into the log
++    # writer's leans as a foregrounding directive. Fire-once by default so
++    # the same observation never surfaces twice in a run (audit §2b).
++    beats: list[Beat] = Field(default_factory=list)
+     archetypes: list[Archetype] = Field(min_length=1)
+     events: list[Event] = Field(min_length=1)
+     # Cycle-1-only briefing prose. Prepended to the SoP user prompt on cycle 1
+@@ -452,12 +538,23 @@ class Mission(BaseModel):
+             (self.cast, "cast member"),
+             (self.archetypes, "archetype"),
+             (self.events, "event"),
++            (self.beats, "beat"),
+         ):
+             seen: set[str] = set()
+             for item in collection:
+                 if item.id in seen:
+                     raise ValueError(f"duplicate {label} id: {item.id!r}")
+                 seen.add(item.id)
++        # Beat ids share the `state.fired` namespace with event ids — keep
++        # them disjoint so an EventFired predicate doesn't accidentally match
++        # a beat fire (or vice versa).
++        event_ids = {e.id for e in self.events}
++        for beat in self.beats:
++            if beat.id in event_ids:
++                raise ValueError(
++                    f"beat id {beat.id!r} collides with an event id; both "
++                    f"share the fired-ledger namespace"
++                )
+         # Outcome keys referenced by terminal events must be in `outcomes`.
+         for event in self.events:
+             if event.terminal and event.outcome_key not in self.outcomes:
+@@ -516,14 +613,15 @@ class Mission(BaseModel):
+ 
+ 
+ class Option(BaseModel):
+-    """One option the drafter offers the player. `archetype`, `agent`, `params`
+-    drive deterministic resolution; `title` and `prose` are display-only —
+-    they never influence state.
++    """One option the drafter offers the player. Assembled by the engine from
++    the selector's `(archetype, agent, satisfies_event)` slot + the prose
++    writer's `(title, prose)` pair. `archetype` and `agent` drive deterministic
++    resolution; `title` and `prose` are display-only — they never influence
++    state.
+     """
+ 
+     archetype: str = Field(min_length=1)
+     agent: str | None = None
+-    params: dict[str, str] = Field(default_factory=dict)
+     title: str = Field(min_length=1)
+     prose: str = Field(min_length=1)
+     # Id of the forced event this option satisfies, if any. Looked up against
+@@ -531,10 +629,14 @@ class Option(BaseModel):
+     satisfies_event: str | None = None
+ 
+ 
+-class OptionSet(BaseModel):
+-    """Drafter structured output: 3–4 options per cycle."""
++class OptionProse(BaseModel):
++    """Prose-writer structured output for one slot. The engine pairs each
++    `OptionProse` (positionally) with a selector slot to build a final
++    `Option`. No catalog identifiers here — those are pinned by the engine
++    before this call runs."""
+ 
+-    options: list[Option] = Field(min_length=3, max_length=4)
++    title: str = Field(min_length=1)
++    prose: str = Field(min_length=1)
+ 
+ 
+ # ───────────────────────── runtime state ─────────────────────────
+diff --git a/handler/src/handler/spine.py b/handler/src/handler/spine.py
+index 6aedca9..d6a7e40 100644
+--- a/handler/src/handler/spine.py
++++ b/handler/src/handler/spine.py
+@@ -16,7 +16,7 @@ from typing import Any, Literal, assert_never
+ from .models import (
+     And_,
+     Archetype,
+-    DramaticQuestion,
++    Beat,
+     Effect,
+     Event,
+     EventFired,
+@@ -75,9 +75,16 @@ def evaluate_predicate(state: State, pred: Predicate) -> bool:
+ # ───────────────────────── effect application ─────────────────────────
+ 
+ 
+-def _apply_one(state: State, eff: Effect) -> tuple[str, Any, Any] | None:
+-    """Apply a single effect to state IN PLACE, return (quality, before, after)
+-    delta tuple for audit. Returns None if the `when` predicate guards it off.
++def _apply_one(
++    state: State, eff: Effect
++) -> tuple[str, Any, Any, str | None] | None:
++    """Apply a single effect to state IN PLACE, return (quality, before, after,
++    branch) tuple for audit. Returns None if the `when` predicate guards it off.
++
++    `branch` carries the effect's author-tag (clean / partial / failure / None)
++    so callers can attribute which conditional branch actually applied — used
++    by opposed-check archetypes to thread the right `branch_leans` into the
++    cycle's renderer directives.
+     """
+     if eff.when is not None and not evaluate_predicate(state, eff.when):
+         return None
+@@ -108,24 +115,33 @@ def _apply_one(state: State, eff: Effect) -> tuple[str, Any, Any] | None:
+     if eff.quality.endswith(".cover") and isinstance(after, (int, float)):
+         after = max(0, min(10, int(after)))
+     state.set_quality(eff.quality, after)
+-    return (eff.quality, before, after)
++    return (eff.quality, before, after, eff.branch)
+ 
+ 
+-def _apply_many(state: State, effects: list[Effect]) -> dict[str, tuple[Any, Any]]:
+-    """Apply a list of effects in order, collecting deltas. The dict keeps
+-    only the net change per quality (first `before`, last `after`)."""
++def _apply_many(
++    state: State, effects: list[Effect]
++) -> tuple[dict[str, tuple[Any, Any]], set[str]]:
++    """Apply a list of effects in order, collecting deltas and the set of
++    branch labels that actually fired. The delta dict keeps only the net
++    change per quality (first `before`, last `after`). `branches_taken` is
++    typically empty (no branch-tagged effects) or a single-element set
++    (opposed-check archetypes author mutually-exclusive branches).
++    """
+     delta: dict[str, tuple[Any, Any]] = {}
++    branches_taken: set[str] = set()
+     for eff in effects:
+         result = _apply_one(state, eff)
+         if result is None:
+             continue
+-        quality, before, after = result
++        quality, before, after, branch = result
++        if branch is not None:
++            branches_taken.add(branch)
+         existing = delta.get(quality)
+         if existing is None:
+             delta[quality] = (before, after)
+         else:
+             delta[quality] = (existing[0], after)
+-    return delta
++    return delta, branches_taken
+ 
+ 
+ # ───────────────────────── archetype enumeration ─────────────────────────
+@@ -179,10 +195,16 @@ def due_forced_events(state: State, mission: Mission) -> list[Event]:
+ 
+ def apply_archetype_effects(
+     state: State, option: Option, mission: Mission
+-) -> dict[str, tuple[Any, Any]]:
++) -> tuple[dict[str, tuple[Any, Any]], set[str]]:
+     """Apply the chosen option's archetype effects to state IN PLACE. Returns
+-    the net delta. If the option binds an agent (via `params`), `$agent` is
+-    substituted in every effect's quality/when.
++    `(delta, branches_taken)` — `branches_taken` is the set of `Effect.branch`
++    labels whose conditional `when:` passed. For non-opposed archetypes
++    (no `branch` tags authored) the set is empty. `cycle.py` uses it to look
++    up `Archetype.branch_leans` and thread the matching directives into the
++    cycle's leans.
++
++    If the option binds an agent (via `params`), `$agent` is substituted in
++    every effect's quality/when.
+     """
+     arch = mission.archetype(option.archetype)
+     effects = list(arch.effects)
+@@ -219,12 +241,13 @@ def apply_forced_event_effects(
+ ) -> dict[str, tuple[Any, Any]]:
+     """Apply a fired forced event's effects to state IN PLACE. Returns net
+     delta. The option's agent (if any) is substituted into `$agent` references.
+-    Records the event in `state.fired`.
++    Records the event in `state.fired`. Forced events don't carry branch
++    labels (their effects are pre-committed), so branch attribution is dropped.
+     """
+     effects = list(event.effects)
+     if option.agent is not None:
+         effects = [substitute_effect(e, {"agent": option.agent}) for e in effects]
+-    delta = _apply_many(state, effects)
++    delta, _branches = _apply_many(state, effects)
+     state.fired.append(event.id)
+     return delta
+ 
+@@ -300,7 +323,7 @@ def fire_due_passive_events(
+             if not evaluate_predicate(state, pred):
+                 continue
+             effects = [substitute_effect(e, placeholders) for e in event.effects]
+-            delta = _apply_many(state, effects)
++            delta, _branches = _apply_many(state, effects)
+             state.fired.append(event.id)
+             if agent_id is not None:
+                 state.fired_per_agent.append(per_agent_key(event.id, agent_id))
+@@ -416,12 +439,29 @@ def derive_tension_band(prior_state: State | None, state: State) -> TensionBand:
+     return "steady"
+ 
+ 
+-def select_dramatic_question(state: State, mission: Mission) -> str | None:
+-    """Return the first dramatic question whose `when` matches current state,
+-    or None if no question fires. Author orders most-specific first."""
+-    for dq in mission.dramatic_questions:
+-        if evaluate_predicate(state, dq.when):
+-            return dq.question
++def select_beat(state: State, mission: Mission) -> Beat | None:
++    """Return the highest-priority `when`-matching beat that hasn't already
++    fired this mission, or None if no eligible beat exists.
++
++    Ordering: sorted by `(priority, authored_index)` — lower `priority` fires
++    first (matching `Event.priority`); authored order breaks ties. Beats with
++    `fires_at_most="once_per_mission"` (default) are skipped if their id is
++    already in `state.fired`.
++
++    Selection is read-only here; `cycle.fire_beat` is what actually appends
++    the beat id to `state.fired` so the same fragment never surfaces twice.
++    """
++    candidates = sorted(
++        enumerate(mission.beats), key=lambda x: (x[1].priority, x[0])
++    )
++    for _, beat in candidates:
++        if (
++            beat.fires_at_most == "once_per_mission"
++            and beat.id in state.fired
++        ):
++            continue
++        if evaluate_predicate(state, beat.when):
++            return beat
+     return None
+ 
+ 
+diff --git a/handler/tests/test_cycle_integration.py b/handler/tests/test_cycle_integration.py
+index a46ea5b..274d335 100644
+--- a/handler/tests/test_cycle_integration.py
++++ b/handler/tests/test_cycle_integration.py
+@@ -31,7 +31,7 @@ def _completed_task() -> asyncio.Task:
+ 
+ 
+ def _stub_drafter_llm(rt):
+-    async def _drafter_llm(session, cycle_index, catalog, forced_event_id):
++    async def _drafter_llm(session, cycle_index, catalog, forced_event_id, beat_fragment=None):
+         # Sort PUSH first so /authorize index 0 reliably progresses the mission.
+         ordered = sorted(catalog, key=lambda c: (0 if c[0] == "PUSH" else 1, c[0]))
+         options: list[Option] = []
+@@ -105,19 +105,10 @@ def _stub_log_writer(rt):
+         await rt.out_queue.put(
+             {"event": "entry_word", "cycle": cycle_index, "idx": 0, "word": "", "is_last": True}
+         )
+-        from handler.agents import LogEntry, LogShorthand
++        from handler.agents import LogEntry
+         rt.log_entries.append(
+             LogEntry(cycle_index=cycle_index, archetype=option.archetype, text=text)
+         )
+-        # Emit a synthetic shorthand event so the integration test can verify
+-        # the entry_shorthand path lights up without hitting the real LLM.
+-        shorthand = f"C{cycle_index} — {option.archetype} — stub consequence"
+-        rt.log_shorthands.append(
+-            LogShorthand(cycle_index=cycle_index, shorthand=shorthand)
+-        )
+-        await rt.out_queue.put(
+-            {"event": "entry_shorthand", "cycle": cycle_index, "shorthand": shorthand}
+-        )
+         return text, _completed_task()
+     return _log_writer
+ 
+@@ -249,7 +240,6 @@ def test_full_cycle_to_terminal(stubbed_client: TestClient) -> None:
+     assert "options_complete" in kinds
+     assert "effects_applied" in kinds
+     assert "entry_started" in kinds
+-    assert "entry_shorthand" in kinds
+     assert "mission_resolved" in kinds
+     # cycle_opened precedes effects_applied for the first cycle.
+     assert kinds.index("cycle_opened") < kinds.index("effects_applied")
+diff --git a/handler/tests/test_dsl.py b/handler/tests/test_dsl.py
+index 1cd7fdf..88d89b4 100644
+--- a/handler/tests/test_dsl.py
++++ b/handler/tests/test_dsl.py
+@@ -249,14 +249,18 @@ def test_normalise_converts_string_effects_in_list() -> None:
+     assert effects[1]["op"] == "set" and effects[1]["value"] == 2
+ 
+ 
+-def test_normalise_recurses_into_dramatic_questions() -> None:
++def test_normalise_recurses_into_beats() -> None:
+     raw = {
+-        "dramatic_questions": [
+-            {"when": "agent[LYNX].cover <= 2", "question": "Is LYNX still useful?"}
++        "beats": [
++            {
++                "id": "lynx_brink",
++                "when": "agent[LYNX].cover <= 2",
++                "fragment": "LYNX is hours from collapse.",
++            }
+         ]
+     }
+     out = normalise_mission_dsl(raw)
+-    assert out["dramatic_questions"][0]["when"]["kind"] == "quality_lte"
++    assert out["beats"][0]["when"]["kind"] == "quality_lte"
+ 
+ 
+ def test_normalise_handles_effect_dict_with_inline_when() -> None:
+diff --git a/handler/tests/test_events.py b/handler/tests/test_events.py
+index ca1d566..7907fe7 100644
+--- a/handler/tests/test_events.py
++++ b/handler/tests/test_events.py
+@@ -62,7 +62,7 @@ def test_fold_replay_matches_live_mutation(mission) -> None:
+     re-fold a fresh state with the recorded event and assert equality."""
+     live = make_initial_state(mission)
+     opt = Option(archetype="PUSH", title="t", prose="p")
+-    delta = apply_archetype_effects(live, opt, mission)
++    delta, _branches = apply_archetype_effects(live, opt, mission)
+ 
+     replay = make_initial_state(mission)
+     fold(replay, EffectsApplied(cycle_index=1, delta=delta))
+diff --git a/handler/tests/test_models.py b/handler/tests/test_models.py
+index e64ce97..474ba2d 100644
+--- a/handler/tests/test_models.py
++++ b/handler/tests/test_models.py
+@@ -9,7 +9,8 @@ from handler.models import (
+     CastMember,
+     And_,
+     Archetype,
+-    DramaticQuestion,
++    Band,
++    Beat,
+     Effect,
+     Event,
+     Mission,
+@@ -313,37 +314,156 @@ def test_mission_qualities_universal_override_omits_initial() -> None:
+     assert s.get_quality("agent[A].cover") == 5
+ 
+ 
+-# ───────────────────────── DramaticQuestion ─────────────────────────
++# ───────────────────────── Beat ─────────────────────────
+ 
+ 
+-def test_dramatic_question_requires_non_empty_question() -> None:
++def test_beat_requires_id_and_fragment() -> None:
+     with pytest.raises(ValidationError):
+-        DramaticQuestion(when=QualityGte(quality="x", value=0), question="")
++        Beat(id="", when=QualityGte(quality="x", value=0), fragment="x")
++    with pytest.raises(ValidationError):
++        Beat(id="x", when=QualityGte(quality="x", value=0), fragment="")
++
++
++def test_beat_defaults() -> None:
++    b = Beat(id="x", when=QualityGte(quality="x", value=0), fragment="x")
++    assert b.priority == 0
++    assert b.fires_at_most == "once_per_mission"
+ 
+ 
+-def test_mission_dramatic_questions_default_empty() -> None:
++def test_mission_beats_default_empty() -> None:
+     m = Mission(**_basic_mission_kwargs())
+-    assert m.dramatic_questions == []
++    assert m.beats == []
+     assert m.standing_orders == []
+ 
+ 
+-def test_mission_with_dramatic_questions_and_standing_orders() -> None:
++def test_mission_with_beats_and_standing_orders() -> None:
+     m = Mission(
+         **_basic_mission_kwargs(),
+         standing_orders=[
+             "LYNX must not be photographed again.",
+             "The Vienna network is offline.",
+         ],
+-        dramatic_questions=[
+-            DramaticQuestion(
++        beats=[
++            Beat(
++                id="brink",
+                 when=QualityLte(quality="agent[A].cover", value=2),
+-                question="Is A still useful, or do we cut her loose?",
++                fragment="A is at the brink — every move buys time at a cost.",
+             ),
+         ],
+     )
+     assert len(m.standing_orders) == 2
+-    assert len(m.dramatic_questions) == 1
+-    assert "useful" in m.dramatic_questions[0].question
++    assert len(m.beats) == 1
++    assert "brink" in m.beats[0].fragment
++
++
++def test_mission_rejects_duplicate_beat_ids() -> None:
++    with pytest.raises(ValidationError) as exc:
++        Mission(
++            **_basic_mission_kwargs(),
++            beats=[
++                Beat(id="b", when=QualityGte(quality="x", value=0), fragment="f1"),
++                Beat(id="b", when=QualityGte(quality="x", value=0), fragment="f2"),
++            ],
++        )
++    assert "duplicate beat id" in str(exc.value)
++
++
++def test_mission_rejects_beat_id_colliding_with_event_id() -> None:
++    """Beats and events share the `state.fired` namespace — ids MUST be disjoint."""
++    with pytest.raises(ValidationError) as exc:
++        Mission(
++            **_basic_mission_kwargs(),
++            beats=[
++                Beat(id="end", when=QualityGte(quality="x", value=0), fragment="f"),
++            ],
++        )
++    assert "collides with an event id" in str(exc.value)
++
++
++# ───────────────────────── Quality.bands + visible (Phase 2) ─────────────────────────
++
++
++def test_quality_bands_validator_rejects_combos() -> None:
++    """Exactly one of buckets / values / bands; mixing fails."""
++    with pytest.raises(ValidationError):
++        Quality(
++            initial=0,
++            buckets=[(1.0, "a")],
++            bands=[Band(threshold=1.0, variants=["v"])],
++        )
++    with pytest.raises(ValidationError):
++        Quality(
++            initial=0,
++            values={"0": "a"},
++            bands=[Band(threshold=1.0, variants=["v"])],
++        )
++
++
++def test_quality_bands_visible_defaults_true() -> None:
++    q = Quality(initial=0, bands=[Band(threshold=10.0, variants=["v"])])
++    assert q.visible is True
++
++
++def test_quality_describe_variant_rotates_by_cycle_index() -> None:
++    """Same band, different cycle index → different variant. Deterministic
++    so test replay reproduces."""
++    q = Quality(
++        initial=0,
++        visible=False,
++        bands=[Band(threshold=5.0, variants=["v0", "v1", "v2"])],
++    )
++    assert q.describe_variant(3, 0) == "v0"
++    assert q.describe_variant(3, 1) == "v1"
++    assert q.describe_variant(3, 2) == "v2"
++    assert q.describe_variant(3, 3) == "v0"  # wraps
++
++
++def test_quality_describe_variant_returns_none_when_no_bands() -> None:
++    q = Quality(initial=0, buckets=[(5.0, "low")])
++    assert q.describe_variant(3, 0) is None
++
++
++def test_quality_describe_returns_first_variant_for_bands() -> None:
++    """The non-variant `describe()` falls back to bands[0].variants[0] so
++    callers without a cycle_index still get something."""
++    q = Quality(
++        initial=0,
++        bands=[Band(threshold=5.0, variants=["primary", "alt"])],
++    )
++    assert q.describe(3) == "primary"
++
++
++# ───────────────────────── Effect.branch + Archetype.branch_leans ─────────────────────────
++
++
++def test_effect_branch_defaults_none() -> None:
++    e = Effect(quality="x", value=1, op="add")
++    assert e.branch is None
++
++
++def test_effect_branch_roundtrip() -> None:
++    e = Effect(quality="x", value=1, op="add", branch="failure")
++    assert e.branch == "failure"
++    e2 = Effect.model_validate(e.model_dump())
++    assert e2.branch == "failure"
++
++
++def test_archetype_branch_leans_defaults_empty() -> None:
++    a = Archetype(id="X", when=QualityGte(quality="a", value=0))
++    assert a.branch_leans == {}
++
++
++def test_archetype_branch_leans_roundtrip() -> None:
++    a = Archetype(
++        id="X",
++        when=QualityGte(quality="a", value=0),
++        branch_leans={
++            "clean": ["lean 1"],
++            "failure": ["reveal", "name the trap"],
++        },
++    )
++    assert a.branch_leans["clean"] == ["lean 1"]
++    assert len(a.branch_leans["failure"]) == 2
+ 
+ 
+ # ───────────────────────── generalised substitution ─────────────────────────
+diff --git a/handler/tests/test_prompt_builders.py b/handler/tests/test_prompt_builders.py
+index f4b0a71..9119dc9 100644
+--- a/handler/tests/test_prompt_builders.py
++++ b/handler/tests/test_prompt_builders.py
+@@ -1,4 +1,4 @@
+-"""Unit tests for the drafter / log-writer / shorthand prompt builders.
++"""Unit tests for the drafter / log-writer prompt builders.
+ 
+ The goal: prove the model NEVER sees a digit in the narrative state block,
+ prove built-in cover/cycles buckets behave as authored, prove the system
+@@ -25,7 +25,6 @@ from handler.agents import (
+     _log_writer_user_prompt,
+     _narrative_state_block,
+     _recently_tried_block,
+-    _shorthand_user_prompt,
+     describe_delta,
+ )
+ from handler.mission_loader import load_mission
+@@ -169,7 +168,7 @@ def test_narrative_state_block_emits_protected_cover_suffix() -> None:
+     state = make_initial_state(mission)
+     state.set_quality("agent[LYNX].cover_protected", True)
+     block = _narrative_state_block(state, mission)
+-    assert "under protective cover this cycle" in block
++    assert "under protective cover this day" in block
+ 
+ 
+ def test_narrative_state_block_omits_fired_events() -> None:
+@@ -190,7 +189,7 @@ def test_narrative_state_block_lynx_initial_reads_in_fiction() -> None:
+     state = make_initial_state(mission)
+     block = _narrative_state_block(state, mission)
+     # The keystone descriptor for extraction_stage=0:
+-    assert "the extraction papers have not yet been surfaced" in block
++    assert "the extraction documents have not yet been surfaced" in block
+     # Cover descriptors for both agents:
+     assert "LYNX: cover intact" in block
+     assert "KESTREL: cover solid" in block
+@@ -247,7 +246,7 @@ def test_drafter_user_prompt_uses_narrative_state_block() -> None:
+         log_entries=[],
+     )
+     assert "LYNX: cover intact" in prompt
+-    assert "the extraction papers have not yet been surfaced" in prompt
++    assert "the extraction documents have not yet been surfaced" in prompt
+     assert "agent[LYNX].cover: 6 / 10" not in prompt
+ 
+ 
+@@ -264,7 +263,7 @@ def test_drafter_user_prompt_threads_recently_tried() -> None:
+         recently_tried=[(1, "DIVERSION_BY_AGENT", "LYNX")],
+     )
+     assert "RECENTLY TRIED" in prompt
+-    assert "C1: DIVERSION_BY_AGENT(LYNX)" in prompt
++    assert "D1: DIVERSION_BY_AGENT(LYNX)" in prompt
+ 
+ 
+ def test_drafter_user_prompt_carries_recent_log_entries() -> None:
+@@ -296,8 +295,8 @@ def test_drafter_user_prompt_carries_recent_log_entries() -> None:
+ def test_log_entries_block_cycle_1_message() -> None:
+     """No prior entries — the block reads as the explicit cycle-1 marker."""
+     block = _log_entries_block([], limit=2)
+-    assert "no prior cycles" in block
+-    assert "cycle 1" in block
++    assert "no prior days" in block
++    assert "day 1" in block
+ 
+ 
+ def test_log_entries_block_limits_to_last_n() -> None:
+@@ -435,7 +434,7 @@ def test_log_writer_user_prompt_includes_leans_when_provided() -> None:
+             "name LYNX's exhaustion at the window",
+         ],
+     )
+-    assert "LEAN-ON THIS CYCLE" in prompt
++    assert "LEAN-ON THIS DAY" in prompt
+     assert "foreground KESTREL" in prompt
+     assert "exhaustion at the window" in prompt
+ 
+@@ -475,30 +474,6 @@ def test_log_writer_user_prompt_carries_resolved_delta() -> None:
+     assert "6 -> 3" in prompt
+ 
+ 
+-# ───────────────────────── shorthand prompt ─────────────────────────
+-
+-
+-def test_shorthand_user_prompt_includes_cycle_and_archetype() -> None:
+-    option = Option(
+-        archetype="DIVERSION_BY_AGENT",
+-        agent="KESTREL",
+-        title="K diverts",
+-        prose="x",
+-    )
+-    prompt = _shorthand_user_prompt(3, option)
+-    assert "C3" in prompt
+-    assert "DIVERSION_BY_AGENT(KESTREL)" in prompt
+-    assert "case-file index" in prompt
+-
+-
+-def test_shorthand_user_prompt_unbound_archetype() -> None:
+-    """HOLD-style archetypes (no bound agent) render without parens."""
+-    option = Option(archetype="HOLD", agent=None, title="x", prose="y")
+-    prompt = _shorthand_user_prompt(5, option)
+-    assert "HOLD" in prompt
+-    assert "HOLD(" not in prompt
+-
+-
+ # ───────────────────────── recently tried ─────────────────────────
+ 
+ 
+@@ -507,13 +482,13 @@ def test_recently_tried_block_renders_authorized_picks() -> None:
+         [(1, "DIVERSION_BY_AGENT", "LYNX"), (2, "DIVERSION_BY_AGENT", "KESTREL")]
+     )
+     assert "RECENTLY TRIED" in block
+-    assert "C1: DIVERSION_BY_AGENT(LYNX)" in block
+-    assert "C2: DIVERSION_BY_AGENT(KESTREL)" in block
++    assert "D1: DIVERSION_BY_AGENT(LYNX)" in block
++    assert "D2: DIVERSION_BY_AGENT(KESTREL)" in block
+ 
+ 
+ def test_recently_tried_block_unbound_archetype() -> None:
+     block = _recently_tried_block([(1, "HOLD", None)])
+-    assert "C1: HOLD" in block
++    assert "D1: HOLD" in block
+     assert "HOLD(" not in block
+ 
+ 
+diff --git a/handler/tests/test_session_replay.py b/handler/tests/test_session_replay.py
+index 6f95c6f..9266a11 100644
+--- a/handler/tests/test_session_replay.py
++++ b/handler/tests/test_session_replay.py
+@@ -77,7 +77,7 @@ def _emit_cycle_one(session, mission) -> None:
+             by_handler_at=datetime.now(timezone.utc),
+         )
+     )
+-    delta = apply_archetype_effects(session.state, opt, mission)
++    delta, _branches = apply_archetype_effects(session.state, opt, mission)
+     session.apply(EffectsApplied(cycle_index=1, delta=delta))
+     close_delta = tick_cycle_close(session.state)
+     session.apply(CycleClosed(cycle_index=1, delta=close_delta))
+diff --git a/handler/tests/test_spine.py b/handler/tests/test_spine.py
+index 46d1cad..035a0f0 100644
+--- a/handler/tests/test_spine.py
++++ b/handler/tests/test_spine.py
+@@ -7,7 +7,7 @@ import pytest
+ 
+ from handler.mission_loader import load_mission
+ from handler.models import (
+-    DramaticQuestion,
++    Beat,
+     Mission,
+     Option,
+     QualityGte,
+@@ -24,7 +24,7 @@ from handler.spine import (
+     fire_due_passive_events,
+     invalid_archetype_combinations,
+     option_progresses_mission,
+-    select_dramatic_question,
++    select_beat,
+     snapshot,
+     tick_cycle_close,
+     valid_archetype_combinations,
+@@ -90,9 +90,10 @@ def test_valid_archetype_combinations_respects_archetype_when(mission, state):
+ 
+ def test_apply_archetype_effects_unbound(mission, state):
+     opt = Option(archetype="PUSH", title="t", prose="p")
+-    delta = apply_archetype_effects(state, opt, mission)
++    delta, branches = apply_archetype_effects(state, opt, mission)
+     assert state.get_quality("mission.progress") == 1
+     assert delta["mission.progress"] == (0, 1)
++    assert branches == set()  # PUSH has no branch-tagged effects
+ 
+ 
+ def test_apply_archetype_effects_substitutes_agent(mission, state):
+@@ -103,7 +104,7 @@ def test_apply_archetype_effects_substitutes_agent(mission, state):
+         title="t",
+         prose="p",
+     )
+-    delta = apply_archetype_effects(state, opt, mission)
++    delta, _branches = apply_archetype_effects(state, opt, mission)
+     # ALPHA cover: 5 → 3 (-2); progress: 0 → 1
+     assert state.get_quality("agent[ALPHA].cover") == 3
+     assert state.get_quality("mission.progress") == 1
+@@ -111,7 +112,8 @@ def test_apply_archetype_effects_substitutes_agent(mission, state):
+ 
+ 
+ def test_apply_archetype_effects_with_conditional_branches(state):
+-    # The LYNX-Exfil mission's RUN_EXFIL is the canonical conditional case.
++    # The LYNX-Exfil mission's RUN_EXFIL is the canonical opposed-check case.
++    # Default initial state has naming_progress=2 (clean band, < 6).
+     from pathlib import Path
+     from handler.mission_loader import load_mission
+ 
+@@ -120,10 +122,48 @@ def test_apply_archetype_effects_with_conditional_branches(state):
+     s.set_quality("mission.extraction_stage", 2)
+     s.set_quality("agent[LYNX].cover", 7)
+     opt = Option(archetype="RUN_EXFIL", title="t", prose="p")
+-    apply_archetype_effects(s, opt, m)
+-    # Clean exit (cover ≥ 5) costs 2.
++    delta, branches = apply_archetype_effects(s, opt, m)
++    # Clean branch (naming_progress < 6): -2 cover, stage advances.
+     assert s.get_quality("agent[LYNX].cover") == 5
+     assert s.get_quality("mission.extraction_stage") == 3
++    assert branches == {"clean"}
++
++
++def test_apply_archetype_effects_partial_branch(state):
++    """Mid-band naming_progress (6..8) triggers the partial branch on
++    RUN_EXFIL — LYNX cover takes a -4 hit and KESTREL is the cost."""
++    from pathlib import Path
++    from handler.mission_loader import load_mission
++
++    m = load_mission(Path(__file__).resolve().parents[1] / "missions" / "lynx_exfil.yaml")
++    s = make_initial_state(m)
++    s.set_quality("mission.extraction_stage", 2)
++    s.set_quality("agent[LYNX].cover", 7)
++    s.set_quality("mission.opposition.naming_progress", 7)
++    opt = Option(archetype="RUN_EXFIL", title="t", prose="p")
++    delta, branches = apply_archetype_effects(s, opt, m)
++    assert s.get_quality("agent[LYNX].cover") == 3  # 7 - 4
++    assert s.get_quality("mission.extraction_stage") == 3
++    assert s.get_quality("agent[KESTREL].cover") == 0
++    assert branches == {"partial"}
++
++
++def test_apply_archetype_effects_failure_branch(state):
++    """High-band naming_progress (>= 9) on RUN_EXFIL forces naming = 10 so
++    the lynx_named terminal fires next passive pass. Cover unchanged in this
++    branch — the loss is the file closing, not LYNX collapsing in the field."""
++    from pathlib import Path
++    from handler.mission_loader import load_mission
++
++    m = load_mission(Path(__file__).resolve().parents[1] / "missions" / "lynx_exfil.yaml")
++    s = make_initial_state(m)
++    s.set_quality("mission.extraction_stage", 2)
++    s.set_quality("agent[LYNX].cover", 7)
++    s.set_quality("mission.opposition.naming_progress", 9)
++    opt = Option(archetype="RUN_EXFIL", title="t", prose="p")
++    delta, branches = apply_archetype_effects(s, opt, m)
++    assert s.get_quality("mission.opposition.naming_progress") == 10
++    assert branches == {"failure"}
+ 
+ 
+ def test_cover_clamp_at_zero(mission, state):
+@@ -311,35 +351,82 @@ def test_derive_tension_band_sums_across_agents(mission, state):
+     assert derive_tension_band(prior, state) == "crisis"
+ 
+ 
+-# ───────────────────────── dramatic question selection ─────────────────────────
++# ───────────────────────── beat selection ─────────────────────────
+ 
+ 
+-def test_select_dramatic_question_returns_first_match(mission, state):
+-    """First matching predicate wins; author orders most-specific first."""
+-    mission_with_qs = mission.model_copy(
++def test_select_beat_returns_highest_priority_match(mission, state):
++    """Lowest `priority` int wins among `when`-matching beats; authored
++    order breaks ties (handled by zip-with-enumerate in select_beat)."""
++    mission_with_beats = mission.model_copy(
+         update={
+-            "dramatic_questions": [
+-                DramaticQuestion(
++            "beats": [
++                Beat(
++                    id="alpha_brink",
+                     when=QualityLte(quality="agent[ALPHA].cover", value=2),
+-                    question="Is ALPHA still useful?",
++                    fragment="ALPHA is at the brink.",
++                    priority=1,
+                 ),
+-                DramaticQuestion(
++                Beat(
++                    id="ambient",
+                     when=QualityGte(quality="mission.cycles_remaining", value=1),
+-                    question="What now?",
++                    fragment="The day is still open.",
++                    priority=5,
+                 ),
+             ]
+         }
+     )
+-    # Cover=5 → first doesn't match, second does
+-    assert select_dramatic_question(state, mission_with_qs) == "What now?"
+-    # Drop cover → first now matches and short-circuits
++    # Cover=5 → brink doesn't match, ambient does
++    selected = select_beat(state, mission_with_beats)
++    assert selected is not None and selected.id == "ambient"
++    # Drop cover → brink matches and (priority=1) wins over ambient (priority=5)
+     state.set_quality("agent[ALPHA].cover", 1)
+-    assert select_dramatic_question(state, mission_with_qs) == "Is ALPHA still useful?"
++    selected = select_beat(state, mission_with_beats)
++    assert selected is not None and selected.id == "alpha_brink"
++
++
++def test_select_beat_skips_already_fired(mission, state):
++    """Once a beat's id is in state.fired, it never re-selects (fire-once)."""
++    mission_with_beats = mission.model_copy(
++        update={
++            "beats": [
++                Beat(
++                    id="ambient",
++                    when=QualityGte(quality="mission.cycles_remaining", value=1),
++                    fragment="The day is open.",
++                    priority=5,
++                ),
++            ]
++        }
++    )
++    selected = select_beat(state, mission_with_beats)
++    assert selected is not None and selected.id == "ambient"
++    state.fired.append("ambient")
++    assert select_beat(state, mission_with_beats) is None
++
++
++def test_select_beat_unlimited_refires(mission, state):
++    """`fires_at_most="unlimited"` beats refire every cycle their predicate matches."""
++    mission_with_beats = mission.model_copy(
++        update={
++            "beats": [
++                Beat(
++                    id="ambient",
++                    when=QualityGte(quality="mission.cycles_remaining", value=1),
++                    fragment="The day is open.",
++                    priority=5,
++                    fires_at_most="unlimited",
++                ),
++            ]
++        }
++    )
++    state.fired.append("ambient")  # simulate prior fire — should NOT skip
++    selected = select_beat(state, mission_with_beats)
++    assert selected is not None and selected.id == "ambient"
+ 
+ 
+-def test_select_dramatic_question_returns_none_when_none_match(mission, state):
+-    """No questions defined → None (caller falls back to plain SoP framing)."""
+-    assert select_dramatic_question(state, mission) is None
++def test_select_beat_returns_none_when_none_match(mission, state):
++    """No beats defined → None (caller falls back gracefully)."""
++    assert select_beat(state, mission) is None
+ 
+ 
+ # ───────────────────────── locked-archetype rationale ─────────────────────────

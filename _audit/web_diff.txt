@@ -1,0 +1,937 @@
+﻿diff --git a/web/src/App.tsx b/web/src/App.tsx
+index 06d4bcb..4b664b0 100644
+--- a/web/src/App.tsx
++++ b/web/src/App.tsx
+@@ -1,6 +1,5 @@
+ import { useEffect } from "react";
+ import { DeskFrame } from "./components/DeskFrame";
+-import { DispatchModal } from "./components/DispatchModal";
+ import { OnboardingCard } from "./components/OnboardingCard";
+ import { OutcomeCard } from "./components/OutcomeCard";
+ import { Paper } from "./components/Paper";
+@@ -27,7 +26,6 @@ export default function App() {
+       </DeskFrame>
+ 
+       <OnboardingCard />
+-      <DispatchModal />
+       <OutcomeCard />
+ 
+       {error && (
+diff --git a/web/src/api.ts b/web/src/api.ts
+index 665feda..355dad6 100644
+--- a/web/src/api.ts
++++ b/web/src/api.ts
+@@ -126,7 +126,6 @@ export type SseEvent =
+   | { event: "events_fired"; events: string[]; delta: Delta; delta_descriptors?: DeltaDescriptors }
+   | { event: "entry_started"; cycle: number; archetype: string }
+   | { event: "entry_word"; cycle: number; idx: number; word: string; is_last?: boolean }
+-  | { event: "entry_shorthand"; cycle: number; shorthand: string }
+   | { event: "cycle_closed"; cycle: number; state: GameState; delta_descriptors?: DeltaDescriptors }
+   | { event: "mission_resolved"; outcome: string; summary: string; terminal_event: string; cycles_used: number; cycles_max: number; agents_lost: string[]; agents_alive: string[] }
+   | { event: "session_closed" }
+diff --git a/web/src/components/DispatchModal.tsx b/web/src/components/DispatchModal.tsx
+deleted file mode 100644
+index e1c1781..0000000
+--- a/web/src/components/DispatchModal.tsx
++++ /dev/null
+@@ -1,78 +0,0 @@
+-import { useEffect } from "react";
+-import { useStore } from "../store";
+-import { StreamingText } from "./StreamingText";
+-import { usePacedWords } from "../hooks/usePacedWords";
+-
+-export function DispatchModal() {
+-  const modalIdx = useStore((s) => s.modalDispatchIndex);
+-  const inbox = useStore((s) => s.inbox);
+-  const closeModal = useStore((s) => s.closeModal);
+-
+-  const d = modalIdx === null ? null : inbox.find((x) => x.cycle_index === modalIdx);
+-  const { words, complete, flush } = usePacedWords(d?.text ?? "");
+-
+-  useEffect(() => {
+-    if (modalIdx === null) return;
+-    function onKey(e: KeyboardEvent) {
+-      if (e.key === "Escape") closeModal();
+-    }
+-    document.addEventListener("keydown", onKey);
+-    document.body.style.overflow = "hidden";
+-    return () => {
+-      document.removeEventListener("keydown", onKey);
+-      document.body.style.overflow = "";
+-    };
+-  }, [modalIdx, closeModal]);
+-
+-  if (modalIdx === null || !d) return null;
+-
+-  return (
+-    <div
+-      className="scrim"
+-      onClick={(e) => {
+-        if (e.target === e.currentTarget) closeModal();
+-      }}
+-      role="dialog"
+-      aria-modal="true"
+-    >
+-      <article className="warm-paper-card archive-card" onClickCapture={flush}>
+-        <button
+-          type="button"
+-          className="archive-close"
+-          onClick={closeModal}
+-          aria-label="close"
+-        >
+-          ×
+-        </button>
+-
+-        <div className="stamp stamp-corner">
+-          <div>FILE</div>
+-          <div>COPY</div>
+-        </div>
+-
+-        <div className="archive-tag">
+-          <span className="archive-tag-rule" />
+-          <span>Case-file entry · cycle {d.cycle_index}</span>
+-        </div>
+-        <div className="archive-route">
+-          C{d.cycle_index} · {d.archetype}
+-        </div>
+-
+-        <div className="archive-body">
+-          <StreamingText words={words} complete={complete} showCaret={!complete} />
+-        </div>
+-
+-        {Object.keys(d.delta).length > 0 && (
+-          <div className="archive-delta">
+-            {Object.entries(d.delta).map(([q, { before, after }]) => (
+-              <span key={q}>
+-                <span className="archive-delta-key">{q}</span>
+-                {String(before)} → {String(after)}
+-              </span>
+-            ))}
+-          </div>
+-        )}
+-      </article>
+-    </div>
+-  );
+-}
+diff --git a/web/src/components/OnboardingCard.tsx b/web/src/components/OnboardingCard.tsx
+index 211e076..5ccacd0 100644
+--- a/web/src/components/OnboardingCard.tsx
++++ b/web/src/components/OnboardingCard.tsx
+@@ -1,19 +1,19 @@
+ import { useEffect } from "react";
+ import { useStore } from "../store";
+-import { StreamingText } from "./StreamingText";
++import { PacedReveal } from "./PacedReveal";
+ import { usePacedWords } from "../hooks/usePacedWords";
+ 
+-// Option B (see _mockups/handler-onboarding-options.html): the orientation
+-// surface holds only what cycle 1 needs — the briefing, in voice, plus one
+-// signpost sentence. Cast roster and meter glossary moved off this surface;
+-// they'll surface in-play (dossier panel, HUD tooltips) when added.
++// Option B (see _mockups/handler-onboarding-options.html): orientation
++// surface holds only the briefing in voice plus one signpost line.
++// Roster and meter glossary live off this surface (dossier panel /
++// HUD tooltips).
+ export function OnboardingCard() {
+   const meta = useStore((s) => s.mission_meta);
+   const dismissed = useStore((s) => s.onboardingDismissed);
+   const dismiss = useStore((s) => s.dismissOnboarding);
+ 
+   const briefing = meta?.opening_briefing?.trim() ?? "";
+-  const { words, complete, flush } = usePacedWords(briefing);
++  const { tokens, flushed, complete, flush, paceMs } = usePacedWords(briefing);
+ 
+   useEffect(() => {
+     if (dismissed || !meta) return;
+@@ -38,8 +38,6 @@ export function OnboardingCard() {
+ 
+   if (dismissed || !meta) return null;
+ 
+-  // Capture-phase so the briefing flushes before StreamingText's
+-  // stopPropagation can prevent the click reaching this handler.
+   return (
+     <div
+       className="scrim heavy"
+@@ -49,7 +47,7 @@ export function OnboardingCard() {
+     >
+       <article
+         className="warm-paper-card onboarding-card"
+-        onClickCapture={flush}
++        onClick={flush}
+       >
+         <header className="onboarding-head">
+           <span className="onboarding-tag">ORIENTATION</span>
+@@ -57,11 +55,7 @@ export function OnboardingCard() {
+         </header>
+ 
+         <div className="onboarding-briefing-body">
+-          <StreamingText
+-            words={words}
+-            complete={complete}
+-            showCaret={!complete}
+-          />
++          <PacedReveal tokens={tokens} flushed={flushed} paceMs={paceMs} />
+         </div>
+ 
+         <footer className="onboarding-foot">
+@@ -71,10 +65,14 @@ export function OnboardingCard() {
+           <button
+             type="button"
+             className="paper-btn"
+-            onClick={dismiss}
++            onClick={(e) => {
++              // Don't let the click bubble to the article's flush handler.
++              e.stopPropagation();
++              dismiss();
++            }}
+             disabled={!complete}
+           >
+-            Begin — cycle 1 ▸
++            Begin — day 1 ▸
+           </button>
+         </footer>
+       </article>
+diff --git a/web/src/components/OutcomeCard.tsx b/web/src/components/OutcomeCard.tsx
+index 00db440..f4b2c74 100644
+--- a/web/src/components/OutcomeCard.tsx
++++ b/web/src/components/OutcomeCard.tsx
+@@ -42,7 +42,7 @@ export function OutcomeCard() {
+ 
+         <div className="outcome-stats">
+           <Stat
+-            label="Cycles used"
++            label="Days used"
+             value={`${outcome.cycles_used} / ${outcome.cycles_max}`}
+           />
+           <Stat
+diff --git a/web/src/components/Paper.tsx b/web/src/components/Paper.tsx
+index eb7084d..27fed42 100644
+--- a/web/src/components/Paper.tsx
++++ b/web/src/components/Paper.tsx
+@@ -1,5 +1,6 @@
+-import { useMemo, useState } from "react";
++import { useEffect, useMemo, useRef, useState } from "react";
+ import type { DeltaDescriptors } from "../api";
++import type { CycleState, LogEntryRecord } from "../store";
+ import { nowZulu } from "../lib/time";
+ import { useStore } from "../store";
+ import { CaveatBanner } from "./CaveatBanner";
+@@ -15,16 +16,12 @@ const BUTTON_LABEL: Record<AuthPhase, string> = {
+   continue: "Continue ▸",
+ };
+ 
+-// Stable empty fallback so the Zustand selector doesn't allocate a fresh
+-// reference on every read (same pattern as the old DispatchOverlay).
+-const EMPTY_DESCRIPTORS: DeltaDescriptors = Object.freeze({}) as DeltaDescriptors;
+-
+ interface ResultLine {
+   key: string;
+   text: string;
+ }
+ 
+-/** Build the RESULT footer lines from the cycle's accumulated narrative
++/** Build the RESULT footer lines from a cycle's accumulated narrative
+  * descriptors. Cover changes render as `LYNX: cover intact → cover degraded`
+  * (using `agent_id` from the server payload); mission qualities render the
+  * new descriptor as a standalone clause. */
+@@ -43,7 +40,6 @@ function buildResultLines(descriptors: DeltaDescriptors): ResultLine[] {
+       lines.push({ key: q, text: d.after });
+     }
+   }
+-  // Cover lines first (most player-visible), then mission-scoped lines.
+   return lines.sort(
+     (a, b) =>
+       (descriptors[a.key].agent_id ? 0 : 1) -
+@@ -54,10 +50,33 @@ function buildResultLines(descriptors: DeltaDescriptors): ResultLine[] {
+ export function Paper() {
+   const meta = useStore((s) => s.mission_meta);
+   const cycle = useStore((s) => s.cycle);
++  const inbox = useStore((s) => s.inbox);
+   const authorize = useStore((s) => s.authorize);
+   const continueCycle = useStore((s) => s.continueCycle);
+   const [stampTimestamp, setStampTimestamp] = useState<string>("");
+ 
++  // Auto-scroll the new cycle's section into view when the engine opens it.
++  // Tracks the last-seen index so we only scroll on transitions, not on
++  // every render. requestAnimationFrame gives the new <section> a tick to
++  // mount before scrollIntoView fires.
++  const lastSeenCycle = useRef<number | null>(null);
++  const cycleIndex = cycle?.index ?? null;
++  useEffect(() => {
++    if (cycleIndex === null) return;
++    if (
++      lastSeenCycle.current !== null &&
++      cycleIndex !== lastSeenCycle.current
++    ) {
++      requestAnimationFrame(() => {
++        document.getElementById(`cycle-${cycleIndex}`)?.scrollIntoView({
++          behavior: "smooth",
++          block: "start",
++        });
++      });
++    }
++    lastSeenCycle.current = cycleIndex;
++  }, [cycleIndex]);
++
+   if (!cycle || !meta) {
+     return (
+       <article className="paper-sheet">
+@@ -67,10 +86,7 @@ export function Paper() {
+     );
+   }
+ 
+-  const file =
+-    meta.agents[0]?.file_number ? `PF.${meta.agents[0].file_number}` : "PF.??-?";
+   const headerTimestamp = nowZulu();
+-
+   const canAuth =
+     cycle.awaiting_auth &&
+     cycle.selected_option_index !== null &&
+@@ -92,56 +108,159 @@ export function Paper() {
+         ? () => void continueCycle()
+         : undefined;
+ 
+-  const showFootHint =
+-    cycle.entry_archetype !== null && !cycle.entry_complete;
++  // The just-finished current cycle (between `entry_word is_last` and
++  // `cycle_opened` for N+1) appears in both `inbox` and `cycle` — filter it
++  // out of the past list so CurrentCycleSection owns its rendering.
++  const pastCycles = inbox.filter((e) => e.cycle_index < cycle.index);
+ 
+   return (
+     <article
+       className="paper-sheet"
+-      aria-label={`cycle ${cycle.index} brief`}
++      aria-label={`case file ${meta.codename}`}
+       data-has-selection={cycle.selected_option_index !== null}
+       data-authorized={cycle.authorized}
+     >
+       <CaveatBanner />
+ 
+       <div className="paper-doctype">
+-        <span>BRIEF</span>
++        <span>CASE FILE</span>
+         <span className="paper-doctype-meta">
+           Op. {meta.codename} · {headerTimestamp}
+         </span>
+       </div>
+       <div className="paper-rule64" />
+-
+       <div className="status-divider" />
+ 
+-      {/* Pre-authorize: options block. Post-authorize: log entry. */}
+-      {!cycle.authorized ? (
+-        <OptionsBlock
+-          stampTimestamp={stampTimestamp}
+-          onClick={onClick}
+-          buttonLabel={BUTTON_LABEL[phase]}
+-          authorized={cycle.authorized}
+-        />
+-      ) : (
+-        <EntryBlock
+-          stampTimestamp={stampTimestamp}
+-          onClick={onClick}
+-          buttonLabel={BUTTON_LABEL[phase]}
+-        />
+-      )}
++      {pastCycles.map((entry) => (
++        <PastCycleSection key={entry.cycle_index} entry={entry} />
++      ))}
+ 
+-      <div className="paper-foot">
+-        <span>
+-          {file} · cycle {cycle.index} of {meta.max_cycles} · p.1
+-        </span>
+-        {showFootHint && (
+-          <span className="paper-foot-hint">tap to skip reveal</span>
+-        )}
+-      </div>
++      <CurrentCycleSection cycle={cycle} />
++
++      <AuthFooter
++        stampTimestamp={stampTimestamp}
++        onClick={onClick}
++        buttonLabel={BUTTON_LABEL[phase]}
++        showStamp={cycle.authorized}
++      />
+     </article>
+   );
+ }
+ 
++function CycleDivider({
++  index,
++  archetype,
++  title,
++}: {
++  index: number;
++  archetype?: string;
++  title?: string;
++}) {
++  const suffix = [archetype, title].filter(Boolean).join(" · ");
++  return (
++    <div className="cycle-divider" aria-hidden>
++      <span className="cycle-divider-rule" />
++      <span className="cycle-divider-label">
++        CYCLE {index}
++        {suffix ? ` · ${suffix}` : ""}
++      </span>
++      <span className="cycle-divider-rule" />
++    </div>
++  );
++}
++
++function ResultBlock({ lines }: { lines: ResultLine[] }) {
++  if (lines.length === 0) return null;
++  return (
++    <div className="dispatch-result" aria-label="cycle result">
++      <span className="dispatch-result-label">RESULT</span>
++      <ul className="dispatch-result-lines">
++        {lines.map((line) => (
++          <li key={line.key}>{line.text}</li>
++        ))}
++      </ul>
++    </div>
++  );
++}
++
++function PastCycleSection({ entry }: { entry: LogEntryRecord }) {
++  const lines = useMemo(
++    () => buildResultLines(entry.delta_descriptors ?? {}),
++    [entry.delta_descriptors],
++  );
++  return (
++    <section
++      id={`cycle-${entry.cycle_index}`}
++      className="cycle-section past"
++      aria-label={`cycle ${entry.cycle_index} archive`}
++    >
++      <CycleDivider
++        index={entry.cycle_index}
++        archetype={entry.archetype}
++        title={entry.title}
++      />
++      <div className="sop-block">
++        <div className="sop-label">
++          OPERATIONS DESK
++          <span className="block-sub"> · Case-file entry</span>
++        </div>
++        <div className="sop-body">{entry.text}</div>
++        <ResultBlock lines={lines} />
++      </div>
++    </section>
++  );
++}
++
++function CurrentCycleSection({ cycle }: { cycle: CycleState }) {
++  const resultLines = useMemo(
++    () =>
++      cycle.entry_complete ? buildResultLines(cycle.delta_descriptors) : [],
++    [cycle.entry_complete, cycle.delta_descriptors],
++  );
++  const authorizedTitle =
++    cycle.selected_option_index !== null
++      ? (cycle.options[cycle.selected_option_index]?.title ?? "")
++      : "";
++
++  return (
++    <section
++      id={`cycle-${cycle.index}`}
++      className="cycle-section current"
++      aria-label={`cycle ${cycle.index} brief`}
++    >
++      <CycleDivider
++        index={cycle.index}
++        archetype={cycle.entry_archetype ?? undefined}
++        title={cycle.authorized ? authorizedTitle : undefined}
++      />
++      <div className="opts-block">
++        <div className="opts-label">
++          OPERATIONS DESK
++          <span className="block-sub"> · Courses of Action</span>
++        </div>
++        <OptionsList />
++      </div>
++
++      {cycle.authorized && (
++        <div className="sop-block">
++          <div className="sop-label">
++            OPERATIONS DESK
++            <span className="block-sub"> · Case-file entry</span>
++          </div>
++          <div className="sop-body">
++            <StreamingText
++              words={cycle.entry_words}
++              showCaret={!cycle.entry_complete}
++              complete={cycle.entry_complete}
++            />
++          </div>
++          <ResultBlock lines={resultLines} />
++        </div>
++      )}
++    </section>
++  );
++}
++
+ function AuthFooter({
+   stampTimestamp,
+   onClick,
+@@ -176,86 +295,3 @@ function AuthFooter({
+     </div>
+   );
+ }
+-
+-function OptionsBlock({
+-  stampTimestamp,
+-  onClick,
+-  buttonLabel,
+-  authorized,
+-}: {
+-  stampTimestamp: string;
+-  onClick: (() => void) | undefined;
+-  buttonLabel: string;
+-  authorized: boolean;
+-}) {
+-  return (
+-    <div className="opts-block">
+-      <div className="opts-label">
+-        OPERATIONS DESK
+-        <span className="block-sub"> · Courses of Action</span>
+-      </div>
+-      <OptionsList />
+-      <AuthFooter
+-        stampTimestamp={stampTimestamp}
+-        onClick={onClick}
+-        buttonLabel={buttonLabel}
+-        showStamp={authorized}
+-      />
+-    </div>
+-  );
+-}
+-
+-function EntryBlock({
+-  stampTimestamp,
+-  onClick,
+-  buttonLabel,
+-}: {
+-  stampTimestamp: string;
+-  onClick: (() => void) | undefined;
+-  buttonLabel: string;
+-}) {
+-  const words = useStore((s) => s.cycle?.entry_words ?? []);
+-  const entryComplete = useStore((s) => s.cycle?.entry_complete ?? false);
+-  const descriptors = useStore(
+-    (s) => s.cycle?.delta_descriptors ?? EMPTY_DESCRIPTORS,
+-  );
+-
+-  // Only populated once the entry has finished streaming — the player reads
+-  // the prose first, the mechanical summary second.
+-  const resultLines = useMemo(
+-    () => (entryComplete ? buildResultLines(descriptors) : []),
+-    [entryComplete, descriptors],
+-  );
+-
+-  return (
+-    <div className="sop-block">
+-      <div className="sop-label">
+-        OPERATIONS DESK
+-        <span className="block-sub"> · Case-file entry</span>
+-      </div>
+-      <div className="sop-body">
+-        <StreamingText
+-          words={words}
+-          showCaret={!entryComplete}
+-          complete={entryComplete}
+-        />
+-      </div>
+-      {resultLines.length > 0 && (
+-        <div className="dispatch-result" aria-label="cycle result">
+-          <span className="dispatch-result-label">RESULT</span>
+-          <ul className="dispatch-result-lines">
+-            {resultLines.map((line) => (
+-              <li key={line.key}>{line.text}</li>
+-            ))}
+-          </ul>
+-        </div>
+-      )}
+-      <AuthFooter
+-        stampTimestamp={stampTimestamp}
+-        onClick={onClick}
+-        buttonLabel={buttonLabel}
+-        showStamp
+-      />
+-    </div>
+-  );
+-}
+diff --git a/web/src/components/Sidebar.tsx b/web/src/components/Sidebar.tsx
+index 492f9cb..bb203b8 100644
+--- a/web/src/components/Sidebar.tsx
++++ b/web/src/components/Sidebar.tsx
+@@ -9,13 +9,19 @@ interface Props {
+ export function Sidebar({ open, onToggle }: Props) {
+   const meta = useStore((s) => s.mission_meta);
+   const state = useStore((s) => s.state);
+-  const shorthands = useStore((s) => s.shorthands);
+-  const openModal = useStore((s) => s.openModal);
+-  const reversedShorthands = useMemo(
+-    () => [...shorthands].reverse(),
+-    [shorthands],
++  const inbox = useStore((s) => s.inbox);
++  const reversedEntries = useMemo(
++    () => [...inbox].reverse(),
++    [inbox],
+   );
+ 
++  function jumpToCycle(cycleIndex: number) {
++    document.getElementById(`cycle-${cycleIndex}`)?.scrollIntoView({
++      behavior: "smooth",
++      block: "start",
++    });
++  }
++
+   if (!meta) {
+     return (
+       <aside className={`desk-side ${open ? "" : "closed"}`}>
+@@ -35,7 +41,7 @@ export function Sidebar({ open, onToggle }: Props) {
+       {open ? (
+         <>
+           <section className="rail-section">
+-            <div className="rail-label">CYCLE</div>
++            <div className="rail-label">DAY</div>
+             <div className="rail-cyc-row">
+               <span className="rail-cyc-num">
+                 {used + 1}/{meta.max_cycles}
+@@ -63,16 +69,16 @@ export function Sidebar({ open, onToggle }: Props) {
+ 
+           <section className="rail-section">
+             <div className="rail-label">CASE FILE</div>
+-            {reversedShorthands.length > 0 && (
++            {reversedEntries.length > 0 && (
+               <div className="inbox-list">
+-                {reversedShorthands.map((row) => (
++                {reversedEntries.map((row) => (
+                   <button
+                     key={row.cycle_index}
+                     type="button"
+                     className="inbox-item"
+-                    onClick={() => openModal(row.cycle_index)}
++                    onClick={() => jumpToCycle(row.cycle_index)}
+                   >
+-                    <span className="inbox-snip">{row.shorthand}</span>
++                    <span className="inbox-snip">{row.title}</span>
+                   </button>
+                 ))}
+               </div>
+@@ -84,7 +90,7 @@ export function Sidebar({ open, onToggle }: Props) {
+       ) : (
+         <>
+           <section className="rail-section">
+-            <div className="rail-tag">CYC</div>
++            <div className="rail-tag">DAY</div>
+             <div className="rail-cyc-row">
+               <span className="rail-cyc-num">
+                 {used + 1}/{meta.max_cycles}
+@@ -103,7 +109,7 @@ export function Sidebar({ open, onToggle }: Props) {
+           </section>
+           <section className="rail-section">
+             <div className="rail-tag">FIL</div>
+-            {shorthands.length > 0 && (
++            {inbox.length > 0 && (
+               <button
+                 type="button"
+                 className="inbox-chip"
+@@ -112,7 +118,7 @@ export function Sidebar({ open, onToggle }: Props) {
+                 aria-label="Open case file"
+               >
+                 <span className="inbox-chip-icon">✉</span>
+-                <span className="inbox-chip-count">{shorthands.length}</span>
++                <span className="inbox-chip-count">{inbox.length}</span>
+               </button>
+             )}
+           </section>
+diff --git a/web/src/hooks/usePacedWords.ts b/web/src/hooks/usePacedWords.ts
+index 6e9eb3c..a47a2df 100644
+--- a/web/src/hooks/usePacedWords.ts
++++ b/web/src/hooks/usePacedWords.ts
+@@ -1,57 +1,36 @@
+-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
++import { useCallback, useEffect, useMemo, useState } from "react";
+ 
+-// Paces a static string out as word tokens to feed <StreamingText>. The
+-// backend's paced_word_emitter does this for LLM output (HANDLER_SPEC_V2
+-// §11 — server-side word-pacing is the single source of timing truth);
+-// this hook does the same for client-side authored prose (briefings,
+-// archive re-reads) so the reveal cadence is consistent across surfaces.
++// Tokenizes a static authored prose string for staggered CSS-delay
++// reveal. The companion render site lays out ALL tokens immediately at
++// opacity 0 with per-word `animation-delay` so the container's size is
++// stable from frame 1 — words fade in at the pace set here, but the box
++// doesn't grow. Backend-streamed surfaces use <StreamingText> instead
++// (words arrive incrementally and the live-write effect is intentional).
+ //
+-// Tokens keep their trailing whitespace so re-joining renders correctly.
+-// `flush` is idempotent — safe to wire directly as a click handler.
+-export function usePacedWords(
+-  text: string,
+-  paceMs = 80,
+-): { words: string[]; complete: boolean; flush: () => void } {
+-  const [words, setWords] = useState<string[]>([]);
+-  const [complete, setComplete] = useState(false);
++// `flush` jumps the whole list to fully visible for click-to-skip.
++export function usePacedWords(text: string, paceMs = 80) {
+   const tokens = useMemo(() => text.match(/\S+\s*/g) ?? [], [text]);
+-  const cancelRef = useRef<(() => void) | null>(null);
++  const [flushed, setFlushed] = useState(false);
++  const [complete, setComplete] = useState(false);
+ 
+   useEffect(() => {
+-    cancelRef.current?.();
+-    setWords([]);
++    setFlushed(false);
+     setComplete(false);
+     if (tokens.length === 0) {
+       setComplete(true);
+       return;
+     }
+-    let i = 0;
+-    let cancelled = false;
+-    let timer: ReturnType<typeof setTimeout> | null = null;
+-    function tick() {
+-      if (cancelled) return;
+-      setWords((w) => [...w, tokens[i]]);
+-      i += 1;
+-      if (i >= tokens.length) {
+-        setComplete(true);
+-        return;
+-      }
+-      timer = setTimeout(tick, paceMs);
+-    }
+-    timer = setTimeout(tick, paceMs);
+-    const cancel = () => {
+-      cancelled = true;
+-      if (timer) clearTimeout(timer);
+-    };
+-    cancelRef.current = cancel;
+-    return cancel;
++    const timer = setTimeout(
++      () => setComplete(true),
++      tokens.length * paceMs,
++    );
++    return () => clearTimeout(timer);
+   }, [tokens, paceMs]);
+ 
+   const flush = useCallback(() => {
+-    cancelRef.current?.();
+-    setWords(tokens);
++    setFlushed(true);
+     setComplete(true);
+-  }, [tokens]);
++  }, []);
+ 
+-  return { words, complete, flush };
++  return { tokens, flushed, complete, flush, paceMs };
+ }
+diff --git a/web/src/index.css b/web/src/index.css
+index b779de2..a136aec 100644
+--- a/web/src/index.css
++++ b/web/src/index.css
+@@ -609,6 +609,42 @@ body {
+   color: var(--ink-soft);
+ }
+ 
++/* Cycle section — one per past or current cycle in the case-file scroll.
++   `current` reads as the active brief; `past` reads as an archived page.
++   Both anchor `scrollIntoView` targets via id="cycle-${n}". */
++.cycle-section { display: block; }
++.cycle-section.past {
++  margin-bottom: 38px;
++  /* Soft archived feel — past pages are read-only and a hair muted. */
++  opacity: 0.92;
++}
++.cycle-section.current { margin-bottom: 0; }
++
++/* Cycle divider — small Courier label between page breaks. Rules on either
++   side hairline-thin. Sits above each cycle's blocks. */
++.cycle-divider {
++  display: flex;
++  align-items: center;
++  gap: 12px;
++  margin: 4px 0 18px;
++}
++.cycle-section.past + .cycle-section .cycle-divider,
++.cycle-section.past:not(:first-of-type) .cycle-divider { margin-top: 12px; }
++.cycle-divider-rule {
++  flex: 1;
++  height: 0;
++  border-top: 1px solid var(--rule-soft);
++}
++.cycle-divider-label {
++  font-family: "Courier Prime", monospace;
++  font-size: 10px;
++  letter-spacing: 0.28em;
++  color: var(--ink-soft);
++  text-transform: uppercase;
++  font-weight: 700;
++  white-space: nowrap;
++}
++
+ /* State of Play */
+ .sop-block { margin: 0 0 24px; padding: 4px 0; }
+ .sop-label {
+@@ -695,10 +731,20 @@ body {
+ .opts.has-sel .opt-row:not(.sel) { opacity: 0.34; }
+ .opts.authorized .opt-row:not(.sel) { opacity: 0.18; }
+ 
+-/* Authorize block — embedded in the paper */
++/* Authorize block — sticky-pinned to the bottom of the paper-wrap viewport.
++   margin-top: auto handles the short-document case (pins to the cream
++   sheet's bottom via the .paper-sheet flex column); position: sticky takes
++   over once cycles accumulate and the document scrolls. The paper background
++   occludes prose scrolling under, and the soft top rule gives a visual hand-
++   off so the auth row reads as separate from the streaming entry. */
+ .auth {
++  position: sticky;
++  bottom: 0;
++  z-index: 2;
+   margin-top: auto;
+-  padding-top: 22px;
++  padding: 18px 0 14px;
++  background: var(--paper);
++  border-top: 1px solid var(--rule-soft);
+   display: grid;
+   grid-template-columns: 1fr auto;
+   gap: 24px;
+@@ -1185,10 +1231,6 @@ body {
+   line-height: 1.78;
+   color: var(--ink);
+   white-space: pre-wrap;
+-  padding: 14px 18px;
+-  border-left: 2px solid var(--stamp);
+-  background: var(--stamp-bg);
+-  cursor: text;
+ }
+ .onboarding-foot {
+   display: flex;
+diff --git a/web/src/store.ts b/web/src/store.ts
+index 140801d..5064a06 100644
+--- a/web/src/store.ts
++++ b/web/src/store.ts
+@@ -33,22 +33,15 @@ export interface OptionDraft {
+ }
+ 
+ /** One past case-file entry — full prose. Held in the store so the
+- * click-to-expand history modal can replay any cycle's entry without a
++ * case-file scroll can render any completed cycle inline without a
+  * round-trip. */
+ export interface LogEntryRecord {
+   cycle_index: number;
+   archetype: string;
++  title: string;
+   text: string;
+   delta: Delta;
+-}
+-
+-/** One case-file history row — LLM-generated one-line shorthand for a cycle.
+- * Server emits via `entry_shorthand` after the entry streams. Frontend
+- * lists these in the case-file panel; clicking opens the full prose
+- * (from `inbox` keyed by cycle_index). */
+-export interface LogShorthandRecord {
+-  cycle_index: number;
+-  shorthand: string;
++  delta_descriptors: DeltaDescriptors;
+ }
+ 
+ export interface CycleState {
+@@ -94,13 +87,9 @@ interface Store {
+   cycle: CycleState | null;
+   // Full prose per cycle. Click a case-file row to re-read any past cycle's entry.
+   inbox: LogEntryRecord[];
+-  // History row shorthands. Server fires `entry_shorthand` after each
+-  // cycle's entry streams. Indexed by cycle_index — append-only.
+-  shorthands: LogShorthandRecord[];
+   outcome: Outcome | null;
+   errorMessage: string | null;
+   bootStarted: boolean;
+-  modalDispatchIndex: number | null;
+   // Onboarding modal — shown once at the start of a session, gated by user
+   // dismissal. Reset on restart (no localStorage) so a replay is implicitly
+   // first-time again.
+@@ -110,8 +99,6 @@ interface Store {
+   authorize: () => Promise<void>;
+   continueCycle: () => Promise<void>;
+   selectOption: (idx: number | null) => void;
+-  openModal: (cycleIndex: number) => void;
+-  closeModal: () => void;
+   dismissOnboarding: () => void;
+   handleEvent: (event: SseEvent) => void;
+   reset: () => void;
+@@ -164,11 +151,9 @@ const _store = create<Store>((set, get) => ({
+   state: {},
+   cycle: null,
+   inbox: [],
+-  shorthands: [],
+   outcome: null,
+   errorMessage: null,
+   bootStarted: false,
+-  modalDispatchIndex: null,
+   onboardingDismissed: false,
+ 
+   reset: () =>
+@@ -178,10 +163,8 @@ const _store = create<Store>((set, get) => ({
+       state: {},
+       cycle: null,
+       inbox: [],
+-      shorthands: [],
+       outcome: null,
+       errorMessage: null,
+-      modalDispatchIndex: null,
+       bootStarted: false,
+       onboardingDismissed: false,
+     }),
+@@ -250,9 +233,6 @@ const _store = create<Store>((set, get) => ({
+     set({ cycle: { ...cycle, selected_option_index: next } });
+   },
+ 
+-  openModal: (cycleIndex) => set({ modalDispatchIndex: cycleIndex }),
+-  closeModal: () => set({ modalDispatchIndex: null }),
+-
+   dismissOnboarding: () => set({ onboardingDismissed: true }),
+ 
+   handleEvent: (ev) => {
+@@ -387,11 +367,17 @@ const _store = create<Store>((set, get) => ({
+         if (ev.is_last) {
+           // Finalise: build inbox entry from accumulated text.
+           const text = c.entry_words.join("");
++          const title =
++            c.selected_option_index !== null
++              ? (c.options[c.selected_option_index]?.title ?? "")
++              : "";
+           const entry: LogEntryRecord = {
+             cycle_index: c.index,
+             archetype: c.entry_archetype ?? "?",
++            title,
+             text,
+             delta: c.delta,
++            delta_descriptors: c.delta_descriptors,
+           };
+           set({
+             cycle: { ...c, entry_complete: true },
+@@ -407,19 +393,6 @@ const _store = create<Store>((set, get) => ({
+         break;
+       }
+ 
+-      case "entry_shorthand": {
+-        // Append the case-file history row. No cycle guard — shorthands
+-        // can land slightly after the cycle has rolled over (the LLM
+-        // call runs in parallel with the cycle-close sequence).
+-        set({
+-          shorthands: [
+-            ...get().shorthands,
+-            { cycle_index: ev.cycle, shorthand: ev.shorthand },
+-          ],
+-        });
+-        break;
+-      }
+-
+       case "cycle_closed": {
+         const c = get().cycle;
+         // Accumulate the cycle-close descriptors (cycles_remaining tick) into

@@ -1,0 +1,766 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>HANDLER — playthrough audit</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Courier+Prime:wght@400;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --ink: #d6d2c4;
+    --ink-dim: #8a8676;
+    --ink-faint: #5a5648;
+    --paper: #14130f;
+    --panel: #1c1b16;
+    --panel-2: #232218;
+    --rule: #3a382e;
+    --warn: #c4956c;
+    --bad: #c46c6c;
+    --good: #8ca873;
+    --hot: #d97a3f;
+    --cool: #6c9bc4;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    font-family: 'Courier Prime', 'Courier New', monospace;
+    background: var(--paper); color: var(--ink);
+    font-size: 14px; line-height: 1.5;
+  }
+  body { padding: 32px 24px 80px; max-width: 1200px; margin: 0 auto; }
+  h1, h2, h3, h4 { font-weight: 700; letter-spacing: 0.02em; margin: 0; }
+  h1 { font-size: 22px; text-transform: uppercase; border-bottom: 1px solid var(--rule); padding-bottom: 12px; margin-bottom: 4px; }
+  h2 { font-size: 16px; text-transform: uppercase; color: var(--ink-dim); margin-top: 36px; margin-bottom: 12px; padding-bottom: 4px; border-bottom: 1px dashed var(--rule); }
+  h3 { font-size: 13px; text-transform: uppercase; color: var(--warn); margin-top: 18px; margin-bottom: 6px; letter-spacing: 0.08em; }
+  h4 { font-size: 12px; text-transform: uppercase; color: var(--ink-dim); margin-top: 14px; margin-bottom: 4px; }
+  p { margin: 8px 0; }
+  a { color: var(--cool); text-decoration: none; border-bottom: 1px dotted var(--cool); }
+  .meta { color: var(--ink-dim); font-size: 12px; margin-top: 6px; margin-bottom: 16px; }
+  .pill { display: inline-block; padding: 2px 8px; border: 1px solid var(--rule); border-radius: 2px; font-size: 11px; text-transform: uppercase; color: var(--ink-dim); margin-right: 6px; }
+  .pill.hot { color: var(--hot); border-color: var(--hot); }
+  .pill.warn { color: var(--warn); border-color: var(--warn); }
+  .pill.bad { color: var(--bad); border-color: var(--bad); }
+  .pill.good { color: var(--good); border-color: var(--good); }
+
+  /* tab nav */
+  .tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--rule); margin-top: 20px; }
+  .tab { padding: 10px 16px; background: var(--panel); color: var(--ink-dim); cursor: pointer; border: 1px solid var(--rule); border-bottom: none; user-select: none; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; }
+  .tab:hover { color: var(--ink); background: var(--panel-2); }
+  .tab.active { color: var(--ink); background: var(--panel-2); border-bottom: 1px solid var(--panel-2); margin-bottom: -1px; position: relative; }
+  .tab-panel { display: none; padding: 24px 0; }
+  .tab-panel.active { display: block; }
+
+  /* === CYCLE XRAY === */
+  .cycle-strip { display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; margin: 16px 0 24px; }
+  .cycle-tab { padding: 12px 8px; background: var(--panel); border: 1px solid var(--rule); cursor: pointer; text-align: center; transition: background 0.15s; }
+  .cycle-tab:hover { background: var(--panel-2); }
+  .cycle-tab.active { background: var(--panel-2); border-color: var(--warn); }
+  .cycle-tab .ix { font-weight: 700; font-size: 18px; color: var(--ink); }
+  .cycle-tab .lbl { font-size: 10px; color: var(--ink-dim); text-transform: uppercase; margin-top: 4px; }
+  .cycle-tab .picked { font-size: 11px; color: var(--warn); margin-top: 6px; min-height: 14px; }
+
+  .cycle-detail { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+  .cycle-side h3 { margin-top: 0; }
+  .span-block {
+    background: var(--panel); border-left: 3px solid var(--rule);
+    padding: 12px 14px; margin: 10px 0; font-size: 13px;
+  }
+  .span-block.sop { border-left-color: var(--cool); }
+  .span-block.drafter { border-left-color: var(--warn); }
+  .span-block.renderer { border-left-color: var(--good); }
+  .span-block.engine { border-left-color: var(--hot); }
+  .span-block.forced { border-left-color: var(--bad); background: rgba(196, 108, 108, 0.06); }
+  .span-block .label { font-size: 10px; text-transform: uppercase; color: var(--ink-dim); letter-spacing: 0.08em; margin-bottom: 6px; }
+  .span-block .body { white-space: pre-wrap; }
+  .options-list { list-style: none; padding: 0; margin: 8px 0 0; }
+  .options-list li { padding: 8px 10px; margin-bottom: 6px; background: var(--panel-2); border-left: 2px solid var(--rule); cursor: default; transition: border-color 0.15s; }
+  .options-list li.picked { border-left-color: var(--warn); background: rgba(196, 149, 108, 0.08); }
+  .options-list li.forced { border-left-color: var(--bad); }
+  .options-list li.picked.forced { border-left-color: var(--bad); background: rgba(196, 108, 108, 0.12); }
+  .options-list .opt-title { font-weight: 700; color: var(--ink); }
+  .options-list .opt-prose { font-size: 12px; color: var(--ink-dim); margin-top: 2px; }
+  .options-list .opt-meta { font-size: 10px; color: var(--ink-faint); text-transform: uppercase; margin-top: 4px; letter-spacing: 0.06em; }
+
+  .state-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 8px; }
+  .state-table th, .state-table td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--rule); }
+  .state-table th { color: var(--ink-dim); font-weight: 400; text-transform: uppercase; font-size: 10px; letter-spacing: 0.06em; }
+  .state-table .delta { color: var(--bad); }
+  .state-table .delta.up { color: var(--good); }
+  .state-table .delta.flat { color: var(--ink-faint); }
+
+  /* === HEATMAP === */
+  .heat-grid { display: grid; grid-template-columns: 200px repeat(5, 1fr); gap: 2px; margin-top: 12px; font-size: 11px; }
+  .heat-grid .heat-row { display: contents; }
+  .heat-grid .heat-cell { padding: 8px; background: var(--panel); border: 1px solid var(--rule); text-align: center; min-height: 38px; display: flex; align-items: center; justify-content: center; }
+  .heat-grid .heat-cell.label { justify-content: flex-start; color: var(--ink-dim); font-size: 11px; padding: 8px 12px; }
+  .heat-grid .heat-cell.l1 { background: rgba(196, 149, 108, 0.15); color: var(--warn); }
+  .heat-grid .heat-cell.l2 { background: rgba(196, 149, 108, 0.35); color: var(--ink); font-weight: 700; }
+  .heat-grid .heat-cell.l3 { background: rgba(217, 122, 63, 0.55); color: var(--paper); font-weight: 700; }
+  .heat-grid .heat-cell .count { font-size: 13px; }
+  .heat-grid .header-cell { background: var(--panel-2); padding: 8px; text-align: center; color: var(--ink-dim); font-size: 11px; text-transform: uppercase; }
+
+  /* === MECHANIC SANDBOX === */
+  .mech-grid { display: grid; grid-template-columns: 320px 1fr; gap: 24px; }
+  .mech-list { display: flex; flex-direction: column; gap: 6px; }
+  .mech-item { padding: 12px; background: var(--panel); border: 1px solid var(--rule); cursor: pointer; transition: all 0.15s; }
+  .mech-item:hover { background: var(--panel-2); border-color: var(--ink-faint); }
+  .mech-item.selected { background: var(--panel-2); border-color: var(--warn); }
+  .mech-item .mh { display: flex; justify-content: space-between; align-items: center; }
+  .mech-item .mtitle { font-weight: 700; font-size: 13px; color: var(--ink); }
+  .mech-item .mstars { color: var(--warn); font-size: 11px; letter-spacing: 0.1em; }
+  .mech-item .mtag { color: var(--ink-dim); font-size: 11px; margin-top: 4px; }
+
+  .mech-detail { background: var(--panel); border: 1px solid var(--rule); padding: 20px; min-height: 480px; }
+  .mech-detail h3 { margin-top: 0; color: var(--warn); font-size: 14px; }
+  .compare { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 16px 0; }
+  .compare > div { padding: 12px; background: var(--panel-2); border-left: 3px solid var(--rule); }
+  .compare .now { border-left-color: var(--bad); }
+  .compare .next { border-left-color: var(--good); }
+  .compare h4 { margin-top: 0; }
+  .compare pre { white-space: pre-wrap; font-family: inherit; font-size: 12px; color: var(--ink); margin: 0; }
+  .impl-snippet { background: var(--paper); border: 1px solid var(--rule); padding: 10px; margin-top: 12px; font-size: 12px; color: var(--ink-dim); white-space: pre-wrap; }
+  .impl-snippet .keyword { color: var(--warn); }
+  .impl-snippet .ident { color: var(--cool); }
+
+  /* === FIX LIST === */
+  .fix-list { display: flex; flex-direction: column; gap: 8px; }
+  .fix-row {
+    display: grid; grid-template-columns: 30px 1fr 100px 80px 80px;
+    gap: 12px; align-items: center;
+    padding: 12px; background: var(--panel); border: 1px solid var(--rule);
+    cursor: pointer; transition: background 0.15s;
+  }
+  .fix-row:hover { background: var(--panel-2); }
+  .fix-row.expanded { background: var(--panel-2); }
+  .fix-num { font-weight: 700; font-size: 14px; color: var(--warn); text-align: center; }
+  .fix-title { color: var(--ink); }
+  .fix-impact, .fix-effort, .fix-area { font-size: 11px; text-transform: uppercase; text-align: center; padding: 4px 6px; border: 1px solid var(--rule); border-radius: 2px; }
+  .fix-impact { color: var(--good); border-color: var(--good); }
+  .fix-impact.med { color: var(--warn); border-color: var(--warn); }
+  .fix-impact.lo { color: var(--ink-dim); }
+  .fix-effort { color: var(--cool); border-color: var(--cool); }
+  .fix-effort.med { color: var(--warn); border-color: var(--warn); }
+  .fix-effort.hi { color: var(--bad); border-color: var(--bad); }
+  .fix-area { color: var(--ink-dim); }
+  .fix-detail { display: none; padding: 16px 20px; background: var(--paper); border: 1px solid var(--rule); border-top: none; font-size: 12px; }
+  .fix-detail.show { display: block; }
+
+  /* === SUMMARY HEADER === */
+  .summary { background: var(--panel); border: 1px solid var(--rule); padding: 18px 22px; margin: 16px 0 8px; font-size: 13px; }
+  .summary .mark { color: var(--warn); }
+  .stat-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 16px 0; }
+  .stat-card { padding: 12px; background: var(--panel); border: 1px solid var(--rule); text-align: center; }
+  .stat-card .v { font-size: 22px; color: var(--ink); font-weight: 700; }
+  .stat-card .l { font-size: 10px; text-transform: uppercase; color: var(--ink-dim); margin-top: 4px; letter-spacing: 0.06em; }
+
+  /* helpers */
+  .inline-key { display: inline-block; padding: 1px 6px; background: var(--panel-2); color: var(--warn); font-size: 11px; border: 1px solid var(--rule); }
+  .footer { margin-top: 60px; padding-top: 16px; border-top: 1px solid var(--rule); color: var(--ink-faint); font-size: 11px; }
+</style>
+</head>
+<body>
+
+<h1>HANDLER — Playthrough Audit</h1>
+<div class="meta">
+  Session <span class="inline-key">eabcac5420ca</span> ·
+  Trace <span class="inline-key">019e1da7df549ffb62a318a4aa86b385</span> ·
+  Captured 2026-05-12 19:26-19:30 UTC ·
+  Mission <span class="inline-key">LYNX-EXFIL</span>
+</div>
+
+<div class="summary">
+  <strong>Diagnosis.</strong> The engine works as designed; the <em>game</em> is the problem. Three structural issues stack to produce the "linear, telegraphed, decisions don't matter" feeling: <span class="mark">(1)</span> the option space is tiny — 7 archetypes total, ~4 legal per cycle, with one usually engine-mandated by a forced event; <span class="mark">(2)</span> forced events pre-narrate their own resolution — the option text and the dispatch say the same thing; <span class="mark">(3)</span> resolution is fully deterministic with no hidden information — players can read the option title and predict the dispatch word-for-word.
+</div>
+
+<div class="stat-row">
+  <div class="stat-card"><div class="v">5</div><div class="l">cycles played</div></div>
+  <div class="stat-card"><div class="v">14</div><div class="l">LLM calls (~10 needed)</div></div>
+  <div class="stat-card"><div class="v">3×</div><div class="l">same dramatic question</div></div>
+  <div class="stat-card"><div class="v">2 / 3</div><div class="l">forced events accepted</div></div>
+</div>
+
+<div class="tabs" id="tabs">
+  <div class="tab active" data-tab="xray">Cycle X-Ray</div>
+  <div class="tab" data-tab="heat">Repetition Map</div>
+  <div class="tab" data-tab="mech">Mechanic Sandbox</div>
+  <div class="tab" data-tab="fixes">Prioritized Fixes</div>
+  <div class="tab" data-tab="genres">Alternative Settings</div>
+</div>
+
+<!-- ============== CYCLE XRAY ============== -->
+<div class="tab-panel active" id="panel-xray">
+  <p>Click a cycle to inspect what the engine sent the LLM, what came back, what the player picked, and what the engine resolved.</p>
+  <div class="cycle-strip" id="cycleStrip"></div>
+  <div class="cycle-detail" id="cycleDetail"></div>
+</div>
+
+<!-- ============== HEATMAP ============== -->
+<div class="tab-panel" id="panel-heat">
+  <p>Frequency of repeated phrases across the five rendered SoP memos and dispatches. Cell intensity shows how often that exact phrase (or close variant) appeared in that cycle's prose. The phrase <em>"the eastern train corridor is clean"</em> is a literal <code>standing_orders</code> line — the model is treating it as a sentence to insert verbatim, not a fact to honor.</p>
+  <div id="heatmap"></div>
+  <div style="margin-top: 28px;">
+    <h3>Same Dramatic Question</h3>
+    <p>The SoP <code>dramatic_questions</code> rotation matches the first satisfying predicate. While <code>extraction_stage == 0</code> the same question fired in cycles 1, 2, and 3.</p>
+    <table class="state-table" style="margin-top: 12px;">
+      <tr><th>cycle</th><th>opening dramatic question</th></tr>
+      <tr><td>1</td><td>"Where do we surface the papers, and at what cost?"</td></tr>
+      <tr><td>2</td><td>"Where does the operational perimeter crack enough to surface the papers, and what will that cost LYNX?"</td></tr>
+      <tr><td>3</td><td>"Where do we surface the papers, and at what cost?"</td></tr>
+      <tr><td>4</td><td>"Where do we surface the papers, and at what cost?" (prefetched, then cycle 4's actual SoP shifted to acknowledge new state)</td></tr>
+      <tr><td>5</td><td>"The window is tightening. Is KESTREL still useful, or do we cut her loose?"</td></tr>
+    </table>
+  </div>
+</div>
+
+<!-- ============== MECHANIC SANDBOX ============== -->
+<div class="tab-panel" id="panel-mech">
+  <p>Click a proposed mechanic on the left to see how cycle 1 of <em>this session</em> would have played differently. Each mechanic shows the engine change required and the side-by-side prose impact.</p>
+  <div class="mech-grid">
+    <div class="mech-list" id="mechList"></div>
+    <div class="mech-detail" id="mechDetail"></div>
+  </div>
+</div>
+
+<!-- ============== FIX LIST ============== -->
+<div class="tab-panel" id="panel-fixes">
+  <p>Suggested implementation order. Click a row to expand the rationale and engine change.</p>
+  <div class="fix-list" id="fixList"></div>
+</div>
+
+<!-- ============== ALTERNATIVE SETTINGS ============== -->
+<div class="tab-panel" id="panel-genres">
+  <p>Seven settings that fit the existing engine. Each one names <em>the single mechanic the spy frame can't easily produce</em>. Click to see what it'd look like running on HANDLER's current code.</p>
+
+  <h3 style="margin-top: 18px;">Three highest-leverage engine additions (genre-agnostic)</h3>
+  <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 12px 0 24px;">
+    <div class="span-block engine">
+      <div class="label">1 · First-class Clock type</div>
+      <div class="body">A <code>Clock</code> primitive: <code>name</code>, <code>segments</code>, <code>tick</code>, <code>fires_event_when_full</code>. Replaces ad-hoc threshold patterns. From Blades in the Dark + Citizen Sleeper. Single cleanest type addition.</div>
+    </div>
+    <div class="span-block forced">
+      <div class="label">2 · Per-agent traits + injuries</div>
+      <div class="body">Same agent + same option = different delta + different prose constraints depending on traits. Multiplies authored content by trait-cardinality without writing more options. From CK3, Battle Brothers, Wildermyth.</div>
+    </div>
+    <div class="span-block sop">
+      <div class="label">3 · meta_state across missions</div>
+      <div class="body">The fired ledger and quality snapshots seed the next scenario's initial state. Engine already has the persistence layer; just don't call <code>make_initial_state</code> between campaigns. From Hades + Inscryption.</div>
+    </div>
+  </div>
+
+  <h3>Settings catalogue</h3>
+  <div id="genreList" style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px;"></div>
+</div>
+
+<div class="footer">
+  Source data: logfire trace <code>019e1da7df549ffb62a318a4aa86b385</code> on project <code>smallville</code>. Engine source: <code>handler/src/handler/{cycle,agents,spine}.py</code>, scenario: <code>handler/missions/lynx_exfil.yaml</code>. Companion files: <code>_audit/handler_audit.md</code>, <code>_audit/spy_game_mechanics_research.md</code>.
+</div>
+
+<script>
+// ============================================================
+// SESSION DATA — pulled from the actual logfire trace
+// ============================================================
+const cycles = [
+  {
+    ix: 1, picked: "HOLD", actor: "operations",
+    sopQ: "Where do we surface the papers, and at what cost?",
+    sop: "Where do we surface the papers, and at what cost? Inside Bucharest, the perimeter tightens around LYNX. Colonel MUNTEANU is reading the file, the photographic evidence constraining movement. KESTREL conducts deep reconnaissance, cover solid, preparing to draw attention if the moment requires it. The extraction papers remain unsourced, held by REDFIELD, a sleeper whose activation surfaces immediate and irreversible jeopardy. The city is a network of surveillance; the eastern train line remains the only known clean route.",
+    forcedEvent: "burn_redfield",
+    options: [
+      {a: "ACTIVATE_SLEEPER_FOR_PAPERS", t: "Burn Redfield to surface papers and safehouse", p: "The sleeper is named and confirmed dead, delivering the papers and securing the safe-house.", forced: true, picked: false},
+      {a: "DIVERSION_BY_AGENT(KESTREL)", t: "Kestrel draws attention to stall MUNTEANU's focus", p: "KESTREL moves to draw counter-intelligence gaze, protecting LYNX's current cover.", forced: false, picked: false},
+      {a: "DIVERSION_BY_AGENT(LYNX)", t: "LYNX increases movement to confuse the surveillance net", p: "LYNX forces a visible shift in pattern, risking exposure for tactical delay.", forced: false, picked: false},
+      {a: "HOLD", t: "Maintain current position and gather more intelligence", p: "No action is taken; the perimeter tightens around LYNX due to passive pressure.", forced: false, picked: true},
+    ],
+    dispatch: "Bucharest perimeter remains stressed. Munteanu's directorate has increased passive surveillance on the designated area. No active movements have been registered by the agents. LYNX's cover is degraded due to sustained external pressure. KESTREL maintains standard operational posture and integrity. The current directive is to maintain position and gather additional intelligence.\n\nThe window remains open for extraction. A patrol unit passed the observation point.",
+    state: [
+      ["LYNX.cover", "6 / cover intact", "5 / cover degraded", "down"],
+      ["KESTREL.cover", "9 / cover solid", "8 / cover intact", "down"],
+      ["extraction_stage", "0 / unstarted", "0 / unstarted", "flat"],
+      ["cycles_remaining", "6", "5", "down"],
+    ],
+    notes: "Player declined the forced burn_redfield event. Passive pressure (world_attention_tightens) decremented both covers by 1 because no progress was made.",
+  },
+  {
+    ix: 2, picked: "DIVERSION_BY_AGENT(KESTREL)", actor: "KESTREL",
+    sopQ: "Where do we surface the papers, and at what cost? (variant)",
+    sop: "Where does the operational perimeter crack enough to surface the papers, and what will that cost LYNX? MUNTEANU's directorate continues to press the boundaries; the recent photographic file has degraded LYNX's cover posture within the city. KESTREL maintains her separate reconnaissance integrity, positioning herself to manage the rising pressure. The extraction papers remain offline, tethered to a civilian asset, and the clean path along the eastern train corridor stands available.",
+    forcedEvent: "burn_redfield",
+    options: [
+      {a: "ACTIVATE_SLEEPER_FOR_PAPERS", t: "Burn Redfield to surface the papers", p: "Redfield is named and confirmed dead; the papers are secured and the safe house is confirmed.", forced: true, picked: false},
+      {a: "DIVERSION_BY_AGENT(KESTREL)", t: "Kestrel executes a major diversion", p: "Kestrel draws heavy counter-intelligence attention, creating a necessary window for LYNX.", forced: false, picked: true},
+      {a: "DIVERSION_BY_AGENT(LYNX)", t: "Lynx risks exposure to buy time", p: "LYNX forces a visible maneuver, risking further compromise of her already degraded cover.", forced: false, picked: false},
+      {a: "DIVERSION_BY_AGENT(KESTREL)", t: "Kestrel increases local surveillance chatter", p: "Kestrel increases local contact chatter, drawing pressure away from the extraction corridor.", forced: false, picked: false},
+    ],
+    dispatch: "The necessity of a decisive move became abundantly clear when I saw the specific cadence of their surveillance—it was tightening around the edges, requiring a kinetic response that was almost reckless, yet ultimately justified for the sake of the file. I had to draw the focus, had to create the friction needed to pull attention away from the principal, and I initiated the diversion by overloading the local counter-intelligence feeds with a coordinated, high-profile incident. It was a costly gamble, certainly, but the resultant window is exactly what was required for the operation to proceed, protecting her at a critical moment.\n\nMy position is now severely compromised, the damage visible in the immediate increase of local patrol frequency, but the pressure has shifted just enough to allow her movement. The heat rising off the pavement is already starting to feel different.",
+    state: [
+      ["LYNX.cover", "5 / cover degraded", "5 / cover degraded (protected)", "flat"],
+      ["KESTREL.cover", "8 / cover intact", "5 / cover degraded", "down"],
+      ["extraction_stage", "0 / unstarted", "0 / unstarted", "flat"],
+      ["cycles_remaining", "5", "4", "down"],
+    ],
+    notes: "Drafter produced TWO KESTREL diversion options (slight prose variation) — narrow option space exposed. Voice held: KESTREL's elaborate, justifying first-person rendered correctly.",
+  },
+  {
+    ix: 3, picked: "ACTIVATE_SLEEPER_FOR_PAPERS (forced)", actor: "operations",
+    sopQ: "Where do we surface the papers, and at what cost?",
+    sop: "Kestrel's cover integrity has degraded, complicating the immediate perimeter. Where do we surface the papers, and at what cost? Inside Bucharest, the pressure from Munteanu's directorate is absolute; the scrutiny has tightened across the designated area. LYNX is positioned under protective cover, but her exposure remains high. Kestrel, though compromised, holds the necessary ground to draw further attention. The eastern corridor remains clear for extraction, yet the access papers remain off-stage.",
+    forcedEvent: "burn_redfield",
+    options: [
+      {a: "ACTIVATE_SLEEPER_FOR_PAPERS", t: "Surface papers via Redfield", p: "Redfield provides the papers; the asset is confirmed dead, and the safe-house is located.", forced: true, picked: true},
+      {a: "DIVERSION_BY_AGENT(LYNX)", t: "Run LYNX distraction op", p: "LYNX executes a deliberate distraction, exposing her movement to Munteanu's scrutiny.", forced: false, picked: false},
+      {a: "HOLD", t: "Maintain current operational posture", p: "No action is taken; sustained external pressure allows the protective cover to degrade further.", forced: false, picked: false},
+    ],
+    dispatch: "The activation of Redfield secured the target documentation. Asset termination confirmed; the papers are in hand. This rapid maneuver was necessary following sustained external pressure from the Romanian counter-intelligence directorate. The safe house location has been identified, positioning LYNX for immediate exfiltration.\n\nBoth agents' operational integrity is now degraded following the accelerated tempo of the operation. The perimeter remains tightly constrained. A tram passed the designated observation point.",
+    state: [
+      ["LYNX.cover", "5", "5", "flat"],
+      ["KESTREL.cover", "5 / cover degraded", "5 / cover degraded", "flat"],
+      ["extraction_stage", "0", "2 / safe-house confirmed", "up"],
+      ["cycles_remaining", "4", "3", "down"],
+    ],
+    notes: "Player capitulated to the forced burn_redfield after eating two cycles of cover decay. The dispatch (operations voice) is a near-verbatim restatement of the option's prose. ZERO surprise — the option text predicted the dispatch.",
+  },
+  {
+    ix: 4, picked: "LYNX_MOVES_TO_SAFEHOUSE", actor: "operations",
+    sopQ: "Where do we surface the papers, and at what cost?",
+    sop: "The activation of Redfield secured the necessary documentation, but the resulting pressure from the Romanian directorate has constrained all movement. The window for exfiltration continues to narrow.\n\nLYNX is positioned within the identified safe house, currently under protective cover, while KESTREL maintains degraded posture nearby. The perimeter remains tightly controlled, and sustained surveillance operations are visible along the routes. The target files are secured, but the immediate threat is the hardening of the counter-intelligence net around the operative.",
+    forcedEvent: null,
+    options: [
+      {a: "LYNX_MOVES_TO_SAFEHOUSE", t: "Reposition LYNX for Immediate Extraction", p: "LYNX moves within the city perimeter; risks exposing her to tightening local patrol sweeps.", forced: false, picked: true},
+      {a: "DIVERSION_BY_AGENT(LYNX)", t: "LYNX Initiates High-Risk Local Diversion", p: "LYNX creates a kinetic incident; risks immediate exposure of her cover identity to MUNTEANU.", forced: false, picked: false},
+      {a: "HOLD", t: "Maintain Current Posture in Safe House", p: "LYNX holds ground; risks incremental decay of the protective cover against pressure.", forced: false, picked: false},
+      {a: "RUN_EXFIL", t: "Run Eastern Corridor Exfiltration — Now", p: "The operation commits LYNX to the extraction vector; all cover integrity is sacrificed.", forced: false, picked: false},
+    ],
+    dispatch: "LYNX executed the movement to the designated safe house. Repositioning was achieved under immediate threat from tightening local sweeps. This high-risk relocation degraded the operational integrity of LYNX. KESTREL's status remains degraded following the accelerated tempo of the deployment phase.\n\nThe perimeter remains tightly constrained, but LYNX is now positioned for immediate extraction. The target documentation secured by REDFIELD remains in custody. The window for exfiltration continues to narrow. A shadow passed across the surveillance feed.",
+    state: [
+      ["LYNX.cover", "5", "4 / cover degraded", "down"],
+      ["KESTREL.cover", "5", "5", "flat"],
+      ["extraction_stage", "2", "2", "flat"],
+      ["cycles_remaining", "3", "2", "down"],
+    ],
+    notes: "LYNX_MOVES_TO_SAFEHOUSE has no agent param, so acting='operations' — the dispatch about LYNX is in detached desk voice. Player loses LYNX's POV at exactly the cycle her stress should be visible in her own words.",
+  },
+  {
+    ix: 5, picked: "DIVERSION_BY_AGENT(KESTREL) — kestrel_sacrifice", actor: "KESTREL",
+    sopQ: "Is KESTREL still useful, or do we cut her loose?",
+    sop: "The window is tightening. Is KESTREL still useful, or do we cut her loose? LYNX is in a safe house, positioning for exfil, but her cover is degraded under protective measures. KESTREL also maintains a degraded posture, her prior diversion having provided a temporary shift in the perimeter. MUNTEANU's directorate remains the primary pressure, the file still held but the constraint is palpable.\n\nThe eastern corridor remains clean. The target documentation secured by REDFIELD is in custody. Both operatives remain constrained by the rapid tempo and the narrowing window, waiting for the movement phase.",
+    forcedEvent: "kestrel_sacrifice",
+    options: [
+      {a: "DIVERSION_BY_AGENT(KESTREL)", t: "Initiate Kestrel's diversionary sacrifice", p: "KESTREL deliberately accepts exposure to create clear lanes for LYNX's exit.", forced: true, picked: true},
+      {a: "RUN_EXFIL", t: "Run immediate extraction via eastern line", p: "Movement through the clean eastern corridor immediately risks perimeter closure.", forced: false, picked: false},
+      {a: "DIVERSION_BY_AGENT(LYNX)", t: "LYNX executes a contained perimeter draw", p: "LYNX draws local attention, burning through her already degraded protective cover.", forced: false, picked: false},
+      {a: "HOLD", t: "Hold position; monitor the tightening perimeter", p: "Maintaining static position accepts the passive decay of operational cover.", forced: false, picked: false},
+    ],
+    dispatch: "The moment I initiated the overload, knowing what I had already paid for that old back channel in Vienna, it became abundantly clear that I was not anticipating a rescue from her, only the clearance of space she required, a choice I made when the clock demanded it. I left the unfinished sentence in my last cipher notebook where the tram light hits the glass. The exposure has been total, and the sheer weight of the local scrutiny is a physical thing, pressing in from the geometry of the streets.\n\nThis deliberate friction has created the necessary corridor for her movement, a narrow, fragile passage that must not be allowed to close. The perimeter feels suddenly tighter than the files suggest. A vendor's cart rattles past the corner.",
+    state: [
+      ["LYNX.cover", "4 (protected)", "4 (protected)", "flat"],
+      ["KESTREL.cover", "5 / cover degraded", "0 / cover blown", "down"],
+      ["extraction_stage", "2", "3 / exfil underway", "up"],
+      ["cycles_remaining", "2", "1", "down"],
+    ],
+    notes: "Strongest dispatch in the session — KESTREL voice is genuinely affecting because the lean_on directives are doing their job. The 'unfinished sentence in my last cipher notebook' is exactly the kind of authored detail (forced via lean_on) that makes the LLM's prose feel earned. Telemetry ends mid-cycle here; final extract dispatch not in trace.",
+  },
+];
+
+// ============================================================
+// REPETITION HEATMAP DATA
+// ============================================================
+const heatPhrases = [
+  ["perimeter remains tightly constrained", [0, 0, 1, 1, 0]],
+  ["window for exfiltration continues to narrow", [0, 0, 0, 1, 1]],
+  ["the eastern corridor / train remains clean", [1, 1, 1, 1, 1]],
+  ["sustained external pressure", [0, 0, 1, 1, 0]],
+  ["protective cover", [1, 1, 1, 1, 1]],
+  ["MUNTEANU's directorate", [0, 1, 1, 1, 1]],
+  ["narrow / narrowing window", [0, 0, 1, 1, 1]],
+  ["target documentation / files secured", [0, 0, 1, 1, 1]],
+  ["tightens / tightening", [1, 1, 1, 1, 1]],
+];
+
+// ============================================================
+// MECHANIC SANDBOX DATA
+// ============================================================
+const mechs = [
+  {
+    id: "windows",
+    title: "Forced events become opportunity windows",
+    stars: "★★★",
+    tag: "engine + scenario · 6.1",
+    desc: "Forced events get a window_cycles: 2 field. If declined for 2 cycles, fire a consequence event that closes the option AND rewrites the world. Player faces real cost on both sides.",
+    nowLabel: "What happened (cycles 1-2)",
+    nowProse: "Player picks HOLD in cycle 1 (declined burn_redfield). Cycle 2: same forced burn_redfield option appears again, identical prose. Player declines again. Cycle 3: still requeued. Player capitulates. The 'choice' was a delay timer.",
+    nextLabel: "What would happen with windows",
+    nextProse: "Cycle 1: burn_redfield offered (window: 2). Player declines, picks HOLD. Cycle 2: burn_redfield offered AGAIN with a visible warning chip ('LAST CYCLE'). Player declines. Cycle 3: REDFIELD compromised event fires — dispatch arrives in operations voice: 'REDFIELD did not make the brush pass at the Piața Unirii. He will not. The papers are gone with him.' extraction_stage permanently locked at 0; player must find another route or fail. The decline had a price.",
+    impl: "events:\n  - id: burn_redfield\n    force_into_drafter: true\n    window_cycles: 2          # NEW\n    on_window_expire: redfield_compromised   # NEW\n  - id: redfield_compromised\n    triggered_only: true      # not in `when` rotation\n    effects: [\"asset[REDFIELD].lost = true\"]"
+  },
+  {
+    id: "opposed",
+    title: "Opposed checks with hidden state",
+    stars: "★★★",
+    tag: "engine + scenario · 6.2",
+    desc: "MUNTEANU gets his own quality investigation_progress (0-10), invisible to the player. Most archetypes resolve against it. Player gambles based on SoP prose hints.",
+    nowLabel: "What happened (cycle 3)",
+    nowProse: "Player picks ACTIVATE_SLEEPER. Engine sets extraction_stage = 2 deterministically. Dispatch confirms papers in hand. No risk, no surprise.",
+    nextLabel: "With opposed check",
+    nextProse: "Player picks ACTIVATE_SLEEPER. Hidden roll: investigation_progress=4 (player saw 'the perimeter feels tighter than the file suggests' in SoP — a hint the value is rising but not specific). Threshold: 6. Roll succeeds. Dispatch carries an extra clause: 'REDFIELD made the drop. The wrapper smelled of wet wool — too clean. Munteanu is closer than the file shows.' Player learns post-hoc that the next op is more dangerous than expected.",
+    impl: "qualities:\n  opposition.investigation_progress:\n    initial: 2\n    visibility: hidden     # NEW\n    sensed_descriptor:     # NEW (what SoP can hint)\n      0-3: \"file suggests\"\n      4-6: \"feels tighter than the file\"\n      7-9: \"a face in the tram window\"\n      10: \"a knock at a door LYNX has never visited\"\n\narchetypes:\n  - id: ACTIVATE_SLEEPER_FOR_PAPERS\n    opposed_check:        # NEW\n      against: opposition.investigation_progress\n      threshold: 6"
+  },
+  {
+    id: "hold",
+    title: "HOLD becomes incoming reports",
+    stars: "★★★",
+    tag: "engine + scenario · 6.3",
+    desc: "When the player picks HOLD, instead of 'no progress, cover decays,' the engine pops the next queued dispatch — a brush-pass from REDFIELD, a Treasury cable, a Vienna intercept. HOLD becomes 'I'm not moving — I'm listening.'",
+    nowLabel: "What happened (cycle 1)",
+    nowProse: "Player picked HOLD. Dispatch (operations voice): 'Bucharest perimeter remains stressed. Munteanu's directorate has increased passive surveillance on the designated area. No active movements have been registered by the agents...' — 60 words of restated state with no new information. Cover -1. Wasted cycle.",
+    nextLabel: "With incoming reports",
+    nextProse: "Player picked HOLD. Engine pops queued dispatch redfield_brush_pass: 'A coffee tin appeared on the second-floor windowsill of an apartment across from the central post office. The signal is REDFIELD's. The note inside, after I unfolded it on the train back: \"the woman in the photograph has a cousin in Constanța. I have three days to confirm whether the file knows.\" — He has not given up.' Cover -1, but the player learned about a new lead AND felt REDFIELD's interiority for the first time. HOLD now has the highest information density in the game.",
+    impl: "qualities:\n  mission.incoming_dispatches:\n    initial: [\"redfield_brush_pass\", \"meriwether_pressure_cable\", ...]\n\narchetypes:\n  - id: HOLD\n    on_authorize:\n      - \"queue_pop_into_renderer(mission.incoming_dispatches)\""
+  },
+  {
+    id: "tiers",
+    title: "Roadwarden choice tiers",
+    stars: "★★★",
+    tag: "scenario only · 6.4",
+    desc: "Tag every option fluff/spice/floodgate/burnt_bridge. Burnt-bridge picks fire a guaranteed closure dispatch within 2 cycles confirming the door is shut. UI shows tier as a visual weight.",
+    nowLabel: "What happened (cycle 3)",
+    nowProse: "Player picked ACTIVATE_SLEEPER (which kills REDFIELD). Dispatch acknowledged the death. Game moved on. Player has no proof the choice mattered to anyone but their state vector.",
+    nextLabel: "With burnt-bridge tier",
+    nextProse: "Same authorize. Tagged BURNT_BRIDGE in UI (option had a thicker border, a 'PERMANENT' chip). Cycle 4 fires a guaranteed closure dispatch from operations: 'Bucharest courier service reports a body recovered from the canal at the eastern bend. Identification matches the asset filed under codename REDFIELD. The wife has been told by the local police. No mention of you appears in the report.' The world acknowledges what the player did, by name, in concrete terms. Player now believes the next burnt_bridge will also matter — trust established.",
+    impl: "events:\n  - id: burn_redfield\n    effect_tier: burnt_bridge\n    closure_event: redfield_corpse_recovered  # NEW\n  - id: redfield_corpse_recovered\n    triggered_only: true\n    delay_cycles: 1\n    lean_on:\n      - \"the wife has been told by the local police\"\n      - \"no mention of you appears in the report\""
+  },
+  {
+    id: "reveal",
+    title: "Forbid renderer from restating option prose",
+    stars: "★★",
+    tag: "prompt only · 6.4 minimal",
+    desc: "The cheapest fix in the audit. Add one line to the renderer system prompt requiring at least one new concrete observation per dispatch. Each archetype gets a small reveal_pool.",
+    nowLabel: "What happened (cycle 3)",
+    nowProse: "Option: 'Redfield provides the papers; the asset is confirmed dead, and the safe-house is located.'\nDispatch: 'The activation of Redfield secured the target documentation. Asset termination confirmed; the papers are in hand. The safe house location has been identified, positioning LYNX for immediate exfiltration.'\n\nThe dispatch is the option, restated. Reading the option = reading the dispatch.",
+    nextLabel: "With reveal-pool requirement",
+    nextProse: "Same authorize. Renderer prompt now includes: 'MUST INCLUDE one of: a courier coat smell · a phone-ledger name · a tram conductor's nervous tic · the price of a coffee in the safe-house café.'\nDispatch: 'The activation of Redfield secured the target documentation. He met me in the back of the third-floor café. He wore a coat that smelled of wet horse — Belgrade in November, the year his back channel went silent. He did not look up when he handed over the envelope. I did not look at him when I took it. The papers are in LYNX's hand. The safe-house is confirmed. A cardboard sign behind the counter said the coffee had gone up by twenty bani.'\n\nNow the dispatch tells you something the option didn't.",
+    impl: "_renderer_system_prompt += \"\"\"\nDISPATCH MUST CONTAIN one concrete sensory or contextual detail not present\nin the option's prose. Pick from the REVEAL POOL provided in the user prompt.\nDo NOT restate the option's framing. The reader has already read it.\n\"\"\"\n\narchetypes:\n  - id: ACTIVATE_SLEEPER_FOR_PAPERS\n    reveal_pool:\n      - \"a courier coat smell\"\n      - \"a phone-ledger name\"\n      - \"the safe-house café's coffee price\"\n      - \"a tram conductor's nervous tic\""
+  },
+  {
+    id: "intel",
+    title: "Intel cards economy",
+    stars: "★★",
+    tag: "engine + scenario · 6.6",
+    desc: "Player accumulates intel cards through HOLD, DIVERSION, forced events. Each is a fact about MUNTEANU/REDFIELD/Vienna/the schedule. Spending one before authorizing boosts the option's effect or adds a side-effect.",
+    nowLabel: "What happened (cycle 5)",
+    nowProse: "Player picked KESTREL_SACRIFICE. KESTREL.cover → 0. extraction_stage → 3. Dispatch is good. But the player had no resources to spend, no agency over the *shape* of the sacrifice.",
+    nextLabel: "With intel cards",
+    nextProse: "Player has accumulated 3 intel cards: 'Munteanu's evening courier' (from cycle 2 HOLD), 'Treasury chief reads at noon' (from cycle 4 LYNX_MOVES), 'eastern train Tuesday is two carriages short' (from cycle 3 forced event). Before authorizing KESTREL_SACRIFICE, player spends 'Munteanu's evening courier' — KESTREL's diversion now targets the courier specifically. Dispatch incorporates: 'I targeted the courier — Wojcik, by the file, Romanian-speaking Pole. He will not deliver the file by tomorrow. That buys her one more day before MUNTEANU has the cable.' The player shaped the sacrifice's meaning.",
+    impl: "qualities:\n  state.intel_cards:\n    initial: []\n    type: list\n\narchetypes:\n  - id: HOLD\n    on_authorize:\n      - \"intel_cards.append(draw_card(state, mission))\"\n\nclass Option:\n  spend_card_id: str | None  # NEW\n\n# renderer prompt receives the spent card and weaves it in:\n# SPENT INTEL CARD: \"Munteanu's evening courier\" — incorporate into\n# the dispatch as a target or a detail."
+  },
+  {
+    id: "trauma",
+    title: "Per-agent trauma state",
+    stars: "★★",
+    tag: "engine + scenario · 6.7",
+    desc: "Agents accumulate trauma when their cover drops or they witness an asset's death. Trauma modifies their voice prompt, gates which archetypes they'll perform, and can trigger agent_refuses events.",
+    nowLabel: "What happened (cycles 3-4)",
+    nowProse: "Cycle 3: REDFIELD dies. Cycle 4: LYNX moves to safehouse. Both rendered in operations voice. The death is mentioned but never lands emotionally — LYNX never reflects on having watched it happen via brush pass.",
+    nextLabel: "With trauma",
+    nextProse: "After cycle 3 (REDFIELD death), LYNX.trauma += 2. KESTREL.trauma += 1. Cycle 4 LYNX_MOVES_TO_SAFEHOUSE now binds to LYNX (because high-trauma operatives demand POV). LYNX voice prompt is appended: 'Trauma 2: sentences narrow. Returns to one sensory detail more often than usual. Does not name the dead by name.' The dispatch becomes: 'Moved at four. The safe-house has thin curtains. The coffee tin REDFIELD used is on the windowsill of the building opposite — someone forgot to take it down. Did not look at it. Did not.' Trauma made the cycle 3 cost visible in cycle 4's prose.",
+    impl: "qualities:\n  agent[*].trauma:\n    initial: 0\n    visibility: sensed   # shown as adjective in dossier\n\nevents:\n  - id: redfield_death\n    fires_at_most: once_per_mission\n    when: \"event_fired:burn_redfield\"\n    effects:\n      - \"agent[LYNX].trauma += 2\"\n      - \"agent[KESTREL].trauma += 1\"\n\n# renderer voice block adds:\n# Voice modifier (trauma 2): {trauma_2_directives}"
+  },
+  {
+    id: "beats",
+    title: "Per-cycle authored SoP beats",
+    stars: "★★★",
+    tag: "scenario only · 6.10 — cheapest fix",
+    desc: "Replace dramatic_questions matching one per state shape with 8-12 cycle-specific beats per scenario. SoP picks the highest-priority unfired beat. No engine work; pure YAML.",
+    nowLabel: "What happened (cycles 1-3)",
+    nowProse: "All three cycles opened with 'Where do we surface the papers, and at what cost?' (cycle 2 was a slight rephrase). Player read the same dramatic frame three times in a row.",
+    nextLabel: "With per-cycle beats",
+    nextProse: "Cycle 1: 'Where do we surface the papers, and at what cost?' (priority 10, fires_at_most: once)\nCycle 2: 'KESTREL is in the city. Three handlers in this department have used her too hard. Are you going to be the fourth?' (priority 8, fires_at_most: once, when: agent[KESTREL].cover >= 7)\nCycle 3: 'REDFIELD's wife is at the market this morning. He told her he would be back by Tuesday.' (priority 6, fires_at_most: once)\n\nNo cycle repeats. The same SoP system. One YAML rewrite.",
+    impl: "# replace `dramatic_questions:` with `cycle_beats:`\ncycle_beats:\n  - id: opening_papers\n    priority: 10\n    fires_at_most: once_per_mission\n    when: \"mission.cycles_remaining == 6\"\n    line: \"Where do we surface the papers, and at what cost?\"\n  - id: kestrel_used_too_hard\n    priority: 8\n    fires_at_most: once_per_mission\n    when: \"mission.cycles_remaining == 5 and agent[KESTREL].cover >= 7\"\n    line: \"KESTREL is in the city. Three handlers in this department have used her too hard. Are you going to be the fourth?\"\n  - id: redfield_wife_market\n    priority: 6\n    fires_at_most: once_per_mission\n    when: \"event_fired:burn_redfield\"\n    line: \"REDFIELD's wife is at the market this morning. He told her he would be back by Tuesday.\""
+  },
+  {
+    id: "prefetch",
+    title: "Fix the prefetch race",
+    stars: "★★",
+    tag: "infra · 7.1",
+    desc: "Cycles 4 and 5 of THIS session burned ~20 seconds each on duplicate drafter calls because the player clicked Continue before the prefetch task finished. Either await in-flight prefetch at consumption, or cancel-and-fall-through more aggressively.",
+    nowLabel: "What happened (cycle 5)",
+    nowProse: "Prefetch task started at 19:29:57. Player clicked Continue at 19:30:00 (3 seconds later). Prefetched SoP wasn't ready yet. Engine ran fresh SoP + drafter. Prefetch ran to completion in the background and wrote to dead state. Two drafter LLM calls (~22s each) for one cycle of options. Trace shows 80eb7e61753e8f78 (prefetch, discarded) and 4a179f9acc82754e (live, used).",
+    nextLabel: "After fix",
+    nextProse: "On consumption, if prefetch_task is in flight, await it instead of starting fresh. Tradeoff: latency floor goes up slightly when player decides faster than prefetch (rare). Net win: ~50% reduction in LLM calls per cycle when player is fast.",
+    impl: "# main.py line 447 area\nif rt.prefetched_cycle_index == cycle_index:\n    if rt.prefetch_task is not None and not rt.prefetch_task.done():\n        # NEW: wait for in-flight prefetch instead of running fresh\n        await rt.prefetch_task\n    if rt.prefetched_sop_text is not None:\n        text = rt.prefetched_sop_text\n        rt.prefetched_sop_text = None\n        ..."
+  },
+];
+
+// ============================================================
+// FIX LIST DATA
+// ============================================================
+const fixes = [
+  {n: 1, title: "Per-cycle authored SoP beats", impact: "high", impactClass: "", effort: "low", effortClass: "", area: "yaml", detail: "Replace dramatic_questions with 8-12 once_per_mission beats. Eliminates 'same dramatic question 3 times' immediately. Pure YAML, no engine work. See mechanic 'beats' for code."},
+  {n: 2, title: "Forbid renderer restating option prose", impact: "high", impactClass: "", effort: "low", effortClass: "", area: "prompt", detail: "Add one constraint to renderer system prompt + a small reveal_pool per archetype. Single biggest perceptual fix. Dispatches start carrying information the option didn't have. See mechanic 'reveal' for code."},
+  {n: 3, title: "HOLD becomes incoming reports", impact: "high", impactClass: "", effort: "med", effortClass: "med", area: "engine + yaml", detail: "Add incoming_dispatches queue to State. HOLD pops the next queued dispatch. Converts the most boring option into the most informative. Authoring-heavy per scenario but high payoff. See mechanic 'hold'."},
+  {n: 4, title: "Forced events become opportunity windows", impact: "high", impactClass: "", effort: "med", effortClass: "med", area: "engine + yaml", detail: "Add window_cycles + on_window_expire fields. Removes the 'consenting at your pace' problem. Decline now has a price. See mechanic 'windows'."},
+  {n: 5, title: "Roadwarden tier vocabulary + closure dispatches", impact: "high", impactClass: "", effort: "med", effortClass: "med", area: "engine + yaml", detail: "effect_tier per option (fluff/spice/floodgate/burnt_bridge). Burnt-bridge picks fire a closure_event within 2 cycles. Trains players to trust that choices matter. See mechanic 'tiers'."},
+  {n: 6, title: "Hidden opposition state with opposed checks", impact: "high", impactClass: "", effort: "hi", effortClass: "hi", area: "engine + yaml", detail: "MUNTEANU gets investigation_progress (0-10), invisible. Most archetypes resolve against it with a threshold check. SoP hints at the value via sensed_descriptor. Genuine surprise. See mechanic 'opposed'."},
+  {n: 7, title: "Per-agent trauma state", impact: "med", impactClass: "med", effort: "med", effortClass: "med", area: "engine + yaml", detail: "agent[*].trauma quality. High trauma changes voice prompt, may force agent-bound rendering, can trigger refuses. Adds an interpersonal axis. See mechanic 'trauma'."},
+  {n: 8, title: "Intel cards economy", impact: "med", impactClass: "med", effort: "hi", effortClass: "hi", area: "engine + yaml", detail: "Player accumulates intel through HOLD/DIVERSION. Spend one to shape an authorization. High authoring cost per scenario; high replayability. See mechanic 'intel'."},
+  {n: 9, title: "Re-contextualization events", impact: "med", impactClass: "med", effort: "med", effortClass: "med", area: "yaml", detail: "5-10 rare authored events whose only job is to retroactively reframe prior cycles ('the asset you trusted has been Bureau the whole time'). Breaks linearity backward. From spy research §7."},
+  {n: 10, title: "Pulse events from the world", impact: "med", impactClass: "med", effort: "med", effortClass: "med", area: "engine + yaml", detail: "Run conditioned-on-state events between cycles independently of player choice. Faction acts, asset crisis, news drops. Makes world feel alive (RimWorld AI Storyteller pattern). From spy research §6."},
+  {n: 11, title: "Fix the prefetch race", impact: "med", impactClass: "med", effort: "low", effortClass: "", area: "infra", detail: "Cycles 4-5 burned ~40s of duplicate LLM calls. Either await in-flight prefetch task at consumption time, or cancel more aggressively. See mechanic 'prefetch'."},
+  {n: 12, title: "Visible threat clocks", impact: "med", impactClass: "med", effort: "low", effortClass: "", area: "ui", detail: "Surface 2-3 deterministic timers in the HUD: cycles_remaining, exfil_window, network_footprint. Tension comes from watching the clock, not from rolls (Invisible Inc pattern). UI work, no engine change."},
+  {n: 13, title: "Coordinated multi-agent archetypes", impact: "lo", impactClass: "lo", effort: "med", effortClass: "med", area: "engine + yaml", detail: "Add archetypes that bind two agents at once (KESTREL_DRAWS_FIRE_FOR_LYNX_RUN). Drafter has more axes to vary against. Late-game spice."},
+  {n: 14, title: "Second opposition character", impact: "lo", impactClass: "lo", effort: "med", effortClass: "med", area: "yaml", detail: "Add Treasury-side character with their own cable queue. Cycles get a third-axis tradeoff: serve field, serve directive, stall. From audit §6.9."},
+];
+
+// ============================================================
+// RENDER
+// ============================================================
+function renderCycleStrip() {
+  const strip = document.getElementById('cycleStrip');
+  cycles.forEach((c, i) => {
+    const el = document.createElement('div');
+    el.className = 'cycle-tab' + (i === 0 ? ' active' : '');
+    el.dataset.ix = i;
+    el.innerHTML = `<div class="ix">${c.ix}</div><div class="lbl">${c.actor}</div><div class="picked">${c.picked.length > 22 ? c.picked.slice(0, 19) + '...' : c.picked}</div>`;
+    el.addEventListener('click', () => selectCycle(i));
+    strip.appendChild(el);
+  });
+  selectCycle(0);
+}
+
+function selectCycle(i) {
+  document.querySelectorAll('#cycleStrip .cycle-tab').forEach((el, ix) => el.classList.toggle('active', ix === i));
+  const c = cycles[i];
+  const detail = document.getElementById('cycleDetail');
+  const optsHtml = c.options.map(o => {
+    let cls = '';
+    if (o.picked) cls += ' picked';
+    if (o.forced) cls += ' forced';
+    let badges = '';
+    if (o.forced) badges += '<span class="pill bad">forced</span>';
+    if (o.picked) badges += '<span class="pill warn">picked</span>';
+    return `<li class="${cls}">
+      <div class="opt-title">${o.t}</div>
+      <div class="opt-prose">${o.p}</div>
+      <div class="opt-meta">${badges}<span class="pill">${o.a}</span></div>
+    </li>`;
+  }).join('');
+
+  const stateRows = c.state.map(([k, before, after, dir]) =>
+    `<tr><td>${k}</td><td>${before}</td><td>${after}</td><td class="delta ${dir}">${dir === 'flat' ? '·' : (dir === 'up' ? '↑' : '↓')}</td></tr>`
+  ).join('');
+
+  detail.innerHTML = `
+    <div class="cycle-side">
+      <h3>Cycle ${c.ix} · LLM Inputs / Outputs</h3>
+      <div class="span-block sop">
+        <div class="label">i. SoP memo (operations voice)</div>
+        <div class="body">${c.sop}</div>
+      </div>
+      <div class="span-block drafter">
+        <div class="label">ii. Drafter options ${c.forcedEvent ? `· forced event: <span class="pill bad">${c.forcedEvent}</span>` : ''}</div>
+        <ul class="options-list">${optsHtml}</ul>
+      </div>
+      <div class="span-block renderer">
+        <div class="label">iv. Renderer dispatch (acting: ${c.actor})</div>
+        <div class="body">${c.dispatch}</div>
+      </div>
+    </div>
+    <div class="cycle-side">
+      <h3>Cycle ${c.ix} · Engine resolution</h3>
+      <div class="span-block engine">
+        <div class="label">iii. State delta (deterministic)</div>
+        <table class="state-table">
+          <tr><th>quality</th><th>before</th><th>after</th><th></th></tr>
+          ${stateRows}
+        </table>
+      </div>
+      <div class="span-block ${c.forcedEvent ? 'forced' : ''}">
+        <div class="label">Notes</div>
+        <div class="body">${c.notes}</div>
+      </div>
+    </div>
+  `;
+}
+
+function renderHeatmap() {
+  const grid = document.getElementById('heatmap');
+  let html = '<div class="heat-grid">';
+  html += '<div class="header-cell">phrase / variant</div>';
+  for (let c = 1; c <= 5; c++) html += `<div class="header-cell">cycle ${c}</div>`;
+  heatPhrases.forEach(([phrase, counts]) => {
+    html += `<div class="heat-row"><div class="heat-cell label">"${phrase}"</div>`;
+    counts.forEach(n => {
+      const cls = n === 0 ? '' : (n === 1 ? 'l1' : n === 2 ? 'l2' : 'l3');
+      html += `<div class="heat-cell ${cls}"><span class="count">${n === 0 ? '·' : n}</span></div>`;
+    });
+    html += '</div>';
+  });
+  html += '</div>';
+  grid.innerHTML = html;
+}
+
+function renderMechs() {
+  const list = document.getElementById('mechList');
+  mechs.forEach((m, i) => {
+    const el = document.createElement('div');
+    el.className = 'mech-item' + (i === 0 ? ' selected' : '');
+    el.innerHTML = `
+      <div class="mh">
+        <div class="mtitle">${m.title}</div>
+        <div class="mstars">${m.stars}</div>
+      </div>
+      <div class="mtag">${m.tag}</div>
+    `;
+    el.addEventListener('click', () => selectMech(i));
+    list.appendChild(el);
+  });
+  selectMech(0);
+}
+
+function selectMech(i) {
+  document.querySelectorAll('#mechList .mech-item').forEach((el, ix) => el.classList.toggle('selected', ix === i));
+  const m = mechs[i];
+  document.getElementById('mechDetail').innerHTML = `
+    <h3>${m.title} <span style="color: var(--ink-dim); font-size: 11px; font-weight: 400; margin-left: 8px;">${m.stars} · ${m.tag}</span></h3>
+    <p>${m.desc}</p>
+    <div class="compare">
+      <div class="now">
+        <h4>${m.nowLabel}</h4>
+        <pre>${m.nowProse}</pre>
+      </div>
+      <div class="next">
+        <h4>${m.nextLabel}</h4>
+        <pre>${m.nextProse}</pre>
+      </div>
+    </div>
+    <h4 style="margin-top: 18px;">Engine change</h4>
+    <div class="impl-snippet">${m.impl}</div>
+  `;
+}
+
+function renderFixes() {
+  const list = document.getElementById('fixList');
+  fixes.forEach((f, i) => {
+    const wrap = document.createElement('div');
+    const row = document.createElement('div');
+    row.className = 'fix-row';
+    row.innerHTML = `
+      <div class="fix-num">${f.n}</div>
+      <div class="fix-title">${f.title}</div>
+      <div class="fix-impact ${f.impactClass}">impact: ${f.impact}</div>
+      <div class="fix-effort ${f.effortClass}">effort: ${f.effort}</div>
+      <div class="fix-area">${f.area}</div>
+    `;
+    const detail = document.createElement('div');
+    detail.className = 'fix-detail';
+    detail.textContent = f.detail;
+    row.addEventListener('click', () => {
+      const isOpen = detail.classList.contains('show');
+      detail.classList.toggle('show');
+      row.classList.toggle('expanded', !isOpen);
+    });
+    wrap.appendChild(row);
+    wrap.appendChild(detail);
+    list.appendChild(wrap);
+  });
+}
+
+// tabs
+document.querySelectorAll('#tabs .tab').forEach(t => {
+  t.addEventListener('click', () => {
+    document.querySelectorAll('#tabs .tab').forEach(x => x.classList.toggle('active', x === t));
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === 'panel-' + t.dataset.tab));
+  });
+});
+
+// ============================================================
+// ALTERNATIVE SETTINGS
+// ============================================================
+const settings = [
+  {
+    title: "Hospital triage in a war zone",
+    tag: "★★★ engine fits as-is",
+    mechanic: "The Triage Tag",
+    pitch: "Multiple patients arrive each cycle; you have N treatment slots and must NOT treat someone. The decision isn't 'what to do' — it's 'who to abandon.' Spy fiction's options are about agency over targets; triage's options are about agency over which lives end.",
+    fit: "Patients = ephemeral agents with a prognosis_clock (Blades-style); ignored ones tick to death. Forced 'MASCAL event' interrupts cycles. Qualities: morale, supplies, chain_of_command_trust.",
+    sample: "FORCED EVENT: Six casualties at the gate. You have three beds.\n\nOPTIONS:\n  ▸ Treat the colonel's aide first (politically necessary; one civilian dies)\n  ▸ Triage by likelihood of survival (one critical denied; medically clean)\n  ▸ Take the two children, refuse the others\n  ▸ Operate on the wounded sniper from yesterday — your hands know him",
+  },
+  {
+    title: "Doomsday cult leader (mid-collapse)",
+    tag: "★★ requires bidirectional terminal",
+    mechanic: "The Faith Spiral",
+    pitch: "A 'fervor' quality you must NOT let drop AND must NOT let max. Max → mass-casualty event; min → schism. Spy frame has pressure to perform; cult frame has pressure to also believe what you sell.",
+    fit: "Per-follower belief quality; events fire on per-agent thresholds. Inner circle = roster; the flock = single aggregated quality. Forced event: federal raid, defector, vision.",
+    sample: "DRAMATIC QUESTION: Does the gun on the inner-circle table get loaded tonight?\n\nOPTIONS:\n  ▸ Speak to the back row about the fire (raises fervor; risks max)\n  ▸ Take Brother Adam aside — he has been writing in his journal again\n  ▸ Cancel the morning sermon (drops fervor; risks min — schism)\n  ▸ Hand the gun to Sister Lila yourself",
+  },
+  {
+    title: "Starship captain on a long-haul voyage",
+    tag: "★★ pure clock + roster",
+    mechanic: "The Imposed Distance Clock",
+    pitch: "A monotonically-decreasing distance_to_destination the player CANNOT influence — only react around. Spy fiction's cycles_remaining is similar but spy missions feel CHOSEN; voyages feel imposed by physics.",
+    fit: "Pure ticking clock plus authored 'milestones at distance X' table. Crew morale, fuel, hull as qualities. Crew as roster with specialist roles (Engineer, Doctor, XO) — straight Battle Brothers fit.",
+    sample: "DISTANCE: 47 light-years (down from 51). NEXT MILESTONE: gravitational shoal at 38.\n\nOPTIONS:\n  ▸ Authorize the engineer's repair on the secondary coil (-2 fuel)\n  ▸ Address the cargo deck mutiny via XO Patel (her cousin is among them)\n  ▸ Open the colony's wake-vials early — you need a botanist's read on the shoal\n  ▸ Run dark for one cycle (+morale, -1 hull from microimpacts)",
+  },
+  {
+    title: "Saint hearing confessions during a plague",
+    tag: "★★★ best engine alignment",
+    mechanic: "The Penitent's Lie",
+    pitch: "Each confession is a forced event with absolution options, but the petitioner has hidden truthfulness. Pick the wrong absolution and a forced event two cycles later reveals you were complicit. Spy frame gives privileged info; this frame WITHHOLDS it.",
+    fit: "Petitioners as ephemeral agents with hidden traits. Engine writes the delta; LLM speaks the petitioner's lie WITHOUT revealing the underlying truth — perfect deterministic-engine + creative-prose split. Qualities: holy_authority, worldly_compromise, plague_dread.",
+    sample: "PETITIONER: Marcus, the cooper's apprentice. He weeps.\n\nHIDDEN: truthfulness=2 (lying about why his master is dead). The LLM speaks the lie convincingly; the engine knows.\n\nOPTIONS:\n  ▸ Pronounce conditional absolution (worldly_compromise +1)\n  ▸ Withhold the sacrament; demand restitution (plague_dread +2 in the parish)\n  ▸ Press him on Tuesday's bell (chance to flip truthfulness; chance to lose him)\n  ▸ Send him to Brother Felix (your problem becomes Felix's)",
+  },
+  {
+    title: "Film-noir DA in a corrupt city",
+    tag: "★★ multiple parallel clocks",
+    mechanic: "The Case File",
+    pitch: "Each cycle player picks WHICH case to push (3-4 cases on the desk). Cases not pushed advance under their own momentum (Citizen Sleeper clock). Spy frame's options are tactical; DA's options are which thread of justice gets bandwidth this week.",
+    fit: "Cases as named clocks with passive ticks. 'Take the bribe' is a recurring meta-option that adds resources at the cost of a compromise quality threshold. Roster: prosecutors, cops, witnesses, mob.",
+    sample: "DESK:\n  · CASE 19-K (Tessio family / docks) — clock 4/8, witness scared\n  · CASE 22-A (Mayor's nephew / DUI) — clock 2/4, evidence rotting\n  · CASE 31 (the Vincenza killing) — clock 7/8, almost gone\n\nOPTIONS:\n  ▸ Push 31 to grand jury (now or never)\n  ▸ Tessio: turn the witness through Detective Park (Park owes you)\n  ▸ Take the call from the Mayor's office (compromise +1; gain budget for next month)\n  ▸ Hold; read the Vincenza file again",
+  },
+  {
+    title: "Startup CEO in collapse",
+    tag: "★ needs player-callable events",
+    mechanic: "The Pivot",
+    pitch: "A forced event you can call YOURSELF once, that REPLACES multiple qualities atomically (burn rate, headcount, product flag). Spy frame doesn't reset; startups do. The pivot card gives the player an authored gambit inside an otherwise downward arc.",
+    fit: "Add a player_callable_event flag — events the player can voluntarily invoke (cost: a quality, a turn, a relationship). Most events still fire from engine; this is the exception. Qualities: runway, team_morale, board_confidence, narrative_in_press.",
+    sample: "BOARD MEETING in 2 cycles. RUNWAY: 6 months.\n\nOPTIONS:\n  ▸ Fire 30% (runway +6mo; team_morale crashes; board confidence +2)\n  ▸ Authorize the deck Anjali wrote (board_confidence +1; press neutral)\n  ▸ ★ PIVOT: kill the consumer product, become a B2B tools company. (atomic reset of 4 qualities, can only call once)\n  ▸ Cold-call the Tier 1 you walked away from (-1 standing; chance of bridge)",
+  },
+  {
+    title: "Immortal vampire managing a court",
+    tag: "★★★ free with meta_state",
+    mechanic: "The Long Memory",
+    pitch: "State persists across CENTURIES (multiple campaign instances). A grudge from cycle 3 of season 1 fires as a forced event in cycle 1 of season 4. Spy frame is single-mission; vampire frame is generational ledger.",
+    fit: "Hades meta-state made literal: the fired-event ledger never wipes. Each 'campaign' = one century. Roster: kindred (immortal, persist), ghouls (mortal, churn). Qualities: masquerade_strain, prince_favor, hunger. The engine ALREADY supports this — just never call make_initial_state again after the first campaign.",
+    sample: "1789. Paris.\nLEDGER (from 1462): you broke the Tremere truce. Marcellus of Vienna has not forgotten.\n\nOPTIONS:\n  ▸ Receive Marcellus's envoy publicly (prince_favor +1; hunger +2 from the strain)\n  ▸ Send Léa (your ghoul, 4th generation) to the catacombs ahead of him\n  ▸ Burn the Vienna correspondence — three centuries of letters\n  ▸ Hold the masquerade; let him come to you",
+  },
+];
+
+function renderSettings() {
+  const list = document.getElementById('genreList');
+  settings.forEach(s => {
+    const el = document.createElement('div');
+    el.className = 'span-block sop';
+    el.style.borderLeftWidth = '3px';
+    el.innerHTML = `
+      <div class="label" style="display: flex; justify-content: space-between;">
+        <span>${s.title}</span>
+        <span style="color: var(--warn);">${s.tag}</span>
+      </div>
+      <div style="margin-top: 8px;"><strong style="color: var(--warn);">Mechanic:</strong> ${s.mechanic}</div>
+      <div style="margin-top: 6px; color: var(--ink);">${s.pitch}</div>
+      <div style="margin-top: 8px; font-size: 11px; color: var(--ink-dim);"><strong>Engine fit:</strong> ${s.fit}</div>
+      <div style="margin-top: 10px; padding: 10px; background: var(--paper); border: 1px solid var(--rule); white-space: pre-wrap; font-size: 11px;">${s.sample}</div>
+    `;
+    list.appendChild(el);
+  });
+}
+
+renderCycleStrip();
+renderHeatmap();
+renderMechs();
+renderFixes();
+renderSettings();
+</script>
+</body>
+</html>
