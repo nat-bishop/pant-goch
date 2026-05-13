@@ -5,7 +5,7 @@ Two layers:
 
 - **Authoring** (loaded from a mission YAML, immutable at runtime):
   `Mission`, `CastMember`, `Archetype`, `Event`. Quality refs are
-  opaque dotted strings — `mission.cycles_remaining`, `mission.extraction_stage`,
+  opaque dotted strings — `mission.days_remaining`, `mission.extraction_stage`,
   `agent[LYNX].cover`. Predicates are tagged-union Pydantic models, not
   free-form strings — every predicate is type-checked at load time.
 
@@ -151,9 +151,6 @@ def iter_predicate_leaves(pred: "Predicate") -> Iterator["Predicate"]:
 # ───────────────────────── effects ─────────────────────────
 
 
-BranchLabel = Literal["clean", "partial", "failure"]
-
-
 class Effect(BaseModel):
     """One literal state mutation. `op` controls how `value` combines with the
     existing quality. `when` optionally gates the effect on a predicate; when
@@ -161,20 +158,14 @@ class Effect(BaseModel):
 
     For string qualities only `op: set` is meaningful — there is no add/max/min.
 
-    `branch` is an optional author-tag for opposed-check resolution. When an
-    archetype encodes three mutually-exclusive `if`-guarded effect branches
-    (clean / partial / failure) against a hidden quality, tagging each effect
-    with its `branch` lets the engine record which branch actually applied —
-    so `Archetype.branch_leans` can thread the matching renderer directives
-    into the log writer's leans. The label has no engine meaning beyond
-    "this effect belongs to the named branch"; resolution still uses `when`.
+    Opposed-check resolution lives in `Action.outcomes` (first-match-wins on
+    sibling `when:` predicates) — Effects no longer carry branch author-tags.
     """
 
     quality: str = Field(min_length=1)
     value: float | int | str | bool
     op: Literal["set", "add", "max", "min"] = "set"
     when: Predicate | None = None
-    branch: BranchLabel | None = None
 
 
 # ───────────────────────── authoring schemas ─────────────────────────
@@ -226,15 +217,32 @@ class CastMember(BaseModel):
 
 
 class Band(BaseModel):
-    """A bucket of variant phrasings keyed by an upper-bound threshold. Used
-    by hidden qualities (`Quality.bands`) so the drafter / log-writer surface
-    can rotate through different observational variants for the same band —
-    the band identifies the value's semantic level; the variant prevents the
-    phrasing from being phrase-decoded by the player across cycles.
+    """One band in a `Quality`'s descriptor ladder: a threshold paired with
+    one or more phrasing variants. Single-variant bands are the simple case
+    (the band describes a state level); multi-variant bands rotate by
+    `cycle_index` for hidden qualities so the player can't phrase-decode
+    the band by reading the same line every cycle.
+
+    YAML may author a Band as:
+      - the explicit form `{threshold: 5, variants: ["v"]}`,
+      - a 2-tuple `[5, "v"]` (single-variant sugar), or
+      - a 2-tuple `[5, ["v1", "v2"]]` (multi-variant tuple form).
+    All forms normalise to the explicit shape in-memory.
     """
 
     threshold: float
     variants: list[str] = Field(min_length=1)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_tuple(cls, data: Any) -> Any:
+        if isinstance(data, (list, tuple)) and len(data) == 2 and not isinstance(data, dict):
+            threshold, body = data
+            if isinstance(body, str):
+                return {"threshold": threshold, "variants": [body]}
+            if isinstance(body, list):
+                return {"threshold": threshold, "variants": body}
+        return data
 
 
 class Quality(BaseModel):
@@ -242,24 +250,22 @@ class Quality(BaseModel):
     used by the narrative state block. The single per-quality authoring unit;
     every entry in `Mission.qualities` is a `Quality`.
 
-    Three descriptor shapes; exactly one MUST be set:
-      - `buckets` — numeric qualities with a single descriptor per band.
-        Walks list in authored order; first threshold >= value wins.
-      - `values` — discrete enums keyed by stringified value.
-      - `bands` — numeric qualities with multiple phrasing variants per band.
-        Use for hidden qualities (`visible=False`) where phrasing rotation
-        across cycles prevents the player from phrase-decoding the band.
+    Descriptor shape: `bands` — an ordered ladder. The first band whose
+    `threshold` covers the value wins (walk in authored order; numeric
+    comparison uses `value <= threshold`). Single-variant bands handle the
+    common case; multi-variant bands rotate by cycle_index for hidden-state
+    phrasing variety.
 
-    Bucket layout (bottom-up):
-        buckets:
+    Ladder layout (bottom-up — first match wins on `value <= threshold`):
+        bands:
           - [0, "blown"]
-          - [2, "compromised"]   # 1..2
-          - [5, "degraded"]      # 3..5
-          - [8, "intact"]        # 6..8
-          - [10, "solid"]        # 9..10
+          - [2, "compromised"]
+          - [5, "degraded"]
+          - [8, "intact"]
+          - [10, "solid"]
 
-    `values` is keyed by the literal value coerced to its string form
-    (`"0": "papers not yet surfaced"`).
+    Enum-like qualities author each level as its own single-variant band
+    keyed on the literal value (`bands: [[0, "..."], [1, "..."]]`).
 
     `label` (optional) prefixes every descriptor — e.g. label="extraction"
     yields "extraction: papers not yet surfaced".
@@ -270,35 +276,29 @@ class Quality(BaseModel):
     hidden-state hint block in the drafter / log-writer user prompts.
 
     `initial` is omitted only for universal qualities the engine injects
-    (`agent[*].cover`, `mission.cycles_remaining`); a `qualities:` entry for
-    those exists purely to override the built-in display buckets.
+    (`agent[*].cover`, `mission.days_remaining`); a `qualities:` entry for
+    those exists purely to override the built-in display.
     """
 
     initial: float | int | str | None = None
-    buckets: list[tuple[float, str]] = Field(default_factory=list)
-    values: dict[str, str] = Field(default_factory=dict)
     bands: list[Band] = Field(default_factory=list)
     label: str = ""
     visible: bool = True
 
     @model_validator(mode="after")
-    def _has_descriptor(self) -> "Quality":
-        set_count = sum(1 for x in (self.buckets, self.values, self.bands) if x)
-        if set_count == 0:
+    def _has_bands(self) -> "Quality":
+        if not self.bands:
             raise ValueError(
-                "Quality: must set one of `buckets`, `values`, or `bands` "
-                "(got none). Every quality must carry its narrative descriptor."
-            )
-        if set_count > 1:
-            raise ValueError(
-                "Quality: set EXACTLY ONE of `buckets`, `values`, `bands`"
+                "Quality: `bands` must be non-empty. Every quality needs at "
+                "least one band carrying its narrative descriptor."
             )
         return self
 
     def _match_band(self, value: float | int | str | bool) -> Band | None:
-        """Walk `bands` and return the first one whose threshold covers value.
-        Returns None for non-numeric values or when `bands` isn't set."""
-        if not self.bands or not isinstance(value, (int, float)) or isinstance(value, bool):
+        """Walk `bands` and return the first whose threshold covers value
+        (`value <= band.threshold`). Returns None for non-numeric values or
+        when no band matches (value above the top threshold)."""
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
             return None
         for band in self.bands:
             if value <= band.threshold:
@@ -309,39 +309,27 @@ class Quality(BaseModel):
         return f"{self.label}: {body}" if self.label else body
 
     def describe(self, value: float | int | str | bool) -> str | None:
-        """Look up the descriptor for `value`. Returns None if no bucket/value
-        matches (numeric value above all bucket thresholds, or string value
-        absent from the values map). Callers fall back to built-ins or skip.
-
-        For `bands`-shaped qualities, returns the FIRST variant of the matching
-        band — callers wanting the rotated variant should call
-        `describe_variant(value, cycle_index)` instead.
-        """
-        if self.values:
-            body = self.values.get(str(value))
-        elif self.buckets and isinstance(value, (int, float)) and not isinstance(value, bool):
-            body = next(
-                (descriptor for threshold, descriptor in self.buckets if value <= threshold),
-                None,
-            )
-        else:
-            band = self._match_band(value)
-            body = band.variants[0] if band is not None else None
-        return self._label(body) if body is not None else None
-
-    def describe_variant(
-        self, value: float | int | str | bool, cycle_index: int
-    ) -> str | None:
-        """Look up a rotated variant for `bands`-shaped qualities. Deterministic
-        by `(value's band, cycle_index)` so test replay is reproducible and the
-        same band visited across consecutive cycles surfaces different
-        phrasings. Returns None when `bands` isn't set or no band matches —
-        callers fall back to `describe(value)`.
+        """Look up the descriptor for `value` — the first variant of the
+        matching band. Returns None when no band covers the value. Callers
+        wanting the rotated variant for multi-variant bands should call
+        `describe_variant(value, day_index)` instead.
         """
         band = self._match_band(value)
         if band is None:
             return None
-        return self._label(band.variants[cycle_index % len(band.variants)])
+        return self._label(band.variants[0])
+
+    def describe_variant(
+        self, value: float | int | str | bool, day_index: int
+    ) -> str | None:
+        """Look up the rotated variant of the matching band, keyed on
+        `day_index % len(variants)`. Deterministic so test replay is
+        reproducible and consecutive days in the same band surface
+        different phrasings. Returns None when no band matches."""
+        band = self._match_band(value)
+        if band is None:
+            return None
+        return self._label(band.variants[day_index % len(band.variants)])
 
 
 class Beat(BaseModel):
@@ -372,124 +360,202 @@ class Beat(BaseModel):
     fires_at_most: Literal["unlimited", "once_per_mission"] = "once_per_mission"
 
 
-class Archetype(BaseModel):
-    """Player-driven action template. Owns a precondition (`when`), a list of
-    effects (deterministic state writes), and an optional `params` declaration
-    that lets the drafter expand the archetype over the available agents.
+class Outcome(BaseModel):
+    """One resolution branch of an Action. First-match-wins on sibling `when:`
+    predicates — sibling outcomes are mutually exclusive (enforced at mission
+    load via `_predicates_may_overlap`).
 
-    `params: ["agent"]` means: the drafter can choose any agent with cover > 0
-    as the actor. The chosen agent is bound to `$agent` in `when` and `effects`.
+    `leans` are renderer directives threaded into the log writer's LEAN-ON
+    block when this outcome resolves. Use them to thread the dramatic shape
+    of an opposed-check (clean / partial / failure) without authoring a
+    separate `branch_leans` dict.
+    """
 
-    `branch_leans` (optional): when this archetype's effects use the
-    `branch` author-tag (opposed-check shape — clean / partial / failure), the
-    engine records which branch fired and `cycle.py` threads the matching list
-    of directives into the log-writer's `LEAN-ON THIS DAY` block. This is how
-    a failure branch produces a reveal rather than a confirmation.
+    when: Predicate
+    effects: list[Effect] = Field(default_factory=list)
+    leans: list[str] = Field(default_factory=list)
+
+
+class Action(BaseModel):
+    """A player-authorizable action. Subsumes the older Archetype (option
+    template) AND forced Event (drafter-surfaced choice with prose constraints)
+    into one type.
+
+    Authoring shapes:
+      - **Flat** — `effects:` (one deterministic outcome).
+      - **Opposed** — `outcomes:` (first-match-wins on sibling `when:`,
+        mutually exclusive at load time).
+    `effects` and `outcomes` are mutually exclusive — author one or the other.
+
+    Forced shape: `forced: true` + optional prose-constraint fields. A forced
+    Action MUST appear as one of the cycle's options when its `when:` holds
+    and its id is not yet in `state.fired`. The drafter's prose writer
+    honours `intent` / `must_communicate` / `must_not` / `tone` on the
+    option that carries it. The forced Action IS the option — there is no
+    separate carrier archetype.
+
+    `for_each_agent: bool` expands `$agent` in `when` / `effects` / `outcomes`
+    over agents with cover > 0 (one catalog entry per matching agent).
     """
 
     id: str = Field(min_length=1)
     when: Predicate
     effects: list[Effect] = Field(default_factory=list)
-    params: list[Literal["agent"]] = Field(default_factory=list)
-    # Short descriptor of the archetype's intent. Surfaced to the drafter so
-    # it can write prose that matches the mechanic. Not displayed to the player.
+    outcomes: list[Outcome] = Field(default_factory=list)
+    for_each_agent: bool = False
     intent: str = ""
-    # Per-branch renderer directives, keyed by branch label. Engine reads
-    # this AFTER effect application; only the keys for branches that fired
-    # contribute leans.
-    branch_leans: dict[BranchLabel, list[str]] = Field(default_factory=dict)
+    # Forced-Action fields. Ignored when forced=False.
+    forced: bool = False
+    must_communicate: list[str] = Field(default_factory=list)
+    must_not: list[str] = Field(default_factory=list)
+    tone: str = ""
+
+    @model_validator(mode="after")
+    def _effects_xor_outcomes(self) -> "Action":
+        if self.effects and self.outcomes:
+            raise ValueError(
+                f"Action {self.id!r}: author `effects` OR `outcomes`, not both"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _outcomes_mutually_exclusive(self) -> "Action":
+        """Sibling outcomes must be mutually exclusive. The check is best-effort
+        — handles AND-of-comparisons (the common opposed-check shape). Predicates
+        the analyser can't decompose (Or_, Not_, EventFired, string Equals)
+        are treated as "possibly overlapping" and raise; authors can refactor
+        or pre-validate manually if needed.
+        """
+        if len(self.outcomes) < 2:
+            return self
+        for i in range(len(self.outcomes)):
+            for j in range(i + 1, len(self.outcomes)):
+                if _predicates_may_overlap(self.outcomes[i].when, self.outcomes[j].when):
+                    raise ValueError(
+                        f"Action {self.id!r}: outcomes {i} and {j} have "
+                        f"overlapping `when:` predicates — sibling outcomes must "
+                        f"be mutually exclusive (first-match-wins)"
+                    )
+        return self
 
 
-class Event(BaseModel):
-    """Predicate-gated mission event. One authored concept, three runtime shapes
-    selected by flag:
+class Reaction(BaseModel):
+    """Engine-applied consequence. Fires after the player authorizes their
+    Action and its effects apply. Replaces the old passive `Event`.
 
-    - **Forced** (`force_into_drafter=True`): the engine adds the event to the
-      drafter's forced-option requirement; effects fire when the player picks
-      the satisfying option. Carries the LLM-facing prose constraints
-      (`intent` / `must_communicate` / `must_not` / `tone`).
-    - **Passive** (`force_into_drafter=False`): the engine fires the event
-      after archetype effects apply when `when` matches. Three sub-shapes:
-        * `terminal=True` — sets `state.outcome` and ends the mission.
-        * `only_when_no_progress_this_cycle=True` — passive pressure that
-          fires only if the authorized option didn't progress the mission.
-        * Reaction — fires unconditionally when predicate matches; lifts
-          flags ("agent lost") in response to state changes.
-    - **Per-agent** (`for_each_agent=True`, passive only): expands `$agent`
-      over the mission's agents — fires one instance per matching agent.
-
-    `fires_at_most` controls re-firing across cycles. Mutual-exclusion
-    invariants on the flag combinations are enforced by `_consistency`.
+    `terminal=True` + `outcome_key` sets `state.outcome` and ends the mission.
+    `only_when_no_progress_this_day=True` gates the reaction on the cycle's
+    Action having NOT progressed the mission (so HOLD has bite).
+    `for_each_agent=True` expands `$agent` over agents (one fire per matching).
     """
 
     id: str = Field(min_length=1)
     when: Predicate
     effects: list[Effect] = Field(default_factory=list)
     fires_at_most: Literal["unlimited", "once_per_mission", "once_per_agent"] = "once_per_mission"
-
-    # Forced-event (drafter-surfaced) fields. Ignored when force_into_drafter=False.
-    force_into_drafter: bool = False
-    intent: str = ""
-    must_communicate: list[str] = Field(default_factory=list)
-    must_not: list[str] = Field(default_factory=list)
-    tone: str = ""
-
-    # Passive-event (post-authorization) fields. Ignored when force_into_drafter=True.
-    terminal: bool = False
-    outcome_key: str | None = None  # for terminal events: sets state.outcome
-    only_when_no_progress_this_cycle: bool = False
-    for_each_agent: bool = False
-    # Authoring-order priority; lower fires first when multiple events are due
-    # in the same passive-fire pass. Tie-breaker is authored order.
     priority: int = 0
-
+    terminal: bool = False
+    outcome_key: str | None = None
+    only_when_no_progress_this_day: bool = False
+    for_each_agent: bool = False
     # Free-form prose directives the renderer should foreground when this
-    # event fires. `cycle._collect_leans` aggregates these across the cycle's
-    # fired events and threads them into the renderer's user prompt verbatim.
-    # No reference validation: author co-locates fact and lean in YAML.
+    # reaction fires. Aggregated by `cycle._collect_leans` and threaded into
+    # the log-writer's user prompt verbatim.
     lean_on: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
-    def _consistency(self) -> "Event":
+    def _consistency(self) -> "Reaction":
         if self.terminal and not self.outcome_key:
             raise ValueError(
-                f"Event {self.id!r}: terminal=True requires outcome_key"
+                f"Reaction {self.id!r}: terminal=True requires outcome_key"
             )
         if self.for_each_agent and self.fires_at_most == "once_per_mission":
-            # `once_per_mission` doesn't make sense with for_each_agent —
-            # the natural pairing is `once_per_agent`.
             raise ValueError(
-                f"Event {self.id!r}: for_each_agent=True requires "
+                f"Reaction {self.id!r}: for_each_agent=True requires "
                 f"fires_at_most='once_per_agent' or 'unlimited'"
             )
         if self.fires_at_most == "once_per_agent" and not self.for_each_agent:
-            # `once_per_agent` is only meaningful when the event has an agent
-            # dimension to gate on — i.e. when `for_each_agent=True`.
             raise ValueError(
-                f"Event {self.id!r}: fires_at_most='once_per_agent' requires "
+                f"Reaction {self.id!r}: fires_at_most='once_per_agent' requires "
                 f"for_each_agent=True"
             )
-        if self.force_into_drafter:
-            # Forced events fire pre-effects via drafter selection; the passive
-            # post-effects flags have no engine semantics in that path. The
-            # fires_at_most restriction also keeps the live spine mutation in
-            # sync with the fold-replay path (both append `event.id` to
-            # `state.fired` exactly once per authored event).
-            for attr in (
-                "terminal",
-                "for_each_agent",
-                "only_when_no_progress_this_cycle",
-            ):
-                if getattr(self, attr):
-                    raise ValueError(
-                        f"Event {self.id!r}: force_into_drafter cannot combine with {attr}"
-                    )
-            if self.fires_at_most != "once_per_mission":
-                raise ValueError(
-                    f"Event {self.id!r}: force_into_drafter=True requires "
-                    f"fires_at_most='once_per_mission' (forced events are one-shot)"
-                )
         return self
+
+
+# ───────────────────────── outcome-overlap analysis ─────────────────────────
+
+
+def _predicates_may_overlap(p1: Predicate, p2: Predicate) -> bool:
+    """True iff there's any state where both predicates can hold simultaneously.
+    Used by Action's mutual-exclusion validator on sibling Outcomes.
+
+    Strategy: extract per-quality numeric intervals (closed bounds with epsilon
+    for strict comparisons). For each shared quality, check intervals are
+    disjoint. If any shared quality is disjoint → predicates are mutually
+    exclusive (return False). Otherwise → may overlap (return True).
+
+    Conservative on shapes the analyser can't decompose (Or_, Not_, EventFired,
+    non-numeric Equals) — those return True so the validator raises, prompting
+    the author to flatten or to write each outcome's `when:` as an
+    AND-of-comparisons over a numeric quality.
+    """
+    iv1 = _quality_intervals(p1)
+    iv2 = _quality_intervals(p2)
+    if iv1 is None or iv2 is None:
+        return True
+    for q, (lo1, hi1) in iv1.items():
+        if q in iv2:
+            lo2, hi2 = iv2[q]
+            if hi1 < lo2 or hi2 < lo1:
+                return False
+    return True
+
+
+def _quality_intervals(pred: Predicate) -> dict[str, tuple[float, float]] | None:
+    """Extract per-quality closed numeric intervals from an AND-of-comparisons.
+    Returns None for shapes the analyser can't decompose."""
+    intervals: dict[str, tuple[float, float]] = {}
+    epsilon = 1e-9
+
+    def add(q: str, lo: float, hi: float) -> bool:
+        existing = intervals.get(q)
+        if existing is None:
+            intervals[q] = (lo, hi)
+            return True
+        new_lo = max(existing[0], lo)
+        new_hi = min(existing[1], hi)
+        if new_lo > new_hi:
+            return False
+        intervals[q] = (new_lo, new_hi)
+        return True
+
+    def walk(p: Predicate) -> bool | None:
+        if isinstance(p, QualityGte):
+            return add(p.quality, float(p.value), float("inf"))
+        if isinstance(p, QualityGt):
+            return add(p.quality, float(p.value) + epsilon, float("inf"))
+        if isinstance(p, QualityLte):
+            return add(p.quality, float("-inf"), float(p.value))
+        if isinstance(p, QualityLt):
+            return add(p.quality, float("-inf"), float(p.value) - epsilon)
+        if isinstance(p, QualityEquals):
+            if not isinstance(p.value, (int, float)) or isinstance(p.value, bool):
+                return None
+            return add(p.quality, float(p.value), float(p.value))
+        if isinstance(p, And_):
+            for sub in p.of:
+                r = walk(sub)
+                if r is None:
+                    return None
+                if not r:
+                    return False
+            return True
+        return None
+
+    result = walk(pred)
+    if result is None:
+        return None
+    return intervals
 
 
 class Mission(BaseModel):
@@ -504,7 +570,7 @@ class Mission(BaseModel):
     # grounding (the city, the sweep, the threat). Optional; falls back to
     # opening_prose alone if unset.
     setting: str = ""
-    max_cycles: int = Field(gt=0)
+    max_days: int = Field(gt=0)
     # Full cast for the mission — operatives (role="agent"), the player's
     # in-fiction handler (role="handler"), the boss (role="boss"), named
     # opposition (role="opposition"). Only role="agent" members are seen by
@@ -515,8 +581,8 @@ class Mission(BaseModel):
     # Quality authoring. Each entry carries the initial value AND the narrative
     # descriptor in one block — co-locating them eliminates the older "missing
     # descriptor" footgun. Universal qualities (agent[*].cover,
-    # mission.cycles_remaining) appear here only when overriding the engine's
-    # built-in display; their initial values come from `max_cycles` and
+    # mission.days_remaining) appear here only when overriding the engine's
+    # built-in display; their initial values come from `max_days` and
     # `cast[*].starting_cover` (agent role only) and are injected by `make_initial_state`.
     qualities: dict[str, Quality] = Field(default_factory=dict)
     # Per-mission persistent prose constraints, injected into all three agent
@@ -530,8 +596,8 @@ class Mission(BaseModel):
     # writer's leans as a foregrounding directive. Fire-once by default so
     # the same observation never surfaces twice in a run (audit §2b).
     beats: list[Beat] = Field(default_factory=list)
-    archetypes: list[Archetype] = Field(min_length=1)
-    events: list[Event] = Field(min_length=1)
+    actions: list[Action] = Field(min_length=1)
+    reactions: list[Reaction] = Field(min_length=1)
     # Cycle-1-only briefing prose. Prepended to the SoP user prompt on cycle 1
     # so the player meets the cast and the stakes before the operational
     # cycles begin. Empty = no briefing branch (skips the block). Front-loads
@@ -544,8 +610,8 @@ class Mission(BaseModel):
     def _id_uniqueness(self) -> "Mission":
         for collection, label in (
             (self.cast, "cast member"),
-            (self.archetypes, "archetype"),
-            (self.events, "event"),
+            (self.actions, "action"),
+            (self.reactions, "reaction"),
             (self.beats, "beat"),
         ):
             seen: set[str] = set()
@@ -553,21 +619,30 @@ class Mission(BaseModel):
                 if item.id in seen:
                     raise ValueError(f"duplicate {label} id: {item.id!r}")
                 seen.add(item.id)
-        # Beat ids share the `state.fired` namespace with event ids — keep
-        # them disjoint so an EventFired predicate doesn't accidentally match
-        # a beat fire (or vice versa).
-        event_ids = {e.id for e in self.events}
-        for beat in self.beats:
-            if beat.id in event_ids:
+        # Actions, Reactions, and Beats all share the `state.fired` namespace
+        # (EventFired predicate is a membership check). Authored ids must be
+        # disjoint across all three so a single id always refers to one thing.
+        fired_ns: dict[str, str] = {}
+        for action in self.actions:
+            fired_ns[action.id] = "action"
+        for reaction in self.reactions:
+            if reaction.id in fired_ns:
                 raise ValueError(
-                    f"beat id {beat.id!r} collides with an event id; both "
-                    f"share the fired-ledger namespace"
+                    f"reaction id {reaction.id!r} collides with a "
+                    f"{fired_ns[reaction.id]} id; both share the fired-ledger namespace"
                 )
-        # Outcome keys referenced by terminal events must be in `outcomes`.
-        for event in self.events:
-            if event.terminal and event.outcome_key not in self.outcomes:
+            fired_ns[reaction.id] = "reaction"
+        for beat in self.beats:
+            if beat.id in fired_ns:
                 raise ValueError(
-                    f"Event {event.id!r}: outcome_key {event.outcome_key!r} "
+                    f"beat id {beat.id!r} collides with a {fired_ns[beat.id]} id; "
+                    f"both share the fired-ledger namespace"
+                )
+        # Outcome keys referenced by terminal reactions must be in `outcomes`.
+        for reaction in self.reactions:
+            if reaction.terminal and reaction.outcome_key not in self.outcomes:
+                raise ValueError(
+                    f"Reaction {reaction.id!r}: outcome_key {reaction.outcome_key!r} "
                     f"is not in mission.outcomes ({sorted(self.outcomes)})"
                 )
         return self
@@ -582,7 +657,7 @@ class Mission(BaseModel):
 
     def initial_qualities_for_state(self) -> dict[str, float | int | str]:
         """Return the (name → initial value) mapping the engine should seed
-        into State at mission start. Universal qualities (cycles_remaining,
+        into State at mission start. Universal qualities (days_remaining,
         agent[*].cover) are injected separately by `make_initial_state`."""
         return {
             name: q.initial
@@ -590,11 +665,17 @@ class Mission(BaseModel):
             if q.initial is not None
         }
 
-    def archetype(self, id: str) -> Archetype:
-        for a in self.archetypes:
+    def action(self, id: str) -> Action:
+        for a in self.actions:
             if a.id == id:
                 return a
-        raise KeyError(f"archetype {id!r} not in mission {self.id!r}")
+        raise KeyError(f"action {id!r} not in mission {self.id!r}")
+
+    def reaction(self, id: str) -> Reaction:
+        for r in self.reactions:
+            if r.id == id:
+                return r
+        raise KeyError(f"reaction {id!r} not in mission {self.id!r}")
 
     @property
     def agents(self) -> list[CastMember]:
@@ -616,11 +697,6 @@ class Mission(BaseModel):
                 return m
         raise KeyError(f"cast member {id!r} not in mission {self.id!r}")
 
-    def event(self, id: str) -> Event:
-        for e in self.events:
-            if e.id == id:
-                return e
-        raise KeyError(f"event {id!r} not in mission {self.id!r}")
 
 
 # ───────────────────────── drafter output ─────────────────────────
@@ -628,19 +704,20 @@ class Mission(BaseModel):
 
 class Option(BaseModel):
     """One option the drafter offers the player. Assembled by the engine from
-    the selector's `(archetype, agent, satisfies_event)` slot + the prose
-    writer's `(title, prose)` pair. `archetype` and `agent` drive deterministic
+    the selector's `(action, agent)` slot + the prose writer's
+    `(title, prose)` pair. `action` and `agent` drive deterministic
     resolution; `title` and `prose` are display-only — they never influence
     state.
+
+    A forced Action surfaces here like any other — the engine knows it's
+    forced from the Action's `forced: true` flag, not from any field on
+    Option. No carrier coupling: the option IS the action.
     """
 
-    archetype: str = Field(min_length=1)
+    action: str = Field(min_length=1)
     agent: str | None = None
     title: str = Field(min_length=1)
     prose: str = Field(min_length=1)
-    # Id of the forced event this option satisfies, if any. Looked up against
-    # `mission.events` where `force_into_drafter=True`.
-    satisfies_event: str | None = None
 
 
 class OptionProse(BaseModel):
@@ -658,10 +735,10 @@ class OptionProse(BaseModel):
 
 class State(BaseModel):
     """Per-game runtime state. Qualities are namespaced flat strings —
-    `mission.cycles_remaining`, `mission.extraction_stage`, `agent[LYNX].cover`.
+    `mission.days_remaining`, `mission.extraction_stage`, `agent[LYNX].cover`.
 
     Universal qualities the engine guarantees (set up by `make_initial_state`):
-    - `mission.cycles_remaining: int` (counts down to 0)
+    - `mission.days_remaining: int` (counts down to 0)
     - `agent[<id>].cover: int` per agent (0 = lost)
     """
 
@@ -674,9 +751,6 @@ class State(BaseModel):
     # `fires_at_most='once_per_agent'`. Key is f"{event_id}:{agent_id}".
     fired_per_agent: list[str] = Field(default_factory=list)
     outcome: str | None = None
-    # Set True for the duration of one cycle by forced-event effects like
-    # kestrel_sacrifice (LYNX.cover_protected). Cleared by `tick_cycle_close`.
-    one_cycle_flags: dict[str, bool] = Field(default_factory=dict)
 
     def get_quality(self, name: str) -> float | int | str | bool | None:
         return self.qualities.get(name)
@@ -687,10 +761,10 @@ class State(BaseModel):
 
 def make_initial_state(mission: Mission) -> State:
     """Construct the starting `State` for a mission. Injects universal
-    qualities (`mission.cycles_remaining`, `agent[*].cover`) and authored
+    qualities (`mission.days_remaining`, `agent[*].cover`) and authored
     initial values from `mission.qualities`."""
     qualities: dict[str, float | int | str | bool] = {
-        "mission.cycles_remaining": mission.max_cycles,
+        "mission.days_remaining": mission.max_days,
     }
     for agent in mission.agents:
         # CastMember validator guarantees role="agent" has starting_cover set.
@@ -707,9 +781,9 @@ class MissionResolution(BaseModel):
     """Snapshot at terminal — what the outcome card shows."""
 
     outcome_key: str
-    terminal_event_id: str
-    cycles_used: int
-    cycles_max: int
+    terminal_reaction_id: str
+    days_used: int
+    days_max: int
     agents_lost: list[str]
     agents_alive: list[str]
     summary: str

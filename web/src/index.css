@@ -593,33 +593,33 @@ body {
   color: var(--ink-soft);
 }
 
-/* Cycle section — one per past or current cycle in the case-file scroll.
+/* Day section — one per past or current day in the case-file scroll.
    `current` reads as the active brief; `past` reads as an archived page.
-   Both anchor `scrollIntoView` targets via id="cycle-${n}". */
-.cycle-section { display: block; }
-.cycle-section.past {
+   Both anchor `scrollIntoView` targets via id="day-${n}". */
+.day-section { display: block; }
+.day-section.past {
   margin-bottom: 38px;
   /* Soft archived feel — past pages are read-only and a hair muted. */
   opacity: 0.92;
 }
-.cycle-section.current { margin-bottom: 0; }
+.day-section.current { margin-bottom: 0; }
 
-/* Cycle divider — small Courier label between page breaks. Rules on either
-   side hairline-thin. Sits above each cycle's blocks. */
-.cycle-divider {
+/* Day divider — small Courier label between page breaks. Rules on either
+   side hairline-thin. Sits above each day's blocks. */
+.day-divider {
   display: flex;
   align-items: center;
   gap: 12px;
   margin: 4px 0 18px;
 }
-.cycle-section.past + .cycle-section .cycle-divider,
-.cycle-section.past:not(:first-of-type) .cycle-divider { margin-top: 12px; }
-.cycle-divider-rule {
+.day-section.past + .day-section .day-divider,
+.day-section.past:not(:first-of-type) .day-divider { margin-top: 12px; }
+.day-divider-rule {
   flex: 1;
   height: 0;
   border-top: 1px solid var(--rule-soft);
 }
-.cycle-divider-label {
+.day-divider-label {
   font-family: "Courier Prime", monospace;
   font-size: 10px;
   letter-spacing: 0.28em;
@@ -718,7 +718,7 @@ body {
 /* Authorize block — sticky-pinned to the bottom of the paper-wrap viewport.
    margin-top: auto handles the short-document case (pins to the cream
    sheet's bottom via the .paper-sheet flex column); position: sticky takes
-   over once cycles accumulate and the document scrolls. The paper background
+   over once days accumulate and the document scrolls. The paper background
    occludes prose scrolling under, and the soft top rule gives a visual hand-
    off so the auth row reads as separate from the streaming entry. */
 .auth {
@@ -983,7 +983,7 @@ body {
 }
 
 /* ─────────────────────────────────────────────────────────────────────
-   ONBOARDING CARD — orientation panel before cycle 1: briefing in voice
+   ONBOARDING CARD — orientation panel before day 1: briefing in voice
    plus one signpost line. Built on the same warm-paper-card shell as
    the dispatch overlay so it reads as another piece of authored paper
    on the desk, not a chrome modal. Cast roster and meter glossary live

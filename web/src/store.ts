@@ -15,7 +15,7 @@ export interface MissionMeta {
   mission_id: string;
   mission_name: string;
   codename: string;
-  max_cycles: number;
+  max_days: number;
   agents: AgentMeta[];
   cast: CastMember[];
   opening_briefing: string;
@@ -23,27 +23,27 @@ export interface MissionMeta {
 }
 
 export interface OptionDraft {
-  archetype: string;
+  action: string;
   agent: string | null;
   title: string;
   prose_words: string[];
   complete: boolean;
-  satisfies_event: string | null;
+  forced: boolean;
 }
 
 /** One past case-file entry — full prose. Held in the store so the
- * case-file scroll can render any completed cycle inline without a
+ * case-file scroll can render any completed day inline without a
  * round-trip. */
 export interface LogEntryRecord {
-  cycle_index: number;
-  archetype: string;
+  day_index: number;
+  action: string;
   title: string;
   text: string;
   delta: Delta;
   delta_descriptors: DeltaDescriptors;
 }
 
-export interface CycleState {
+export interface DayState {
   index: number;
   options: OptionDraft[];
   options_complete: boolean;
@@ -51,30 +51,28 @@ export interface CycleState {
   awaiting_auth: boolean;
   authorized: boolean;
   // Log entry streaming: present after authorize, until the entry completes.
-  entry_archetype: string | null;
+  entry_action: string | null;
   entry_words: string[];
   entry_complete: boolean;
   // True after the server emits `awaiting_continue` — engine is paused
-  // between cycles waiting for the player to click through.
+  // between days waiting for the player to click through.
   awaiting_continue: boolean;
-  // Latest cycle delta (effects + events merged) — surfaced to the current-
-  // cycle panel for the RESULT footer.
+  // Latest day delta (effects + reactions merged) — surfaced to the current-
+  // day panel for the RESULT footer.
   delta: Delta;
-  // Accumulated narrative-descriptor map across the cycle's mutation phases
-  // (effects_applied + events_fired + cycle_closed). Powers the RESULT
-  // footer in the current-cycle panel: a one-line "what just moved" summary
-  // pulled from server-side `_describe_*` helpers. Filtered: same-bucket
-  // swings (e.g. 8→7 cover, both 'intact') don't surface.
+  // Accumulated narrative-descriptor map across the day's mutation phases
+  // (effects_applied + reactions_fired + day_closed). Powers the RESULT
+  // footer in the current-day panel.
   delta_descriptors: DeltaDescriptors;
-  events_fired: string[];
+  reactions_fired: string[];
 }
 
 export interface Outcome {
   outcome_key: string;
   summary: string;
-  terminal_event: string;
-  cycles_used: number;
-  cycles_max: number;
+  terminal_reaction: string;
+  days_used: number;
+  days_max: number;
   agents_lost: string[];
   agents_alive: string[];
 }
@@ -83,8 +81,8 @@ interface Store {
   session_id: string | null;
   mission_meta: MissionMeta | null;
   state: GameState;
-  cycle: CycleState | null;
-  // Full prose per cycle. Click a case-file row to re-read any past cycle's entry.
+  cycle: DayState | null;
+  // Full prose per day. Click a case-file row to re-read any past day's entry.
   inbox: LogEntryRecord[];
   outcome: Outcome | null;
   errorMessage: string | null;
@@ -96,7 +94,7 @@ interface Store {
 
   startMission: () => Promise<void>;
   authorize: () => Promise<void>;
-  continueCycle: () => Promise<void>;
+  continueDay: () => Promise<void>;
   selectOption: (idx: number | null) => void;
   dismissOnboarding: () => void;
   handleEvent: (event: SseEvent) => void;
@@ -105,7 +103,7 @@ interface Store {
 
 // ─── reducer-style helpers (kept outside the store to stay testable) ─────
 
-function newCycle(index: number): CycleState {
+function newDay(index: number): DayState {
   return {
     index,
     options: [],
@@ -113,20 +111,20 @@ function newCycle(index: number): CycleState {
     selected_option_index: null,
     awaiting_auth: false,
     authorized: false,
-    entry_archetype: null,
+    entry_action: null,
     entry_words: [],
     entry_complete: false,
     awaiting_continue: false,
     delta: {},
     delta_descriptors: {},
-    events_fired: [],
+    reactions_fired: [],
   };
 }
 
-// Cycle accumulates mutation phases in order: effects → events → close.
+// Day accumulates mutation phases in order: effects → events → close.
 // Both deltas and their narrative descriptors merge the same way — keep the
-// first-seen `before` (the cycle's true starting value) and the latest
-// `after` (the cycle's final value for that quality).
+// first-seen `before` (the day's true starting value) and the latest
+// `after` (the day's final value for that quality).
 function mergeByQuality<T extends { before: unknown; after: unknown }>(
   a: Record<string, T>,
   b: Record<string, T> | undefined,
@@ -202,7 +200,7 @@ const _store = create<Store>((set, get) => ({
       // Re-read after the await — the server may have streamed
       // `entry_started`/`effects_applied` while we were awaiting the
       // /authorize response, and a stale-cycle spread here would clobber
-      // those SSE-driven fields (entry_archetype, delta, etc.).
+      // those SSE-driven fields (entry_action, delta, etc.).
       const latest = get().cycle;
       if (!latest) return;
       set({
@@ -213,12 +211,12 @@ const _store = create<Store>((set, get) => ({
     }
   },
 
-  continueCycle: async () => {
+  continueDay: async () => {
     const { session_id, cycle } = get();
     if (!session_id || !cycle?.awaiting_continue) return;
     try {
-      await api.continueCycle(session_id);
-      // No local state mutation — the server's `cycle_opened` for N+1 will
+      await api.continueDay(session_id);
+      // No local state mutation — the server's `day_opened` for N+1 will
       // replace `cycle` wholesale, clearing `awaiting_continue`.
     } catch (e: any) {
       set({ errorMessage: e.message ?? String(e) });
@@ -242,7 +240,7 @@ const _store = create<Store>((set, get) => ({
             mission_id: ev.mission_id,
             mission_name: ev.mission_name,
             codename: ev.codename,
-            max_cycles: ev.max_cycles,
+            max_days: ev.max_days,
             agents: ev.agents,
             cast: ev.cast,
             opening_briefing: ev.opening_briefing,
@@ -252,20 +250,20 @@ const _store = create<Store>((set, get) => ({
         });
         break;
 
-      case "cycle_opened":
-        set({ cycle: newCycle(ev.cycle), state: ev.state });
+      case "day_opened":
+        set({ cycle: newDay(ev.day), state: ev.state });
         break;
 
       case "option_started": {
         const c = get().cycle;
-        if (!c || c.index !== ev.cycle) return;
+        if (!c || c.index !== ev.day) return;
         const opt: OptionDraft = {
-          archetype: ev.archetype,
+          action: ev.action,
           agent: ev.agent,
           title: ev.title,
           prose_words: [],
           complete: false,
-          satisfies_event: ev.satisfies_event,
+          forced: ev.forced,
         };
         const options = [...c.options];
         options[ev.option_idx] = opt;
@@ -275,7 +273,7 @@ const _store = create<Store>((set, get) => ({
 
       case "option_word": {
         const c = get().cycle;
-        if (!c || c.index !== ev.cycle) return;
+        if (!c || c.index !== ev.day) return;
         const options = [...c.options];
         const opt = options[ev.option_idx];
         if (!opt) return;
@@ -307,7 +305,7 @@ const _store = create<Store>((set, get) => ({
 
       case "awaiting_continue": {
         const c = get().cycle;
-        if (!c || c.index !== ev.cycle) return;
+        if (!c || c.index !== ev.day) return;
         set({ cycle: { ...c, awaiting_continue: true } });
         break;
       }
@@ -328,7 +326,7 @@ const _store = create<Store>((set, get) => ({
         break;
       }
 
-      case "events_fired": {
+      case "reactions_fired": {
         const c = get().cycle;
         if (!c) return;
         set({
@@ -339,7 +337,7 @@ const _store = create<Store>((set, get) => ({
               c.delta_descriptors,
               ev.delta_descriptors,
             ),
-            events_fired: [...c.events_fired, ...ev.events],
+            reactions_fired: [...c.reactions_fired, ...ev.reactions],
           },
         });
         break;
@@ -347,11 +345,11 @@ const _store = create<Store>((set, get) => ({
 
       case "entry_started": {
         const c = get().cycle;
-        if (!c || c.index !== ev.cycle) return;
+        if (!c || c.index !== ev.day) return;
         set({
           cycle: {
             ...c,
-            entry_archetype: ev.archetype,
+            entry_action: ev.action,
             entry_words: [],
             entry_complete: false,
           },
@@ -361,7 +359,7 @@ const _store = create<Store>((set, get) => ({
 
       case "entry_word": {
         const c = get().cycle;
-        if (!c || c.index !== ev.cycle) return;
+        if (!c || c.index !== ev.day) return;
         if (ev.is_last) {
           // Finalise: build inbox entry from accumulated text.
           const text = c.entry_words.join("");
@@ -370,8 +368,8 @@ const _store = create<Store>((set, get) => ({
               ? (c.options[c.selected_option_index]?.title ?? "")
               : "";
           const entry: LogEntryRecord = {
-            cycle_index: c.index,
-            archetype: c.entry_archetype ?? "?",
+            day_index: c.index,
+            action: c.entry_action ?? "?",
             title,
             text,
             delta: c.delta,
@@ -391,10 +389,10 @@ const _store = create<Store>((set, get) => ({
         break;
       }
 
-      case "cycle_closed": {
+      case "day_closed": {
         const c = get().cycle;
-        // Accumulate the cycle-close descriptors (cycles_remaining tick) into
-        // the current-cycle panel's RESULT footer if the cycle is still on-screen.
+        // Accumulate the day-close descriptors (days_remaining tick) into
+        // the current-day panel's RESULT footer if the day is still on-screen.
         if (c && ev.delta_descriptors && Object.keys(ev.delta_descriptors).length > 0) {
           set({
             state: ev.state,
@@ -418,8 +416,8 @@ const _store = create<Store>((set, get) => ({
             outcome_key: ev.outcome,
             summary: ev.summary,
             terminal_event: ev.terminal_event,
-            cycles_used: ev.cycles_used,
-            cycles_max: ev.cycles_max,
+            days_used: ev.days_used,
+            days_max: ev.days_max,
             agents_lost: ev.agents_lost,
             agents_alive: ev.agents_alive,
           },

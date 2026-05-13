@@ -18,29 +18,27 @@ _LYNX = Path(__file__).resolve().parents[1] / "missions" / "lynx_exfil.yaml"
 def test_tiny_mission_loads() -> None:
     m = load_mission(_TINY)
     assert m.id == "tiny"
-    # mission.agents is now a property filtering role=='agent'.
     assert {a.id for a in m.agents} == {"ALPHA", "BRAVO"}
-    # mission.cast carries every role (the tiny fixture authors a handler).
     assert {c.id for c in m.cast} == {"ALPHA", "BRAVO", "HANDLER"}
     assert m.member("HANDLER").role == "handler"
-    assert {a.id for a in m.archetypes} == {"PUSH", "SACRIFICE_BY_AGENT", "HOLD"}
-    assert {e.id for e in m.events} >= {"win", "timeout", "passive_decay"}
+    # Normal actions + the forced turning_point action.
+    assert {a.id for a in m.actions} >= {"PUSH", "SACRIFICE_BY_AGENT", "HOLD", "turning_point"}
+    assert {r.id for r in m.reactions} >= {"win", "timeout", "passive_decay"}
 
 
-def test_tiny_mission_loads_opening_briefing_and_lean_on() -> None:
-    """The tiny fixture authors a cycle-1 briefing and a forced-event lean."""
+def test_tiny_mission_loads_opening_briefing() -> None:
+    """The tiny fixture authors a day-1 briefing."""
     m = load_mission(_TINY)
     assert "Test briefing" in m.opening_briefing
-    turning = next(e for e in m.events if e.id == "turning_point")
-    assert turning.lean_on == ["test lean directive for ALPHA"]
 
 
 def test_lynx_exfil_loads() -> None:
     m = load_mission(_LYNX)
     assert m.codename == "LYNX-EXFIL"
-    assert m.max_cycles == 6
-    assert len(m.archetypes) >= 5
-    assert any(e.id == "kestrel_sacrifice" and e.force_into_drafter for e in m.events)
+    assert m.max_days == 6
+    assert len(m.actions) >= 5
+    # kestrel_sacrifice is now a forced Action (no more force_into_drafter on Event).
+    assert any(a.id == "kestrel_sacrifice" and a.forced for a in m.actions)
 
 
 def test_missing_file_raises_with_path(tmp_path: Path) -> None:
@@ -65,16 +63,16 @@ def test_top_level_must_be_mapping(tmp_path: Path) -> None:
     assert "mapping" in str(exc.value)
 
 
-def test_load_fails_on_quality_without_descriptor(tmp_path: Path) -> None:
-    """A `qualities:` entry with `initial:` but no `buckets:`/`values:` is
-    rejected by the per-quality validator. Co-locating initial + descriptor
-    means the author can't write one without the other."""
+def test_load_fails_on_quality_without_bands(tmp_path: Path) -> None:
+    """A `qualities:` entry with `initial:` but no `bands:` is rejected by
+    the per-quality validator. Co-locating initial + descriptor means the
+    author can't write one without the other."""
     bad = tmp_path / "missing_descriptor.yaml"
     bad.write_text(
         """\
 id: bad
 name: "Bad mission — undescribed quality"
-max_cycles: 3
+max_days: 3
 cast:
   - id: A
     codename: A
@@ -82,14 +80,14 @@ cast:
 qualities:
   mission.undescribed:
     initial: 0
-    # no buckets, no values — the Quality model rejects this
-archetypes:
+    # no bands — the Quality model rejects this
+actions:
   - id: X
     when:
       kind: quality_gte
       quality: a
       value: 0
-events:
+reactions:
   - id: end
     terminal: true
     outcome_key: w
@@ -105,6 +103,4 @@ outcomes:
     )
     with pytest.raises(MissionLoadError) as exc:
         load_mission(bad)
-    msg = str(exc.value)
-    # The Quality model's _has_descriptor validator names buckets/values.
-    assert "buckets" in msg or "values" in msg
+    assert "bands" in str(exc.value)

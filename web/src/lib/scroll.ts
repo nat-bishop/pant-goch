@@ -1,5 +1,5 @@
-export function scrollToCycle(cycleIndex: number) {
-  document.getElementById(`cycle-${cycleIndex}`)?.scrollIntoView({
+export function scrollToDay(dayIndex: number) {
+  document.getElementById(`day-${dayIndex}`)?.scrollIntoView({
     behavior: "smooth",
     block: "start",
   });

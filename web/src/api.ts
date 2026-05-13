@@ -37,17 +37,17 @@ export interface CastMember {
 }
 
 export interface OptionPayload {
-  archetype: string;
+  action: string;
   agent: string | null;
   title: string;
-  satisfies_event: string | null;
+  forced: boolean;
 }
 
 export type Quality = number | string | boolean;
 export type GameState = Record<string, Quality>;
 export type Delta = Record<string, { before: Quality | null; after: Quality }>;
 
-/** Narrative descriptor for one quality in a cycle's delta. `before` is
+/** Narrative descriptor for one quality in a day's delta. `before` is
  * null on first-time quality writes (e.g. authored mission qualities
  * surfacing for the first time); `agent_id` is the operative whose cover
  * changed (e.g. "LYNX") or null for mission-scoped qualities. The pair
@@ -67,7 +67,7 @@ export interface StartResponse {
   mission_id: string;
   mission_name: string;
   codename: string;
-  max_cycles: number;
+  max_days: number;
   opening_briefing: string;
   opening_prose: string;
   cast: CastMember[];
@@ -91,7 +91,7 @@ export async function authorize(
   await ensureOk(r, "authorize");
 }
 
-export async function continueCycle(session_id: string): Promise<void> {
+export async function continueDay(session_id: string): Promise<void> {
   const r = await fetch(`${API}/mission/${session_id}/continue`, {
     method: "POST",
   });
@@ -100,7 +100,7 @@ export async function continueCycle(session_id: string): Promise<void> {
 
 export interface StateResponse {
   session_id: string;
-  cycle_index: number | null;
+  day_index: number | null;
   state: GameState;
   outcome: string | null;
 }
@@ -114,19 +114,19 @@ export async function fetchState(session_id: string): Promise<StateResponse> {
 // ─── SSE event vocabulary (must match handler/main.py) ───────────────────
 
 export type SseEvent =
-  | { event: "mission_started"; mission_id: string; mission_name: string; codename: string; max_cycles: number; agents: AgentMeta[]; cast: CastMember[]; opening_briefing: string; opening_prose: string; state: GameState }
-  | { event: "cycle_opened"; cycle: number; state: GameState }
-  | { event: "option_started"; cycle: number; option_idx: number; archetype: string; agent: string | null; title: string; satisfies_event: string | null }
-  | { event: "option_word"; cycle: number; option_idx: number; idx: number; word: string; is_last?: boolean }
-  | { event: "options_complete"; cycle: number; count: number; has_forced_event: boolean; event_id: string | null; engine_fallback: boolean }
+  | { event: "mission_started"; mission_id: string; mission_name: string; codename: string; max_days: number; agents: AgentMeta[]; cast: CastMember[]; opening_briefing: string; opening_prose: string; state: GameState }
+  | { event: "day_opened"; day: number; state: GameState }
+  | { event: "option_started"; day: number; option_idx: number; action: string; agent: string | null; title: string; forced: boolean }
+  | { event: "option_word"; day: number; option_idx: number; idx: number; word: string; is_last?: boolean }
+  | { event: "options_complete"; day: number; count: number; has_forced_action: boolean; action_id: string | null; engine_fallback: boolean }
   | { event: "awaiting_auth" }
-  | { event: "awaiting_continue"; cycle: number }
+  | { event: "awaiting_continue"; day: number }
   | { event: "effects_applied"; delta: Delta; delta_descriptors?: DeltaDescriptors }
-  | { event: "events_fired"; events: string[]; delta: Delta; delta_descriptors?: DeltaDescriptors }
-  | { event: "entry_started"; cycle: number; archetype: string }
-  | { event: "entry_word"; cycle: number; idx: number; word: string; is_last?: boolean }
-  | { event: "cycle_closed"; cycle: number; state: GameState; delta_descriptors?: DeltaDescriptors }
-  | { event: "mission_resolved"; outcome: string; summary: string; terminal_event: string; cycles_used: number; cycles_max: number; agents_lost: string[]; agents_alive: string[] }
+  | { event: "reactions_fired"; reactions: string[]; delta: Delta; delta_descriptors?: DeltaDescriptors }
+  | { event: "entry_started"; day: number; action: string }
+  | { event: "entry_word"; day: number; idx: number; word: string; is_last?: boolean }
+  | { event: "day_closed"; day: number; state: GameState; delta_descriptors?: DeltaDescriptors }
+  | { event: "mission_resolved"; outcome: string; summary: string; terminal_reaction: string; days_used: number; days_max: number; agents_lost: string[]; agents_alive: string[] }
   | { event: "session_closed" }
   | { event: "error"; code: string };
 

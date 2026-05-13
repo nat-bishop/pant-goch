@@ -10,10 +10,10 @@ from pathlib import Path
 import pytest
 
 from handler.events import (
-    CycleClosed,
-    CycleOpened,
+    DayClosed,
+    DayOpened,
     EffectsApplied,
-    EventsFired,
+    ReactionsFired,
     LogEntryAppended,
     MissionStarted,
     OptionAuthorized,
@@ -27,7 +27,7 @@ from handler.session import (
     make_session,
     replay_into_session,
 )
-from handler.spine import apply_archetype_effects, tick_cycle_close
+from handler.spine import apply_action_effects, tick_day_close
 
 
 _TINY = Path(__file__).parent / "fixtures" / "tiny_mission.yaml"
@@ -48,38 +48,38 @@ def agents_stub(mission):
     return SimpleNamespace(drafter=None, log_writer=None, mission=mission)
 
 
-def _emit_cycle_one(session, mission) -> None:
-    """Drive a single cycle's worth of events into `session` via the live path.
+def _emit_day_one(session, mission) -> None:
+    """Drive a single day's worth of events into `session` via the live path.
 
-    Mirrors what `cycle.run_cycle` would emit, minus the SoP / drafter / renderer
+    Mirrors what `day.run_day` would emit, minus the SoP / drafter / renderer
     streaming. Each event carries the delta produced by the spine functions, so
     fold() can reproduce state from the log alone.
     """
     # Snapshot the initial state. model_copy() is shallow — qualities is a
     # dict and would alias with session.state.qualities, polluting replay.
-    # `cycle.start_mission` solves this by constructing a fresh State; here a
+    # `day.start_mission` solves this by constructing a fresh State; here a
     # deep copy is equivalent and clearer at the test boundary.
     initial = session.state.model_copy(deep=True)
     session.apply(MissionStarted(mission_id=mission.id, initial_state=initial))
-    session.apply(CycleOpened(cycle_index=1))
+    session.apply(DayOpened(day_index=1))
     opt = Option(
-        archetype="SACRIFICE_BY_AGENT",
+        action="SACRIFICE_BY_AGENT",
         agent="ALPHA",
         title="t",
         prose="p",
     )
-    session.apply(OptionsDrafted(cycle_index=1, options=[opt]))
+    session.apply(OptionsDrafted(day_index=1, options=[opt]))
     session.apply(
         OptionAuthorized(
-            cycle_index=1,
+            day_index=1,
             option=opt,
             by_handler_at=datetime.now(timezone.utc),
         )
     )
-    delta, _branches = apply_archetype_effects(session.state, opt, mission)
-    session.apply(EffectsApplied(cycle_index=1, delta=delta))
-    close_delta = tick_cycle_close(session.state)
-    session.apply(CycleClosed(cycle_index=1, delta=close_delta))
+    delta, _leans = apply_action_effects(session.state, opt, mission)
+    session.apply(EffectsApplied(day_index=1, delta=delta, action_id="SACRIFICE_BY_AGENT", action_forced=False))
+    close_delta = tick_day_close(session.state)
+    session.apply(DayClosed(day_index=1, delta=close_delta))
 
 
 # ───────────────────────── state_at ─────────────────────────
@@ -87,13 +87,13 @@ def _emit_cycle_one(session, mission) -> None:
 
 def test_state_at_reproduces_intermediate_snapshots(mission, agents_stub) -> None:
     session = make_session(mission, agents_stub)
-    _emit_cycle_one(session, mission)
+    _emit_day_one(session, mission)
 
     # state_at(0) is the initial state (no events folded).
     s0 = session.state_at(0)
     assert s0.qualities == make_initial_state(mission).qualities
 
-    # state_at after MissionStarted + CycleOpened — same as initial.
+    # state_at after MissionStarted + DayOpened — same as initial.
     s2 = session.state_at(2)
     assert s2.qualities == make_initial_state(mission).qualities
 
@@ -104,7 +104,7 @@ def test_state_at_reproduces_intermediate_snapshots(mission, agents_stub) -> Non
 
 def test_state_at_rejects_out_of_range(mission, agents_stub) -> None:
     session = make_session(mission, agents_stub)
-    _emit_cycle_one(session, mission)
+    _emit_day_one(session, mission)
     with pytest.raises(IndexError):
         session.state_at(-1)
     with pytest.raises(IndexError):
@@ -117,12 +117,12 @@ def test_state_at_rejects_out_of_range(mission, agents_stub) -> None:
 def test_jsonl_persist_then_replay_matches_live(
     tmp_path: Path, mission, agents_stub
 ) -> None:
-    """Drive cycle 1 through a session with a JSONL persistor, then load the
+    """Drive day 1 through a session with a JSONL persistor, then load the
     file into a fresh session via `replay_into_session` and assert state
     equivalence. The disk round-trip is the canonical save/load path."""
     log_path = tmp_path / "session.jsonl"
     live = make_session(mission, agents_stub, persist=make_jsonl_persistor(log_path))
-    _emit_cycle_one(live, mission)
+    _emit_day_one(live, mission)
 
     # JSONL file should now have one line per emitted event.
     raw = log_path.read_text(encoding="utf-8").splitlines()
@@ -148,7 +148,7 @@ def test_replay_into_session_skips_persist_hook(
     replay target and confirming file size unchanged."""
     log_path = tmp_path / "session.jsonl"
     live = make_session(mission, agents_stub, persist=make_jsonl_persistor(log_path))
-    _emit_cycle_one(live, mission)
+    _emit_day_one(live, mission)
 
     before = log_path.read_text(encoding="utf-8")
 

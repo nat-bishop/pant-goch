@@ -4,7 +4,7 @@
 + report serialization. `run_session` drives one game end-to-end:
   - POST /mission/start
   - GET /mission/{id}/stream (SSE)
-  - per cycle: collect SoP + options, call the picker, POST /authorize
+  - per day: collect SoP + options, call the picker, POST /authorize
   - on terminal: record outcome
 """
 from __future__ import annotations
@@ -20,15 +20,15 @@ from .option_picker import PickedOption, pick
 from .personas import PersonaSpec
 
 
-# ───────────────────────── per-cycle trace ─────────────────────────
+# ───────────────────────── per-day trace ─────────────────────────
 
 
 @dataclass
 class CycleTrace:
-    """What happened in one cycle. Mirrors the SSE event stream — collected
+    """What happened in one day. Mirrors the SSE event stream — collected
     by `run_session` as events flow in."""
 
-    cycle_index: int
+    day_index: int
     options: list[dict[str, Any]] = field(default_factory=list)
     chosen_index: int | None = None
     chosen_archetype: str | None = None
@@ -130,8 +130,8 @@ async def run_session(
                     kind = ev.get("event")
                     if kind == "mission_started":
                         record.final_state = dict(ev.get("state", {}))
-                    elif kind == "cycle_opened":
-                        current = CycleTrace(cycle_index=ev["cycle"])
+                    elif kind == "day_opened":
+                        current = CycleTrace(day_index=ev["day"])
                         record.cycles.append(current)
                         current_options_payload = []
                     elif kind == "option_started" and current is not None:
@@ -174,7 +174,7 @@ async def run_session(
                             json={"option_index": chosen_idx},
                         )
                     elif kind == "awaiting_continue":
-                        # Engine paused between cycles waiting for the player —
+                        # Engine paused between days waiting for the player —
                         # the playtest harness has no human, so click through
                         # immediately.
                         await client.post(f"/mission/{session_id}/continue")
@@ -189,7 +189,7 @@ async def run_session(
                     elif kind == "entry_word" and current is not None:
                         if not ev.get("is_last"):
                             current.entry_text += ev["word"]
-                    elif kind == "cycle_closed":
+                    elif kind == "day_closed":
                         record.final_state = dict(ev.get("state", {}))
                     elif kind == "mission_resolved":
                         record.outcome = ev["outcome"]

@@ -1,16 +1,16 @@
-# Minimal HANDLER mission used by unit tests. 2 agents, 3 archetypes, 5
-# events (1 forced + 4 passive). Exercises every engine primitive without
-# LYNX-EXFIL's tuning. The "tiny" suffix signals: this is NOT a playable
-# scenario.
+# Minimal HANDLER mission used by unit tests. 2 agents, 3 normal Actions +
+# 1 forced Action, 3 Reactions (terminals + passive decay). Exercises every
+# engine primitive without LYNX-EXFIL's tuning. The "tiny" suffix signals:
+# this is NOT a playable scenario.
 
 id: tiny
 name: "Tiny Test Mission"
 codename: "TINY"
-max_cycles: 4
+max_days: 4
 
 opening_prose: "A two-agent test bed."
 
-opening_briefing: "Test briefing for the operation. Cycle 1 only."
+opening_briefing: "Test briefing for the operation. Day 1 only."
 
 cast:
   - id: ALPHA
@@ -31,17 +31,17 @@ cast:
 qualities:
   mission.progress:
     initial: 0
-    values:
-      "0": "the operation has not yet advanced"
-      "1": "the operation has advanced one step"
-      "2": "the operation is at terminal threshold"
+    bands:
+      - [0, "the operation has not yet advanced"]
+      - [1, "the operation has advanced one step"]
+      - [2, "the operation is at terminal threshold"]
 
 outcomes:
   win: "ALPHA pushed the progress to 2."
   loss_agent_lost: "An agent's cover collapsed."
-  loss_timeout: "Out of cycles."
+  loss_timeout: "Out of days."
 
-archetypes:
+actions:
   - id: PUSH
     intent: "Advance the mission."
     when:
@@ -59,7 +59,7 @@ archetypes:
       kind: quality_gt
       quality: agent[$agent].cover
       value: 0
-    params: [agent]
+    for_each_agent: true
     effects:
       - quality: agent[$agent].cover
         value: -2
@@ -72,15 +72,14 @@ archetypes:
     intent: "Do nothing."
     when:
       kind: quality_gte
-      quality: mission.cycles_remaining
+      quality: mission.days_remaining
       value: 1
     effects: []
 
-events:
-  # Forced (drafter-surfaced) event.
+  # Forced Action — drafter-surfaced obligation. Subsumes the old
+  # `force_into_drafter` Event shape into a single Action with `forced: true`.
   - id: turning_point
-    force_into_drafter: true
-    fires_at_most: once_per_mission
+    forced: true
     when:
       kind: and
       of:
@@ -91,12 +90,10 @@ events:
           of:
             kind: event_fired
             event: turning_point
-    intent: "Test forced event that ratchets progress + costs ALPHA cover."
+    intent: "Test forced action that ratchets progress + costs ALPHA cover."
     must_communicate: ["test"]
     must_not: []
     tone: "test"
-    lean_on:
-      - "test lean directive for ALPHA"
     effects:
       - quality: mission.progress
         value: 1
@@ -105,7 +102,7 @@ events:
         value: -3
         op: add
 
-  # Passive (post-authorization) events.
+reactions:
   - id: win
     terminal: true
     outcome_key: win
@@ -121,9 +118,10 @@ events:
     priority: 1
     when:
       kind: quality_equals
-      quality: mission.cycles_remaining
+      quality: mission.days_remaining
       value: 0
 
+  # for_each_agent reaction — fires once per agent whose cover hits 0.
   - id: agent_lost
     for_each_agent: true
     fires_at_most: once_per_agent
@@ -139,7 +137,7 @@ events:
 
   - id: passive_decay
     fires_at_most: unlimited
-    only_when_no_progress_this_cycle: true
+    only_when_no_progress_this_day: true
     priority: 10
     when:
       kind: quality_lt

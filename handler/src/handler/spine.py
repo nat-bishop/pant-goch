@@ -1,8 +1,8 @@
 """Engine: predicate evaluation + state mutation. Pure deterministic functions.
 
 The LLM never writes to state — every state mutation flows through one of
-the spine entry points (`apply_archetype_effects`, `apply_forced_event_effects`,
-`fire_due_passive_events`, `tick_cycle_close`) and is called from `cycle.py`.
+the spine entry points (`apply_action_effects`, `fire_due_reactions`,
+`tick_day_close`) and is called from `cycle.py`.
 
 No I/O, no LLM calls, no async. Every function is pure (returns a new value)
 or mutates the passed-in `State` in place (well-marked). Predicate evaluation
@@ -14,24 +14,24 @@ import copy
 from typing import Any, Literal, assert_never
 
 from .models import (
+    Action,
     And_,
-    Archetype,
     Beat,
-    BranchLabel,
     CastMember,
     Effect,
-    Event,
     EventFired,
     Mission,
     Not_,
     Option,
     Or_,
+    Outcome,
     Predicate,
     QualityEquals,
     QualityGt,
     QualityGte,
     QualityLt,
     QualityLte,
+    Reaction,
     State,
     iter_predicate_leaves,
     substitute_effect,
@@ -77,17 +77,9 @@ def evaluate_predicate(state: State, pred: Predicate) -> bool:
 # ───────────────────────── effect application ─────────────────────────
 
 
-def _apply_one(
-    state: State, eff: Effect
-) -> tuple[str, Any, Any, BranchLabel | None] | None:
-    """Apply a single effect to state IN PLACE, return (quality, before, after,
-    branch) tuple for audit. Returns None if the `when` predicate guards it off.
-
-    `branch` carries the effect's author-tag (clean / partial / failure / None)
-    so callers can attribute which conditional branch actually applied — used
-    by opposed-check archetypes to thread the right `branch_leans` into the
-    cycle's renderer directives.
-    """
+def _apply_one(state: State, eff: Effect) -> tuple[str, Any, Any] | None:
+    """Apply a single effect to state IN PLACE, return (quality, before, after)
+    for audit. Returns None if the `when` predicate guards it off."""
     if eff.when is not None and not evaluate_predicate(state, eff.when):
         return None
     before = state.get_quality(eff.quality)
@@ -105,7 +97,7 @@ def _apply_one(
     else:
         assert_never(eff.op)
     # Preserve int-ness for numeric ops on integer-typed qualities (cover,
-    # cycles, extraction_stage). Mixed float/int qualities don't exist in MVP.
+    # days, extraction_stage). Mixed float/int qualities don't exist in MVP.
     if (
         eff.op != "set"
         and isinstance(before, int)
@@ -117,117 +109,143 @@ def _apply_one(
     if eff.quality.endswith(".cover") and isinstance(after, (int, float)):
         after = max(0, min(10, int(after)))
     state.set_quality(eff.quality, after)
-    return (eff.quality, before, after, eff.branch)
+    return (eff.quality, before, after)
 
 
 def _apply_many(
     state: State, effects: list[Effect]
-) -> tuple[dict[str, tuple[Any, Any]], set[str]]:
-    """Apply a list of effects in order, collecting deltas and the set of
-    branch labels that actually fired. The delta dict keeps only the net
-    change per quality (first `before`, last `after`). `branches_taken` is
-    typically empty (no branch-tagged effects) or a single-element set
-    (opposed-check archetypes author mutually-exclusive branches).
-    """
+) -> dict[str, tuple[Any, Any]]:
+    """Apply effects in order, returning a net delta map. The delta keeps the
+    first `before` and the latest `after` per quality across the run."""
     delta: dict[str, tuple[Any, Any]] = {}
-    branches_taken: set[str] = set()
     for eff in effects:
         result = _apply_one(state, eff)
         if result is None:
             continue
-        quality, before, after, branch = result
-        if branch is not None:
-            branches_taken.add(branch)
+        quality, before, after = result
         existing = delta.get(quality)
         if existing is None:
             delta[quality] = (before, after)
         else:
             delta[quality] = (existing[0], after)
-    return delta, branches_taken
+    return delta
 
 
-# ───────────────────────── archetype enumeration ─────────────────────────
+# ───────────────────────── action catalog ─────────────────────────
 
 
-def valid_archetype_combinations(
+def valid_action_catalog(
     state: State, mission: Mission
 ) -> list[tuple[str, str | None, dict[str, str]]]:
-    """Enumerate every (archetype_id, agent_id, params) tuple whose
-    precondition `when` is satisfied. For archetypes that take `params: [agent]`,
-    expands over agents whose cover > 0.
+    """Enumerate every (action_id, agent_id, params) tuple whose precondition
+    `when` is satisfied. For actions with `for_each_agent=True`, expands over
+    agents whose cover > 0.
 
     Returns the catalog the drafter receives.
     """
     catalog: list[tuple[str, str | None, dict[str, str]]] = []
-    for arch in mission.archetypes:
-        if "agent" in arch.params:
+    for action in mission.actions:
+        # Forced actions whose id is already in state.fired drop out of the
+        # catalog so they can't be re-authorized.
+        if action.forced and action.id in state.fired:
+            continue
+        if action.for_each_agent:
             for agent in mission.agents:
                 cover = state.get_quality(f"agent[{agent.id}].cover")
                 if cover is None or float(cover) <= 0:
                     continue
-                # Substitute $agent in the precondition before evaluating.
-                pred = substitute_predicate(arch.when, {"agent": agent.id})
+                pred = substitute_predicate(action.when, {"agent": agent.id})
                 if evaluate_predicate(state, pred):
-                    catalog.append((arch.id, agent.id, {"agent": agent.id}))
+                    catalog.append((action.id, agent.id, {"agent": agent.id}))
         else:
-            if evaluate_predicate(state, arch.when):
-                catalog.append((arch.id, None, {}))
+            if evaluate_predicate(state, action.when):
+                catalog.append((action.id, None, {}))
     return catalog
 
 
-# ───────────────────────── forced-event enumeration ─────────────────────────
-
-
-def due_forced_events(state: State, mission: Mission) -> list[Event]:
-    """Forced events whose `when` holds and haven't already fired. Filters
-    `mission.events` to those with `force_into_drafter=True` — these are
-    surfaced to the drafter so one option this cycle must satisfy them.
-    The `_consistency` validator pins forced events to `fires_at_most="once_per_mission"`.
-    """
+def due_forced_actions(state: State, mission: Mission) -> list[Action]:
+    """Forced actions whose `when` holds and which haven't fired yet. The
+    drafter MUST surface one of these as an option per cycle — `cycle.py` picks
+    the first due forced action and routes it through the drafter's prompt as
+    a required satisfier."""
     return [
-        e for e in mission.events
-        if e.force_into_drafter
-        and e.id not in state.fired
-        and evaluate_predicate(state, e.when)
+        a for a in mission.actions
+        if a.forced
+        and a.id not in state.fired
+        and evaluate_predicate(state, a.when)
     ]
 
 
-# ───────────────────────── archetype application ─────────────────────────
+# ───────────────────────── action application ─────────────────────────
 
 
-def apply_archetype_effects(
+def apply_action_effects(
     state: State, option: Option, mission: Mission
-) -> tuple[dict[str, tuple[Any, Any]], set[str]]:
-    """Apply the chosen option's archetype effects to state IN PLACE. Returns
-    `(delta, branches_taken)` — `branches_taken` is the set of `Effect.branch`
-    labels whose conditional `when:` passed. For non-opposed archetypes
-    (no `branch` tags authored) the set is empty. `cycle.py` uses it to look
-    up `Archetype.branch_leans` and thread the matching directives into the
-    cycle's leans.
+) -> tuple[dict[str, tuple[Any, Any]], list[str]]:
+    """Apply the chosen option's action effects to state IN PLACE. Returns
+    `(delta, leans)`:
 
-    If the option binds an agent (via `params`), `$agent` is substituted in
-    every effect's quality/when.
+      - For flat actions (`effects:` authored), `leans` is empty.
+      - For opposed-check actions (`outcomes:` authored), the first matching
+        outcome's effects apply and `leans` is that outcome's `leans` list.
+
+    Forced actions append their id to `state.fired` so the catalog filter and
+    `EventFired` predicates can see the firing. Non-forced actions don't
+    write to `state.fired` (no need — they're freely re-authorizable).
+
+    If the option binds an agent, `$agent` is substituted in every effect's
+    quality and `when`.
     """
-    arch = mission.archetype(option.archetype)
-    effects = list(arch.effects)
-    if option.agent is not None:
-        effects = [substitute_effect(e, {"agent": option.agent}) for e in effects]
+    action = mission.action(option.action)
+    placeholders = {"agent": option.agent} if option.agent is not None else {}
+
+    if action.outcomes:
+        delta, leans = _apply_outcomes(state, action.outcomes, placeholders)
+    else:
+        delta = _apply_with_substitution(state, action.effects, placeholders)
+        leans = []
+
+    if action.forced:
+        state.fired.append(action.id)
+    return delta, leans
+
+
+def _apply_with_substitution(
+    state: State, effects: list[Effect], placeholders: dict[str, str]
+) -> dict[str, tuple[Any, Any]]:
+    """Apply effects with optional `$name` substitution. Fast-path: skip the
+    Effect-rebuild pass when `placeholders` is empty (the common case for
+    unbound actions / reactions without `for_each_agent`)."""
+    if placeholders:
+        effects = [substitute_effect(e, placeholders) for e in effects]
     return _apply_many(state, effects)
 
 
-def option_progresses_mission(delta: dict[str, tuple[Any, Any]], mission: Mission) -> bool:
-    """True iff the delta moved `mission.extraction_stage` (or any
-    non-cover, non-protected mission-qualities) forward. Used to gate
-    passive-pressure beats (§7 `only_when_no_progress_this_cycle`).
+def _apply_outcomes(
+    state: State, outcomes: list[Outcome], placeholders: dict[str, str]
+) -> tuple[dict[str, tuple[Any, Any]], list[str]]:
+    """Walk outcomes, find the first whose `when:` matches, apply its effects.
+    Returns `(delta, leans)`. The mutual-exclusion validator on `Action.outcomes`
+    guarantees at most one outcome matches a given state — first-match-wins is
+    safe."""
+    for outcome in outcomes:
+        pred = (
+            substitute_predicate(outcome.when, placeholders) if placeholders else outcome.when
+        )
+        if not evaluate_predicate(state, pred):
+            continue
+        return _apply_with_substitution(state, outcome.effects, placeholders), list(outcome.leans)
+    return {}, []
 
-    "Progress" definition: any mission.* quality changed AND at least one
-    such change was an increase. Cover changes alone don't count as progress.
-    """
+
+def option_progresses_mission(delta: dict[str, tuple[Any, Any]], mission: Mission) -> bool:
+    """True iff the delta moved a non-cover, non-countdown `mission.*` quality
+    forward. Used to gate passive-pressure reactions (`only_when_no_progress_this_day`)."""
     for quality, (before, after) in delta.items():
         if not quality.startswith("mission."):
             continue
-        if quality == "mission.cycles_remaining":
-            continue  # cycle countdown isn't progress
+        if quality == "mission.days_remaining":
+            continue
         if before is None and after is not None:
             return True
         if before is not None and after is not None and float(after) > float(before):
@@ -235,126 +253,101 @@ def option_progresses_mission(delta: dict[str, tuple[Any, Any]], mission: Missio
     return False
 
 
-# ───────────────────────── forced-event application ─────────────────────────
+# ───────────────────────── reaction firing ─────────────────────────
 
 
-def apply_forced_event_effects(
-    state: State, event: Event, option: Option
-) -> dict[str, tuple[Any, Any]]:
-    """Apply a fired forced event's effects to state IN PLACE. Returns net
-    delta. The option's agent (if any) is substituted into `$agent` references.
-    Records the event in `state.fired`. Forced events don't carry branch
-    labels (their effects are pre-committed), so branch attribution is dropped.
-    """
-    effects = list(event.effects)
-    if option.agent is not None:
-        effects = [substitute_effect(e, {"agent": option.agent}) for e in effects]
-    delta, _branches = _apply_many(state, effects)
-    state.fired.append(event.id)
-    return delta
+def per_agent_key(reaction_id: str, agent_id: str) -> str:
+    """Canonical key format for `state.fired_per_agent`. The live spine write
+    and the fold-replay write both go through this helper."""
+    return f"{reaction_id}:{agent_id}"
 
 
-# ───────────────────────── passive-event firing ─────────────────────────
-
-
-def per_agent_key(event_id: str, agent_id: str) -> str:
-    """Canonical key format for the `state.fired_per_agent` ledger. The live
-    spine write and the fold replay write both go through this helper so the
-    delimiter shape is single-source."""
-    return f"{event_id}:{agent_id}"
-
-
-def _event_fired_already(state: State, event: Event, agent_id: str | None) -> bool:
-    if event.fires_at_most == "unlimited":
+def _reaction_fired_already(state: State, reaction: Reaction, agent_id: str | None) -> bool:
+    if reaction.fires_at_most == "unlimited":
         return False
-    if event.fires_at_most == "once_per_mission":
-        return event.id in state.fired
-    # once_per_agent — the `_consistency` validator pins this to events with
-    # `for_each_agent=True`, so `agent_id` is always set on this path.
-    assert agent_id is not None, "once_per_agent event fired without agent_id"
-    return per_agent_key(event.id, agent_id) in state.fired_per_agent
+    if reaction.fires_at_most == "once_per_mission":
+        return reaction.id in state.fired
+    # once_per_agent — validator pins this to `for_each_agent=True`.
+    assert agent_id is not None, "once_per_agent reaction fired without agent_id"
+    return per_agent_key(reaction.id, agent_id) in state.fired_per_agent
 
 
 def merge_delta_into(
     target: dict[str, tuple[Any, Any]], source: dict[str, tuple[Any, Any]]
 ) -> None:
     """Merge `source` delta into `target` in place — first-seen `before` wins,
-    latest `after` wins. Used to fold per-fire deltas into a cycle aggregate
-    and to layer a forced event's effects over an archetype's."""
+    latest `after` wins."""
     for q, (b, a) in source.items():
         existing = target.get(q)
         target[q] = (existing[0] if existing else b, a)
 
 
-def fire_due_passive_events(
+def fire_due_reactions(
     state: State, mission: Mission, made_progress: bool
-) -> tuple[list[tuple[Event, str | None, dict[str, tuple[Any, Any]]]], dict[str, tuple[Any, Any]]]:
-    """Fire every eligible passive event (`force_into_drafter=False`) in
-    (priority, authored) order. Mutates state in place. Returns:
-        - list of (event, agent_id_or_None, per-event delta) for each fire
+) -> tuple[list[tuple[Reaction, str | None, dict[str, tuple[Any, Any]]]], dict[str, tuple[Any, Any]]]:
+    """Fire every eligible Reaction in (priority, authored) order. Mutates
+    state in place. Returns:
+        - list of (reaction, agent_id_or_None, per-reaction delta)
         - aggregate delta across all fires
 
-    For `for_each_agent` events, fires once per matching agent. Stops the
-    cycle's passive-event phase when a `terminal` event fires (subsequent
-    events do not fire that cycle).
+    For `for_each_agent` reactions, fires once per matching agent. Stops the
+    pass on a `terminal` fire.
     """
-    fires: list[tuple[Event, str | None, dict[str, tuple[Any, Any]]]] = []
+    fires: list[tuple[Reaction, str | None, dict[str, tuple[Any, Any]]]] = []
     aggregate: dict[str, tuple[Any, Any]] = {}
 
-    passive = [(i, e) for i, e in enumerate(mission.events) if not e.force_into_drafter]
-    ordered = sorted(passive, key=lambda x: (x[1].priority, x[0]))
+    ordered = sorted(
+        enumerate(mission.reactions), key=lambda x: (x[1].priority, x[0])
+    )
 
-    for _, event in ordered:
+    for _, reaction in ordered:
         if state.outcome is not None:
-            break  # terminal short-circuit
-        if event.only_when_no_progress_this_cycle and made_progress:
+            break
+        if reaction.only_when_no_progress_this_day and made_progress:
             continue
 
-        # Non-`for_each_agent` events iterate once with no agent binding;
-        # `for_each_agent` events expand over the mission's agents. The body
-        # below is identical for both.
         agent_ids: list[str | None] = (
-            [a.id for a in mission.agents] if event.for_each_agent else [None]
+            [a.id for a in mission.agents] if reaction.for_each_agent else [None]
         )
 
         for agent_id in agent_ids:
-            if _event_fired_already(state, event, agent_id):
+            if _reaction_fired_already(state, reaction, agent_id):
                 continue
             placeholders = {"agent": agent_id} if agent_id is not None else {}
-            pred = substitute_predicate(event.when, placeholders)
+            pred = (
+                substitute_predicate(reaction.when, placeholders) if placeholders else reaction.when
+            )
             if not evaluate_predicate(state, pred):
                 continue
-            effects = [substitute_effect(e, placeholders) for e in event.effects]
-            delta, _branches = _apply_many(state, effects)
-            state.fired.append(event.id)
+            delta = _apply_with_substitution(state, reaction.effects, placeholders)
+            state.fired.append(reaction.id)
             if agent_id is not None:
-                state.fired_per_agent.append(per_agent_key(event.id, agent_id))
-            if event.terminal and event.outcome_key is not None:
-                state.outcome = event.outcome_key
-            fires.append((event, agent_id, delta))
+                state.fired_per_agent.append(per_agent_key(reaction.id, agent_id))
+            if reaction.terminal and reaction.outcome_key is not None:
+                state.outcome = reaction.outcome_key
+            fires.append((reaction, agent_id, delta))
             merge_delta_into(aggregate, delta)
-            if event.terminal:
-                break  # one terminal fire is enough
+            if reaction.terminal:
+                break
 
     return fires, aggregate
 
 
-# ───────────────────────── cycle close ─────────────────────────
+# ───────────────────────── day close ─────────────────────────
 
 
-def tick_cycle_close(state: State) -> dict[str, tuple[Any, Any]]:
-    """End-of-cycle housekeeping. Decrements `mission.cycles_remaining` and
-    clears one-cycle flags. Returns the cycle-close delta. Pure-ish: mutates
-    `state` in place, doesn't fire beats (those run separately).
-    """
+def tick_day_close(state: State) -> dict[str, tuple[Any, Any]]:
+    """End-of-day housekeeping. Decrements `mission.days_remaining`. One-day
+    flags (e.g. cover_protected) are cleared by explicit reset Reactions in
+    the mission YAML — see `clear_cover_protected` in lynx_exfil.yaml for the
+    pattern."""
     delta: dict[str, tuple[Any, Any]] = {}
-    cur = state.get_quality("mission.cycles_remaining")
+    cur = state.get_quality("mission.days_remaining")
     if cur is not None:
         before = cur
         after = int(cur) - 1
-        state.set_quality("mission.cycles_remaining", after)
-        delta["mission.cycles_remaining"] = (before, after)
-    state.one_cycle_flags.clear()
+        state.set_quality("mission.days_remaining", after)
+        delta["mission.days_remaining"] = (before, after)
     return delta
 
 
@@ -371,13 +364,13 @@ def snapshot(state: State) -> State:
 
 # Cover at or below this value puts the mission in crisis act phase.
 _COVER_BRINK = 2
-# When `cycles_remaining / max_cycles` drops to / below this, climax begins.
+# When `days_remaining / max_days` drops to / below this, climax begins.
 _CLIMAX_THRESHOLD = 0.34
 # When the ratio is at / above this, the setup phase still holds (provided
 # no cover loss has happened yet).
 _SETUP_THRESHOLD = 0.66
 # Cover swing thresholds for derive_tension_band — values are absolute
-# magnitudes summed across all .cover qualities this cycle.
+# magnitudes summed across all .cover qualities this day.
 _CRISIS_SWING = 4
 _ESCALATING_SWING = 2
 
@@ -389,29 +382,26 @@ def _is_numeric(v: Any) -> bool:
 
 
 def derive_act_phase(state: State, mission: Mission) -> ActPhase:
-    """Classify the current cycle into a four-act register so the renderer
-    and SoP can adopt an appropriate dramatic tone. Mission-agnostic — uses
-    universal qualities only (cycles_remaining + per-agent cover).
+    """Classify the current day into a four-act register so the renderer and
+    SoP can adopt an appropriate dramatic tone. Mission-agnostic — uses
+    universal qualities only (days_remaining + per-agent cover).
 
-    Precedence: crisis > climax > setup > complication. The order matters
-    because crisis (an agent on the brink) trumps "we still have time."
+    Precedence: crisis > climax > setup > complication.
     """
-    cycles_raw = state.get_quality("mission.cycles_remaining")
-    cycles = int(cycles_raw) if _is_numeric(cycles_raw) else 0
-    max_cycles = mission.max_cycles
+    days_raw = state.get_quality("mission.days_remaining")
+    days = int(days_raw) if _is_numeric(days_raw) else 0
+    max_days = mission.max_days
     covers: list[tuple[CastMember, Any]] = [
         (a, state.get_quality(f"agent[{a.id}].cover")) for a in mission.agents
     ]
-    # crisis: any agent's cover is at the brink, OR one cycle left.
     for _, cover in covers:
         if _is_numeric(cover) and int(cover) <= _COVER_BRINK:
             return "crisis"
-    if cycles <= 1:
+    if days <= 1:
         return "crisis"
-    if max_cycles > 0 and cycles / max_cycles <= _CLIMAX_THRESHOLD:
+    if max_days > 0 and days / max_days <= _CLIMAX_THRESHOLD:
         return "climax"
-    # setup holds only while no agent has taken any cover loss yet.
-    if max_cycles > 0 and cycles / max_cycles >= _SETUP_THRESHOLD:
+    if max_days > 0 and days / max_days >= _SETUP_THRESHOLD:
         if all(
             not _is_numeric(cover) or int(cover) >= a.starting_cover
             for a, cover in covers
@@ -421,11 +411,7 @@ def derive_act_phase(state: State, mission: Mission) -> ActPhase:
 
 
 def derive_tension_band(prior_state: State | None, state: State) -> TensionBand:
-    """Classify the magnitude of cover swing this cycle — a renderer-side
-    signal so a quiet cycle reads measured and a sharp drop reads kinetic.
-    `prior_state` is the state at the start of the cycle (before
-    archetype/event application); `state` is post-cycle.
-    """
+    """Classify the magnitude of cover swing this day."""
     if prior_state is None:
         return "steady"
     total_swing = 0
@@ -443,17 +429,9 @@ def derive_tension_band(prior_state: State | None, state: State) -> TensionBand:
 
 
 def select_beat(state: State, mission: Mission) -> Beat | None:
-    """Return the highest-priority `when`-matching beat that hasn't already
-    fired this mission, or None if no eligible beat exists.
-
-    Ordering: sorted by `(priority, authored_index)` — lower `priority` fires
-    first (matching `Event.priority`); authored order breaks ties. Beats with
-    `fires_at_most="once_per_mission"` (default) are skipped if their id is
-    already in `state.fired`.
-
-    Selection is read-only here; `cycle.fire_beat` is what actually appends
-    the beat id to `state.fired` so the same fragment never surfaces twice.
-    """
+    """Return the highest-priority `when`-matching beat that hasn't fired
+    this mission, or None. Read-only; `cycle.fire_beat` is the single fire
+    site that appends the beat id to `state.fired`."""
     candidates = sorted(
         enumerate(mission.beats), key=lambda x: (x[1].priority, x[0])
     )
@@ -468,49 +446,45 @@ def select_beat(state: State, mission: Mission) -> Beat | None:
     return None
 
 
-def invalid_archetype_combinations(
+def invalid_action_catalog(
     state: State, mission: Mission
 ) -> list[tuple[str, str | None, str]]:
-    """For each (archetype, agent) combination whose precondition is NOT
-    satisfied, return (archetype_id, agent_id_or_None, reason). Reason is a
-    short human-readable description of which precondition leaf failed —
-    surfaced to the drafter so it can reason about *why* an option is
-    unavailable instead of only seeing the trimmed catalog.
-
-    Sibling of `valid_archetype_combinations`; together they cover the full
-    archetype × agent space without overlap.
-    """
+    """For each (action, agent) combination whose precondition is NOT
+    satisfied, return (action_id, agent_id_or_None, reason). Surfaced to the
+    drafter so it can reason about *why* an option is unavailable instead of
+    only seeing the trimmed catalog."""
     invalid: list[tuple[str, str | None, str]] = []
-    for arch in mission.archetypes:
-        if "agent" in arch.params:
+    for action in mission.actions:
+        # Don't surface already-fired forced actions in the locked list —
+        # they're done, not unavailable.
+        if action.forced and action.id in state.fired:
+            continue
+        if action.for_each_agent:
             for agent in mission.agents:
                 cover = state.get_quality(f"agent[{agent.id}].cover")
                 if not _is_numeric(cover) or float(cover) <= 0:
-                    invalid.append((arch.id, agent.id, f"agent[{agent.id}] is lost"))
+                    invalid.append((action.id, agent.id, f"agent[{agent.id}] is lost"))
                     continue
-                pred = substitute_predicate(arch.when, {"agent": agent.id})
+                pred = substitute_predicate(action.when, {"agent": agent.id})
                 if evaluate_predicate(state, pred):
                     continue
-                invalid.append((arch.id, agent.id, _describe_failing_predicate(state, pred)))
+                invalid.append((action.id, agent.id, _describe_failing_predicate(state, pred)))
         else:
-            if evaluate_predicate(state, arch.when):
+            if evaluate_predicate(state, action.when):
                 continue
-            invalid.append((arch.id, None, _describe_failing_predicate(state, arch.when)))
+            invalid.append((action.id, None, _describe_failing_predicate(state, action.when)))
     return invalid
 
 
 def _describe_failing_predicate(state: State, pred: Predicate) -> str:
     """Walk the predicate tree; return a short description of the first leaf
-    that evaluates False. If every leaf passes (which can happen for composite
-    failures driven by Or_/Not_ logic), return a generic message."""
+    that evaluates False."""
     for leaf in iter_predicate_leaves(pred):
         if not evaluate_predicate(state, leaf):
             return _format_leaf(state, leaf)
     return "preconditions not met"
 
 
-# Comparison-leaf templates. Keyed by predicate class; the format string uses
-# `q` (quality ref), `v` (actual value from state), `t` (required threshold).
 _COMPARISON_LEAF_TEMPLATES: dict[type, str] = {
     QualityGte:    "{q} is {v} (requires >= {t})",
     QualityGt:     "{q} is {v} (requires > {t})",
@@ -521,8 +495,7 @@ _COMPARISON_LEAF_TEMPLATES: dict[type, str] = {
 
 
 def _format_leaf(state: State, leaf: Predicate) -> str:
-    """Render one failing leaf as a short prose hint (e.g.
-    'mission.extraction_stage is 0 (requires >= 2)')."""
+    """Render one failing leaf as a short prose hint."""
     template = _COMPARISON_LEAF_TEMPLATES.get(type(leaf))
     if template is not None:
         return template.format(
@@ -531,5 +504,3 @@ def _format_leaf(state: State, leaf: Predicate) -> str:
     if isinstance(leaf, EventFired):
         return f"event {leaf.event!r} has not fired"
     return "precondition not met"
-
-

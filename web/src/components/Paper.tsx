@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { DeltaDescriptors } from "../api";
-import type { CycleState, LogEntryRecord } from "../store";
-import { scrollToCycle } from "../lib/scroll";
+import type { DayState, LogEntryRecord } from "../store";
+import { scrollToDay } from "../lib/scroll";
 import { nowZulu } from "../lib/time";
 import { useStore } from "../store";
 import { CaveatBanner } from "./CaveatBanner";
@@ -22,7 +22,7 @@ interface ResultLine {
   text: string;
 }
 
-/** Build the RESULT footer lines from a cycle's accumulated narrative
+/** Build the RESULT footer lines from a day's accumulated narrative
  * descriptors. Cover changes render as `LYNX: cover intact → cover degraded`
  * (using `agent_id` from the server payload); mission qualities render the
  * new descriptor as a standalone clause. */
@@ -53,36 +53,47 @@ export function Paper() {
   const cycle = useStore((s) => s.cycle);
   const inbox = useStore((s) => s.inbox);
   const authorize = useStore((s) => s.authorize);
-  const continueCycle = useStore((s) => s.continueCycle);
+  const continueDay = useStore((s) => s.continueDay);
   const [stampTimestamp, setStampTimestamp] = useState<string>("");
 
-  // Scroll the newly-opened cycle into view on transitions only (not every
+  // Scroll the newly-opened day into view on transitions only (not every
   // render). rAF gives the new <section> a tick to mount before scrolling.
-  const lastSeenCycle = useRef<number | null>(null);
-  const cycleIndex = cycle?.index ?? null;
+  const lastSeenDay = useRef<number | null>(null);
+  const dayIndex = cycle?.index ?? null;
   useEffect(() => {
-    if (cycleIndex === null) return;
+    if (dayIndex === null) return;
     if (
-      lastSeenCycle.current !== null &&
-      cycleIndex !== lastSeenCycle.current
+      lastSeenDay.current !== null &&
+      dayIndex !== lastSeenDay.current
     ) {
-      requestAnimationFrame(() => scrollToCycle(cycleIndex));
+      requestAnimationFrame(() => scrollToDay(dayIndex));
     }
-    lastSeenCycle.current = cycleIndex;
-  }, [cycleIndex]);
+    lastSeenDay.current = dayIndex;
+  }, [dayIndex]);
+
+  // The case-file header timestamp anchors the session open time; it
+  // doesn't drift with renders.
+  const headerTimestamp = useMemo(() => nowZulu(), []);
+
+  // The just-finished current day (between `entry_word is_last` and
+  // `day_opened` for N+1) appears in both `inbox` and `cycle` — filter it
+  // out of the past list so CurrentDaySection owns its rendering. Memoized
+  // because Paper re-renders on every streamed word. Hoisted above the
+  // early return so hook count stays stable across renders.
+  const pastDays = useMemo(
+    () => (cycle ? inbox.filter((e) => e.day_index < cycle.index) : []),
+    [inbox, cycle],
+  );
 
   if (!cycle || !meta) {
     return (
       <article className="paper-sheet">
         <CaveatBanner />
-        <div className="paper-waiting">Waiting for cycle…</div>
+        <div className="paper-waiting">Waiting for day…</div>
       </article>
     );
   }
 
-  // The case-file header timestamp anchors the session open time; it
-  // doesn't drift with renders.
-  const headerTimestamp = useMemo(() => nowZulu(), []);
   const canAuth =
     cycle.awaiting_auth &&
     cycle.selected_option_index !== null &&
@@ -101,17 +112,8 @@ export function Paper() {
           void authorize();
         }
       : phase === "continue"
-        ? () => void continueCycle()
+        ? () => void continueDay()
         : undefined;
-
-  // The just-finished current cycle (between `entry_word is_last` and
-  // `cycle_opened` for N+1) appears in both `inbox` and `cycle` — filter it
-  // out of the past list so CurrentCycleSection owns its rendering. Memoized
-  // because Paper re-renders on every streamed word.
-  const pastCycles = useMemo(
-    () => inbox.filter((e) => e.cycle_index < cycle.index),
-    [inbox, cycle.index],
-  );
 
   return (
     <article
@@ -131,11 +133,11 @@ export function Paper() {
       <div className="paper-rule64" />
       <div className="status-divider" />
 
-      {pastCycles.map((entry) => (
-        <PastCycleSection key={entry.cycle_index} entry={entry} />
+      {pastDays.map((entry) => (
+        <PastDaySection key={entry.day_index} entry={entry} />
       ))}
 
-      <CurrentCycleSection cycle={cycle} />
+      <CurrentDaySection cycle={cycle} />
 
       <AuthFooter
         stampTimestamp={stampTimestamp}
@@ -147,7 +149,7 @@ export function Paper() {
   );
 }
 
-function CycleDivider({
+function DayDivider({
   index,
   archetype,
   title,
@@ -158,13 +160,13 @@ function CycleDivider({
 }) {
   const suffix = [archetype, title].filter(Boolean).join(" · ");
   return (
-    <div className="cycle-divider" aria-hidden>
-      <span className="cycle-divider-rule" />
-      <span className="cycle-divider-label">
+    <div className="day-divider" aria-hidden>
+      <span className="day-divider-rule" />
+      <span className="day-divider-label">
         DAY {index}
         {suffix ? ` · ${suffix}` : ""}
       </span>
-      <span className="cycle-divider-rule" />
+      <span className="day-divider-rule" />
     </div>
   );
 }
@@ -172,7 +174,7 @@ function CycleDivider({
 function ResultBlock({ lines }: { lines: ResultLine[] }) {
   if (lines.length === 0) return null;
   return (
-    <div className="dispatch-result" aria-label="cycle result">
+    <div className="dispatch-result" aria-label="day result">
       <span className="dispatch-result-label">RESULT</span>
       <ul className="dispatch-result-lines">
         {lines.map((line) => (
@@ -183,19 +185,19 @@ function ResultBlock({ lines }: { lines: ResultLine[] }) {
   );
 }
 
-function PastCycleSection({ entry }: { entry: LogEntryRecord }) {
+function PastDaySection({ entry }: { entry: LogEntryRecord }) {
   const lines = useMemo(
     () => buildResultLines(entry.delta_descriptors ?? {}),
     [entry.delta_descriptors],
   );
   return (
     <section
-      id={`cycle-${entry.cycle_index}`}
-      className="cycle-section past"
-      aria-label={`cycle ${entry.cycle_index} archive`}
+      id={`day-${entry.day_index}`}
+      className="day-section past"
+      aria-label={`day ${entry.day_index} archive`}
     >
-      <CycleDivider
-        index={entry.cycle_index}
+      <DayDivider
+        index={entry.day_index}
         archetype={entry.archetype}
         title={entry.title}
       />
@@ -211,7 +213,7 @@ function PastCycleSection({ entry }: { entry: LogEntryRecord }) {
   );
 }
 
-function CurrentCycleSection({ cycle }: { cycle: CycleState }) {
+function CurrentDaySection({ cycle }: { cycle: DayState }) {
   const resultLines = useMemo(
     () =>
       cycle.entry_complete ? buildResultLines(cycle.delta_descriptors) : [],
@@ -224,11 +226,11 @@ function CurrentCycleSection({ cycle }: { cycle: CycleState }) {
 
   return (
     <section
-      id={`cycle-${cycle.index}`}
-      className="cycle-section current"
-      aria-label={`cycle ${cycle.index} brief`}
+      id={`day-${cycle.index}`}
+      className="day-section current"
+      aria-label={`day ${cycle.index} brief`}
     >
-      <CycleDivider
+      <DayDivider
         index={cycle.index}
         archetype={cycle.entry_archetype ?? undefined}
         title={cycle.authorized ? authorizedTitle : undefined}

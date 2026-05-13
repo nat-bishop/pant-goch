@@ -43,7 +43,7 @@ export function OutcomeCard() {
         <div className="outcome-stats">
           <Stat
             label="Days used"
-            value={`${outcome.cycles_used} / ${outcome.cycles_max}`}
+            value={`${outcome.days_used} / ${outcome.days_max}`}
           />
           <Stat
             label="Agents lost"

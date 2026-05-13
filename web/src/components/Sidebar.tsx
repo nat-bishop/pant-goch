@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { scrollToCycle } from "../lib/scroll";
+import { scrollToDay } from "../lib/scroll";
 import { useStore } from "../store";
 
 interface Props {
@@ -24,9 +24,9 @@ export function Sidebar({ open, onToggle }: Props) {
     );
   }
 
-  const cyclesRemaining =
-    (state["mission.cycles_remaining"] as number | undefined) ?? meta.max_cycles;
-  const used = Math.max(0, meta.max_cycles - cyclesRemaining);
+  const daysRemaining =
+    (state["mission.days_remaining"] as number | undefined) ?? meta.max_days;
+  const used = Math.max(0, meta.max_days - daysRemaining);
 
   return (
     <aside className={`desk-side ${open ? "" : "closed"}`}>
@@ -38,9 +38,9 @@ export function Sidebar({ open, onToggle }: Props) {
             <div className="rail-label">DAY</div>
             <div className="rail-cyc-row">
               <span className="rail-cyc-num">
-                {used + 1}/{meta.max_cycles}
+                {used + 1}/{meta.max_days}
               </span>
-              <CycleTicks used={used} total={meta.max_cycles} />
+              <DayTicks used={used} total={meta.max_days} />
             </div>
           </section>
 
@@ -67,10 +67,10 @@ export function Sidebar({ open, onToggle }: Props) {
               <div className="inbox-list">
                 {reversedEntries.map((row) => (
                   <button
-                    key={row.cycle_index}
+                    key={row.day_index}
                     type="button"
                     className="inbox-item"
-                    onClick={() => scrollToCycle(row.cycle_index)}
+                    onClick={() => scrollToDay(row.day_index)}
                   >
                     <span className="inbox-snip">{row.title}</span>
                   </button>
@@ -87,7 +87,7 @@ export function Sidebar({ open, onToggle }: Props) {
             <div className="rail-tag">DAY</div>
             <div className="rail-cyc-row">
               <span className="rail-cyc-num">
-                {used + 1}/{meta.max_cycles}
+                {used + 1}/{meta.max_days}
               </span>
             </div>
           </section>
@@ -138,7 +138,7 @@ function RailToggle({ open, onToggle }: Props) {
   );
 }
 
-function CycleTicks({ used, total }: { used: number; total: number }) {
+function DayTicks({ used, total }: { used: number; total: number }) {
   return (
     <span className="cyc-ticks">
       {Array.from({ length: total }).map((_, i) => (

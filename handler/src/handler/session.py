@@ -69,7 +69,7 @@ def make_session(
     *,
     persist: Callable[[Event], None] | None = None,
 ) -> Session:
-    """Build a fresh session with starting state. Caller drives the cycle
+    """Build a fresh session with starting state. Caller drives the day
     loop (which emits events through `session.apply`)."""
     return Session(
         mission=mission,

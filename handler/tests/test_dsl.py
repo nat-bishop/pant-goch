@@ -293,7 +293,7 @@ def test_dsl_round_trip_via_inline_mission(tmp_path: Path) -> None:
         """\
 id: tt
 name: "DSL test"
-max_cycles: 3
+max_days: 3
 cast:
   - id: A
     codename: A
@@ -301,19 +301,22 @@ cast:
 qualities:
   mission.stage:
     initial: 0
-    values: { "0": "init", "1": "mid", "2": "done" }
-archetypes:
+    bands:
+      - [0, "init"]
+      - [1, "mid"]
+      - [2, "done"]
+actions:
   - id: PUSH
     when: "mission.stage < 2"
     effects:
       - "mission.stage += 1"
   - id: BURN
     when: "agent[$agent].cover > 0 and mission.stage in 0..1"
-    params: [agent]
+    for_each_agent: true
     effects:
       - "agent[$agent].cover -= 2"
       - "mission.stage += 1"
-events:
+reactions:
   - id: win
     terminal: true
     outcome_key: w
@@ -321,7 +324,7 @@ events:
   - id: timeout
     terminal: true
     outcome_key: lo
-    when: "mission.cycles_remaining == 0"
+    when: "mission.days_remaining == 0"
 outcomes:
   w: ""
   lo: ""
@@ -330,10 +333,9 @@ outcomes:
     )
     m = load_mission(shorthand)
     assert m.id == "tt"
-    push = m.archetype("PUSH")
+    push = m.action("PUSH")
     assert isinstance(push.when, QualityLt)
-    burn = m.archetype("BURN")
-    # The `in 0..1` clause expands to And_.
+    burn = m.action("BURN")
     assert isinstance(burn.when, And_)
     assert burn.effects[0].op == "add"
     assert burn.effects[0].value == -2

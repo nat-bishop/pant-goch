@@ -1,8 +1,8 @@
 """Event round-trip + `fold()` equivalence with the live spine mutation path.
 
-Critical invariant per HANDLER_SPEC_V2 §8.5: the live path (spine mutates +
-event records delta) and the replay path (fold replays delta) must converge
-on the same state. These tests pin that.
+Critical invariant: the live path (spine mutates + event records delta) and
+the replay path (fold replays delta) must converge on the same state. These
+tests pin that.
 """
 from __future__ import annotations
 
@@ -13,23 +13,19 @@ import pytest
 from pydantic import TypeAdapter
 
 from handler.events import (
-    CycleClosed,
-    CycleOpened,
+    DayClosed,
+    DayOpened,
     EffectsApplied,
     Event,
-    EventsFired,
     MissionStarted,
     OptionAuthorized,
     OptionsDrafted,
+    ReactionsFired,
     fold,
 )
 from handler.mission_loader import load_mission
-from handler.models import MissionResolution, Option, State, make_initial_state
-from handler.spine import (
-    apply_archetype_effects,
-    fire_due_passive_events,
-    tick_cycle_close,
-)
+from handler.models import Option, State, make_initial_state
+from handler.spine import apply_action_effects
 
 
 _TINY = Path(__file__).parent / "fixtures" / "tiny_mission.yaml"
@@ -45,15 +41,14 @@ def test_event_union_roundtrip(mission) -> None:
     initial = make_initial_state(mission)
     samples: list[Event] = [
         MissionStarted(mission_id="tiny", initial_state=initial),
-        CycleOpened(cycle_index=1),
-        EffectsApplied(cycle_index=1, delta={"mission.progress": (0, 1)}),
-        EventsFired(cycle_index=1, fires=[("passive_decay", None, {"agent[ALPHA].cover": (5, 4)})]),
-        CycleClosed(cycle_index=1, delta={"mission.cycles_remaining": (4, 3)}),
+        DayOpened(day_index=1),
+        EffectsApplied(day_index=1, delta={"mission.progress": (0, 1)}, action_id="PUSH", action_forced=False),
+        ReactionsFired(day_index=1, fires=[("passive_decay", None, {"agent[ALPHA].cover": (5, 4)})]),
+        DayClosed(day_index=1, delta={"mission.days_remaining": (4, 3)}),
     ]
     for ev in samples:
         dumped = adapter.dump_python(ev)
         restored = adapter.validate_python(dumped)
-        # The validator picks the right branch via `kind` discriminator.
         assert type(restored).__name__ == type(ev).__name__
 
 
@@ -61,11 +56,11 @@ def test_fold_replay_matches_live_mutation(mission) -> None:
     """Apply effects via spine (live), record the delta as an event, then
     re-fold a fresh state with the recorded event and assert equality."""
     live = make_initial_state(mission)
-    opt = Option(archetype="PUSH", title="t", prose="p")
-    delta, _branches = apply_archetype_effects(live, opt, mission)
+    opt = Option(action="PUSH", title="t", prose="p")
+    delta, _ = apply_action_effects(live, opt, mission)
 
     replay = make_initial_state(mission)
-    fold(replay, EffectsApplied(cycle_index=1, delta=delta))
+    fold(replay, EffectsApplied(day_index=1, delta=delta, action_id="PUSH", action_forced=False))
 
     assert dict(replay.qualities) == dict(live.qualities)
 
@@ -73,24 +68,22 @@ def test_fold_replay_matches_live_mutation(mission) -> None:
 def test_fold_observation_events_dont_mutate(mission) -> None:
     s = make_initial_state(mission)
     snapshot = dict(s.qualities)
-    fold(s, CycleOpened(cycle_index=1))
-    fold(s, OptionsDrafted(cycle_index=1, options=[]))
+    fold(s, DayOpened(day_index=1))
+    fold(s, OptionsDrafted(day_index=1, options=[]))
     fold(s, OptionAuthorized(
-        cycle_index=1,
-        option=Option(archetype="PUSH", title="t", prose="p"),
+        day_index=1,
+        option=Option(action="PUSH", title="t", prose="p"),
         by_handler_at=datetime.now(timezone.utc),
     ))
     assert dict(s.qualities) == snapshot
     assert s.outcome is None
 
 
-def test_fold_events_fired_records_fire_ledger(mission) -> None:
+def test_fold_reactions_fired_records_fire_ledger(mission) -> None:
     s = make_initial_state(mission)
-    ev = EventsFired(
-        cycle_index=1,
-        fires=[
-            ("agent_lost", "ALPHA", {"agent[ALPHA].lost": (None, True)}),
-        ],
+    ev = ReactionsFired(
+        day_index=1,
+        fires=[("agent_lost", "ALPHA", {"agent[ALPHA].lost": (None, True)})],
     )
     fold(s, ev)
     assert s.get_quality("agent[ALPHA].lost") is True
@@ -98,10 +91,19 @@ def test_fold_events_fired_records_fire_ledger(mission) -> None:
     assert "agent_lost:ALPHA" in s.fired_per_agent
 
 
+def test_fold_effects_applied_records_forced_action_in_fired(mission) -> None:
+    """Forced Actions append their id to state.fired on authorization. Non-forced
+    actions do not."""
+    s = make_initial_state(mission)
+    fold(s, EffectsApplied(day_index=1, delta={}, action_id="turning_point", action_forced=True))
+    assert "turning_point" in s.fired
+
+    s2 = make_initial_state(mission)
+    fold(s2, EffectsApplied(day_index=1, delta={}, action_id="PUSH", action_forced=False))
+    assert "PUSH" not in s2.fired
+
+
 def test_fold_mission_started_reseeds_state(mission) -> None:
-    """Replay path: a session starts with a `MissionStarted` event carrying
-    the initial snapshot. fold() must reseed state to exactly that snapshot
-    (clearing any prior content)."""
     seeded = make_initial_state(mission)
     fresh = State()
     fresh.qualities["spurious"] = 999

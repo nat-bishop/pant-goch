@@ -27,11 +27,11 @@ Evaluator = Callable[[SessionRecord], EvalResult]
 
 
 def session_completed(rec: SessionRecord) -> EvalResult:
-    """The session ran without errors and produced at least one cycle."""
+    """The session ran without errors and produced at least one day."""
     if rec.error:
         return EvalResult("session_completed", False, f"error: {rec.error}")
     if not rec.cycles:
-        return EvalResult("session_completed", False, "no cycles recorded")
+        return EvalResult("session_completed", False, "no days recorded")
     return EvalResult("session_completed", True)
 
 
@@ -39,7 +39,7 @@ def terminal_reached(rec: SessionRecord) -> EvalResult:
     """A terminal event fired (mission resolved with an outcome)."""
     if rec.outcome is None:
         return EvalResult(
-            "terminal_reached", False, f"no terminal; cycles={rec.cycles_used()}"
+            "terminal_reached", False, f"no terminal; days={rec.cycles_used()}"
         )
     return EvalResult("terminal_reached", True, f"outcome={rec.outcome}")
 
@@ -59,20 +59,20 @@ def expected_outcome_reached(rec: SessionRecord, expected: str | None) -> EvalRe
 
 
 def no_engine_fallback(rec: SessionRecord) -> EvalResult:
-    """The drafter never exhausted retries — every cycle's options came from
+    """The drafter never exhausted retries — every day's options came from
     the LLM, not the engine fallback. Surfaces prompt instability."""
     n = rec.engine_fallback_count()
     if n > 0:
         return EvalResult(
             "no_engine_fallback",
             False,
-            f"engine fallback fired in {n} cycle(s) — drafter prompt instability",
+            f"engine fallback fired in {n} day(s) — drafter prompt instability",
         )
     return EvalResult("no_engine_fallback", True)
 
 
 def forced_event_satisfied_when_eligible(rec: SessionRecord) -> EvalResult:
-    """If a forced event appeared in any cycle, exactly one option satisfied
+    """If a forced event appeared in any day, exactly one option satisfied
     it. (The engine validates this server-side; the evaluator double-checks
     the recorded trace.)"""
     failures: list[int] = []
@@ -83,41 +83,41 @@ def forced_event_satisfied_when_eligible(rec: SessionRecord) -> EvalResult:
             o for o in c.options if o.get("satisfies_event") == c.forced_event_id
         ]
         if len(satisfiers) != 1:
-            failures.append(c.cycle_index)
+            failures.append(c.day_index)
     if failures:
         return EvalResult(
             "forced_event_satisfied_when_eligible",
             False,
-            f"cycles with bad forced-event counts: {failures}",
+            f"days with bad forced-event counts: {failures}",
         )
     return EvalResult("forced_event_satisfied_when_eligible", True)
 
 
-def cycles_within_budget(rec: SessionRecord, max_cycles: int) -> EvalResult:
-    """The session terminated within the authored cycle budget."""
+def days_within_budget(rec: SessionRecord, max_days: int) -> EvalResult:
+    """The session terminated within the authored day budget."""
     used = rec.cycles_used()
-    if used > max_cycles:
+    if used > max_days:
         return EvalResult(
-            "cycles_within_budget",
+            "days_within_budget",
             False,
-            f"used {used} cycles, budget was {max_cycles}",
+            f"used {used} days, budget was {max_days}",
         )
-    return EvalResult("cycles_within_budget", True, f"{used}/{max_cycles}")
+    return EvalResult("days_within_budget", True, f"{used}/{max_days}")
 
 
 def options_tonal_spread(rec: SessionRecord) -> EvalResult:
-    """Every cycle drafted at least 2 distinct archetypes — sanity check
+    """Every day drafted at least 2 distinct archetypes — sanity check
     against the drafter collapsing to a single mode."""
     failures: list[int] = []
     for c in rec.cycles:
         archetypes = {o["archetype"] for o in c.options}
         if len(archetypes) < 2:
-            failures.append(c.cycle_index)
+            failures.append(c.day_index)
     if failures:
         return EvalResult(
             "options_tonal_spread",
             False,
-            f"cycles with <2 distinct archetypes: {failures}",
+            f"days with <2 distinct archetypes: {failures}",
         )
     return EvalResult("options_tonal_spread", True)
 
@@ -125,14 +125,14 @@ def options_tonal_spread(rec: SessionRecord) -> EvalResult:
 # ───────────────────────── runner ─────────────────────────
 
 
-def run_all(rec: SessionRecord, *, expected_outcome: str | None, max_cycles: int) -> list[EvalResult]:
+def run_all(rec: SessionRecord, *, expected_outcome: str | None, max_days: int) -> list[EvalResult]:
     """Run the full evaluator suite against one record. Order matters for
     stdout summaries — keep the most informative results first."""
     return [
         session_completed(rec),
         terminal_reached(rec),
         expected_outcome_reached(rec, expected_outcome),
-        cycles_within_budget(rec, max_cycles),
+        days_within_budget(rec, max_days),
         forced_event_satisfied_when_eligible(rec),
         options_tonal_spread(rec),
         no_engine_fallback(rec),

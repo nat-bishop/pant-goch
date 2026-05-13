@@ -6,10 +6,10 @@ Endpoints:
   POST   /mission/{session_id}/authorize → record the player's option pick
   GET    /mission/{session_id}/state    → snapshot for reconnect
 
-The cycle loop runs as a background asyncio.Task per session, pushing events
+The day loop runs as a background asyncio.Task per session, pushing events
 into the session's `out_queue`. The SSE endpoint consumes from the queue.
-`/authorize` resolves the cycle's pending `auth_future`, unblocking the loop
-to compute effects + render the log entry + advance to the next cycle.
+`/authorize` resolves the day's pending `auth_future`, unblocking the loop
+to compute effects + render the log entry + advance to the next day.
 """
 from __future__ import annotations
 
@@ -48,7 +48,7 @@ from .agents import (
     select_then_write_with_retries,
 )
 from .config import Settings
-from .cycle import run_cycle, start_mission
+from .day import run_day, start_mission
 from .events import (
     Event,
     LogEntryAppended,
@@ -66,7 +66,7 @@ from .launcher import (
 from .mission_loader import MissionLoadError, load_mission
 from .models import Mission, Option, State
 from .session import Session, make_jsonl_persistor, make_session
-from .spine import due_forced_events, select_beat, valid_archetype_combinations
+from .spine import due_forced_actions, select_beat, valid_action_catalog
 
 
 _BOOT_SETTINGS = Settings()
@@ -136,19 +136,19 @@ async def _probe_inferno_health(url: str, timeout: float = INFERNO_PROBE_TIMEOUT
 @dataclass
 class SessionRuntime:
     """Per-session live state: the engine session, the SSE queue, the two
-    futures the cycle loop alternates between (auth = pause INSIDE a cycle
-    waiting for the player's pick; continue = pause BETWEEN cycles waiting
-    for the player to click through), the cycle task itself, and the
+    futures the day loop alternates between (auth = pause INSIDE a day
+    waiting for the player's pick; continue = pause BETWEEN days waiting
+    for the player to click through), the day task itself, and the
     accumulating case-file artifacts (log_entries, log_message_history) for
     the log writer.
 
-    Cross-cycle prefetch (wall-clock optimisation): when cycle N's log writer
-    text is ready, a background task pre-runs cycle N+1's drafter LLM call
+    Cross-day prefetch (wall-clock optimisation): when day N's log writer
+    text is ready, a background task pre-runs day N+1's drafter LLM call
     so options are ready by the time the player clicks Continue. The drafter
     is stateless, so prefetching it is trivial. Prefetched results are
-    tagged with `prefetched_cycle_index`.
+    tagged with `prefetched_day_index`.
 
-    `last_authorized` carries one-cycle context forward so the next cycle's
+    `last_authorized` carries one-day context forward so the next day's
     drafter prompt can lead with "vary from what was recently tried".
     """
 
@@ -159,28 +159,28 @@ class SessionRuntime:
     current_options: list[Option] | None = None
     cycle_task: asyncio.Task | None = None
     # Accumulating case-file artifacts.
-    # `log_entries` — full prose per cycle. Drafter prompt pulls the last 2
-    # for cross-cycle context (drafter is stateless one-shot). Frontend
+    # `log_entries` — full prose per day. Drafter prompt pulls the last 2
+    # for cross-day context (drafter is stateless one-shot). Frontend
     # caches the full text for the click-to-expand history UI.
     log_entries: list[LogEntry] = field(default_factory=list)
     # `log_message_history` — the log-writer agent's accumulating pydantic-ai
-    # `message_history`. One user+assistant pair per cycle. The conversation
+    # `message_history`. One user+assistant pair per day. The conversation
     # IS the case file. Initialized empty; grown by `_build_log_writer_callable`
-    # after each cycle's stream completes.
+    # after each day's stream completes.
     log_message_history: list[ModelMessage] = field(default_factory=list)
-    # Cross-cycle drafter prefetch — populated by `prefetch_next_cycle`,
-    # consumed by the drafter LLM callable on the next run_cycle iteration.
-    prefetched_cycle_index: int | None = None
+    # Cross-day drafter prefetch — populated by `prefetch_next_day`,
+    # consumed by the drafter LLM callable on the next run_day iteration.
+    prefetched_day_index: int | None = None
     prefetched_options: list[Option] | None = None
     prefetched_engine_fallback: bool = False
     prefetch_task: asyncio.Task | None = None
-    # Last 2 authorized picks as (cycle_index, archetype, agent_id|None).
-    # Cycle N+1's drafter prompt reads this to vary tonal range. Updated by
+    # Last 2 authorized picks as (day_index, archetype, agent_id|None).
+    # Day N+1's drafter prompt reads this to vary tonal range. Updated by
     # `_run_session_loop` after each /authorize lands.
     last_authorized: list[tuple[int, str, str | None]] = field(default_factory=list)
 
     async def await_auth(self) -> Option:
-        """Block the cycle loop until POST /authorize resolves auth_future."""
+        """Block the day loop until POST /authorize resolves auth_future."""
         self.auth_future = asyncio.get_event_loop().create_future()
         try:
             return await self.auth_future
@@ -188,7 +188,7 @@ class SessionRuntime:
             self.auth_future = None
 
     async def await_continue(self) -> None:
-        """Block the cycle loop until POST /continue resolves continue_future."""
+        """Block the day loop until POST /continue resolves continue_future."""
         self.continue_future = asyncio.get_event_loop().create_future()
         try:
             await self.continue_future
@@ -198,7 +198,7 @@ class SessionRuntime:
     def _clear_prefetch(self) -> None:
         """Reset prefetch fields (after consumption, cancellation, or a
         stale-result discard)."""
-        self.prefetched_cycle_index = None
+        self.prefetched_day_index = None
         self.prefetched_options = None
         self.prefetched_engine_fallback = False
 
@@ -279,7 +279,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # multi-turn (see CLAUDE.md). The log writer's accumulating
         # message_history makes this load-bearing: without it, pydantic-ai's
         # default 'auto' round-trips ThinkingParts back into assistant
-        # content as <think>...</think> blocks and drift compounds every cycle.
+        # content as <think>...</think> blocks and drift compounds every day.
         profile = replace(base_profile, openai_chat_send_back_thinking_parts=False)
         provider = OpenAIProvider(base_url=api_url, api_key="local")
         model = OpenAIChatModel(model_name, provider=provider, profile=profile)
@@ -397,7 +397,7 @@ def _build_drafter_llm_callable(rt: SessionRuntime) -> Any:
     (or consumes prefetched options). NO SSE emission; that's
     `_build_drafter_emit_callable`.
 
-    Two stateless one-shot LLM calls per cycle: the selector picks N catalog
+    Two stateless one-shot LLM calls per day: the selector picks N catalog
     targets + forced-event carrier, then the prose writer writes title/prose
     for each pinned slot. Both take `rt.log_entries` (last 2) as user-side
     context, not a message_history.
@@ -405,16 +405,16 @@ def _build_drafter_llm_callable(rt: SessionRuntime) -> Any:
 
     async def _drafter_llm(
         session: Session,
-        cycle_index: int,
+        day_index: int,
         catalog: list[tuple[str, str | None, dict[str, str]]],
-        forced_event_id: str | None,
+        forced_action_id: str | None,
         beat_fragment: str | None,
     ) -> tuple[list[Option], bool]:
         assert AGENTS is not None
 
-        # Consume prefetched options if tagged for this cycle.
+        # Consume prefetched options if tagged for this day.
         if (
-            rt.prefetched_cycle_index == cycle_index
+            rt.prefetched_day_index == day_index
             and rt.prefetched_options is not None
         ):
             options = rt.prefetched_options
@@ -423,17 +423,17 @@ def _build_drafter_llm_callable(rt: SessionRuntime) -> Any:
             rt.prefetched_engine_fallback = False
             return options, engine_fallback
 
-        forced_event = (
-            session.mission.event(forced_event_id) if forced_event_id else None
+        forced_action = (
+            session.mission.action(forced_action_id) if forced_action_id else None
         )
         return await select_then_write_with_retries(
             AGENTS.selector,
             AGENTS.prose_writer,
-            cycle_index=cycle_index,
+            day_index=day_index,
             state=session.state,
             mission=session.mission,
             catalog=catalog,
-            forced_event=forced_event,
+            forced_action=forced_action,
             log_entries=rt.log_entries,
             recently_tried=list(rt.last_authorized),
             beat_fragment=beat_fragment,
@@ -449,37 +449,37 @@ def _build_drafter_emit_callable(rt: SessionRuntime) -> Any:
     """
 
     async def _drafter_emit(
-        cycle_index: int,
+        day_index: int,
         options: list[Option],
         engine_fallback: bool,
-        forced_event_id: str | None,
+        forced_action_id: str | None,
     ) -> None:
         rt.current_options = options
         for option_idx, option in enumerate(options):
             await rt.out_queue.put(
                 {
                     "event": "option_started",
-                    "cycle": cycle_index,
+                    "day": day_index,
                     "option_idx": option_idx,
-                    "archetype": option.archetype,
+                    "action": option.action,
                     "agent": option.agent,
                     "title": option.title,
-                    "satisfies_event": option.satisfies_event,
+                    "forced": option.action == forced_action_id,
                 }
             )
             await paced_word_emitter(
                 _words_from_text(option.prose),
                 rt.out_queue.put,
                 event_kind="option_word",
-                extra={"cycle": cycle_index, "option_idx": option_idx},
+                extra={"day": day_index, "option_idx": option_idx},
             )
         await rt.out_queue.put(
             {
                 "event": "options_complete",
-                "cycle": cycle_index,
+                "day": day_index,
                 "count": len(options),
-                "has_forced_event": forced_event_id is not None,
-                "event_id": forced_event_id,
+                "has_forced_action": forced_action_id is not None,
+                "action_id": forced_action_id,
                 "engine_fallback": engine_fallback,
             }
         )
@@ -488,18 +488,18 @@ def _build_drafter_emit_callable(rt: SessionRuntime) -> Any:
 
 
 def _build_log_writer_callable(rt: SessionRuntime) -> Any:
-    """Conversation-based log writer. Streams the cycle's case-file entry
+    """Conversation-based log writer. Streams the day's case-file entry
     against `rt.log_message_history`, updates the persistent history with
     the new user+assistant pair, and appends a `LogEntry` to
     `rt.log_entries`.
 
     Returns `(text, pacing_task)` — the same shape as the older `RendererFn`,
-    so cycle.py can continue scheduling the cycle-close + cross-cycle prefetch
+    so day.py can continue scheduling the day-close + cross-day prefetch
     while paced `entry_word` events stream to the client.
 
     Wall-clock structure:
     - Text resolves the moment the LLM stream is exhausted (via `text_ready`),
-      letting cycle.py advance past the await.
+      letting day.py advance past the await.
     - History updates happen synchronously inside the streaming generator —
       so prefetch (which fires before `await pacing_task`) sees the just-
       appended log entry in `rt.log_entries`.
@@ -507,7 +507,7 @@ def _build_log_writer_callable(rt: SessionRuntime) -> Any:
 
     async def _log_writer(
         session: Session,
-        cycle_index: int,
+        day_index: int,
         option: Option,
         delta: dict,
         prior_state: State,
@@ -518,12 +518,12 @@ def _build_log_writer_callable(rt: SessionRuntime) -> Any:
         await rt.out_queue.put(
             {
                 "event": "entry_started",
-                "cycle": cycle_index,
-                "archetype": option.archetype,
+                "day": day_index,
+                "action": option.action,
             }
         )
         prompt = _log_writer_user_prompt(
-            cycle_index, session.state, session.mission, option, delta,
+            day_index, session.state, session.mission, option, delta,
             prior_state=prior_state,
             leans=list(leans),
         )
@@ -531,7 +531,7 @@ def _build_log_writer_callable(rt: SessionRuntime) -> Any:
         # Snapshot the persistent history at the start of this call. Used
         # as `message_history` input to the stream; after the stream
         # completes, `stream_result.all_messages()` gives us the updated
-        # full history (system + every cycle's entry, including this one).
+        # full history (system + every day's entry, including this one).
         history_in = list(rt.log_message_history)
         text_ready: asyncio.Future[str] = asyncio.get_event_loop().create_future()
         buf: list[str] = []
@@ -550,12 +550,12 @@ def _build_log_writer_callable(rt: SessionRuntime) -> Any:
                         # LogEntry and update message_history synchronously
                         # so the prefetch hook (which fires before pacing
                         # completes) sees the just-rendered entry. Then
-                        # resolve the future so cycle.py can advance.
+                        # resolve the future so day.py can advance.
                         full_text = "".join(buf)
                         rt.log_entries.append(
                             LogEntry(
-                                cycle_index=cycle_index,
-                                archetype=option.archetype,
+                                day_index=day_index,
+                                action=option.action,
                                 text=full_text,
                             )
                         )
@@ -567,7 +567,7 @@ def _build_log_writer_callable(rt: SessionRuntime) -> Any:
                         _words_from_stream(teed()),
                         rt.out_queue.put,
                         event_kind="entry_word",
-                        extra={"cycle": cycle_index},
+                        extra={"day": day_index},
                     )
             except BaseException as e:
                 if not text_ready.done():
@@ -582,33 +582,33 @@ def _build_log_writer_callable(rt: SessionRuntime) -> Any:
     return _log_writer
 
 
-# ───────────────────────── cross-cycle prefetch ─────────────────────────
+# ───────────────────────── cross-day prefetch ─────────────────────────
 
 
-async def prefetch_next_cycle(rt: SessionRuntime, next_cycle_index: int) -> None:
-    """Run cycle N+1's drafter LLM call in the background while the player
-    reads cycle N's log entry. State is final after cycle N's
-    `tick_cycle_close` + timeout re-check; the drafter is stateless; the only
+async def prefetch_next_day(rt: SessionRuntime, next_day_index: int) -> None:
+    """Run day N+1's drafter LLM call in the background while the player
+    reads day N's log entry. State is final after day N's
+    `tick_day_close` + timeout re-check; the drafter is stateless; the only
     thing gating its call is the /continue UI gate.
 
     The drafter is stateless one-shot, so prefetching it is trivial. The log
     writer is conversation-based and cannot be prefetched ahead of the
     player's pick — we don't know the authorized option until /authorize.
 
-    Results are stashed on `rt` (tagged with `next_cycle_index`) and consumed
-    by the drafter LLM callable on the next `run_cycle` iteration.
+    Results are stashed on `rt` (tagged with `next_day_index`) and consumed
+    by the drafter LLM callable on the next `run_day` iteration.
     """
     assert AGENTS is not None
     state = rt.session.state
     if state.outcome is not None:
-        return  # mission resolved; no next cycle
+        return  # mission resolved; no next day
     mission = rt.session.mission
 
-    with logfire.span("prefetch_next_cycle", cycle_index=next_cycle_index):
-        catalog = valid_archetype_combinations(state, mission)
-        forced = due_forced_events(state, mission)
-        forced_event = forced[0] if forced else None
-        # Read-only peek at the beat the live cycle-open will fire. State is
+    with logfire.span("prefetch_next_day", day_index=next_day_index):
+        catalog = valid_action_catalog(state, mission)
+        forced = due_forced_actions(state, mission)
+        forced_action = forced[0] if forced else None
+        # Read-only peek at the beat the live day-open will fire. State is
         # frozen between now and the player's /continue click — `select_beat`
         # returns the same beat `fire_beat` will commit, so the prefetched
         # options carry the same framing the live drafter would produce.
@@ -617,11 +617,11 @@ async def prefetch_next_cycle(rt: SessionRuntime, next_cycle_index: int) -> None
         options, fallback = await select_then_write_with_retries(
             AGENTS.selector,
             AGENTS.prose_writer,
-            cycle_index=next_cycle_index,
+            day_index=next_day_index,
             state=state,
             mission=mission,
             catalog=catalog,
-            forced_event=forced_event,
+            forced_action=forced_action,
             log_entries=rt.log_entries,
             recently_tried=list(rt.last_authorized),
             beat_fragment=beat_fragment,
@@ -631,35 +631,35 @@ async def prefetch_next_cycle(rt: SessionRuntime, next_cycle_index: int) -> None
 
 
 def _build_log_text_ready_hook(rt: SessionRuntime) -> Any:
-    """Fires when cycle N's log-writer LLM completes (state is final by the
-    time cycle.py invokes it: tick_cycle_close + timeout re-check have run).
-    Cancels any stale prefetch left over from earlier cycles, then schedules
-    cycle N+1's prefetch in the background."""
+    """Fires when day N's log-writer LLM completes (state is final by the
+    time day.py invokes it: tick_day_close + timeout re-check have run).
+    Cancels any stale prefetch left over from earlier days, then schedules
+    day N+1's prefetch in the background."""
 
-    async def _hook(cycle_index: int) -> None:
-        # Defensive: cancel any in-flight prefetch task from an earlier cycle.
+    async def _hook(day_index: int) -> None:
+        # Defensive: cancel any in-flight prefetch task from an earlier day.
         if rt.prefetch_task is not None and not rt.prefetch_task.done():
             rt.prefetch_task.cancel()
             with contextlib.suppress(BaseException):
                 await rt.prefetch_task
         rt._clear_prefetch()
-        next_idx = cycle_index + 1
-        rt.prefetched_cycle_index = next_idx
-        rt.prefetch_task = asyncio.create_task(prefetch_next_cycle(rt, next_idx))
+        next_idx = day_index + 1
+        rt.prefetched_day_index = next_idx
+        rt.prefetch_task = asyncio.create_task(prefetch_next_day(rt, next_idx))
 
     return _hook
 
 
-# ───────────────────────── cycle loop ─────────────────────────
+# ───────────────────────── day loop ─────────────────────────
 
 
 async def _run_session_loop(rt: SessionRuntime) -> None:
-    """Drive cycles back-to-back until terminal. Run as an asyncio.Task per session."""
+    """Drive days back-to-back until terminal. Run as an asyncio.Task per session."""
     assert AGENTS is not None
     mission = rt.session.mission
     await start_mission(rt.session, mission)
     await rt.out_queue.put(_mission_started_payload(mission, rt.session.state.qualities))
-    cycle_index = 1
+    day_index = 1
     # Per-session callable bundle. Built once: the drafter LLM phase / drafter
     # emit phase / log writer / prefetch-hook closures all capture `rt`, so
     # we don't need to rebuild them every iteration.
@@ -669,9 +669,9 @@ async def _run_session_loop(rt: SessionRuntime) -> None:
     on_log_text_ready_fn = _build_log_text_ready_hook(rt)
     try:
         while True:
-            active = await run_cycle(
+            active = await run_day(
                 rt.session,
-                cycle_index,
+                day_index,
                 drafter_llm=drafter_llm_fn,
                 drafter_emit=drafter_emit_fn,
                 log_writer=log_writer_fn,
@@ -679,8 +679,8 @@ async def _run_session_loop(rt: SessionRuntime) -> None:
                 await_authorization=rt.await_auth,
                 on_log_text_ready=on_log_text_ready_fn,
             )
-            # After the cycle's chosen option (if any) lands on the event log,
-            # extract its (archetype, agent) for the next cycle's RECENTLY
+            # After the day's chosen option (if any) lands on the event log,
+            # extract its (archetype, agent) for the next day's RECENTLY
             # TRIED drafter prompt. Keep the last 2 picks only.
             last_auth = _last_authorized_pick(rt.session)
             if last_auth is not None and (
@@ -690,13 +690,13 @@ async def _run_session_loop(rt: SessionRuntime) -> None:
                 rt.last_authorized = rt.last_authorized[-2:]
             if not active:
                 break
-            # Gate the next cycle on the player clicking "Continue" — symmetric
-            # with the in-cycle auth gate. Cycle N+1's LLM work is already in
+            # Gate the next day on the player clicking "Continue" — symmetric
+            # with the in-day auth gate. Day N+1's LLM work is already in
             # flight via the prefetch task scheduled by `on_log_text_ready`,
             # so this gate now only waits on the player, not on LLM latency.
-            await rt.out_queue.put({"event": "awaiting_continue", "cycle": cycle_index})
+            await rt.out_queue.put({"event": "awaiting_continue", "day": day_index})
             await rt.await_continue()
-            cycle_index += 1
+            day_index += 1
     except asyncio.CancelledError:
         logfire.info("session loop cancelled", session_id=rt.session.id)
         raise
@@ -734,7 +734,7 @@ class StartResponse(BaseModel):
     mission_id: str
     mission_name: str
     codename: str
-    max_cycles: int
+    max_days: int
     opening_briefing: str
     opening_prose: str
     cast: list[CastEntry]
@@ -767,7 +767,7 @@ def _mission_started_payload(mission: Mission, state_qualities: dict) -> dict:
         "mission_id": mission.id,
         "mission_name": mission.name,
         "codename": mission.codename,
-        "max_cycles": mission.max_cycles,
+        "max_days": mission.max_days,
         "agents": [
             {"id": a.id, "codename": a.codename, "file_number": a.file_number}
             for a in mission.agents
@@ -780,13 +780,13 @@ def _mission_started_payload(mission: Mission, state_qualities: dict) -> dict:
 
 
 def _last_authorized_pick(session: Session) -> tuple[int, str, str | None] | None:
-    """Pull the most recent (cycle_index, archetype, agent_id) from the
+    """Pull the most recent (day_index, archetype, agent_id) from the
     session event log. Used to populate `rt.last_authorized` for the next
-    cycle's RECENTLY TRIED drafter prompt. Returns None if no option has
+    day's RECENTLY TRIED drafter prompt. Returns None if no option has
     been authorized yet."""
     for ev in reversed(session.event_log):
         if isinstance(ev, OptionAuthorized):
-            return (ev.cycle_index, ev.option.archetype, ev.option.agent)
+            return (ev.day_index, ev.option.action, ev.option.agent)
     return None
 
 
@@ -796,7 +796,7 @@ class AuthorizeRequest(BaseModel):
 
 class StateResponse(BaseModel):
     session_id: str
-    cycle_index: int | None
+    day_index: int | None
     state: dict[str, Any]
     outcome: str | None
 
@@ -832,7 +832,7 @@ async def mission_start() -> StartResponse:
         mission_id=MISSION.id,
         mission_name=MISSION.name,
         codename=MISSION.codename,
-        max_cycles=MISSION.max_cycles,
+        max_days=MISSION.max_days,
         opening_briefing=MISSION.opening_briefing,
         opening_prose=MISSION.opening_prose,
         cast=_cast_payload(MISSION),
@@ -880,7 +880,7 @@ async def mission_authorize(session_id: str, req: AuthorizeRequest) -> dict:
         raise HTTPException(400, f"option_index out of range [0, {len(rt.current_options)})")
     chosen = rt.current_options[req.option_index]
     rt.auth_future.set_result(chosen)
-    return {"accepted": True, "option_index": req.option_index, "archetype": chosen.archetype}
+    return {"accepted": True, "option_index": req.option_index, "action": chosen.action}
 
 
 @app.post("/mission/{session_id}/continue")
@@ -895,14 +895,14 @@ async def mission_continue(session_id: str) -> dict:
 @app.get("/mission/{session_id}/state", response_model=StateResponse)
 async def mission_state(session_id: str) -> StateResponse:
     rt = _get_runtime(session_id)
-    cycle_index: int | None = None
+    day_index: int | None = None
     for ev in reversed(rt.session.event_log):
-        if hasattr(ev, "cycle_index"):
-            cycle_index = ev.cycle_index  # type: ignore[attr-defined]
+        if hasattr(ev, "day_index"):
+            day_index = ev.day_index  # type: ignore[attr-defined]
             break
     return StateResponse(
         session_id=session_id,
-        cycle_index=cycle_index,
+        day_index=day_index,
         state=rt.session.state.qualities,
         outcome=rt.session.state.outcome,
     )

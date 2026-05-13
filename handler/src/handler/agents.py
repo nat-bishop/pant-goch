@@ -1,20 +1,20 @@
 """LLM agents — three agents per session, split for schema simplicity.
 
 - `SELECTOR_AGENT` — picks N catalog targets + forced-event carrier per
-  cycle. Output schema is a per-cycle `Literal`-typed list of target tokens
+  day. Output schema is a per-day `Literal`-typed list of target tokens
   (grammar-sampler enforces catalog validity at decode time). **Stateless
   one-shot.**
 - `PROSE_WRITER_AGENT` — writes `(title, prose)` pairs for the slots the
   selector pinned. Output schema is just a positional list of two-string
   pairs — no catalog identifiers leak into this call's schema. **Stateless
   one-shot.**
-- `LOG_WRITER_AGENT` — appends the cycle's case-file entry after effects
+- `LOG_WRITER_AGENT` — appends the day's case-file entry after effects
   apply, Operations voice (str output, streamed). **Conversation-based** —
   one pydantic-ai agent per session whose `message_history` accumulates
-  one user+assistant pair per cycle. The conversation IS the case file.
+  one user+assistant pair per day. The conversation IS the case file.
 
 Why split selector + prose: Gemma E4B struggles when one structured emission
-has to satisfy enum-class constraints (`archetype` ∈ current catalog) AND
+has to satisfy enum-class constraints (`action` ∈ current catalog) AND
 open-ended prose constraints (~6–10 word title, ~12–20 word prose, voice
 rules, no leaked game vocabulary) at once. The split narrows each call's
 schema to a focused job — the selector emits ≤2 fields per slot, the prose
@@ -28,7 +28,7 @@ Prompt structure (KV-cache friendly):
 System prompts are baked at `build_agent_bundle(model, mission)`. User
 prompts and output schemas are built per call. The selector + prose writer
 use pydantic-ai's runtime `output_type=` override on `.run()` to swap in a
-per-cycle schema — see `_make_selector_output_type` / `_make_prose_output_type`.
+per-day schema — see `_make_selector_output_type` / `_make_prose_output_type`.
 
 This module has NO direct LLM call sites. `cycle.py` wraps the agent runs
 into the drafter/log-writer protocols; `main.py` wires up the paced
@@ -46,8 +46,8 @@ from pydantic_ai import Agent, NativeOutput
 from pydantic_ai.models.openai import OpenAIChatModel
 
 from .models import (
+    Action,
     CastMember,
-    Event,
     Mission,
     Option,
     OptionProse,
@@ -57,7 +57,7 @@ from .spine import (
     ActPhase,
     derive_act_phase,
     derive_tension_band,
-    invalid_archetype_combinations,
+    invalid_action_catalog,
 )
 
 
@@ -80,13 +80,13 @@ log = logging.getLogger(__name__)
 @dataclass
 class LogEntry:
     """One past log entry — the full prose the log writer produced for a
-    cycle. Held in session memory so the drafter prompt can carry the last
+    day. Held in session memory so the drafter prompt can carry the last
     2 entries forward as user-side context. The log writer itself reads its
     history directly via pydantic-ai's `message_history`, not via this list.
     """
 
-    cycle_index: int
-    archetype: str
+    day_index: int
+    action: str
     text: str
 
 
@@ -102,7 +102,7 @@ class AgentBundle:
     `SessionRuntime.log_message_history`.
 
     The selector and prose writer use `output_type=str` at construction —
-    actual per-cycle Literal-typed schemas are passed via `agent.run(...,
+    actual per-day Literal-typed schemas are passed via `agent.run(...,
     output_type=NativeOutput(BuiltType, strict=True))`. The pydantic-ai
     runtime-override pattern; the construction-time type is a placeholder.
     """
@@ -204,10 +204,9 @@ def _leans_block(leans: Sequence[str]) -> str:
 
 
 def _selector_system_prompt(mission: Mission) -> str:
-    """Selector agent: picks 3–4 catalog targets for this day and (when a
-    forced event is due) flags exactly one carrier. NO prose written here —
-    that's the prose writer's job. Schema-side: `target` is a per-cycle
-    Literal of `archetype` or `archetype:agent` strings, so the grammar
+    """Selector agent: picks 3–4 catalog targets for this day. NO prose
+    written here — that's the prose writer's job. Schema-side: `target` is
+    a per-day Literal of `action` or `action:agent` strings, so the grammar
     sampler rejects invalid catalog picks at decode time.
     """
     return f"""\
@@ -226,9 +225,7 @@ MISSION CAST:
 OUTPUT:
 A list of `selections`, each with:
   - `target`: one of the catalog tokens given in the user prompt
-    (encoded `ARCHETYPE` for unbound, `ARCHETYPE:AGENT` for agent-bound).
-  - `satisfies_event` (only when a FORCED EVENT block is present): the
-    event's id on EXACTLY ONE selection; null on the others.
+    (encoded `ACTION` for unbound, `ACTION:AGENT` for agent-bound).
 
 SELECTION RULES:
 - Pick 3 or 4 targets — the user prompt names N for this day.
@@ -240,10 +237,9 @@ SELECTION RULES:
   safe-↔-risky axis. Do not pick the same target the player just authorized.
 - HOLD is doing nothing — include it when passive pressure is the meaningful
   contrast.
-- If a FORCED EVENT block appears, exactly ONE selection must carry it
-  (`satisfies_event` = event id). Pick the carrier whose archetype + agent
-  best fits the event's intent — the prose pass will honor the event's
-  prose constraints on whichever slot you flag.
+- If a FORCED ACTION block appears, that action MUST be one of your selections.
+  The prose pass will honor the action's prose constraints on whichever slot
+  carries it.
 
 You will not see numeric state. The user prompt translates state into
 narrative descriptors (cover intact / degraded / compromised / blown,
@@ -253,16 +249,15 @@ posture.
 
 
 def _prose_writer_system_prompt(mission: Mission) -> str:
-    """Prose writer agent: takes the engine-pinned `(archetype, agent,
-    satisfies_event)` slate from the selector and writes `(title, prose)`
-    per slot. No catalog identifiers in this agent's output — those are
-    already fixed."""
+    """Prose writer agent: takes the engine-pinned `(action, agent)` slate
+    from the selector and writes `(title, prose)` per slot. No catalog
+    identifiers in this agent's output — those are already fixed."""
     return f"""\
 You are Operations Desk writing player-facing prose for {mission.codename}.
-You receive a list of SLOTS the selector has already pinned (archetype +
-optional agent + optional forced-event flag). Your job is to write one
-`title` and one `prose` line per slot, in order, matching the slot's
-operational shape.
+You receive a list of SLOTS the selector has already pinned (action +
+optional agent). One slot may be marked as the FORCED ACTION CARRIER —
+write that slot's prose to honor the prose constraints supplied in the
+user prompt.
 
 VOICE: {_VOICE_OPERATIONS}
 
@@ -279,7 +274,7 @@ PER-SLOT OUTPUT SHAPE (strict):
      the risk, or the stake. No restating the verb. No scene-setting.
 
 PROSE RULES:
-- Telegraph cost honestly. If a slot's archetype costs cover, the prose
+- Telegraph cost honestly. If a slot's action costs cover, the prose
   names it in the world (e.g. "burns through LYNX's already-degraded
   cover" — NOT "-3 cover" and NOT "drops cover level to four").
 - NEVER predict outcomes. NEVER fabricate state that isn't in the user prompt.
@@ -418,19 +413,19 @@ def _describe_cover(value: int, mission: Mission, agent_id: str) -> str:
     return _BUILTIN_COVER_BUCKETS[-1][1]
 
 
-def _describe_cycles(cycles_remaining: int, max_cycles: int, mission: Mission) -> str:
+def _describe_days(days_remaining: int, max_days: int, mission: Mission) -> str:
     """Narrative descriptor for the operation clock. Authors may override via
-    a `qualities["mission.cycles_remaining"]` entry (numeric buckets on the
-    raw cycles_remaining value). Built-in fallback buckets on the ratio so
+    a `qualities["mission.days_remaining"]` entry (numeric buckets on the
+    raw days_remaining value). Built-in fallback buckets on the ratio so
     the descriptor scales with mission length."""
-    override = mission.qualities.get("mission.cycles_remaining")
+    override = mission.qualities.get("mission.days_remaining")
     if override is not None:
-        described = override.describe(cycles_remaining)
+        described = override.describe(days_remaining)
         if described is not None:
             return described
-    if max_cycles <= 0 or cycles_remaining <= 0:
+    if max_days <= 0 or days_remaining <= 0:
         return "the window has closed"
-    ratio = cycles_remaining / max_cycles
+    ratio = days_remaining / max_days
     if ratio >= 0.66:
         return "the window is open"
     if ratio >= 0.5:
@@ -462,7 +457,7 @@ DeltaMap = dict[str, tuple[Any, Any]]
 def _agent_id_from_cover_quality(quality: str) -> str | None:
     """Extract `LYNX` from `agent[LYNX].cover`. None for non-cover or
     non-agent-scoped quality refs (e.g. `agent[LYNX].cover_protected` or
-    `mission.cycles_remaining`)."""
+    `mission.days_remaining`)."""
     if not quality.startswith("agent[") or not quality.endswith(".cover"):
         return None
     closing = quality.find("]")
@@ -486,14 +481,14 @@ def describe_quality_pair(
     the same bucket) or for qualities with no authored / built-in descriptor
     (e.g. one-cycle flags, lost flags).
     """
-    if quality == "mission.cycles_remaining":
+    if quality == "mission.days_remaining":
         before_desc = (
-            _describe_cycles(int(before), mission.max_cycles, mission)
+            _describe_days(int(before), mission.max_days, mission)
             if _is_numeric_value(before)
             else None
         )
         after_desc = (
-            _describe_cycles(int(after), mission.max_cycles, mission)
+            _describe_days(int(after), mission.max_days, mission)
             if _is_numeric_value(after)
             else None
         )
@@ -563,9 +558,9 @@ def _narrative_state_block(state: State, mission: Mission) -> str:
     so the player gets observational hints instead of explicit state lines.
     """
     lines: list[str] = []
-    cycles_raw = state.get_quality("mission.cycles_remaining")
-    cycles = int(cycles_raw) if isinstance(cycles_raw, (int, float)) and not isinstance(cycles_raw, bool) else 0
-    lines.append(f"OPERATION CLOCK: {_describe_cycles(cycles, mission.max_cycles, mission)}")
+    days_raw = state.get_quality("mission.days_remaining")
+    days = int(days_raw) if isinstance(days_raw, (int, float)) and not isinstance(days_raw, bool) else 0
+    lines.append(f"OPERATION CLOCK: {_describe_days(days, mission.max_days, mission)}")
     lines.append("AGENT POSTURES:")
     for agent in mission.agents:
         cover_raw = state.get_quality(f"agent[{agent.id}].cover")
@@ -576,7 +571,7 @@ def _narrative_state_block(state: State, mission: Mission) -> str:
         lines.append(f"  - {agent.id}: {descriptor}{suffix}")
     authored_lines: list[str] = []
     for q, v in state.qualities.items():
-        if not q.startswith("mission.") or q == "mission.cycles_remaining":
+        if not q.startswith("mission.") or q == "mission.days_remaining":
             continue
         # `_describe_authored_quality` returns None for unauthored qualities
         # AND for `visible=False` ones — hidden state surfaces only through
@@ -591,14 +586,14 @@ def _narrative_state_block(state: State, mission: Mission) -> str:
 
 
 def _hidden_state_hint_block(
-    state: State, mission: Mission, cycle_index: int
+    state: State, mission: Mission, day_index: int
 ) -> str:
     """Render the HIDDEN STATE TO HINT AT block for the drafter / log-writer
     user prompts. For each `Quality` authored with `visible=False` and
-    `bands:`, pick the rotated variant for the current value + cycle index.
+    `bands:`, pick the rotated variant for the current value + day index.
 
     The system-prompt directive tells the LLM to translate the variant
-    through the cycle's situation, never quote it verbatim. Authoring
+    through the day's situation, never quote it verbatim. Authoring
     discipline: variants are *examples* the model paraphrases, not lines.
     """
     lines: list[str] = []
@@ -608,7 +603,7 @@ def _hidden_state_hint_block(
         value = state.get_quality(q_name)
         if value is None:
             continue
-        variant = q_def.describe_variant(value, cycle_index)
+        variant = q_def.describe_variant(value, day_index)
         if variant is not None:
             lines.append(variant)
     return _bullet_block(
@@ -628,27 +623,27 @@ def _log_entries_block(entries: list[LogEntry], limit: int) -> str:
     chunk = entries[-limit:]
     parts: list[str] = []
     for d in chunk:
-        parts.append(f"--- Day {d.cycle_index} — {d.archetype}")
+        parts.append(f"--- Day {d.day_index} — {d.action}")
         parts.append(d.text.strip())
         parts.append("")
     return "\n".join(parts).rstrip()
 
 
-def _target_string(archetype: str, agent: str | None) -> str:
-    """Encode a `(archetype, agent)` catalog entry as a single Literal token.
-    `HOLD` for unbound, `INITIATE_EXFIL:LYNX` for agent-bound. Matches the
-    grammar produced by `_make_selector_output_type`'s `Literal` over the
-    cycle's catalog — the selector emits these tokens and the engine parses
-    them back via `_parse_target`."""
-    return f"{archetype}:{agent}" if agent else archetype
+def _target_string(action: str, agent: str | None) -> str:
+    """Encode an `(action, agent)` catalog entry as a single Literal token.
+    `HOLD` for unbound, `RETRIEVE_PAPERS_VIA_AGENT:LYNX` for agent-bound.
+    Matches the grammar produced by `_make_selector_output_type`'s `Literal`
+    over the day's catalog — the selector emits these tokens and the engine
+    parses them back via `_parse_target`."""
+    return f"{action}:{agent}" if agent else action
 
 
 def _parse_target(token: str) -> tuple[str, str | None]:
-    """Inverse of `_target_string`. Splits on the first `:`; archetypes
+    """Inverse of `_target_string`. Splits on the first `:`; action ids
     themselves never contain `:`, so this is unambiguous."""
     if ":" in token:
-        archetype, agent = token.split(":", 1)
-        return archetype, agent
+        action, agent = token.split(":", 1)
+        return action, agent
     return token, None
 
 
@@ -656,49 +651,50 @@ def _catalog_block(
     catalog: list[tuple[str, str | None, dict[str, str]]],
     mission: Mission,
 ) -> str:
-    """Render the selector's catalog: one line per valid `(archetype, agent)`
-    tuple, encoded as a Literal token + the archetype's intent (for tonal
+    """Render the selector's catalog: one line per valid `(action, agent)`
+    tuple, encoded as a Literal token + the action's intent (for tonal
     judgment). The token format MUST match `_target_string` — the grammar
     sampler is built from these strings."""
-    intents = {a.id: a.intent for a in mission.archetypes}
+    intents = {a.id: a.intent for a in mission.actions}
     lines = []
-    for arch_id, agent_id, _ in catalog:
-        token = _target_string(arch_id, agent_id)
-        intent = intents.get(arch_id, "")
+    for action_id, agent_id, _ in catalog:
+        token = _target_string(action_id, agent_id)
+        intent = intents.get(action_id, "")
         lines.append(f"  - {token} — {intent}")
     return "\n".join(lines)
 
 
-def _forced_event_selector_block(event: Event | None) -> str:
-    """Render the FORCED EVENT block for the selector prompt — id + intent
-    only. The selector flags one slot as the carrier; it does NOT write
-    prose, so it doesn't need must_communicate / must_not / tone."""
-    if event is None:
-        return "(no forced event this day.)"
+def _forced_action_selector_block(action: Action | None) -> str:
+    """Render the FORCED ACTION block for the selector prompt — id + intent
+    only. The selector includes the forced Action as one of its targets; it
+    does NOT write prose, so it doesn't need must_communicate / must_not /
+    tone here."""
+    if action is None:
+        return "(no forced action this day.)"
     return f"""\
-A FORCED EVENT must be carried by exactly ONE selection this day:
-  event_id: {event.id}
-  intent: {event.intent.strip()}
-Set `satisfies_event` = "{event.id}" on the one selection whose archetype
-+ agent best fits this intent. Set it to null on the others. The prose
-pass will honor the event's prose constraints on whichever slot you flag.
+A FORCED ACTION must be selected as one of this day's targets:
+  action_id: {action.id}
+  intent: {action.intent.strip()}
+Include `{_target_string(action.id, None)}` (or its `:AGENT` variant if the
+action is agent-bound) as one of your selections. The prose pass will honor
+the action's prose constraints on the slot carrying it.
 """
 
 
-def _forced_event_prose_block(event: Event | None, carrier_index: int | None) -> str:
-    """Render the FORCED EVENT block for the prose writer — full prose
+def _forced_action_prose_block(action: Action | None, carrier_index: int | None) -> str:
+    """Render the FORCED ACTION block for the prose writer — full prose
     constraints, targeted at the carrier slot index the selector picked."""
-    if event is None or carrier_index is None:
-        return "(no forced event this day.)"
+    if action is None or carrier_index is None:
+        return "(no forced action this day.)"
     return f"""\
-FORCED EVENT — carrier is slot #{carrier_index + 1}. That slot's prose MUST honor:
-  event_id: {event.id}
-  intent: {event.intent.strip()}
+FORCED ACTION — carrier is slot #{carrier_index + 1}. That slot's prose MUST honor:
+  action_id: {action.id}
+  intent: {action.intent.strip()}
   must_communicate:
-{chr(10).join(f"    - {x}" for x in event.must_communicate)}
+{chr(10).join(f"    - {x}" for x in action.must_communicate)}
   must_not:
-{chr(10).join(f"    - {x}" for x in event.must_not)}
-  tone: {event.tone}
+{chr(10).join(f"    - {x}" for x in action.must_not)}
+  tone: {action.tone}
 The mechanical effect is engine-applied; you only write the prose situated
 in current state.
 """
@@ -707,13 +703,13 @@ in current state.
 def _locked_block(
     state: State, mission: Mission
 ) -> str:
-    """Per-cycle list of archetypes that are NOT in the catalog right now,
-    each annotated with which precondition leaf failed. Helps the drafter
-    reason about *why* an option is unavailable instead of seeing only the
-    trimmed catalog (4i)."""
+    """Per-day list of actions that are NOT in the catalog right now, each
+    annotated with which precondition leaf failed. Helps the drafter reason
+    about *why* an option is unavailable instead of seeing only the trimmed
+    catalog."""
     lines = [
-        f"{arch_id}({agent_id}) — {reason}" if agent_id else f"{arch_id} — {reason}"
-        for arch_id, agent_id, reason in invalid_archetype_combinations(state, mission)
+        f"{action_id}({agent_id}) — {reason}" if agent_id else f"{action_id} — {reason}"
+        for action_id, agent_id, reason in invalid_action_catalog(state, mission)
     ]
     return _bullet_block(
         "LOCKED THIS DAY (use as context for option framing — do NOT propose these):",
@@ -725,17 +721,17 @@ def _locked_block(
 def _recently_tried_block(
     recently_tried: Sequence[tuple[int, str, str | None]] | None,
 ) -> str:
-    """Render the RECENTLY TRIED block: the last 1-2 cycles' authorized
-    (cycle_index, archetype, agent_id_or_None) tuples. Empty for cycle 1.
+    """Render the RECENTLY TRIED block: the last 1-2 days' authorized
+    (day_index, action_id, agent_id_or_None) tuples. Empty for day 1.
     Drafter is told to span a different tonal range from these picks."""
     lines = [
-        f"D{cycle_idx}: {archetype}({agent_id})" if agent_id else f"D{cycle_idx}: {archetype}"
-        for cycle_idx, archetype, agent_id in (recently_tried or [])
+        f"D{day_idx}: {action_id}({agent_id})" if agent_id else f"D{day_idx}: {action_id}"
+        for day_idx, action_id, agent_id in (recently_tried or [])
     ]
     return _bullet_block(
         "RECENTLY TRIED (vary tonal range from these — different agent, "
         "different cost shape, or different point on the safe-↔-risky "
-        "axis; do not propose the same (archetype, agent) pair the player "
+        "axis; do not propose the same (action, agent) pair the player "
         "just authorized):",
         lines,
     )
@@ -748,19 +744,19 @@ def _beat_block(beat_fragment: str | None) -> str:
     if not beat_fragment:
         return ""
     return _bullet_block(
-        "BEAT THIS DAY (cycle framing — let it inform tone / risk emphasis "
-        "without quoting verbatim):",
+        "BEAT THIS DAY (framing for the day — let it inform tone / risk "
+        "emphasis without quoting verbatim):",
         [beat_fragment.strip()],
     )
 
 
 def _selector_user_prompt(
-    cycle_index: int,
+    day_index: int,
     n: int,
     state: State,
     mission: Mission,
     catalog: list[tuple[str, str | None, dict[str, str]]],
-    forced_event: Event | None,
+    forced_action: Action | None,
     log_entries: list[LogEntry],
     *,
     retry_feedback: str | None = None,
@@ -778,7 +774,7 @@ ACT PHASE: {act_phase}
 
 CURRENT STATE:
 {_narrative_state_block(state, mission)}
-{_hidden_state_hint_block(state, mission, cycle_index)}{_beat_block(beat_fragment)}
+{_hidden_state_hint_block(state, mission, day_index)}{_beat_block(beat_fragment)}
 RECENT CASE-FILE ENTRIES (last 2):
 {_log_entries_block(log_entries, limit=2)}
 
@@ -786,48 +782,51 @@ VALID CATALOG (token — intent). Pick {n} of these as `target` values:
 {_catalog_block(catalog, mission)}
 
 {_locked_block(state, mission)}{_recently_tried_block(recently_tried)}
-{_forced_event_selector_block(forced_event)}{retry}
+{_forced_action_selector_block(forced_action)}{retry}
 Pick {n} targets now. No duplicates.
 """
 
 
 def _prose_slot_block(
-    slots: list[tuple[str, str | None, str | None]],
+    slots: list[tuple[str, str | None]],
     mission: Mission,
+    forced_action_id: str | None,
 ) -> str:
     """Render the SLOTS TO WRITE PROSE FOR block. Each slot is the selector's
-    `(archetype, agent, satisfies_event)` triple. Position in the list IS the
-    slot index — the prose writer's output list is zipped to this order."""
-    intents = {a.id: a.intent for a in mission.archetypes}
+    `(action, agent)` pair. Position in the list IS the slot index — the
+    prose writer's output list is zipped to this order. If a slot's action
+    matches `forced_action_id`, it gets the FORCED ACTION CARRIER marker."""
+    intents = {a.id: a.intent for a in mission.actions}
     lines: list[str] = []
-    for i, (arch, ag, sat) in enumerate(slots, start=1):
-        token = _target_string(arch, ag)
-        intent = intents.get(arch, "")
-        marker = "  [FORCED EVENT CARRIER]" if sat else ""
+    for i, (action_id, ag) in enumerate(slots, start=1):
+        token = _target_string(action_id, ag)
+        intent = intents.get(action_id, "")
+        marker = "  [FORCED ACTION CARRIER]" if action_id == forced_action_id else ""
         lines.append(f"  {i}. {token} — {intent}{marker}")
     return "\n".join(lines)
 
 
 def _prose_writer_user_prompt(
-    cycle_index: int,
+    day_index: int,
     state: State,
     mission: Mission,
-    slots: list[tuple[str, str | None, str | None]],
-    forced_event: Event | None,
+    slots: list[tuple[str, str | None]],
+    forced_action: Action | None,
     log_entries: list[LogEntry],
     *,
     retry_feedback: str | None = None,
     beat_fragment: str | None = None,
 ) -> str:
     """Build the prose writer's user prompt. `slots` is the selector's output
-    in order: list of `(archetype, agent, satisfies_event)`. The prose
-    writer's output list must have the same length and order — the engine
-    zips them positionally to build the final `Option` list."""
+    in order: list of `(action, agent)`. The prose writer's output list must
+    have the same length and order — the engine zips them positionally to
+    build the final `Option` list."""
     retry = ""
     if retry_feedback:
         retry = f"\nPREVIOUS ATTEMPT WAS REJECTED:\n{retry_feedback}\n"
+    forced_id = forced_action.id if forced_action else None
     carrier_index = next(
-        (i for i, (_, _, sat) in enumerate(slots) if sat),
+        (i for i, (a, _) in enumerate(slots) if a == forced_id),
         None,
     )
     act_phase = derive_act_phase(state, mission)
@@ -838,20 +837,20 @@ ACT PHASE: {act_phase}
 
 CURRENT STATE:
 {_narrative_state_block(state, mission)}
-{_hidden_state_hint_block(state, mission, cycle_index)}{_beat_block(beat_fragment)}
+{_hidden_state_hint_block(state, mission, day_index)}{_beat_block(beat_fragment)}
 RECENT CASE-FILE ENTRIES (last 2):
 {_log_entries_block(log_entries, limit=2)}
 
 SLOTS TO WRITE PROSE FOR (in this order; your output list is zipped to this):
-{_prose_slot_block(slots, mission)}
+{_prose_slot_block(slots, mission, forced_id)}
 
-{_forced_event_prose_block(forced_event, carrier_index)}{retry}
+{_forced_action_prose_block(forced_action, carrier_index)}{retry}
 Write one title + prose pair per slot now, in order. {len(slots)} pairs.
 """
 
 
 def _log_writer_user_prompt(
-    cycle_index: int,
+    day_index: int,
     state: State,
     mission: Mission,
     option: Option,
@@ -860,7 +859,7 @@ def _log_writer_user_prompt(
     prior_state: State | None = None,
     leans: list[str] = (),
 ) -> str:
-    """Build the cycle's user turn for the log writer. Goes onto the
+    """Build the day's user turn for the log writer. Goes onto the
     accumulating `message_history`; the assistant turn is the prose entry."""
     delta_str = (
         "\n".join(f"  - {q}: {before} -> {after}" for q, (before, after) in delta.items())
@@ -873,14 +872,14 @@ def _log_writer_user_prompt(
     tension_band = derive_tension_band(prior_state, state)
 
     return f"""\
-Day {cycle_index} of {mission.max_cycles}. Append the next case-file entry.
+Day {day_index} of {mission.max_days}. Append the next case-file entry.
 
 ACT PHASE: {act_phase}
 TONE BAND: {tone_band}
 TENSION (this day's cover swing): {tension_band}
 {_leans_block(leans)}
 AUTHORIZED OPTION:
-  archetype: {option.archetype}
+  action: {option.action}
   agent: {option.agent or "(none)"}
   title: {option.title}
   prose (the option as offered): {option.prose}
@@ -890,7 +889,7 @@ RESOLVED STATE DELTA (this day's mutations — honor these magnitudes):
 
 CURRENT STATE (after delta — narrative, mirror this register):
 {_narrative_state_block(state, mission)}
-{_hidden_state_hint_block(state, mission, cycle_index)}
+{_hidden_state_hint_block(state, mission, day_index)}
 Write the entry now. Two paragraphs: angle, then resolution.
 """
 
@@ -907,33 +906,25 @@ def _decide_n(catalog: list[tuple[str, str | None, dict[str, str]]]) -> int:
 
 def _make_selector_output_type(
     catalog: list[tuple[str, str | None, dict[str, str]]],
-    forced_event: Event | None,
     n: int,
 ) -> type[BaseModel]:
-    """Build the selector's per-cycle output schema. `target` is a `Literal`
-    over the catalog's encoded `(archetype, agent)` tokens — under
-    `strict=True` this compiles to a llama.cpp grammar sampler that rejects
-    invalid catalog picks at decode time. When a forced event is due,
-    `satisfies_event` is `Literal[event_id, None]`; otherwise the field is
-    omitted entirely so the model doesn't waste tokens on a vestigial null."""
+    """Build the selector's per-day output schema. `target` is a `Literal`
+    over the catalog's encoded `(action, agent)` tokens — under `strict=True`
+    this compiles to a llama.cpp grammar sampler that rejects invalid catalog
+    picks at decode time.
+
+    No `satisfies_event` field — the engine knows which action is forced from
+    the Action's own `forced=True` flag, so the selector just has to include
+    the forced Action's token among its picks. Validation happens engine-side.
+    """
     target_tokens = tuple(_target_string(a, ag) for a, ag, _ in catalog)
-    # `Literal[(t1, t2, ...)]` is equivalent to `Literal[t1, t2, ...]` —
-    # Python's subscript syntax passes a tuple to `__class_getitem__`. The
-    # runtime behavior is exactly what we need; type-checkers will object.
+    # `Literal[(t1, t2, ...)]` is equivalent to `Literal[t1, t2, ...]`.
     TargetType = Literal[target_tokens]  # type: ignore[valid-type]
 
-    if forced_event is not None:
-        EventFlag = Literal[forced_event.id, None]  # type: ignore[valid-type]
-        Selection = create_model(
-            "Selection",
-            target=(TargetType, ...),
-            satisfies_event=(EventFlag, ...),
-        )
-    else:
-        Selection = create_model(
-            "Selection",
-            target=(TargetType, ...),
-        )
+    Selection = create_model(
+        "Selection",
+        target=(TargetType, ...),
+    )
 
     return create_model(
         "Selections",
@@ -1001,50 +992,42 @@ class DrafterValidationError(ValueError):
 
 
 def _slots_from_selections(
-    selections_obj: BaseModel, has_forced: bool
-) -> list[tuple[str, str | None, str | None]]:
-    """Normalize a dynamically-built `Selections` instance to plain slot
-    tuples — the engine's working form. `(archetype, agent, satisfies_event)`,
-    where `satisfies_event` is None when no forced event was active this
-    cycle (the schema doesn't even carry the field in that case)."""
-    slots: list[tuple[str, str | None, str | None]] = []
+    selections_obj: BaseModel,
+) -> list[tuple[str, str | None]]:
+    """Normalize a dynamically-built `Selections` instance to plain `(action,
+    agent)` tuples — the engine's working form."""
+    slots: list[tuple[str, str | None]] = []
     for s in selections_obj.selections:  # type: ignore[attr-defined]
-        arch, ag = _parse_target(s.target)
-        sat = s.satisfies_event if has_forced else None
-        slots.append((arch, ag, sat))
+        action_id, ag = _parse_target(s.target)
+        slots.append((action_id, ag))
     return slots
 
 
 def _zip_options(
-    slots: list[tuple[str, str | None, str | None]],
+    slots: list[tuple[str, str | None]],
     prose_list: list[OptionProse],
 ) -> list[Option]:
-    """Pair selector slots with prose-writer output positionally — the two
-    LLM calls' outputs are joined by list index. Schema constraints on both
-    sides guarantee the lengths match before this is called."""
+    """Pair selector slots with prose-writer output positionally."""
     return [
         Option(
-            archetype=arch,
+            action=action_id,
             agent=ag,
             title=p.title,
             prose=p.prose,
-            satisfies_event=sat,
         )
-        for (arch, ag, sat), p in zip(slots, prose_list)
+        for (action_id, ag), p in zip(slots, prose_list)
     ]
 
 
 def validate_selections(
-    slots: list[tuple[str, str | None, str | None]],
+    slots: list[tuple[str, str | None]],
     catalog: list[tuple[str, str | None, dict[str, str]]],
-    forced_event_id: str | None,
+    forced_action_id: str | None,
     n: int,
 ) -> None:
-    """Raise `DrafterValidationError` with a corrective message if the
-    selector's output violates constraints. Catalog-membership is enforced
-    by the grammar sampler under `strict=True` — we check it here too as
-    defense-in-depth so the validator's feedback can speak in the same
-    language as the prompt if something slips through."""
+    """Raise `DrafterValidationError` if the selector's output violates
+    constraints. Catalog-membership is enforced by the grammar sampler under
+    `strict=True`; we check it here too as defense-in-depth."""
     problems: list[str] = []
     if len(slots) != n:
         problems.append(
@@ -1052,24 +1035,24 @@ def validate_selections(
         )
     valid_keys = {(a, ag) for (a, ag, _) in catalog}
     seen: set[tuple[str, str | None]] = set()
-    for i, (arch, ag, _sat) in enumerate(slots):
-        key = (arch, ag)
+    for i, (action_id, ag) in enumerate(slots):
+        key = (action_id, ag)
         if key not in valid_keys:
             problems.append(
-                f"selection {i + 1}: target archetype={arch!r} agent={ag!r} "
+                f"selection {i + 1}: target action={action_id!r} agent={ag!r} "
                 f"is not in the VALID CATALOG"
             )
         if key in seen:
             problems.append(
-                f"selection {i + 1}: duplicate target archetype={arch!r} agent={ag!r}"
+                f"selection {i + 1}: duplicate target action={action_id!r} agent={ag!r}"
             )
         seen.add(key)
-    if forced_event_id is not None:
-        carriers = [s for s in slots if s[2] == forced_event_id]
-        if len(carriers) != 1:
+    if forced_action_id is not None:
+        carriers = [s for s in slots if s[0] == forced_action_id]
+        if not carriers:
             problems.append(
-                f"forced event {forced_event_id!r}: expected exactly 1 selection "
-                f"with satisfies_event={forced_event_id!r}, found {len(carriers)}"
+                f"forced action {forced_action_id!r}: expected one selection with "
+                f"action={forced_action_id!r}, found none"
             )
     if problems:
         raise DrafterValidationError("; ".join(problems))
@@ -1092,55 +1075,53 @@ def validate_prose(prose_list: list[OptionProse], n: int) -> None:
 def engine_fallback_options(
     catalog: list[tuple[str, str | None, dict[str, str]]],
     mission: Mission,
-    forced_event: Event | None,
+    forced_action: Action | None,
     n: int,
 ) -> list[Option]:
     """Engine-authored fallback when either LLM call exhausts retries. Picks
     deterministic options from the valid catalog with terse generic prose.
 
     Strategy:
-    - If a forced event is required, the first option satisfies it (using
-      any agent-bound catalog entry as carrier — forced events apply their
-      effects on top of the carrier archetype's).
+    - If a forced Action is required, it gets the first slot — under the new
+      model the forced Action IS the option (no carrier coupling).
     - HOLD is included next if available.
-    - Then one (archetype, agent) per remaining agent.
+    - Then one (action, agent) per remaining agent.
     - Fill from leftover catalog entries until N options exist.
     """
     options: list[Option] = []
     used_keys: set[tuple[str, str | None]] = set()
 
     def _add(opt: Option) -> None:
-        key = (opt.archetype, opt.agent)
+        key = (opt.action, opt.agent)
         if key in used_keys:
             return
         used_keys.add(key)
         options.append(opt)
 
-    # Forced event FIRST so it's never overwritten by later fill.
-    if forced_event is not None:
-        carrier = next(
-            ((a, ag) for (a, ag, _) in catalog if ag is not None),
+    # Forced action FIRST so it's never overwritten by later fill.
+    if forced_action is not None:
+        entry = next(
+            ((a, ag) for (a, ag, _) in catalog if a == forced_action.id),
             None,
         )
-        if carrier is not None:
-            a, ag = carrier
+        if entry is not None:
+            a, ag = entry
             _add(
                 Option(
-                    archetype=a,
+                    action=a,
                     agent=ag,
-                    title=forced_event.id,
-                    prose=forced_event.intent.strip()[:240] or f"Honor the {forced_event.id} event.",
-                    satisfies_event=forced_event.id,
+                    title=forced_action.id,
+                    prose=forced_action.intent.strip()[:240] or f"Authorize {forced_action.id}.",
                 )
             )
 
-    # HOLD next, if available and not already used as a forced-moment carrier.
+    # HOLD next, if available.
     for (a, ag, _) in catalog:
         if a != "HOLD":
             continue
         _add(
             Option(
-                archetype=a,
+                action=a,
                 agent=ag,
                 title="Hold position",
                 prose="Take no action this day. Both agents stay put. The situation tightens.",
@@ -1148,7 +1129,7 @@ def engine_fallback_options(
         )
         break
 
-    # One archetype per remaining agent.
+    # One action per remaining agent.
     seen_agents: set[str | None] = {o.agent for o in options}
     for (a, ag, _) in catalog:
         if a == "HOLD" or ag in seen_agents:
@@ -1156,11 +1137,11 @@ def engine_fallback_options(
         seen_agents.add(ag)
         _add(
             Option(
-                archetype=a,
+                action=a,
                 agent=ag,
                 title=f"Authorize {a} ({ag or 'unbound'})",
                 prose=(
-                    f"Authorize the {a} archetype on {ag or 'Operations'}. "
+                    f"Authorize the {a} action on {ag or 'Operations'}. "
                     f"The mechanical cost is documented in the catalog."
                 ),
             )
@@ -1173,10 +1154,10 @@ def engine_fallback_options(
         for (a, ag, _) in catalog:
             _add(
                 Option(
-                    archetype=a,
+                    action=a,
                     agent=ag,
                     title=f"Authorize {a}",
-                    prose=f"Authorize the {a} archetype.",
+                    prose=f"Authorize the {a} action.",
                 )
             )
             if len(options) >= n:
@@ -1189,39 +1170,38 @@ async def select_then_write_with_retries(
     selector: Agent[None, Any],
     prose_writer: Agent[None, Any],
     *,
-    cycle_index: int,
+    day_index: int,
     state: State,
     mission: Mission,
     catalog: list[tuple[str, str | None, dict[str, str]]],
-    forced_event: Event | None,
+    forced_action: Action | None,
     log_entries: list[LogEntry],
     max_retries: int = 3,
     recently_tried: Sequence[tuple[int, str, str | None]] | None = None,
     beat_fragment: str | None = None,
 ) -> tuple[list[Option], bool]:
     """Two-phase drafter orchestration:
-      1. Selector picks N catalog targets + forced-event carrier.
+      1. Selector picks N catalog targets (including the forced Action if any).
       2. Prose writer writes (title, prose) pairs for each pinned slot.
 
     Each phase has its own retry budget. If either exhausts retries, the
     function returns engine-authored fallback options and `engine_fallback=True`.
 
-    Per-cycle output schemas are built dynamically: the selector's `target`
+    Per-day output schemas are built dynamically: the selector's `target`
     is a `Literal` over the current catalog (grammar-sampler enforces
     validity at decode time); the prose writer's schema is a fixed-length
-    list of `OptionProse` pairs. Both schemas are passed via pydantic-ai's
-    runtime `output_type=` override on `.run()`.
+    list of `OptionProse` pairs.
     """
     n = _decide_n(catalog)
-    forced_id = forced_event.id if forced_event is not None else None
+    forced_id = forced_action.id if forced_action is not None else None
 
     # ─── Phase 1: selector ───
-    selector_type = _make_selector_output_type(catalog, forced_event, n)
-    slots: list[tuple[str, str | None, str | None]] | None = None
+    selector_type = _make_selector_output_type(catalog, n)
+    slots: list[tuple[str, str | None]] | None = None
     last_error: str | None = None
     for attempt in range(max_retries + 1):
         prompt = _selector_user_prompt(
-            cycle_index, n, state, mission, catalog, forced_event, log_entries,
+            day_index, n, state, mission, catalog, forced_action, log_entries,
             retry_feedback=last_error,
             recently_tried=recently_tried,
             beat_fragment=beat_fragment,
@@ -1235,9 +1215,7 @@ async def select_then_write_with_retries(
                 log.warning("selector call failed: %s", e)
                 last_error = f"agent run failed: {e}"
                 continue
-        candidate = _slots_from_selections(
-            result.output, has_forced=forced_event is not None
-        )
+        candidate = _slots_from_selections(result.output)
         try:
             validate_selections(candidate, catalog, forced_id, n)
             slots = candidate
@@ -1250,14 +1228,14 @@ async def select_then_write_with_retries(
         log.warning(
             "selector exhausted %d retries; using engine fallback options", max_retries
         )
-        return engine_fallback_options(catalog, mission, forced_event, n), True
+        return engine_fallback_options(catalog, mission, forced_action, n), True
 
     # ─── Phase 2: prose writer ───
     prose_type = _make_prose_output_type(n)
     last_error = None
     for attempt in range(max_retries + 1):
         prompt = _prose_writer_user_prompt(
-            cycle_index, state, mission, slots, forced_event, log_entries,
+            day_index, state, mission, slots, forced_action, log_entries,
             retry_feedback=last_error,
             beat_fragment=beat_fragment,
         )
@@ -1281,4 +1259,4 @@ async def select_then_write_with_retries(
     log.warning(
         "prose writer exhausted %d retries; using engine fallback options", max_retries
     )
-    return engine_fallback_options(catalog, mission, forced_event, n), True
+    return engine_fallback_options(catalog, mission, forced_action, n), True

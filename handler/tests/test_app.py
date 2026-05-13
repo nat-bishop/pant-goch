@@ -1,12 +1,12 @@
 """FastAPI endpoint smoke tests. Live llama is not required — the lifespan
 boots the engine sidecar in test mode (`LAUNCH_LLAMA=false`), the mission
-loads from disk, but the cycle loop is short-circuited by stubbing the
+loads from disk, but the day loop is short-circuited by stubbing the
 three agent callables before they make any network calls.
 
 These tests cover endpoint shape: /health 200, /mission/start returns a
 session_id, /authorize 409s when no auth is pending, /state returns a
-snapshot. End-to-end behaviour (full cycle with live llama) lives in
-test_cycle_integration.py under the `integration` marker.
+snapshot. End-to-end behaviour (full day with live llama) lives in
+test_day_integration.py under the `integration` marker.
 """
 from __future__ import annotations
 
@@ -62,7 +62,7 @@ def test_mission_start_returns_session_id(app_client: TestClient) -> None:
     assert "session_id" in body
     assert body["mission_id"] == "tiny"
     assert body["codename"] == "TINY"
-    assert body["max_cycles"] == 4
+    assert body["max_days"] == 4
 
 
 def test_mission_start_returns_cast_and_briefing(app_client: TestClient) -> None:
@@ -93,6 +93,6 @@ def test_state_returns_snapshot(app_client: TestClient) -> None:
     assert s.status_code == 200
     body = s.json()
     assert body["session_id"] == sid
-    assert "mission.cycles_remaining" in body["state"]
-    assert body["state"]["mission.cycles_remaining"] == 4
+    assert "mission.days_remaining" in body["state"]
+    assert body["state"]["mission.days_remaining"] == 4
     assert body["outcome"] is None

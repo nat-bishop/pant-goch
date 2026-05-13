@@ -47,35 +47,34 @@ class MissionStarted(BaseModel):
     initial_state: State
 
 
-class CycleOpened(BaseModel):
-    kind: Literal["cycle_opened"] = "cycle_opened"
-    cycle_index: int  # 1-based; CYC 01 / 06 maps to cycle_index=1
+class DayOpened(BaseModel):
+    kind: Literal["day_opened"] = "day_opened"
+    day_index: int  # 1-based
 
 
 class OptionsDrafted(BaseModel):
     kind: Literal["options_drafted"] = "options_drafted"
-    cycle_index: int
+    day_index: int
     options: list[Option]
-    # Id of the forced event surfaced to the drafter this cycle, if any.
-    forced_event_id: str | None = None
+    # Id of the forced Action surfaced to the drafter this day, if any.
+    forced_action_id: str | None = None
     engine_fallback: bool = False  # True if engine emitted fallback options
 
 
 class OptionAuthorized(BaseModel):
     kind: Literal["option_authorized"] = "option_authorized"
-    cycle_index: int
+    day_index: int
     option: Option
     by_handler_at: datetime
 
 
 class LogEntryAppended(BaseModel):
-    """The cycle's case-file entry, written by the log writer in Operations
-    voice after effects apply. Always Ops voice — voice multiplexing is gone
-    per HANDLER_SPEC_V2 §8.2."""
+    """The day's case-file entry, written by the log writer in Operations
+    voice after effects apply. `action` is the authorized action's id."""
 
     kind: Literal["log_entry_appended"] = "log_entry_appended"
-    cycle_index: int
-    archetype: str
+    day_index: int
+    action: str
     text: str
 
 
@@ -83,39 +82,43 @@ class LogEntryAppended(BaseModel):
 
 
 class EffectsApplied(BaseModel):
-    """Carries the delta from `apply_archetype_effects` (and any forced-event
-    effects merged in)."""
+    """Carries the delta from `apply_action_effects` — the chosen Action's
+    own effects (or its first-matching outcome's effects)."""
 
     kind: Literal["effects_applied"] = "effects_applied"
-    cycle_index: int
+    day_index: int
     delta: Delta
-    # Id of the forced event the chosen option satisfied this cycle, if any.
-    forced_event_id: str | None = None
+    # Id of the Action the player authorized this day. Used by fold-replay to
+    # rebuild `state.fired` for forced actions. None on observation-only paths.
+    action_id: str | None = None
+    # True iff that action is `forced=True` — fold appends `action_id` to
+    # `state.fired` only in this case (mirrors the live `apply_action_effects`).
+    action_forced: bool = False
 
 
-class EventsFired(BaseModel):
-    """Records one or more passive events that fired this cycle. Each entry
-    carries its own delta plus the (event_id, agent_id_or_None) pair.
-    Terminal events are included; the next log entry will be `MissionResolved`.
+class ReactionsFired(BaseModel):
+    """Records one or more Reactions that fired this day. Each entry carries
+    its own delta plus the (reaction_id, agent_id_or_None) pair. Terminal
+    reactions are included; the next log entry will be `MissionResolved`.
     """
 
-    kind: Literal["events_fired"] = "events_fired"
-    cycle_index: int
-    fires: list[tuple[str, str | None, Delta]]  # (event_id, agent_id|None, delta)
+    kind: Literal["reactions_fired"] = "reactions_fired"
+    day_index: int
+    fires: list[tuple[str, str | None, Delta]]  # (reaction_id, agent_id|None, delta)
 
 
-class CycleClosed(BaseModel):
-    """End-of-cycle housekeeping: cycles_remaining decrement + one-cycle
+class DayClosed(BaseModel):
+    """End-of-day housekeeping: days_remaining decrement + one-day
     flag clear. Carries the close delta."""
 
-    kind: Literal["cycle_closed"] = "cycle_closed"
-    cycle_index: int
+    kind: Literal["day_closed"] = "day_closed"
+    day_index: int
     delta: Delta
 
 
 class MissionResolved(BaseModel):
     kind: Literal["mission_resolved"] = "mission_resolved"
-    cycle_index: int
+    day_index: int
     resolution: MissionResolution
 
 
@@ -125,13 +128,13 @@ class MissionResolved(BaseModel):
 Event = Annotated[
     Union[
         MissionStarted,
-        CycleOpened,
+        DayOpened,
         OptionsDrafted,
         OptionAuthorized,
         LogEntryAppended,
         EffectsApplied,
-        EventsFired,
-        CycleClosed,
+        ReactionsFired,
+        DayClosed,
         MissionResolved,
     ],
     Field(discriminator="kind"),
@@ -159,25 +162,23 @@ def fold(state: State, event: Event) -> None:
         state.fired_per_agent.clear()
         state.fired_per_agent.extend(event.initial_state.fired_per_agent)
         state.outcome = event.initial_state.outcome
-        state.one_cycle_flags = dict(event.initial_state.one_cycle_flags)
         return
-    if isinstance(event, (CycleOpened, OptionsDrafted, OptionAuthorized, LogEntryAppended)):
+    if isinstance(event, (DayOpened, OptionsDrafted, OptionAuthorized, LogEntryAppended)):
         return  # observation only
     if isinstance(event, EffectsApplied):
         _apply_delta(state, event.delta)
-        if event.forced_event_id is not None:
-            state.fired.append(event.forced_event_id)
+        if event.action_forced and event.action_id is not None:
+            state.fired.append(event.action_id)
         return
-    if isinstance(event, EventsFired):
-        for event_id, agent_id, delta in event.fires:
+    if isinstance(event, ReactionsFired):
+        for reaction_id, agent_id, delta in event.fires:
             _apply_delta(state, delta)
-            state.fired.append(event_id)
+            state.fired.append(reaction_id)
             if agent_id is not None:
-                state.fired_per_agent.append(per_agent_key(event_id, agent_id))
+                state.fired_per_agent.append(per_agent_key(reaction_id, agent_id))
         return
-    if isinstance(event, CycleClosed):
+    if isinstance(event, DayClosed):
         _apply_delta(state, event.delta)
-        state.one_cycle_flags.clear()
         return
     if isinstance(event, MissionResolved):
         state.outcome = event.resolution.outcome_key

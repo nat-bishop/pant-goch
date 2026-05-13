@@ -207,7 +207,7 @@ async def amain(args: argparse.Namespace) -> int:
         records: list[SessionRecord] = await asyncio.gather(*tasks)
         ended_at = dt.datetime.now()
 
-        # Look up authored max_cycles to bound the budget evaluator.
+        # Look up authored max_days to bound the budget evaluator.
         mission_path = Path(__file__).resolve().parents[2] / "missions" / "lynx_exfil.yaml"
         mission = load_mission(mission_path)
 
@@ -218,7 +218,7 @@ async def amain(args: argparse.Namespace) -> int:
             evals = run_all(
                 rec,
                 expected_outcome=persona.expected_outcome,
-                max_cycles=mission.max_cycles,
+                max_days=mission.max_days,
             )
             cases.append((rec, evals))
 
