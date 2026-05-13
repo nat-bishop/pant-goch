@@ -151,14 +151,14 @@ export function Paper() {
 
 function DayDivider({
   index,
-  archetype,
+  action,
   title,
 }: {
   index: number;
-  archetype?: string;
+  action?: string;
   title?: string;
 }) {
-  const suffix = [archetype, title].filter(Boolean).join(" · ");
+  const suffix = [action, title].filter(Boolean).join(" · ");
   return (
     <div className="day-divider" aria-hidden>
       <span className="day-divider-rule" />
@@ -198,7 +198,7 @@ function PastDaySection({ entry }: { entry: LogEntryRecord }) {
     >
       <DayDivider
         index={entry.day_index}
-        archetype={entry.archetype}
+        action={entry.action}
         title={entry.title}
       />
       <div className="sop-block">
@@ -232,7 +232,7 @@ function CurrentDaySection({ cycle }: { cycle: DayState }) {
     >
       <DayDivider
         index={cycle.index}
-        archetype={cycle.entry_archetype ?? undefined}
+        action={cycle.entry_action ?? undefined}
         title={cycle.authorized ? authorizedTitle : undefined}
       />
       <div className="opts-block">

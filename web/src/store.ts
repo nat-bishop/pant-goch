@@ -415,7 +415,7 @@ const _store = create<Store>((set, get) => ({
           outcome: {
             outcome_key: ev.outcome,
             summary: ev.summary,
-            terminal_event: ev.terminal_event,
+            terminal_reaction: ev.terminal_reaction,
             days_used: ev.days_used,
             days_max: ev.days_max,
             agents_lost: ev.agents_lost,
