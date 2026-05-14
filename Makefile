@@ -4,41 +4,24 @@ LLAMA_BIN   := vendor/llama.cpp/llama-server.exe
 LLAMA_HOST  := 127.0.0.1
 LLAMA_PORT  := 8080
 
-# Eval llama (Qwen 3.6 35B-A3B MoE) — only needed by future LLM-judge phases
-# of the playtest. The MVP playtest is programmatic-only and doesn't require
-# the eval llama. Kept here for when judges return.
-EVAL_MODEL      := models/Qwen3.6-35B-A3B-Q8_0.gguf
-EVAL_MODEL_URL  := https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/Qwen3.6-35B-A3B-Q8_0.gguf
-
 .DEFAULT_GOAL := help
 
 .PHONY: help
 help:
-	@echo "HANDLER targets:"
-	@echo "  make run            Boot sidecar (spawns llama) + web dev server in parallel"
+	@echo "HANDLER v2 targets:"
+	@echo "  make sidecar             Run the FastAPI sidecar (spawns its own llama-server)"
+	@echo "  make sidecar-inferno     Run the sidecar against the inferno gateway (skips bundled llama)"
+	@echo "  make web                 Run the Vite dev server"
+	@echo "  make cli                 Run the text-only CLI playthrough (uses inferno)"
 	@echo "  make download-model      Fetch the Gemma 4 E4B Q8_0 GGUF (~8 GB)"
-	@echo "  make download-eval-model Fetch the Qwen 3.6 35B-A3B Q8_0 GGUF (~37 GB)"
-	@echo "  make llama               Run engine llama-server (Gemma on :8080, 4 slots)"
-	@echo "  make llama-playtest      Run engine llama-server with 16 slots — pair with 'make playtest'"
-	@echo "  make llama-eval          Run eval llama-server (Qwen 35B-A3B on :8081)"
-	@echo "  make sidecar             Run Python sidecar, externally-managed llama (terminal 2)"
-	@echo "  make sidecar-inferno     Run Python sidecar against inferno (skips bundled llama)"
-	@echo "  make web                 Run Vite dev server (terminal 3)"
-	@echo "  make test                Run pytest"
-	@echo "  make typecheck           Run TS typecheck on web/"
-	@echo "  make playtest            Run the option-picker playtest (spawns sidecar+llama; one terminal)"
-	@echo "  make clean               Remove __pycache__ and logs/*.log"
+	@echo "  make test                Run pytest (unit suite, skips live-llama integration)"
+	@echo "  make test-integration    Run pytest including the live-llama integration test"
+	@echo "  make typecheck           Run TS typecheck on handler/web/"
+	@echo "  make build               Production build of handler/web/"
 	@echo "  make kill                Force-kill stragglers on :8000/:8080/:5173-5176"
-	@echo "  make mission-check       Validate handler/missions/*.yaml against the schema"
-
-# `run` boots sidecar and web in parallel via `concurrently` (npm). Ctrl-C
-# propagates through concurrently → tree-kill → both children die. The
-# sidecar spawns llama-server itself (LAUNCH_LLAMA=true default) and its
-# Job Object (launcher.py) ensures llama dies when the sidecar dies.
-.PHONY: run
-run: $(MODEL)
-	@echo "Starting sidecar (spawns llama) and web in parallel. Browser: http://localhost:5173"
-	cd web && npm run dev:all
+	@echo "  make clean               Remove __pycache__"
+	@echo ""
+	@echo "Browser dev flow: 'make sidecar' (terminal 1) + 'make web' (terminal 2), open http://localhost:5173"
 
 $(MODEL):
 	mkdir -p models
@@ -47,83 +30,60 @@ $(MODEL):
 .PHONY: download-model
 download-model: $(MODEL)
 
-$(EVAL_MODEL):
-	mkdir -p models
-	curl -L -o $(EVAL_MODEL) $(EVAL_MODEL_URL)
-
-.PHONY: download-eval-model
-download-eval-model: $(EVAL_MODEL)
-
-# Boots llama-server via handler.run_llama so the argv comes from the same
-# `launcher.build_command` the sidecar uses. Don't reintroduce a hardcoded
-# llama-server invocation here — it will drift from Settings.
-.PHONY: llama
-llama: $(MODEL)
-	cd handler && uv run python -m handler.run_llama
-
-# Engine llama sized for the playtest harness (`--parallel 16`): 16 KV slots,
-# 16 × 32k = 512k total pool. The two env vars are set explicitly (not
-# auto-derived) so the slot/pool sizing is self-documenting at the call site —
-# matches the convention in config.py's `llama_total_ctx` comment.
-.PHONY: llama-playtest
-llama-playtest: $(MODEL)
-	cd handler && LLAMA_N_PARALLEL=16 LLAMA_TOTAL_CTX=524288 uv run python -m handler.run_llama
-
-# Eval llama, routed through the same launcher.py with `--role eval`. Used
-# by future LLM-judge phases of the playtest.
-.PHONY: llama-eval
-llama-eval: $(EVAL_MODEL)
-	cd handler && uv run python -m handler.run_llama --role eval
-
 .PHONY: sidecar
 sidecar:
-	cd handler && LAUNCH_LLAMA=false uv run python -m handler
+	cd handler && uv run uvicorn handler.main:app --reload --port 8000
 
 # Inferno mode: skip bundled llama, route pydantic-ai at inferno's /v1.
-# Requires inferno running on :7770.
+# Requires inferno running on :7770. See handler/CLAUDE.md (when written) or
+# the root CLAUDE.md "Inferno gateway" section for env var details.
 .PHONY: sidecar-inferno
 sidecar-inferno:
-	cd handler && SMALLVILLE_USE_INFERNO=1 uv run python -m handler
+	cd handler && SMALLVILLE_USE_INFERNO=1 uv run uvicorn handler.main:app --reload --port 8000
 
 .PHONY: web
 web:
-	cd web && npm run dev
+	cd handler/web && npm run dev
+
+# Text-only CLI playthrough — stdin pick/walk, paced prose to stdout, log
+# entries indented after each scene. Routes at inferno by default.
+.PHONY: cli
+cli:
+	cd handler && SMALLVILLE_USE_INFERNO=1 uv run python -m handler
 
 .PHONY: test
 test:
-	cd handler && uv run pytest
+	cd handler && uv run pytest -q --ignore=tests/test_live_integration.py
 
-# Mission YAML schema check — loads every handler/missions/*.yaml and
-# surfaces validator errors with the file path. Cheap (no llama, no SSE).
-.PHONY: mission-check
-mission-check:
-	cd handler && uv run python -c "from pathlib import Path; from handler.mission_loader import load_mission; [print(f'OK {p.name}: {load_mission(p).codename}') for p in sorted(Path('missions').glob('*.yaml'))]"
-
-# Playtest harness. `--spawn-engine` boots a sidecar (which boots llama with
-# LLAMA_N_PARALLEL=16 / LLAMA_TOTAL_CTX=524288 — same shape as `make llama-playtest`)
-# and tears it down on exit; reuses an already-healthy engine on :8000 if one
-# is up. Drop the flag (or call `uv run python -m scripts.playtest` directly)
-# for the two-terminal flow when iterating fast on a long-lived sidecar.
-# Programmatic evaluators only for MVP — LLM judges come back when prose-quality
-# scoring is worth it.
-.PHONY: playtest
-playtest:
-	cd handler && PYTHONIOENCODING=utf-8 uv run python -u -m scripts.playtest --spawn-engine
+.PHONY: test-integration
+test-integration:
+	cd handler && uv run pytest -q
 
 .PHONY: typecheck
 typecheck:
-	cd web && npm run typecheck
+	cd handler/web && npm run typecheck
+
+.PHONY: build
+build:
+	cd handler/web && npm run build
 
 .PHONY: clean
 clean:
-	rm -f logs/*.log
 	find . -type d -name __pycache__ -prune -exec rm -rf {} +
 
-# See scripts/kill-zombies.ps1 for why this is a two-pass kill (the prior
-# single-pass recipe missed multiprocessing-fork orphans that inherit
-# listening sockets, so it would print "killed" while the port was still
-# bound). The PowerShell lives in a .ps1 to avoid Make+bash+PowerShell
-# quoting hell. Exits non-zero if any port is still bound after the kill.
+# Two-pass kill — single-pass misses multiprocessing-fork orphans that inherit
+# listening sockets. Exits non-zero if any port is still bound after the kill.
 .PHONY: kill
 kill:
-	@powershell -NoProfile -ExecutionPolicy Bypass -File scripts/kill-zombies.ps1
+	@powershell -NoProfile -ExecutionPolicy Bypass -Command "& { \
+	  $$ports = 8000,8080,5173,5174,5175,5176; \
+	  foreach ($$pass in 1..2) { \
+	    foreach ($$p in $$ports) { \
+	      $$pids = (Get-NetTCPConnection -LocalPort $$p -ErrorAction SilentlyContinue).OwningProcess | Sort-Object -Unique; \
+	      foreach ($$pid in $$pids) { try { Stop-Process -Id $$pid -Force -ErrorAction Stop; Write-Host \"killed pid $$pid on :$$p\" } catch {} } \
+	    } \
+	    Start-Sleep -Milliseconds 300 \
+	  } \
+	  $$still = @(); foreach ($$p in $$ports) { if (Get-NetTCPConnection -LocalPort $$p -ErrorAction SilentlyContinue) { $$still += $$p } } \
+	  if ($$still.Count) { Write-Host \"still bound: $$($$still -join ',')\"; exit 1 } else { Write-Host 'all clear' } \
+	}"

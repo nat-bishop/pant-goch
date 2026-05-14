@@ -1,122 +1,112 @@
-# HANDLER
+# HANDLER v2 — Pant Goch
 
-Single-player spy game. One verb: **authorize one of 3–4 options per cycle**.
+LLM-driven investigation game set in the Welsh Marches village of Pant Goch. You're a freelance journalist who arrives to look into a death the local police closed too quickly. The world — ten locations, nine villagers, the truth, the major beats — is hand-authored. The scenes inside it are LLM-improvised. The map is the primary navigation surface: walk the village by clicking locations.
 
-The player sits at a desk in a windowless room. Operations Desk drafts options each cycle; the player picks one; an agent in the field carries it out and files a dispatch. The campaign closes when a mission resolves, succeeds, or fails. The MVP mission is **Op. LYNX-EXFIL**: get the deep-cover agent LYNX out before the surveillance window closes, with a second agent (KESTREL) who can be sacrificed to clear her lanes.
+The architectural bet, in one sentence: **the LLM writes prose, the engine writes state**. State changes flow through a discriminated-union type with grammar-sampled enums; the model literally cannot invent a beat or location it doesn't have permission for.
 
-The game is LLM-native — the Operations Desk's drafting and the agents' dispatches are situated prose conditioned on world state. Mechanics, however, are fully deterministic and live in YAML. The LLM never decides outcomes.
-
-Visual reference: `_mockups/handler-authorize-desk.html`.
+Design doc: `handler/SPEC.md`. Remaining work plan: `handler/PLAN.md`.
 
 ## Architecture
 
 ```
-┌──────────┐  HTTP/SSE  ┌─────────────┐  spawn  ┌──────────────┐
-│ Browser  │ ─────────► │   handler   │ ──────► │ llama-server │
-│ (Vite +  │            │  (FastAPI + │  /v1/   │ (llama.cpp)  │
-│  React)  │ ◄───────── │  Pydantic AI)│ ◄────── │              │
-└──────────┘            └─────────────┘         └──────────────┘
+┌──────────┐  HTTP/SSE  ┌───────────────┐  spawn  ┌──────────────┐
+│ Browser  │ ─────────► │    handler    │ ──────► │ llama-server │
+│ (Vite +  │            │  (FastAPI +   │  /v1/   │ (llama.cpp)  │
+│  React)  │ ◄───────── │  Pydantic AI) │ ◄────── │              │
+└──────────┘            └───────────────┘         └──────────────┘
 ```
 
-- **handler** owns the deterministic engine (state, archetypes, events) and three stateless one-shot Pydantic AI agents per cycle:
-  - `SOP_AGENT` — `output_type=str`, streamed. Synthesises the State-of-Play memo at cycle open, in the Operations Desk voice (terse, declarative, third-party handler).
-  - `DRAFTER_AGENT` — `NativeOutput(OptionSet)`. Produces 3–4 candidate courses of action from the engine-computed valid catalog. Validated server-side; retries 3× with corrective feedback then falls back to an engine-authored option set so the player never sees a broken cycle.
-  - `RENDERER_AGENT` — `output_type=str`, streamed. Renders the field dispatch in the acting agent's voice (or Operations for HOLD).
+Two pydantic-ai agents per session:
 
-  All three are **stateless** — no `message_history` is passed between cycles. Continuity is preserved by explicitly including recent dispatches in user-side context (with same-agent preference for the renderer, per spec §8.3).
+- **Scene runner.** Two-stage emission per turn against one stable system prompt. Phase 1 emits a `StateChangeBundle` (`unlock_beat`, `move_npc`, ...) validated against `requires_beats` / `blocked_by_beats`; `ModelRetry` on failure, budget 2. Phase 2 emits a `ProsePart` (free-form prose + ≤4 options including ≥1 "Leave for…"). Both calls share KV cache because the system prompt is byte-identical.
+- **Log writer.** Conversation-based; one user+assistant pair appended per scene-end. System prompt carries the world bible + journalist's voice rules. The accumulating history is the case file.
 
-- **Word-pacing is server-side.** The SSE event stream emits word-by-word at ≥80 ms/word. Frontend renders each word with an 80 ms CSS fade-in; clicking the streaming text container flushes the rest instantly.
-
-- **Browser** is a Vite + React client styled as a paper document on a dark institutional desk (Courier Prime monospace, classified-red stamps, paper textures). Server is the source of truth; the Zustand store is a render cache.
-
-- **One verb**: `POST /mission/{id}/authorize { option_index: N }`. Per cycle the player picks one of 3–4 options. No free-text input.
+Word-pacing is server-side at ≥80 ms cadence. The frontend's `<StreamingText>` only animates fade-in.
 
 ## Prerequisites
 
 - Python 3.11 or 3.12 + [uv](https://docs.astral.sh/uv/).
 - Node 18+ for the web client.
-- Windows for the bundled `llama-server.exe`. Linux/macOS works with a hand-built `llama-server` (point `LLAMA_SERVER_BIN` at it).
-- ~10 GB free for the Gemma 4 E4B Q8 model (auto-downloaded via Hugging Face on first run).
+- Windows for the bundled `llama-server.exe` at `vendor/llama.cpp/`. Linux/macOS works with a hand-built `llama-server` (point `LLAMA_SERVER_BIN` at it).
+- ~10 GB free for the Gemma 4 E4B Q8 model (auto-downloaded via Hugging Face on first run, or fetch ahead of time with `make download-model`).
 
 ## Run
 
-Three terminals (or `make run` if `concurrently` is happy on your shell):
+Two terminals:
 
 ```
-# Terminal 1: llama-server (spawned by the sidecar by default, OR boot manually)
-make llama
+# Terminal 1 — FastAPI sidecar (spawns llama-server on :8080)
+make sidecar
 
-# Terminal 2: the FastAPI sidecar
-make sidecar       # LAUNCH_LLAMA=false — uses the externally-managed llama from terminal 1
-# OR: make sidecar with LAUNCH_LLAMA unset to spawn its own llama subprocess.
-
-# Terminal 3: the Vite dev server
+# Terminal 2 — Vite dev server
 make web
 ```
 
-Open <http://localhost:5173>. The mission boots immediately; cycle 1's SoP memo streams in word-by-word; options appear; pick one; authorize; the dispatch streams in. Repeat to terminal.
+Open <http://localhost:5173>. Click "Begin investigation". Pick options, walk to adjacent locations, watch your case file fill up in the sidebar.
+
+For a text-only playthrough in one terminal (no web, uses the inferno gateway on the Blackwell box):
+
+```
+make cli
+```
 
 ## Test
 
 ```
-make test                           # full unit suite (~3s)
-cd handler && uv run pytest         # same
+make test                  # fast unit suite (~3s, no live llama)
+make test-integration      # includes the live-llama integration test
 ```
 
-The suite covers the engine primitives (predicates, effects, archetypes, events including forced / passive / terminal / for_each_agent shapes), log-entry union round-trip + fold equivalence with the live mutation path, mission YAML loading, and FastAPI endpoint shape. Live-llama integration tests go behind the `integration` marker; the in-tree `test_cycle_integration.py` uses stubbed agents and the `live_llama` fixture in `conftest.py` is available for live runs.
+## Authoring
 
-## Authoring a mission
+World content lives in `handler/world/`:
 
-Missions live in `handler/missions/*.yaml`. The schema is `Mission` in `handler/src/handler/models.py`. The MVP example is `lynx_exfil.yaml` (7 archetypes, 6 events — one forced and five passive, 2 dossiers).
+- `locations/*.yaml` — one file per location. `connects_to` enumerates the adjacency graph.
+- `cast.yaml` — all NPCs in one file. Each has `themes`, `knowledge`, `attitude`.
+- `truth.yaml` — beats and endings. Beats are gated by `requires_beats` / `blocked_by_beats`. Endings gate on player-driven decision beats authored as mutually-exclusive.
+- `brief.yaml` — opening location + editor brief + framing letter.
 
-Universal qualities are auto-injected from the schema (`mission.cycles_remaining` from `max_cycles`, `agent[<id>].cover` from each agent-role `CastMember.starting_cover`). Authored qualities go under `qualities:` — each entry carries the initial value AND the in-fiction descriptor in one block, so an author can't write one without the other.
+Schema lives in `handler/src/handler/models.py`. Loader invariants in `handler/src/handler/world.py`.
 
-Predicates and effects use quality refs as opaque dotted strings — `mission.extraction_stage`, `agent[LYNX].cover`. Both may be authored as the explicit tagged-union dict form OR as short DSL strings: `when: "agent[$agent].cover > 0 and mission.extraction_stage == 1"` and `effects: ["agent[$agent].cover -= 2"]`. `$agent` (and other `$name` placeholders) are substituted at evaluation time for `for_each_agent` events and `params:[agent]` archetypes.
+Point the sidecar at a non-default world with `WORLD_PATH=/path/to/world make sidecar` (once authoring stabilizes — currently world path is fixed to `handler/world`).
 
-Optional per-mission authoring: `standing_orders:` (a list of prose constraints injected into all three agent system prompts) and `dramatic_questions:` (predicate-gated framing the SoP leads with each cycle).
+## Inferno gateway (dev-mode)
 
-Events under `events:` cover four shapes via flags:
-- `force_into_drafter: true` — surfaced to the drafter with LLM-facing prose constraints (`intent`, `must_communicate`, `must_not`, `tone`); fires when the player picks the satisfying option.
-- `terminal: true` + `outcome_key:` — ends the mission. The outcome_key must exist in `outcomes:`; the validator catches mismatches at load time.
-- `only_when_no_progress_this_cycle: true` — passive pressure that fires only on cycles where the authorized option didn't progress the mission.
-- `for_each_agent: true` — expands `$agent` over the mission's agents; pairs with `fires_at_most: once_per_agent` or `unlimited`.
-
-Point the sidecar at a non-default mission with `MISSION_PATH=/path/to/mission.yaml make sidecar`.
-
-## Settings
-
-`handler_port`, `handler_log_level`, `handler_logfire_console`, `launch_llama`, `mission_path`, `llama_*` — see `handler/src/handler/config.py`. Settings are loaded via pydantic-settings; env vars override defaults (case-insensitive).
-
-`LOGFIRE_TOKEN` is read directly via `os.getenv` and is also picked up from `handler/.logfire/logfire_credentials.json` if present. Logfire console output is on by default in dev; set `HANDLER_LOGFIRE_CONSOLE=false` to silence.
+`make sidecar-inferno` skips the bundled llama-server and routes pydantic-ai at the inferno gateway on `:7770` instead (byte-identical chat template + kernel params; VRAM co-residency with other models on the same box). Requires inferno running. See `CLAUDE.md` → "Inferno gateway" for env vars.
 
 ## Project layout
 
 ```
 handler/
-├── src/handler/        # engine + agents + API
-├── missions/           # authored mission YAMLs (lynx_exfil.yaml is MVP)
-├── scripts/
-│   └── playtest/       # option-picker harness + personas + evaluators
-└── tests/              # unit suite (167 tests)
+├── PLAN.md, SPEC.md, SPEC.html
+├── src/handler/
+│   ├── main.py, __main__.py
+│   ├── launcher.py            ← bundled llama-server launcher
+│   ├── models.py              ← Location, NPC, Beat, Ending, Brief
+│   ├── world.py               ← loader + invariants
+│   ├── state.py               ← State, TurnRecord, LogEntry, GameOver
+│   ├── schemas.py             ← StateChangeBundle, ProsePart, Option
+│   ├── engine.py              ← apply, validate, reachable beats
+│   ├── agents.py              ← scene runner + log writer
+│   ├── prompts.py             ← KV-cache-friendly prompt builders
+│   ├── scene_loop.py          ← play_scene, play_session, event emission
+│   └── sse.py                 ← paced word emitter + event builders
+├── tests/                     ← 109 unit tests + 1 live integration
+├── world/                     ← Pant Goch authored content
+│   ├── brief.yaml, cast.yaml, truth.yaml
+│   └── locations/             ← 10 location YAMLs
+└── web/                       ← React + Vite + TypeScript
 
-web/                    # Vite + React + Tailwind. Single dark theme.
-├── src/
-│   ├── App.tsx
-│   ├── components/     # Topbar, StateStrip, Paper, OptionsList, Inbox, ...
-│   ├── hooks/useStream.ts
-│   ├── store.ts
-│   ├── api.ts
-│   └── index.css
-
-_mockups/               # design references (handler-authorize-desk.html is current)
+vendor/llama.cpp/              ← bundled llama-server.exe
+models/                        ← Gemma 4 E4B Q8 GGUF
 ```
 
 ## Troubleshooting
 
-- **`llama-server failed to come up`** — check `handler/logs/llama-*.log` for the underlying stderr. Common causes: port `:8080` in use (`make kill`), GPU OOM (drop `LLAMA_NGL`), corrupt GGUF (delete `models/` and re-run `make download-model`).
-- **`engine sidecar unreachable`** (from playtest) — sidecar isn't running on `:8000`. Boot via `make sidecar`.
-- **Browser shows "booting…" forever** — sidecar is up but the SSE stream is silent. Usually means llama-server isn't responding to /v1/chat/completions. Check the sidecar's stdout for the first agent call.
+- **`llama-server failed to come up`** — port `:8080` in use (`make kill`), GPU OOM (drop `LLAMA_NGL`), corrupt GGUF (delete `models/` and re-run `make download-model`).
+- **Browser shows "booting…" forever** — sidecar is up but the SSE stream is silent. Check the sidecar's stdout for the first agent call. Usually means llama-server isn't responding to `/v1/chat/completions`.
+- **Inferno mode fails immediately** — inferno isn't reachable at `INFERNO_URL` (default `http://127.0.0.1:7770`). The lifespan probe fails loud by design; no silent fallback. Start inferno or drop `SMALLVILLE_USE_INFERNO`.
 
 ## License + attribution
 
-Mockup design references in `_mockups/` are evolving concept art. Courier Prime via Google Fonts. Gemma 4 E4B via Hugging Face.
+Courier Prime via Google Fonts. Gemma 4 E4B via Hugging Face.

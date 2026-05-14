@@ -1,0 +1,983 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>STORYLET POOL — brainstorm v.0.1</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Courier+Prime:ital,wght@0,400;0,700;1,400;1,700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --desk:          #14171b;
+    --desk-2:        #1a1e23;
+    --desk-3:        #1f242a;
+    --desk-rule:     #262a31;
+    --desk-rule-soft:#1d2027;
+
+    --paper:         #eee5cd;
+    --paper-shade:   #d8cfb4;
+    --paper-onion:   #e6e2d3;
+
+    --ink:           #1c1814;
+    --ink-soft:      #4a4438;
+    --ink-faint:     #837c6c;
+    --rule:          #b8af96;
+    --rule-soft:     #d6cdb0;
+
+    --chrome-bright: #e8e0c5;
+    --chrome:        #b0a994;
+    --chrome-dim:    #75705f;
+    --chrome-faint:  #43413b;
+
+    --stamp:         #7a1f18;
+    --stamp-soft:    #9a3a32;
+    --teal:          #4a8f8a;
+    --teal-soft:     #2e5e5b;
+
+    --shadow-paper:
+      0  1px  2px rgba(0, 0, 0, 0.30),
+      0 12px 28px rgba(0, 0, 0, 0.50),
+      0 40px 72px rgba(0, 0, 0, 0.40);
+  }
+
+  *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html, body {
+    min-height: 100vh;
+    background: var(--desk);
+    color: var(--chrome);
+    font-family: 'Courier Prime', 'Courier New', monospace;
+    font-weight: 400;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    line-height: 1.55;
+  }
+
+  body {
+    background-image:
+      radial-gradient(ellipse 55% 55% at 50% 30%, rgba(200, 180, 120, 0.04) 0%, transparent 70%),
+      radial-gradient(ellipse 90% 60% at 50% 110%, rgba(0,0,0,0.6) 0%, transparent 60%);
+    min-height: 100vh;
+  }
+
+  .grain {
+    position: fixed; inset: 0;
+    pointer-events: none;
+    z-index: 50;
+    opacity: 0.03;
+    mix-blend-mode: overlay;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.9'/%3E%3C/svg%3E");
+  }
+
+  main {
+    max-width: 1080px;
+    margin: 0 auto;
+    padding: 64px 48px 120px;
+  }
+
+  /* ============================================================
+     TOPBAR
+     ============================================================ */
+  .topbar {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    align-items: baseline;
+    gap: 24px;
+    padding-bottom: 14px;
+    margin-bottom: 56px;
+    border-bottom: 1px solid var(--desk-rule);
+    font-size: 10.5px;
+    letter-spacing: 0.28em;
+    text-transform: uppercase;
+    color: var(--chrome-dim);
+  }
+  .topbar .center {
+    text-align: center;
+    color: var(--chrome-bright);
+    letter-spacing: 0.34em;
+  }
+  .topbar .right { text-align: right; }
+  .topbar .stamp-tag {
+    color: var(--stamp-soft);
+    letter-spacing: 0.32em;
+  }
+
+  /* ============================================================
+     HERO
+     ============================================================ */
+  .hero {
+    margin-bottom: 88px;
+  }
+  .hero h1 {
+    font-size: 38px;
+    line-height: 1.15;
+    letter-spacing: 0.02em;
+    color: var(--chrome-bright);
+    font-weight: 700;
+    margin-bottom: 24px;
+  }
+  .hero h1 em {
+    color: var(--stamp-soft);
+    font-style: normal;
+  }
+  .hero .lede {
+    font-size: 15px;
+    color: var(--chrome);
+    max-width: 720px;
+    margin-bottom: 18px;
+  }
+  .hero .lede strong {
+    color: var(--chrome-bright);
+    font-weight: 700;
+  }
+  .hero .corollary {
+    font-size: 12.5px;
+    color: var(--chrome-dim);
+    max-width: 720px;
+    font-style: italic;
+  }
+
+  /* ============================================================
+     SECTION
+     ============================================================ */
+  section {
+    margin-bottom: 80px;
+  }
+  .section-head {
+    display: flex;
+    align-items: baseline;
+    gap: 16px;
+    margin-bottom: 28px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--desk-rule);
+  }
+  .section-head .num {
+    font-size: 11px;
+    letter-spacing: 0.28em;
+    color: var(--chrome-dim);
+  }
+  .section-head h2 {
+    font-size: 22px;
+    color: var(--chrome-bright);
+    font-weight: 700;
+    letter-spacing: 0.01em;
+  }
+  .section-head .aside {
+    margin-left: auto;
+    font-size: 10.5px;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--chrome-faint);
+  }
+
+  p { font-size: 14px; color: var(--chrome); max-width: 760px; margin-bottom: 14px; }
+  p strong { color: var(--chrome-bright); font-weight: 700; }
+  p em { color: var(--chrome-bright); font-style: italic; }
+  p code, .inline-code {
+    background: var(--desk-2);
+    border: 1px solid var(--desk-rule);
+    padding: 1px 6px;
+    border-radius: 2px;
+    font-size: 12.5px;
+    color: var(--paper-shade);
+  }
+
+  ul.notes {
+    list-style: none;
+    margin: 14px 0 14px 0;
+    max-width: 760px;
+  }
+  ul.notes li {
+    font-size: 13.5px;
+    color: var(--chrome);
+    padding: 4px 0 4px 22px;
+    position: relative;
+  }
+  ul.notes li::before {
+    content: "—";
+    position: absolute;
+    left: 0;
+    color: var(--chrome-faint);
+  }
+  ul.notes li strong { color: var(--chrome-bright); font-weight: 700; }
+
+  /* ============================================================
+     DAILY-LOOP MOCKUP
+     ============================================================ */
+  .loop-frame {
+    background: var(--paper);
+    color: var(--ink);
+    padding: 36px 40px 32px;
+    box-shadow: var(--shadow-paper);
+    margin: 12px 0 18px;
+    position: relative;
+  }
+  .loop-frame::before {
+    content: "";
+    position: absolute;
+    inset: 8px;
+    border: 1px solid var(--rule-soft);
+    pointer-events: none;
+  }
+  .loop-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    margin-bottom: 22px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--rule);
+    font-size: 11px;
+    letter-spacing: 0.24em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+  }
+  .loop-head .day-num { color: var(--ink); font-weight: 700; }
+  .loop-prompt {
+    font-size: 14px;
+    color: var(--ink-soft);
+    font-style: italic;
+    margin-bottom: 18px;
+  }
+  .loop-options {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+  .loop-option {
+    border-top: 1px solid var(--rule-soft);
+    padding: 14px 4px 14px 26px;
+    position: relative;
+  }
+  .loop-option:last-child { border-bottom: 1px solid var(--rule-soft); }
+  .loop-option .key {
+    position: absolute;
+    left: 0;
+    top: 14px;
+    font-size: 12px;
+    color: var(--ink-soft);
+    font-weight: 700;
+  }
+  .loop-option .title {
+    font-size: 14.5px;
+    color: var(--ink);
+    font-weight: 700;
+    margin-bottom: 4px;
+  }
+  .loop-option .blurb {
+    font-size: 13px;
+    color: var(--ink-soft);
+    line-height: 1.5;
+  }
+  .loop-option .tag {
+    margin-top: 8px;
+    display: inline-block;
+    font-size: 10px;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    padding: 2px 6px;
+    border: 1px solid var(--rule);
+  }
+
+  .loop-footer {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 22px;
+    padding-top: 12px;
+    border-top: 1px solid var(--rule);
+    font-size: 10.5px;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+  }
+
+  .loop-caption {
+    font-size: 11.5px;
+    color: var(--chrome-dim);
+    font-style: italic;
+    max-width: 720px;
+    margin-top: 10px;
+  }
+
+  /* ============================================================
+     YAML BLOCK
+     ============================================================ */
+  .yaml {
+    background: var(--desk-2);
+    border: 1px solid var(--desk-rule);
+    padding: 22px 26px;
+    margin: 18px 0;
+    font-size: 12.5px;
+    color: var(--chrome);
+    line-height: 1.65;
+    overflow-x: auto;
+    position: relative;
+  }
+  .yaml::before {
+    content: attr(data-label);
+    position: absolute;
+    top: -10px;
+    left: 16px;
+    background: var(--desk);
+    padding: 0 8px;
+    font-size: 10px;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--chrome-dim);
+  }
+  .yaml .k { color: var(--teal); }
+  .yaml .s { color: var(--paper-shade); }
+  .yaml .n { color: var(--stamp-soft); }
+  .yaml .c { color: var(--chrome-faint); font-style: italic; }
+  .yaml .h { color: var(--chrome-bright); font-weight: 700; }
+  .yaml pre { font-family: inherit; white-space: pre; }
+
+  /* ============================================================
+     STATE GRID
+     ============================================================ */
+  .state-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+    margin: 18px 0;
+  }
+  .state-card {
+    background: var(--desk-2);
+    border: 1px solid var(--desk-rule);
+    padding: 18px 20px 20px;
+  }
+  .state-card h4 {
+    font-size: 11px;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--chrome-bright);
+    margin-bottom: 12px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--desk-rule);
+  }
+  .state-card ul {
+    list-style: none;
+    font-size: 12px;
+    color: var(--chrome);
+  }
+  .state-card li {
+    padding: 3px 0;
+    color: var(--chrome);
+  }
+  .state-card li .v {
+    color: var(--paper-shade);
+    margin-left: 6px;
+  }
+  .state-card li .v.true { color: var(--teal); }
+  .state-card li .v.false { color: var(--stamp-soft); }
+  .state-card .footnote {
+    font-size: 10.5px;
+    color: var(--chrome-faint);
+    font-style: italic;
+    margin-top: 10px;
+    padding-top: 8px;
+    border-top: 1px solid var(--desk-rule);
+  }
+
+  /* ============================================================
+     DIVERGENCE PAIR
+     ============================================================ */
+  .divergence {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    gap: 0;
+    margin: 22px 0;
+    align-items: stretch;
+  }
+  .divergence .branch {
+    background: var(--desk-2);
+    border: 1px solid var(--desk-rule);
+    padding: 20px 22px 22px;
+  }
+  .divergence .branch.left { border-right: none; }
+  .divergence .splitter {
+    width: 36px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    background: var(--desk-3);
+    border-top: 1px solid var(--desk-rule);
+    border-bottom: 1px solid var(--desk-rule);
+    font-size: 9.5px;
+    letter-spacing: 0.22em;
+    color: var(--chrome-faint);
+    text-transform: uppercase;
+    writing-mode: vertical-rl;
+  }
+  .divergence .branch h5 {
+    font-size: 11px;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--chrome-bright);
+    margin-bottom: 4px;
+  }
+  .divergence .branch .subtitle {
+    font-size: 11px;
+    color: var(--chrome-faint);
+    font-style: italic;
+    margin-bottom: 14px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--desk-rule);
+  }
+  .divergence .branch .storylet {
+    font-size: 12.5px;
+    color: var(--chrome);
+    padding: 6px 0;
+  }
+  .divergence .branch .storylet .name {
+    color: var(--paper-shade);
+    font-weight: 700;
+  }
+  .divergence .branch .storylet .gate {
+    display: block;
+    font-size: 10.5px;
+    color: var(--chrome-faint);
+    margin-top: 2px;
+    font-style: italic;
+  }
+  .divergence .branch .storylet.dead {
+    color: var(--chrome-faint);
+    text-decoration: line-through;
+    text-decoration-color: var(--stamp);
+  }
+  .divergence .branch .storylet.dead .name { color: var(--chrome-faint); }
+
+  /* ============================================================
+     SETTING CANDIDATES
+     ============================================================ */
+  .settings {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 16px;
+    margin: 18px 0;
+  }
+  .setting {
+    background: var(--desk-2);
+    border: 1px solid var(--desk-rule);
+    padding: 22px 24px 22px;
+    position: relative;
+  }
+  .setting .marker {
+    position: absolute;
+    top: 16px;
+    right: 18px;
+    font-size: 10px;
+    letter-spacing: 0.22em;
+    color: var(--chrome-faint);
+  }
+  .setting h4 {
+    font-size: 16px;
+    color: var(--chrome-bright);
+    font-weight: 700;
+    margin-bottom: 4px;
+  }
+  .setting .pitch {
+    font-size: 12px;
+    color: var(--chrome-dim);
+    font-style: italic;
+    margin-bottom: 14px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--desk-rule);
+  }
+  .setting .row {
+    font-size: 12px;
+    color: var(--chrome);
+    padding: 4px 0;
+    display: grid;
+    grid-template-columns: 96px 1fr;
+    gap: 8px;
+  }
+  .setting .row .label {
+    color: var(--chrome-faint);
+    font-size: 10.5px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    padding-top: 2px;
+  }
+  .setting .row .val { color: var(--chrome); }
+
+  /* ============================================================
+     OPEN QUESTIONS
+     ============================================================ */
+  .questions {
+    background: var(--desk-2);
+    border: 1px solid var(--desk-rule);
+    border-left: 3px solid var(--stamp);
+    padding: 24px 28px 26px;
+    margin: 20px 0;
+  }
+  .questions h4 {
+    font-size: 11px;
+    letter-spacing: 0.28em;
+    text-transform: uppercase;
+    color: var(--stamp-soft);
+    margin-bottom: 16px;
+  }
+  .questions ol {
+    margin: 0;
+    padding-left: 22px;
+    color: var(--chrome);
+    font-size: 13px;
+  }
+  .questions ol li {
+    padding: 8px 0;
+    border-bottom: 1px solid var(--desk-rule-soft);
+  }
+  .questions ol li:last-child { border-bottom: none; }
+  .questions ol li strong { color: var(--chrome-bright); font-weight: 700; }
+  .questions ol li .leaning {
+    display: block;
+    margin-top: 4px;
+    font-size: 11.5px;
+    color: var(--chrome-faint);
+    font-style: italic;
+  }
+
+  /* ============================================================
+     FOOT
+     ============================================================ */
+  .foot {
+    margin-top: 64px;
+    padding-top: 16px;
+    border-top: 1px solid var(--desk-rule);
+    font-size: 10px;
+    letter-spacing: 0.28em;
+    text-transform: uppercase;
+    color: var(--chrome-faint);
+    display: flex;
+    justify-content: space-between;
+  }
+</style>
+</head>
+<body>
+
+<div class="grain"></div>
+
+<main>
+
+  <div class="topbar">
+    <div class="left">Design Note · brainstorm</div>
+    <div class="center">Storylet Pool</div>
+    <div class="right stamp-tag">v.0.1 · 2026-05-13</div>
+  </div>
+
+  <!-- ============================================================
+       HERO
+       ============================================================ -->
+  <div class="hero">
+    <h1>Stop authoring missions.<br>Author a <em>pool</em>.</h1>
+    <p class="lede">
+      The game has no mission boundary. There is one ongoing life in one strange place, and a pool of <strong>~120 storylets</strong> the engine draws from. Each day the engine offers 3–4 from whichever are eligible against current state. Killing someone subtracts their storylets from the pool forever. Earning a scar unlocks a dozen new ones.
+    </p>
+    <p class="lede">
+      Authoring is local: write one storylet at a time, ship it, never touch a global graph. The LLM helps fill the pool — proposes storylets given a brief + current state, drafts prose, suggests <span class="inline-code">when:</span> predicates. The story is the path you walk through the pool. No two playthroughs use the same 30%.
+    </p>
+    <p class="corollary">
+      The handler engine already supports the substrate (qualities, when-predicates, fired ledger, opposed checks). The leap is: <em>the storylet pool is the game</em>, not one mission's worth of authored content.
+    </p>
+  </div>
+
+  <!-- ============================================================
+       SECTION 1 — DAILY LOOP
+       ============================================================ -->
+  <section>
+    <div class="section-head">
+      <div class="num">§ 01</div>
+      <h2>The daily loop, from the player's seat</h2>
+      <div class="aside">What you actually see</div>
+    </div>
+
+    <p>
+      Same verb as today: <strong>authorize one of three or four options</strong>. What changes is where they come from — the engine queries the pool, filters by current state, weights by recency / pressure / NPC presence, picks 3–4, and renders them as the day's options. Below: an illustrative day from a frontier-town setting.
+    </p>
+
+    <div class="loop-frame">
+      <div class="loop-head">
+        <div>Day <span class="day-num">37</span> · Late autumn</div>
+        <div>3 options</div>
+      </div>
+      <div class="loop-prompt">
+        The morning bell has rung at the assay office. Smoke from the foothills hasn't lifted in a week. Choose your day.
+      </div>
+      <div class="loop-options">
+        <div class="loop-option">
+          <div class="key">A.</div>
+          <div class="title">Visit Doctor Iselin at the bone-pit.</div>
+          <div class="blurb">You owe her an answer about the boy you brought down last spring. She has not forgotten.</div>
+          <span class="tag">NPC · Iselin · trust 4</span>
+        </div>
+        <div class="loop-option">
+          <div class="key">B.</div>
+          <div class="title">Ride east toward the smoke.</div>
+          <div class="blurb">Three days out and three back, and you will miss the council vote. But something is burning that wasn't burning before.</div>
+          <span class="tag">Trip · 6 days · locks 3 storylets</span>
+        </div>
+        <div class="loop-option">
+          <div class="key">C.</div>
+          <div class="title">Sit with Magistrate Caul on the porch.</div>
+          <div class="blurb">He will offer you a position. He will not offer twice.</div>
+          <span class="tag">One-shot · forced if Caul·patience &lt; 2</span>
+        </div>
+      </div>
+      <div class="loop-footer">
+        <div>Reputation · Steady · 4</div>
+        <div>Coin · 28</div>
+        <div>Scars · 2</div>
+      </div>
+    </div>
+
+    <p class="loop-caption">
+      Each option is one storylet drawn from the pool. The tag in author view shows the gate; in player view it's gone. The current <span class="inline-code">forced</span> mechanic still works — option C above would have <span class="inline-code">forced: true</span> with a <span class="inline-code">when:</span> on Caul's patience.
+    </p>
+  </section>
+
+  <!-- ============================================================
+       SECTION 2 — ANATOMY
+       ============================================================ -->
+  <section>
+    <div class="section-head">
+      <div class="num">§ 02</div>
+      <h2>Anatomy of a storylet</h2>
+      <div class="aside">The unit of authoring</div>
+    </div>
+
+    <p>
+      A storylet is the existing <span class="inline-code">Action</span> type plus a couple of new fields. It declares when it is <em>eligible</em>, what choosing it <em>does</em>, and what optional <em>follow-ups</em> the engine should queue. The author writes exactly one of these at a time and the file lives wherever.
+    </p>
+
+    <div class="yaml" data-label="storylet.yaml">
+<pre><span class="k">id:</span> <span class="s">visit_iselin_about_boy</span>
+<span class="k">title:</span> <span class="s">Visit Doctor Iselin at the bone-pit</span>
+<span class="k">tags:</span> [<span class="s">iselin</span>, <span class="s">past_debt</span>, <span class="s">moral</span>]
+
+<span class="c"># Eligibility — the engine offers this only when all hold</span>
+<span class="k">when:</span>
+  <span class="k">all:</span>
+    - <span class="s">npc[iselin].alive == true</span>
+    - <span class="s">npc[iselin].trust &gt;= 2</span>
+    - <span class="s">flag[boy_brought_down] == true</span>
+    - <span class="s">not EventFired(visit_iselin_about_boy)</span>
+
+<span class="c"># What the player chooses inside the scene (opposed check)</span>
+<span class="k">outcomes:</span>
+  - <span class="k">id:</span> <span class="s">tell_truth</span>
+    <span class="k">when:</span> <span class="s">choice == "tell_truth"</span>
+    <span class="k">effects:</span>
+      - <span class="s">npc[iselin].trust += 2</span>
+      - <span class="s">player.guilt -= 1</span>
+      - <span class="s">flag[iselin_knows] = true</span>
+    <span class="k">leans:</span> [<span class="s">honest</span>, <span class="s">unburdened</span>]
+  - <span class="k">id:</span> <span class="s">lie</span>
+    <span class="k">when:</span> <span class="s">choice == "lie"</span>
+    <span class="k">effects:</span>
+      - <span class="s">npc[iselin].trust -= 1</span>
+      - <span class="s">player.guilt += 2</span>
+      - <span class="s">flag[carrying_the_boy] = true</span>
+    <span class="k">leans:</span> [<span class="s">cornered</span>, <span class="s">unsettled</span>]
+
+<span class="c"># Optional — queue follow-up storylets to be drawn later</span>
+<span class="k">queues:</span>
+  - <span class="k">storylet:</span> <span class="s">iselin_corners_you</span>
+    <span class="k">when:</span> <span class="s">flag[carrying_the_boy] == true</span>
+    <span class="k">delay:</span> <span class="n">3..7</span>   <span class="c"># show up some day in this window</span></pre>
+    </div>
+
+    <ul class="notes">
+      <li><strong>One file, one storylet.</strong> No central manifest. The loader globs <span class="inline-code">storylets/**/*.yaml</span> and validates locally.</li>
+      <li><strong>The pool is the union of all storylets.</strong> No "act 1 / act 2" structure. Pacing emerges from <span class="inline-code">when:</span> gates that depend on time, scars, trust, etc.</li>
+      <li><strong>Queued follow-ups</strong> let an author write a 2-3 beat arc without a meta-graph: storylet A queues B (with its own gate + a fuzzy delay window) which queues C. The engine still respects eligibility — if state shifts, queued follow-ups simply never become eligible.</li>
+      <li><strong>One-shot vs. recurring.</strong> Most storylets self-gate with <span class="inline-code">not EventFired(self)</span>. A few — chores, encounters — omit that and can recur.</li>
+    </ul>
+  </section>
+
+  <!-- ============================================================
+       SECTION 3 — STATE MODEL
+       ============================================================ -->
+  <section>
+    <div class="section-head">
+      <div class="num">§ 03</div>
+      <h2>State the storylets read from</h2>
+      <div class="aside">Three buckets</div>
+    </div>
+
+    <p>
+      Storylets gate on a small number of state buckets. Authoring is tractable because <em>every storylet only references state that already exists</em>; adding a new dimension is a deliberate act, not an accident.
+    </p>
+
+    <div class="state-grid">
+      <div class="state-card">
+        <h4>Player</h4>
+        <ul>
+          <li>reputation <span class="v">3</span></li>
+          <li>coin <span class="v">28</span></li>
+          <li>guilt <span class="v">2</span></li>
+          <li>nerve <span class="v">5</span></li>
+          <li>scars <span class="v">["coyote", "fever"]</span></li>
+          <li>knows_secret <span class="v">["caul_drinks"]</span></li>
+          <li>inventory <span class="v">["lockpick", "letter"]</span></li>
+        </ul>
+        <div class="footnote">Numeric qualities + sets. Sets are easier to gate on than counters; prefer them.</div>
+      </div>
+
+      <div class="state-card">
+        <h4>NPCs</h4>
+        <ul>
+          <li>iselin.alive <span class="v true">true</span></li>
+          <li>iselin.trust <span class="v">4</span></li>
+          <li>iselin.knows_about_boy <span class="v false">false</span></li>
+          <li>caul.alive <span class="v true">true</span></li>
+          <li>caul.patience <span class="v">1</span></li>
+          <li>caul.offered_post <span class="v false">false</span></li>
+          <li>marlowe.alive <span class="v false">false</span></li>
+        </ul>
+        <div class="footnote">Per-NPC qualities live under <span style="color:var(--paper-shade);">npc[id].*</span>. Death is one flag flip — all of marlowe's storylets drop from the pool.</div>
+      </div>
+
+      <div class="state-card">
+        <h4>World</h4>
+        <ul>
+          <li>day <span class="v">37</span></li>
+          <li>season <span class="v">late_autumn</span></li>
+          <li>flag[boy_brought_down] <span class="v true">true</span></li>
+          <li>flag[smoke_in_foothills] <span class="v true">true</span></li>
+          <li>flag[council_voted] <span class="v false">false</span></li>
+          <li>locked_storylets <span class="v">12</span></li>
+        </ul>
+        <div class="footnote">Flags are unset by default. Once true, they only become false via an authored effect — making "X happened" durable and reasonable about.</div>
+      </div>
+    </div>
+
+    <p>
+      All three buckets are already representable in the current <span class="inline-code">qualities</span> dict — we just convention <span class="inline-code">npc[id].x</span> as a namespaced key, and add a per-NPC <span class="inline-code">.alive</span> sentinel that every NPC-touching storylet must gate on. (Or: introduce a real <span class="inline-code">NPC</span> type. Open question §07.)
+    </p>
+  </section>
+
+  <!-- ============================================================
+       SECTION 4 — NON-LINEARITY IN ACTION
+       ============================================================ -->
+  <section>
+    <div class="section-head">
+      <div class="num">§ 04</div>
+      <h2>Where the non-linearity actually lives</h2>
+      <div class="aside">Two players, same setting, day 40</div>
+    </div>
+
+    <p>
+      Non-linearity isn't "branching paths" in the choose-your-own sense — it's <strong>two players see different pools on the same day</strong> because their state differs. Below: same world, day 40, two playthroughs. The pool is the same ~120 storylets. The <em>eligible subset</em> diverges sharply.
+    </p>
+
+    <div class="divergence">
+      <div class="branch left">
+        <h5>Playthrough A</h5>
+        <div class="subtitle">Iselin alive · trust 6 · guilt 1 · Caul alive · spared the rider</div>
+        <div class="storylet">
+          <span class="name">iselin_asks_you_to_stay</span>
+          <span class="gate">when iselin.trust ≥ 5 and not flag[council_decided]</span>
+        </div>
+        <div class="storylet">
+          <span class="name">caul_offers_a_seat</span>
+          <span class="gate">when caul.patience ≥ 1 and reputation ≥ 4</span>
+        </div>
+        <div class="storylet">
+          <span class="name">rider_returns_with_warning</span>
+          <span class="gate">when flag[spared_rider] and day ≥ 35</span>
+        </div>
+        <div class="storylet dead">
+          <span class="name">iselin_funeral</span>
+        </div>
+        <div class="storylet dead">
+          <span class="name">caul_replacement_arrives</span>
+        </div>
+      </div>
+      <div class="splitter">DIVERGE</div>
+      <div class="branch left">
+        <h5>Playthrough B</h5>
+        <div class="subtitle">Iselin dead · Caul disgraced · killed the rider · guilt 6</div>
+        <div class="storylet">
+          <span class="name">iselin_funeral</span>
+          <span class="gate">when iselin.alive == false and day &lt; iselin.death_day + 10</span>
+        </div>
+        <div class="storylet">
+          <span class="name">caul_replacement_arrives</span>
+          <span class="gate">when caul.disgraced and day ≥ 30</span>
+        </div>
+        <div class="storylet">
+          <span class="name">guilt_breaks_open</span>
+          <span class="gate">when player.guilt ≥ 5</span>
+        </div>
+        <div class="storylet dead">
+          <span class="name">iselin_asks_you_to_stay</span>
+        </div>
+        <div class="storylet dead">
+          <span class="name">caul_offers_a_seat</span>
+        </div>
+      </div>
+    </div>
+
+    <p>
+      The dead/struck-through items aren't <em>removed from the file</em> — they're authored once, eternal in the pool. They're simply ineligible against Playthrough B's state. Neither author nor engine has to remember "B is on the dark path"; the state remembers, and the gates do the rest.
+    </p>
+
+    <p>
+      <strong>The big win for authoring:</strong> you write <span class="inline-code">iselin_funeral</span> once. It's available to every playthrough where Iselin dies, regardless of <em>how</em>, <em>when</em>, or <em>under what circumstances</em>. The combinatorial explosion that kills branching narratives doesn't happen, because storylets compose over state instead of forking trees.
+    </p>
+  </section>
+
+  <!-- ============================================================
+       SECTION 5 — SETTING CANDIDATES
+       ============================================================ -->
+  <section>
+    <div class="section-head">
+      <div class="num">§ 05</div>
+      <h2>What setting hosts the pool</h2>
+      <div class="aside">Four candidates</div>
+    </div>
+
+    <p>
+      The setting needs three things: a reason for you to <em>stay</em> (so storylets accumulate), a small named cast (≤ 12) so each NPC carries weight, and tonal room for both intimate and high-stakes storylets. Four candidates ranked by my read of fit:
+    </p>
+
+    <div class="settings">
+
+      <div class="setting">
+        <div class="marker">A</div>
+        <h4>The frontier town</h4>
+        <div class="pitch">You arrived for a reason that's slipping away. Now you live here.</div>
+        <div class="row"><div class="label">Stay</div><div class="val">Geographic isolation; the next town is a week's ride.</div></div>
+        <div class="row"><div class="label">Cast</div><div class="val">8–12 named — doctor, magistrate, deputy, drunk, rancher, etc.</div></div>
+        <div class="row"><div class="label">Tone</div><div class="val">Moral western. Decisions echo for months.</div></div>
+        <div class="row"><div class="label">Why fit</div><div class="val">Strongest social grammar of these four — duels, debts, oaths, alliances all map cleanly to qualities + scars.</div></div>
+      </div>
+
+      <div class="setting">
+        <div class="marker">B</div>
+        <h4>The strange small city</h4>
+        <div class="pitch">A place where letters arrive that weren't sent and the cathedral has nine bells.</div>
+        <div class="row"><div class="label">Stay</div><div class="val">You can't leave easily; the trains don't always go where they say.</div></div>
+        <div class="row"><div class="label">Cast</div><div class="val">Larger (~15), loosely connected; some never meet each other.</div></div>
+        <div class="row"><div class="label">Tone</div><div class="val">Fallen London. Gothic, dreamlike, anything goes.</div></div>
+        <div class="row"><div class="label">Why fit</div><div class="val">Tonal latitude is enormous — storylets can be anything. Cost: harder to make any individual NPC matter.</div></div>
+      </div>
+
+      <div class="setting">
+        <div class="marker">C</div>
+        <h4>The long voyage</h4>
+        <div class="pitch">A six-month sail, train across a continent, or caravan to the interior.</div>
+        <div class="row"><div class="label">Stay</div><div class="val">Trivially — you literally cannot leave the ship/train.</div></div>
+        <div class="row"><div class="label">Cast</div><div class="val">~8 fellow passengers/crew, fixed roster.</div></div>
+        <div class="row"><div class="label">Tone</div><div class="val">Hitchcock + Conrad. Forced intimacy, slow dread.</div></div>
+        <div class="row"><div class="label">Why fit</div><div class="val">Geography is solved (one corridor) and the cast is closed. Cost: limited tonal range — everything happens in the same handful of rooms.</div></div>
+      </div>
+
+      <div class="setting">
+        <div class="marker">D</div>
+        <h4>The haunted estate</h4>
+        <div class="pitch">You inherited / were summoned to / cannot leave a great house in the country.</div>
+        <div class="row"><div class="label">Stay</div><div class="val">A binding — debt, illness, the will. You can't sell.</div></div>
+        <div class="row"><div class="label">Cast</div><div class="val">Small (~6) — staff, family, neighbour, the priest. Plus the house itself.</div></div>
+        <div class="row"><div class="label">Tone</div><div class="val">Gothic chamber piece. Mortality runs hot.</div></div>
+        <div class="row"><div class="label">Why fit</div><div class="val">Smallest cast = deepest NPCs. The house as a quasi-NPC is rich. Cost: pacing is hardest here — the world doesn't push on you.</div></div>
+      </div>
+
+    </div>
+
+    <p>
+      <strong>My lean: A (frontier town).</strong> The genre comes with built-in social vocabulary (debts, oaths, scars, vengeance, alliances) that maps to qualities almost without translation, and the medium-size cast (8–12) is the sweet spot for "every NPC matters" without "I can only write 6 mini-novellas." But B is the strongest <em>tonal sandbox</em> if you want maximum authorial freedom.
+    </p>
+  </section>
+
+  <!-- ============================================================
+       SECTION 6 — AUTHORING WORKFLOW
+       ============================================================ -->
+  <section>
+    <div class="section-head">
+      <div class="num">§ 06</div>
+      <h2>What authoring looks like, day-to-day</h2>
+      <div class="aside">You + the LLM</div>
+    </div>
+
+    <p>
+      The shipped pool starts small (~30 storylets) and grows. Your day-to-day rhythm:
+    </p>
+
+    <ul class="notes">
+      <li><strong>1. Play until you hit a dead spot.</strong> Day 22, no eligible storylets feel right. The engine still picks 3, but the seams show.</li>
+      <li><strong>2. Ask the LLM to propose 5 storylets that would fit this gap.</strong> Prompt: "Player state X. Recent storylets Y. Setting bible Z. Suggest 5 storylets, each as (title, one-line pitch, suggested when: predicate, suggested effects). Bias toward ones that touch NPCs that haven't shown up recently."</li>
+      <li><strong>3. Pick one, refine the gate, write the prose.</strong> Or let the LLM draft prose against your accepted gate.</li>
+      <li><strong>4. Drop it in the pool. Continue.</strong> No graph update. No version bump. The next playthrough through that state finds it.</li>
+    </ul>
+
+    <p>
+      The LLM also helps with two recurring authoring problems:
+    </p>
+
+    <ul class="notes">
+      <li><strong>Predicate suggestion.</strong> Given a storylet idea, "what would gate this naturally?" — the LLM is good at proposing 3-5 candidate <span class="inline-code">when:</span> clauses you can pick from.</li>
+      <li><strong>Pool gap analysis.</strong> Periodically: "Run the current pool against 20 sample states. Where does the eligible set drop below 4? What state-shapes have the fewest storylets?" — this surfaces the unauthored corners of state-space.</li>
+    </ul>
+  </section>
+
+  <!-- ============================================================
+       SECTION 7 — OPEN QUESTIONS
+       ============================================================ -->
+  <section>
+    <div class="section-head">
+      <div class="num">§ 07</div>
+      <h2>Open questions worth pushing on</h2>
+      <div class="aside">Decisions to make before authoring</div>
+    </div>
+
+    <div class="questions">
+      <h4>Pending</h4>
+      <ol>
+        <li>
+          <strong>How long is one playthrough?</strong> 50 days? 100? 250? Long enough that you care; short enough to replay.
+          <span class="leaning">Lean: ~80 in-game days, ~3–5 real hours. Replay is the unit.</span>
+        </li>
+        <li>
+          <strong>Endings — one big arc, or many small ones?</strong> Does the pool include a small set of authored "ending storylets" gated on accumulated state? Or does the player just stop when they're done?
+          <span class="leaning">Lean: 5–8 authored endings, each with a heavy <span class="inline-code">when:</span> predicate. Player still chooses when to authorize the ending storylet; multiple may be eligible.</span>
+        </li>
+        <li>
+          <strong>Time pressure inside the pool.</strong> Without mission deadlines, why is today urgent? Options: NPC schedules (Caul moves away on day 40 if not visited), seasonal pressure (winter forecloses options), accumulating decay (your nerve drops each idle day).
+          <span class="leaning">Lean: a mix — seasonal gates + a handful of NPCs with hard timers.</span>
+        </li>
+        <li>
+          <strong>NPCs: real type or quality-namespacing?</strong> Introduce a first-class <span class="inline-code">NPC</span> authored type (with declared qualities, schedule, default storylets) or keep them as <span class="inline-code">npc[id].*</span> qualities by convention?
+          <span class="leaning">Lean: first-class NPC type. Pays for itself the first time you want to enumerate "all NPCs at the saloon today."</span>
+        </li>
+        <li>
+          <strong>Does the opposed-check / leans system survive?</strong> It does — slot it inside any storylet's <span class="inline-code">outcomes:</span>. But most storylets won't need it. Pure flag-flip storylets are fine and probably dominate.
+          <span class="leaning">Lean: keep it, use it sparingly. Maybe 20% of storylets have opposed checks.</span>
+        </li>
+        <li>
+          <strong>Log writer / Operations voice.</strong> Without "Operations" as a frame, what writes the running narrative? Options: silent (no log), first-person journal (your character), third-person omniscient ("She thought, that evening, about the bone-pit").
+          <span class="leaning">Lean: first-person journal. Cheapest tonal fit and keeps the existing conversation-based log architecture.</span>
+        </li>
+        <li>
+          <strong>How does the player explore the pool's reach?</strong> One concern: if 70% of the pool is invisible, players may never feel the design. Possible mitigations: post-run "you also could have…" reveals; subtle in-run gossip about events the player skipped.
+          <span class="leaning">Lean: post-run reveal screen. Cheap and rewards understanding.</span>
+        </li>
+      </ol>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       FOOT
+       ============================================================ -->
+  <div class="foot">
+    <div>Storylet Pool · brainstorm</div>
+    <div>Continue → frontier town setting bible</div>
+  </div>
+
+</main>
+
+</body>
+</html>

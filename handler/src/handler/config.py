@@ -1,28 +1,13 @@
 """Runtime configuration loaded from env vars and an optional `.env` file.
 
 Pydantic-settings reads env vars case-insensitively, so snake_case field names
-here match uppercase env names (`launch_llama` ↔ `LAUNCH_LLAMA`). The .env file
-is anchored at the repo root rather than CWD because the sidecar is launched
-with mixed CWDs (Godot launches it with cwd=repo-root; `make sidecar` cd's into
-handler/).
+match uppercase env names (`use_inferno` ↔ `USE_INFERNO`, etc.).
 
-Most of these fields are tuned once and forgotten — context size, slot count,
-ports, history-compaction tunings. Only a handful are actually toggled at
-runtime: `launch_llama` (the `make sidecar` workflow + tests), `mission_path`
-(test fixtures, playtester), `handler_logfire_console` (conftest sets false), and
-`session_save_path` (opt-in JSONL persistence). Pydantic-settings still owns
-the lot so they all share one typed parsing path and re-bind cleanly inside
-FastAPI's `lifespan` (which is what makes `monkeypatch.setenv(...)` work in
-tests). The README documents only the toggle-able ones.
-
-Instantiate `Settings()` fresh at each entry point (lifespan, uvicorn bootstrap)
-rather than caching at module scope — tests rely on `monkeypatch.setenv(...)`
-inside fixtures, which only takes effect for instantiations that happen after
-the fixture runs.
+Anchored at handler/.env, NOT the smallville root — handler is a self-contained
+subproject.
 """
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Literal
 
@@ -30,26 +15,20 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-# src layout: src/handler/config.py → workspace root is parents[3].
-# parents[0]=src/handler, [1]=src, [2]=handler, [3]=<workspace>.
-_REPO_ROOT = Path(__file__).resolve().parents[3]
+# src layout: src/handler/config.py → handler/ is parents[2].
+# parents[0]=src/handler, [1]=src, [2]=handler.
+_HANDLER_ROOT = Path(__file__).resolve().parents[2]
 
 
-# ───────── derived constants ─────────
-# Convenience exports for call sites that don't want to instantiate `Settings`
-# (e.g. argparse `default=...` in the playtest CLI; the integration-test
-# fixture URL in tests/conftest.py). These are the always-computed defaults;
-# `Settings` below owns the env-override surface.
+# Convenience exports for call sites that don't want to instantiate `Settings`.
 LLAMA_HOST = "127.0.0.1"
 LLAMA_PORT = 8080
 LLAMA_BASE_URL = f"http://{LLAMA_HOST}:{LLAMA_PORT}/v1"
-EVAL_LLAMA_PORT = 8081
-EVAL_LLAMA_BASE_URL = f"http://{LLAMA_HOST}:{EVAL_LLAMA_PORT}/v1"
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=_REPO_ROOT / ".env",
+        env_file=_HANDLER_ROOT / ".env",
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,
@@ -58,149 +37,60 @@ class Settings(BaseSettings):
     # ───────── service ─────────
     handler_port: int = 8000
     handler_log_level: str = "info"
-    # True (default) prints Logfire spans + log records to stderr for fast local
-    # feedback; tests set this to false to keep pytest output uncluttered.
     handler_logfire_console: bool = True
 
     # ───────── llama lifecycle ─────────
-    launch_llama: bool = True
     llama_server_bin: Path | None = None
     llama_model_path: Path | None = None
     llama_hf_repo: str = "ggml-org/gemma-4-E4B-it-GGUF:Q8_0"
     llama_host: str = LLAMA_HOST
     llama_port: int = LLAMA_PORT
     # Per-call context budget. Each agent's prompt (system + user) must fit
-    # within this. Default sized so the renderer's full system+user prompt plus
-    # the recent-dispatches block has headroom for a 600-token completion.
-    # What scales for high concurrency is `llama_total_ctx` (the server's `-c`
-    # flag), NOT this.
+    # within this. 32k absorbs the world bible (system prefix) + the dynamic
+    # suffix (case file + reachable beats + this scene so far) comfortably;
+    # SPEC §4.2 estimates ~5k tokens of dynamic suffix at end of game.
     llama_ctx: int = 32768
     llama_ngl: int = 99
-    # Number of parallel decoding slots in llama-server (`-np N`). Each slot
-    # can serve one in-flight request; past N, requests queue server-side.
-    # With `--no-kv-unified` (our default), each slot pre-allocates
-    # `llama_total_ctx / n_parallel` tokens of KV — so `-np` directly drives
-    # VRAM cost. Default 4 is sized for single-user `make run`: one day
-    # peaks at 1 agent call at a time (SoP / drafter / renderer fire
-    # sequentially, never concurrently). Past benchmarks showed 128 slots
-    # fragmented the KV pool and degraded effective batch — interactive
-    # throughput improved ~2× moving from 128 to 4 on a 96 GB Blackwell.
-    # `make llama-playtest` overrides via env to `LLAMA_N_PARALLEL=16` to
-    # match the playtest harness's `--parallel 16` default.
+    # Single-user game; one in-flight LLM call at a time. With per-slot KV
+    # allocation (default), `-np 4` reserves 4× llama_ctx; bump if running
+    # parallel sessions (not v1's use case).
     llama_n_parallel: int = 4
-    # Gemma 4 reasoning mode. `off` (default): no `<think>` blocks; the three
-    # agents return prose directly. `on`: restore Gemma 4 thinking. `auto`:
-    # llama-server detects from the chat template. Wired through to
-    # `--reasoning <mode>` and (when mode != "off") `--reasoning-format deepseek`
-    # on the llama-server command. Set `LLAMA_REASONING_MODE=on` to flip back
-    # without code changes.
+    # Gemma 4 reasoning mode. `off` (default): no `<think>` blocks; v2's
+    # scene runner returns prose directly. The conversation-based log writer
+    # ALSO depends on no thinking parts in assistant messages — see
+    # `OpenAIModelProfile(openai_chat_send_back_thinking_parts=False)` in
+    # main.py's lifespan.
     llama_reasoning_mode: Literal["on", "off", "auto"] = "off"
-    # Unified KV cache (`--kv-unified`): one shared KV buffer of total size
-    # `llama_total_ctx` paged across all slots, with prefix bytes shared across
-    # sequences. Optimised for many-users-one-system-prompt fleets, where the
-    # shared prefix amortises prefill. Penalises workloads where each session
-    # has a distinct prefix (agentic/stateful), because the page-management
-    # overhead applies on every batch step but there's nothing to share —
-    # measured ~2.7× slower at 64-concurrent on Gemma 4 E4B Q8 vs per-slot
-    # allocation. HANDLER is single-session, single-mission, so default OFF.
-    # Recent llama.cpp builds enable
-    # unified by default when `-np` is auto, so we always emit an EXPLICIT
-    # flag (--kv-unified or --no-kv-unified) to defend against drift.
+    # Per-slot KV allocation. v1's measurement: --no-kv-unified is ~2.7×
+    # faster than --kv-unified at 64-concurrent on Gemma 4 E4B Q8 (no shared
+    # prefix to amortise). v2 is single-session so the win is even clearer.
+    # Always emit explicit flag — recent llama.cpp builds default to unified
+    # when -np is auto.
     llama_kv_unified: bool = False
     # Total KV pool size passed to llama-server's `-c` flag. With unified KV
-    # off (the default), llama-server divides this by `-np` per slot, so each
-    # slot gets `llama_total_ctx / n_parallel` tokens of context. Sizing rule:
-    # `llama_total_ctx >= n_parallel × llama_ctx` so each slot has the full
-    # per-session budget. Default 0 → fall back to `n_parallel × llama_ctx`
-    # automatically. `make llama-playtest` sets `LLAMA_TOTAL_CTX=524288`
-    # (512k = 16 × 32k) explicitly so the value stays self-documenting at the
-    # call site.
+    # off, llama-server divides this by `-np` per slot. Default 0 → fall back
+    # to `n_parallel × llama_ctx` automatically.
     llama_total_ctx: int = 0
     # Escape hatch for any flag we haven't promoted to a typed Settings field.
-    # Whitespace-split, appended verbatim to the llama-server command.
     llama_extra_args: str = ""
 
     # ───────── pydantic-ai wiring (override only when pointing at remote llama) ─────────
     llama_base_url: str | None = None
 
-    # ───────── eval llama (playtester second server, Qwen on mainline llama.cpp) ─────────
-    # Powers the synthetic-player agent and the LLM judges. Different family from
-    # the engine SUT (Gemma) to mitigate same-family preference leakage in judging
-    # — see arxiv 2502.01534. Default points at port 8081 so the engine llama on
-    # 8080 stays unaffected. Lifecycle is user-managed (`make llama-eval`) for the
-    # legacy bundled-llama-server path; the inferno gateway is the new default.
-    eval_llama_port: int = EVAL_LLAMA_PORT
-    # Precedence (resolved at Settings() instantiation):
-    # 1. Explicit `EVAL_LLAMA_BASE_URL` env var (highest — for hand-overrides).
-    # 2. `INFERNO_URL` env var, suffixed with `/v1` (canonical for inferno-served eval).
-    # 3. None — consumer falls back to the legacy `EVAL_LLAMA_BASE_URL` constant
-    #    (i.e. `make llama-eval` on :8081).
-    # No consumer wires this today (programmatic evaluators only — see
-    # scripts/playtest/evaluators.py) but the resolution is plumbed so future
-    # LLM-judge code reads from inferno out of the box.
-    eval_llama_base_url: str | None = Field(
-        default_factory=lambda: (
-            f"{os.environ['INFERNO_URL'].rstrip('/')}/v1"
-            if os.environ.get("INFERNO_URL")
-            else None
-        ),
-    )
-    # Boot-time fields (mirror engine field-for-field; routed through
-    # `launcher.resolve_eval_config` → `build_command`). Defaults sized for the
-    # playtester at `--parallel 64`.
-    eval_llama_server_bin: Path | None = None
-    eval_llama_model_path: Path | None = None
-    eval_llama_hf_repo: str = "unsloth/Qwen3.6-35B-A3B-GGUF:Q8_0"
-    eval_llama_host: str = LLAMA_HOST
-    # Per-call context budget. Same default as the engine so the synthetic
-    # player + judges have the same headroom as the production agents. Total
-    # pool sizing is driven by `eval_llama_total_ctx`.
-    eval_llama_ctx: int = 32768
-    eval_llama_ngl: int = 99
-    # Slots = 16, smaller than the playtester's `--parallel 64` default. Why:
-    # `eval_llama_n_parallel × eval_llama_ctx` is the KV pool reservation
-    # (with `--kv-unified`, llama.cpp pre-allocates the full pool at boot),
-    # and at 64 × 32k = 2M tokens the Qwen 35B-A3B GQA KV pool is ~40 GB —
-    # which combined with weights (~37 GB) + compute (~10 GB) + the engine
-    # llama (~15 GB) overshoots a 96 GB Blackwell, pushing VRAM to 99% used
-    # and triggering driver paging that collapsed observed throughput from
-    # 185 tok/s solo to ~6 tok/s under playtest load (May 2026 measurement).
-    # 16 slots × 32k = 512k pool → ~10 GB KV → ~78 GB total, ~18 GB margin.
-    # Cap the playtester at `--parallel 16` to match. Raise these together
-    # only if you have headroom (multi-GPU, smaller quant, or ik_llama.cpp).
-    eval_llama_n_parallel: int = 16
-    # Default `True`. The engine's measurement of `--no-kv-unified` being
-    # ~2.7× faster (see `llama_kv_unified` above) was on dense Gemma 4 E4B;
-    # Qwen 35B-A3B is MoE, where unified pages help expert-routing cache
-    # locality. The original raw `make llama-eval` command (deleted) used
-    # `--kv-unified`. Re-measure on Qwen before flipping. With unified, `-c`
-    # is the total pool dynamically shared across slots; the auto-sized
-    # `n_parallel × ctx = 2M` pool gives every slot up to 32k headroom.
-    eval_llama_kv_unified: bool = True
-    eval_llama_total_ctx: int = 0
-    eval_llama_extra_args: str = ""
-
-    # ───────── inferno gateway (dev-mode opt-in for engine Gemma) ─────────
+    # ───────── inferno gateway (dev-mode opt-in) ─────────
     # When `use_inferno` is true, the sidecar skips spawning its bundled
-    # `llama-server` subprocess and points the engine pydantic-ai client at
-    # inferno's `/v1` endpoint instead. The shipped game ignores this — env
-    # var is unset in distribution, so `launch_llama` (default True) wins
-    # and the bundled subprocess boots as today. Dev sessions on the
+    # `llama-server` subprocess and points pydantic-ai at inferno's `/v1`
+    # endpoint instead. The shipped game ignores this — env var unset in
+    # distribution, so the bundled subprocess boots. Dev sessions on the
     # Blackwell set `SMALLVILLE_USE_INFERNO=1` to share VRAM with FLUX /
     # TRELLIS / Qwen-Image via inferno's budgeted co-residency.
-    # Namespaced env var (`SMALLVILLE_USE_INFERNO`) rather than `USE_INFERNO`
-    # so it doesn't collide with other inferno-aware projects on the same box.
+    # Namespaced `SMALLVILLE_USE_INFERNO` so it doesn't collide with other
+    # inferno-aware projects on the same box.
     use_inferno: bool = Field(default=False, validation_alias="SMALLVILLE_USE_INFERNO")
     inferno_url: str = "http://127.0.0.1:7770"
 
-    # Path to the mission YAML to load at lifespan boot. None → fall back to
-    # handler/missions/lynx_exfil.yaml relative to this file. Tests + the
-    # playtester set this to point at fixtures.
-    mission_path: Path | None = None
-
-    # ───────── session persistence (off by default) ─────────
-    # When set, every committed Event on the default session is appended as
-    # one JSON object per line to <session_save_path>. On boot, lifespan
-    # replays the JSONL into a fresh session before yielding. Unset → no
-    # disk I/O (in-memory only).
-    session_save_path: Path | None = None
+    # ───────── world directory ─────────
+    # Path to the world bible (locations + cast + truth + brief). None →
+    # fall back to handler/world/ relative to this file. Tests point at
+    # fixture worlds.
+    world_path: Path | None = None
