@@ -81,7 +81,7 @@ interface Store {
   session_id: string | null;
   mission_meta: MissionMeta | null;
   state: GameState;
-  cycle: DayState | null;
+  day: DayState | null;
   // Full prose per day. Click a case-file row to re-read any past day's entry.
   inbox: LogEntryRecord[];
   outcome: Outcome | null;
@@ -146,7 +146,7 @@ const _store = create<Store>((set, get) => ({
   session_id: null,
   mission_meta: null,
   state: {},
-  cycle: null,
+  day: null,
   inbox: [],
   outcome: null,
   errorMessage: null,
@@ -158,7 +158,7 @@ const _store = create<Store>((set, get) => ({
       session_id: null,
       mission_meta: null,
       state: {},
-      cycle: null,
+      day: null,
       inbox: [],
       outcome: null,
       errorMessage: null,
@@ -191,20 +191,20 @@ const _store = create<Store>((set, get) => ({
   },
 
   authorize: async () => {
-    const { session_id, cycle } = get();
-    if (!session_id || !cycle) return;
-    if (cycle.selected_option_index === null) return;
-    if (!cycle.awaiting_auth || cycle.authorized) return;
+    const { session_id, day } = get();
+    if (!session_id || !day) return;
+    if (day.selected_option_index === null) return;
+    if (!day.awaiting_auth || day.authorized) return;
     try {
-      await api.authorize(session_id, cycle.selected_option_index);
+      await api.authorize(session_id, day.selected_option_index);
       // Re-read after the await — the server may have streamed
       // `entry_started`/`effects_applied` while we were awaiting the
-      // /authorize response, and a stale-cycle spread here would clobber
+      // /authorize response, and a stale-day spread here would clobber
       // those SSE-driven fields (entry_action, delta, etc.).
-      const latest = get().cycle;
+      const latest = get().day;
       if (!latest) return;
       set({
-        cycle: { ...latest, authorized: true, awaiting_auth: false },
+        day: { ...latest, authorized: true, awaiting_auth: false },
       });
     } catch (e: any) {
       set({ errorMessage: e.message ?? String(e) });
@@ -212,22 +212,22 @@ const _store = create<Store>((set, get) => ({
   },
 
   continueDay: async () => {
-    const { session_id, cycle } = get();
-    if (!session_id || !cycle?.awaiting_continue) return;
+    const { session_id, day } = get();
+    if (!session_id || !day?.awaiting_continue) return;
     try {
       await api.continueDay(session_id);
       // No local state mutation — the server's `day_opened` for N+1 will
-      // replace `cycle` wholesale, clearing `awaiting_continue`.
+      // replace `day` wholesale, clearing `awaiting_continue`.
     } catch (e: any) {
       set({ errorMessage: e.message ?? String(e) });
     }
   },
 
   selectOption: (idx) => {
-    const { cycle } = get();
-    if (!cycle || cycle.authorized) return;
-    const next = cycle.selected_option_index === idx ? null : idx;
-    set({ cycle: { ...cycle, selected_option_index: next } });
+    const { day } = get();
+    if (!day || day.authorized) return;
+    const next = day.selected_option_index === idx ? null : idx;
+    set({ day: { ...day, selected_option_index: next } });
   },
 
   dismissOnboarding: () => set({ onboardingDismissed: true }),
@@ -251,11 +251,11 @@ const _store = create<Store>((set, get) => ({
         break;
 
       case "day_opened":
-        set({ cycle: newDay(ev.day), state: ev.state });
+        set({ day: newDay(ev.day), state: ev.state });
         break;
 
       case "option_started": {
-        const c = get().cycle;
+        const c = get().day;
         if (!c || c.index !== ev.day) return;
         const opt: OptionDraft = {
           action: ev.action,
@@ -267,12 +267,12 @@ const _store = create<Store>((set, get) => ({
         };
         const options = [...c.options];
         options[ev.option_idx] = opt;
-        set({ cycle: { ...c, options } });
+        set({ day: { ...c, options } });
         break;
       }
 
       case "option_word": {
-        const c = get().cycle;
+        const c = get().day;
         if (!c || c.index !== ev.day) return;
         const options = [...c.options];
         const opt = options[ev.option_idx];
@@ -285,36 +285,36 @@ const _store = create<Store>((set, get) => ({
             prose_words: [...opt.prose_words, ev.word],
           };
         }
-        set({ cycle: { ...c, options } });
+        set({ day: { ...c, options } });
         break;
       }
 
       case "options_complete": {
-        const c = get().cycle;
+        const c = get().day;
         if (!c) return;
-        set({ cycle: { ...c, options_complete: true } });
+        set({ day: { ...c, options_complete: true } });
         break;
       }
 
       case "awaiting_auth": {
-        const c = get().cycle;
+        const c = get().day;
         if (!c) return;
-        set({ cycle: { ...c, awaiting_auth: true } });
+        set({ day: { ...c, awaiting_auth: true } });
         break;
       }
 
       case "awaiting_continue": {
-        const c = get().cycle;
+        const c = get().day;
         if (!c || c.index !== ev.day) return;
-        set({ cycle: { ...c, awaiting_continue: true } });
+        set({ day: { ...c, awaiting_continue: true } });
         break;
       }
 
       case "effects_applied": {
-        const c = get().cycle;
+        const c = get().day;
         if (!c) return;
         set({
-          cycle: {
+          day: {
             ...c,
             delta: mergeByQuality(c.delta, ev.delta),
             delta_descriptors: mergeByQuality(
@@ -327,10 +327,10 @@ const _store = create<Store>((set, get) => ({
       }
 
       case "reactions_fired": {
-        const c = get().cycle;
+        const c = get().day;
         if (!c) return;
         set({
-          cycle: {
+          day: {
             ...c,
             delta: mergeByQuality(c.delta, ev.delta),
             delta_descriptors: mergeByQuality(
@@ -344,10 +344,10 @@ const _store = create<Store>((set, get) => ({
       }
 
       case "entry_started": {
-        const c = get().cycle;
+        const c = get().day;
         if (!c || c.index !== ev.day) return;
         set({
-          cycle: {
+          day: {
             ...c,
             entry_action: ev.action,
             entry_words: [],
@@ -358,7 +358,7 @@ const _store = create<Store>((set, get) => ({
       }
 
       case "entry_word": {
-        const c = get().cycle;
+        const c = get().day;
         if (!c || c.index !== ev.day) return;
         if (ev.is_last) {
           // Finalise: build inbox entry from accumulated text.
@@ -376,27 +376,27 @@ const _store = create<Store>((set, get) => ({
             delta_descriptors: c.delta_descriptors,
           };
           set({
-            cycle: { ...c, entry_complete: true },
+            day: { ...c, entry_complete: true },
             inbox: [...get().inbox, entry],
-            // Apply cycle delta to global state — covers + extraction_stage etc.
+            // Apply day delta to global state — covers + extraction_stage etc.
             state: applyDeltaToState(get().state, c.delta),
           });
         } else {
           set({
-            cycle: { ...c, entry_words: [...c.entry_words, ev.word] },
+            day: { ...c, entry_words: [...c.entry_words, ev.word] },
           });
         }
         break;
       }
 
       case "day_closed": {
-        const c = get().cycle;
+        const c = get().day;
         // Accumulate the day-close descriptors (days_remaining tick) into
         // the current-day panel's RESULT footer if the day is still on-screen.
         if (c && ev.delta_descriptors && Object.keys(ev.delta_descriptors).length > 0) {
           set({
             state: ev.state,
-            cycle: {
+            day: {
               ...c,
               delta_descriptors: mergeByQuality(
                 c.delta_descriptors,
@@ -425,7 +425,7 @@ const _store = create<Store>((set, get) => ({
         break;
 
       case "session_closed":
-        // nothing to do — the cycle loop ended; outcome (if any) is set.
+        // nothing to do — the day loop ended; outcome (if any) is set.
         break;
 
       case "error":

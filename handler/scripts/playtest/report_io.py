@@ -1,7 +1,7 @@
 """JSON dump + stdout summary for a playtest run.
 
 Two artifacts per (persona, seed) case:
-  - SessionRecord (engine trace: cycles, options, dispatches, final state)
+  - SessionRecord (engine trace: days, options, dispatches, final state)
   - list[EvalResult] (programmatic evaluator outputs)
 
 Combined into a single JSON sidecar at `_analysis/playtest_<timestamp>.json`.

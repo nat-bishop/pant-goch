@@ -6,10 +6,10 @@ const ROMAN = ["i.", "ii.", "iii.", "iv."];
 const SLOT_INDICES = [0, 1, 2, 3];
 
 export function OptionsList() {
-  const cycle = useStore((s) => s.cycle);
-  const authorized = cycle?.authorized ?? false;
-  const awaitingAuth = cycle?.awaiting_auth ?? false;
-  const selectedIdx = cycle?.selected_option_index ?? null;
+  const day = useStore((s) => s.day);
+  const authorized = day?.authorized ?? false;
+  const awaitingAuth = day?.awaiting_auth ?? false;
+  const selectedIdx = day?.selected_option_index ?? null;
   const selectOption = useStore((s) => s.selectOption);
   const authorize = useStore((s) => s.authorize);
 
@@ -30,7 +30,7 @@ export function OptionsList() {
     return () => document.removeEventListener("keydown", onKey);
   }, [authorized, awaitingAuth, selectedIdx, selectOption, authorize]);
 
-  if (!cycle) return null;
+  if (!day) return null;
 
   const hasSel = selectedIdx !== null;
   const optsClass = `opts ${hasSel ? "has-sel" : ""} ${authorized ? "authorized" : ""}`;
@@ -41,7 +41,7 @@ export function OptionsList() {
   return (
     <div className={optsClass}>
       {SLOT_INDICES.map((idx) => {
-        const opt = cycle.options[idx];
+        const opt = day.options[idx];
         const isPlaceholder = !opt;
         const selected = !isPlaceholder && selectedIdx === idx;
         return (

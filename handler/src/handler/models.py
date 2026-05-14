@@ -9,13 +9,13 @@ Two layers:
   `agent[LYNX].cover`. Predicates are tagged-union Pydantic models, not
   free-form strings — every predicate is type-checked at load time.
 
-- **Runtime** (mutable, owned by `cycle.py` via `spine.py`'s pure functions):
+- **Runtime** (mutable, owned by `day.py` via `spine.py`'s pure functions):
   `State`. Holds the flat qualities map plus engine-internal trackers
   (`fired` ledger, per-agent fire ledger, outcome).
 
 The LLM never writes to state. State writes happen only through the three
 spine entry points (`apply_archetype_effects`, `apply_forced_event_effects`,
-`fire_due_passive_events`) plus `tick_cycle_close`.
+`fire_due_passive_events`) plus `tick_day_close`.
 
 Adding a new `Predicate` variant — coordinated edits:
   1. Define the class here, inheriting `_PredicateLeaf` (evaluated directly)
@@ -220,8 +220,8 @@ class Band(BaseModel):
     """One band in a `Quality`'s descriptor ladder: a threshold paired with
     one or more phrasing variants. Single-variant bands are the simple case
     (the band describes a state level); multi-variant bands rotate by
-    `cycle_index` for hidden qualities so the player can't phrase-decode
-    the band by reading the same line every cycle.
+    `day_index` for hidden qualities so the player can't phrase-decode
+    the band by reading the same line every day.
 
     YAML may author a Band as:
       - the explicit form `{threshold: 5, variants: ["v"]}`,
@@ -253,7 +253,7 @@ class Quality(BaseModel):
     Descriptor shape: `bands` — an ordered ladder. The first band whose
     `threshold` covers the value wins (walk in authored order; numeric
     comparison uses `value <= threshold`). Single-variant bands handle the
-    common case; multi-variant bands rotate by cycle_index for hidden-state
+    common case; multi-variant bands rotate by day_index for hidden-state
     phrasing variety.
 
     Ladder layout (bottom-up — first match wins on `value <= threshold`):
@@ -333,23 +333,23 @@ class Quality(BaseModel):
 
 
 class Beat(BaseModel):
-    """Author-written observational fragment threaded into a cycle's prompts
+    """Author-written observational fragment threaded into a day's prompts
     when its predicate matches. Replaces the older `DramaticQuestion`.
 
     Selection is highest-priority (lowest `priority` int) authored-order winner
     among `when`-matching beats that haven't already fired this mission.
     On selection, the beat's `id` is appended to `state.fired` so the same
     fragment never surfaces twice — fixing the audit §2b symptom of the same
-    framing reappearing every cycle.
+    framing reappearing every day.
 
-    `fragment` is the prose handed to the LLM. The drafter sees it as cycle
+    `fragment` is the prose handed to the LLM. The drafter sees it as day
     framing color; the log writer sees it as an additional lean directive.
     Authors write the fragment as one *example* — the prompts instruct
-    translation through the cycle's specific situation, not verbatim quoting.
+    translation through the day's specific situation, not verbatim quoting.
 
     `fires_at_most`:
       - "once_per_mission" (default): consume on fire, never repeats.
-      - "unlimited": legacy semantics — re-fires every cycle the predicate
+      - "unlimited": legacy semantics — re-fires every day the predicate
         matches. Use sparingly; the whole point of the rename is fire-once.
     """
 
@@ -388,7 +388,7 @@ class Action(BaseModel):
     `effects` and `outcomes` are mutually exclusive — author one or the other.
 
     Forced shape: `forced: true` + optional prose-constraint fields. A forced
-    Action MUST appear as one of the cycle's options when its `when:` holds
+    Action MUST appear as one of the day's options when its `when:` holds
     and its id is not yet in `state.fired`. The drafter's prose writer
     honours `intent` / `must_communicate` / `must_not` / `tone` on the
     option that carries it. The forced Action IS the option — there is no
@@ -444,7 +444,7 @@ class Reaction(BaseModel):
     Action and its effects apply. Replaces the old passive `Event`.
 
     `terminal=True` + `outcome_key` sets `state.outcome` and ends the mission.
-    `only_when_no_progress_this_day=True` gates the reaction on the cycle's
+    `only_when_no_progress_this_day=True` gates the reaction on the day's
     Action having NOT progressed the mission (so HOLD has bite).
     `for_each_agent=True` expands `$agent` over agents (one fire per matching).
     """
@@ -459,7 +459,7 @@ class Reaction(BaseModel):
     only_when_no_progress_this_day: bool = False
     for_each_agent: bool = False
     # Free-form prose directives the renderer should foreground when this
-    # reaction fires. Aggregated by `cycle._collect_leans` and threaded into
+    # reaction fires. Aggregated by `day._collect_leans` and threaded into
     # the log-writer's user prompt verbatim.
     lean_on: list[str] = Field(default_factory=list)
 
@@ -586,22 +586,22 @@ class Mission(BaseModel):
     # `cast[*].starting_cover` (agent role only) and are injected by `make_initial_state`.
     qualities: dict[str, Quality] = Field(default_factory=dict)
     # Per-mission persistent prose constraints, injected into all three agent
-    # system prompts. Use for facts the renderer/SoP must honor every cycle
+    # system prompts. Use for facts the renderer/SoP must honor every day
     # (e.g. "LYNX must not be photographed again", "the Vienna network is
     # offline"). Authored, no LLM in the loop.
     standing_orders: list[str] = Field(default_factory=list)
     # Per-state-shape authored fragments. The engine selects one beat per
-    # cycle (highest-priority `when`-matching unfired entry); it's threaded
+    # day (highest-priority `when`-matching unfired entry); it's threaded
     # into the drafter's user prompt as framing color AND into the log
     # writer's leans as a foregrounding directive. Fire-once by default so
     # the same observation never surfaces twice in a run (audit §2b).
     beats: list[Beat] = Field(default_factory=list)
     actions: list[Action] = Field(min_length=1)
     reactions: list[Reaction] = Field(min_length=1)
-    # Cycle-1-only briefing prose. Prepended to the SoP user prompt on cycle 1
+    # Day-1-only briefing prose. Prepended to the SoP user prompt on day 1
     # so the player meets the cast and the stakes before the operational
-    # cycles begin. Empty = no briefing branch (skips the block). Front-loads
-    # investment without restructuring cycles or adding a mechanic.
+    # days begin. Empty = no briefing branch (skips the block). Front-loads
+    # investment without restructuring days or adding a mechanic.
     opening_briefing: str = Field(default="")
     # Map of outcome_key → human prose summary for the outcome card.
     outcomes: dict[str, str] = Field(default_factory=dict)

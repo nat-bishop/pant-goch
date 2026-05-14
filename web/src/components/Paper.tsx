@@ -50,7 +50,7 @@ function buildResultLines(descriptors: DeltaDescriptors): ResultLine[] {
 
 export function Paper() {
   const meta = useStore((s) => s.mission_meta);
-  const cycle = useStore((s) => s.cycle);
+  const day = useStore((s) => s.day);
   const inbox = useStore((s) => s.inbox);
   const authorize = useStore((s) => s.authorize);
   const continueDay = useStore((s) => s.continueDay);
@@ -59,7 +59,7 @@ export function Paper() {
   // Scroll the newly-opened day into view on transitions only (not every
   // render). rAF gives the new <section> a tick to mount before scrolling.
   const lastSeenDay = useRef<number | null>(null);
-  const dayIndex = cycle?.index ?? null;
+  const dayIndex = day?.index ?? null;
   useEffect(() => {
     if (dayIndex === null) return;
     if (
@@ -76,16 +76,16 @@ export function Paper() {
   const headerTimestamp = useMemo(() => nowZulu(), []);
 
   // The just-finished current day (between `entry_word is_last` and
-  // `day_opened` for N+1) appears in both `inbox` and `cycle` — filter it
+  // `day_opened` for N+1) appears in both `inbox` and `day` — filter it
   // out of the past list so CurrentDaySection owns its rendering. Memoized
   // because Paper re-renders on every streamed word. Hoisted above the
   // early return so hook count stays stable across renders.
   const pastDays = useMemo(
-    () => (cycle ? inbox.filter((e) => e.day_index < cycle.index) : []),
-    [inbox, cycle],
+    () => (day ? inbox.filter((e) => e.day_index < day.index) : []),
+    [inbox, day],
   );
 
-  if (!cycle || !meta) {
+  if (!day || !meta) {
     return (
       <article className="paper-sheet">
         <CaveatBanner />
@@ -95,12 +95,12 @@ export function Paper() {
   }
 
   const canAuth =
-    cycle.awaiting_auth &&
-    cycle.selected_option_index !== null &&
-    !cycle.authorized;
-  const phase: AuthPhase = cycle.awaiting_continue
+    day.awaiting_auth &&
+    day.selected_option_index !== null &&
+    !day.authorized;
+  const phase: AuthPhase = day.awaiting_continue
     ? "continue"
-    : cycle.authorized
+    : day.authorized
       ? "authorized"
       : canAuth
         ? "ready"
@@ -119,8 +119,8 @@ export function Paper() {
     <article
       className="paper-sheet"
       aria-label={`case file ${meta.codename}`}
-      data-has-selection={cycle.selected_option_index !== null}
-      data-authorized={cycle.authorized}
+      data-has-selection={day.selected_option_index !== null}
+      data-authorized={day.authorized}
     >
       <CaveatBanner />
 
@@ -137,13 +137,13 @@ export function Paper() {
         <PastDaySection key={entry.day_index} entry={entry} />
       ))}
 
-      <CurrentDaySection cycle={cycle} />
+      <CurrentDaySection day={day} />
 
       <AuthFooter
         stampTimestamp={stampTimestamp}
         onClick={onClick}
         buttonLabel={BUTTON_LABEL[phase]}
-        showStamp={cycle.authorized}
+        showStamp={day.authorized}
       />
     </article>
   );
@@ -213,27 +213,27 @@ function PastDaySection({ entry }: { entry: LogEntryRecord }) {
   );
 }
 
-function CurrentDaySection({ cycle }: { cycle: DayState }) {
+function CurrentDaySection({ day }: { day: DayState }) {
   const resultLines = useMemo(
     () =>
-      cycle.entry_complete ? buildResultLines(cycle.delta_descriptors) : [],
-    [cycle.entry_complete, cycle.delta_descriptors],
+      day.entry_complete ? buildResultLines(day.delta_descriptors) : [],
+    [day.entry_complete, day.delta_descriptors],
   );
   const authorizedTitle =
-    cycle.selected_option_index !== null
-      ? (cycle.options[cycle.selected_option_index]?.title ?? "")
+    day.selected_option_index !== null
+      ? (day.options[day.selected_option_index]?.title ?? "")
       : "";
 
   return (
     <section
-      id={`day-${cycle.index}`}
+      id={`day-${day.index}`}
       className="day-section current"
-      aria-label={`day ${cycle.index} brief`}
+      aria-label={`day ${day.index} brief`}
     >
       <DayDivider
-        index={cycle.index}
-        action={cycle.entry_action ?? undefined}
-        title={cycle.authorized ? authorizedTitle : undefined}
+        index={day.index}
+        action={day.entry_action ?? undefined}
+        title={day.authorized ? authorizedTitle : undefined}
       />
       <div className="opts-block">
         <div className="opts-label">
@@ -243,7 +243,7 @@ function CurrentDaySection({ cycle }: { cycle: DayState }) {
         <OptionsList />
       </div>
 
-      {cycle.authorized && (
+      {day.authorized && (
         <div className="sop-block">
           <div className="sop-label">
             OPERATIONS DESK
@@ -251,9 +251,9 @@ function CurrentDaySection({ cycle }: { cycle: DayState }) {
           </div>
           <div className="sop-body">
             <StreamingText
-              words={cycle.entry_words}
-              showCaret={!cycle.entry_complete}
-              complete={cycle.entry_complete}
+              words={day.entry_words}
+              showCaret={!day.entry_complete}
+              complete={day.entry_complete}
             />
           </div>
           <ResultBlock lines={resultLines} />

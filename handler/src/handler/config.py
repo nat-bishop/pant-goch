@@ -80,7 +80,7 @@ class Settings(BaseSettings):
     # can serve one in-flight request; past N, requests queue server-side.
     # With `--no-kv-unified` (our default), each slot pre-allocates
     # `llama_total_ctx / n_parallel` tokens of KV — so `-np` directly drives
-    # VRAM cost. Default 4 is sized for single-user `make run`: one cycle
+    # VRAM cost. Default 4 is sized for single-user `make run`: one day
     # peaks at 1 agent call at a time (SoP / drafter / renderer fire
     # sequentially, never concurrently). Past benchmarks showed 128 slots
     # fragmented the KV pool and degraded effective batch — interactive

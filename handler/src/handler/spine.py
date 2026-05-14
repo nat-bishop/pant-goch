@@ -2,7 +2,7 @@
 
 The LLM never writes to state — every state mutation flows through one of
 the spine entry points (`apply_action_effects`, `fire_due_reactions`,
-`tick_day_close`) and is called from `cycle.py`.
+`tick_day_close`) and is called from `day.py`.
 
 No I/O, no LLM calls, no async. Every function is pure (returns a new value)
 or mutates the passed-in `State` in place (well-marked). Predicate evaluation
@@ -165,7 +165,7 @@ def valid_action_catalog(
 
 def due_forced_actions(state: State, mission: Mission) -> list[Action]:
     """Forced actions whose `when` holds and which haven't fired yet. The
-    drafter MUST surface one of these as an option per cycle — `cycle.py` picks
+    drafter MUST surface one of these as an option per day — `day.py` picks
     the first due forced action and routes it through the drafter's prompt as
     a required satisfier."""
     return [
@@ -430,7 +430,7 @@ def derive_tension_band(prior_state: State | None, state: State) -> TensionBand:
 
 def select_beat(state: State, mission: Mission) -> Beat | None:
     """Return the highest-priority `when`-matching beat that hasn't fired
-    this mission, or None. Read-only; `cycle.fire_beat` is the single fire
+    this mission, or None. Read-only; `day.fire_beat` is the single fire
     site that appends the beat id to `state.fired`."""
     candidates = sorted(
         enumerate(mission.beats), key=lambda x: (x[1].priority, x[0])

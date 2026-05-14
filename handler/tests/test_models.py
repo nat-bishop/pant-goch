@@ -297,7 +297,7 @@ def test_quality_describe_bands_walk_with_label() -> None:
     assert q.describe(5) == "extraction: alive"
 
 
-def test_quality_describe_variant_rotates_by_cycle_index() -> None:
+def test_quality_describe_variant_rotates_by_day_index() -> None:
     q = Quality(
         initial=0,
         visible=False,

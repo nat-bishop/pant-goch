@@ -93,7 +93,7 @@ logfire.instrument_pydantic_ai()
 # record='failure' keeps the failure-only safety net (mission YAML, drafter
 # schema violations) without spamming a span for every field validation —
 # default 'all' floods stdout during streaming chat completions and was the
-# observed cause of a logfire-buffer blow-up that killed the sidecar mid-cycle.
+# observed cause of a logfire-buffer blow-up that killed the sidecar mid-day.
 logfire.instrument_pydantic(record="failure")
 logfire.instrument_httpx(capture_all=True)
 logging.getLogger().addHandler(logfire.LogfireLoggingHandler())
@@ -157,7 +157,7 @@ class SessionRuntime:
     auth_future: asyncio.Future[Option] | None = None
     continue_future: asyncio.Future[None] | None = None
     current_options: list[Option] | None = None
-    cycle_task: asyncio.Task | None = None
+    day_task: asyncio.Task | None = None
     # Accumulating case-file artifacts.
     # `log_entries` — full prose per day. Drafter prompt pulls the last 2
     # for cross-day context (drafter is stateless one-shot). Frontend
@@ -304,8 +304,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         finally:
             logfire.info("stopping llama-server")
             for sid, rt in list(SESSIONS.items()):
-                if rt.cycle_task is not None and not rt.cycle_task.done():
-                    rt.cycle_task.cancel()
+                if rt.day_task is not None and not rt.day_task.done():
+                    rt.day_task.cancel()
             stop_llama(LLAMA_PROC)
 
 
@@ -826,7 +826,7 @@ async def mission_start() -> StartResponse:
     session = make_session(MISSION, AGENTS, persist=persist)
     rt = SessionRuntime(session=session)
     SESSIONS[session.id] = rt
-    rt.cycle_task = asyncio.create_task(_run_session_loop(rt))
+    rt.day_task = asyncio.create_task(_run_session_loop(rt))
     return StartResponse(
         session_id=session.id,
         mission_id=MISSION.id,

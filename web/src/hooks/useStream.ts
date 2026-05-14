@@ -22,7 +22,7 @@ export function useStream(): void {
     // cancels us before we open the stream. Two concurrent consumers on
     // the same session race against the server's single-consumer SSE
     // queue — each event goes to exactly one consumer — which interleaves
-    // stale-read writes into the shared Zustand store and corrupts cycle
+    // stale-read writes into the shared Zustand store and corrupts day
     // state. queueMicrotask isn't enough here: React's commit yields to
     // microtasks between setup1 and cleanup1 in dev. setTimeout(0) clears
     // the entire commit boundary so cancelled is reliably true by the

@@ -24,7 +24,7 @@ from .personas import PersonaSpec
 
 
 @dataclass
-class CycleTrace:
+class DayTrace:
     """What happened in one day. Mirrors the SSE event stream — collected
     by `run_session` as events flow in."""
 
@@ -47,7 +47,7 @@ class SessionRecord:
     persona_name: str
     persona_archetype: str
     seed: int
-    cycles: list[CycleTrace] = field(default_factory=list)
+    days: list[DayTrace] = field(default_factory=list)
     final_state: dict[str, Any] = field(default_factory=dict)
     outcome: str | None = None  # outcome_key on terminal, None on error/timeout
     outcome_summary: str = ""
@@ -56,24 +56,24 @@ class SessionRecord:
     def reached_terminal(self) -> bool:
         return self.outcome is not None
 
-    def cycles_used(self) -> int:
-        return len(self.cycles)
+    def days_used(self) -> int:
+        return len(self.days)
 
     def fired_events(self) -> list[str]:
         out: list[str] = []
-        for c in self.cycles:
+        for c in self.days:
             out.extend(c.events_fired)
         return out
 
     def engine_fallback_count(self) -> int:
-        return sum(1 for c in self.cycles if c.used_engine_fallback)
+        return sum(1 for c in self.days if c.used_engine_fallback)
 
     def to_json(self) -> dict[str, Any]:
         return {
             "persona_name": self.persona_name,
             "persona_archetype": self.persona_archetype,
             "seed": self.seed,
-            "cycles": [asdict(c) for c in self.cycles],
+            "days": [asdict(c) for c in self.days],
             "final_state": self.final_state,
             "outcome": self.outcome,
             "outcome_summary": self.outcome_summary,
@@ -105,7 +105,7 @@ async def run_session(
     """Run one playtest session end-to-end. Returns a populated `SessionRecord`.
 
     The engine sidecar must already be running at `engine_base_url`. Each
-    SSE event mutates the in-progress `CycleTrace`; when options finish
+    SSE event mutates the in-progress `DayTrace`; when options finish
     streaming and `awaiting_auth` arrives, the picker fires.
     """
     record = SessionRecord(
@@ -119,7 +119,7 @@ async def run_session(
             r.raise_for_status()
             session_id = r.json()["session_id"]
 
-            current: CycleTrace | None = None
+            current: DayTrace | None = None
             current_options_payload: list[dict[str, Any]] = []
 
             async with client.stream(
@@ -131,8 +131,8 @@ async def run_session(
                     if kind == "mission_started":
                         record.final_state = dict(ev.get("state", {}))
                     elif kind == "day_opened":
-                        current = CycleTrace(day_index=ev["day"])
-                        record.cycles.append(current)
+                        current = DayTrace(day_index=ev["day"])
+                        record.days.append(current)
                         current_options_payload = []
                     elif kind == "option_started" and current is not None:
                         current_options_payload.append(

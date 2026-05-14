@@ -60,7 +60,7 @@ setting: |
   REDFIELD, your fourteen-year sleeper, is the only access to the documents.
 
 # Persistent prose constraints surfaced to all three agents' system prompts.
-# Use for facts the renderer/SoP/drafter must honour every cycle. Authored
+# Use for facts the renderer/SoP/drafter must honour every day. Authored
 # only — no LLM in the loop.
 standing_orders:
   - "LYNX must not be photographed again. MUNTEANU already has one image; a second names her in his file."
@@ -77,9 +77,9 @@ standing_orders:
 # authored order breaks ties.
 #
 # Authoring discipline: each fragment is ONE example phrasing. The prompts
-# instruct the LLM to translate through the cycle's situation, not quote
+# instruct the LLM to translate through the day's situation, not quote
 # verbatim — so write the fragment concrete enough to be evocative, generic
-# enough that any cycle in its predicate-space can carry it.
+# enough that any day in its predicate-space can carry it.
 beats:
   # ─── Crisis register (priority 1 — highest) ───
   - id: lynx_at_brink
@@ -118,7 +118,7 @@ beats:
     priority: 2
     fragment: "KESTREL chose. The case file will record what she chose; it will not record what she meant by it."
 
-  # ─── Stage 0 variants (priority 3 — keep cycle 1-3 framings distinct) ───
+  # ─── Stage 0 variants (priority 3 — keep day 1-3 framings distinct) ───
   - id: photograph_in_drawer
     when: "mission.extraction_stage == 0 and mission.days_remaining >= 4"
     priority: 3
@@ -320,7 +320,7 @@ qualities:
   # condition the briefing literally promises). Never shown explicitly:
   # `visible: false` skips it from OPERATION POSTURE bullets and from the
   # RESULT footer. The drafter / log-writer see it only through the
-  # HIDDEN STATE TO HINT AT block, which rotates phrasing per cycle via the
+  # HIDDEN STATE TO HINT AT block, which rotates phrasing per day via the
   # variants-per-band shape so the player can't phrase-decode the band.
   #
   # Tick rules: baseline +1 per day (see `opposition_advances`); +1 if

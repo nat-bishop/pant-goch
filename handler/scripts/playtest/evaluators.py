@@ -30,7 +30,7 @@ def session_completed(rec: SessionRecord) -> EvalResult:
     """The session ran without errors and produced at least one day."""
     if rec.error:
         return EvalResult("session_completed", False, f"error: {rec.error}")
-    if not rec.cycles:
+    if not rec.days:
         return EvalResult("session_completed", False, "no days recorded")
     return EvalResult("session_completed", True)
 
@@ -39,7 +39,7 @@ def terminal_reached(rec: SessionRecord) -> EvalResult:
     """A terminal event fired (mission resolved with an outcome)."""
     if rec.outcome is None:
         return EvalResult(
-            "terminal_reached", False, f"no terminal; days={rec.cycles_used()}"
+            "terminal_reached", False, f"no terminal; days={rec.days_used()}"
         )
     return EvalResult("terminal_reached", True, f"outcome={rec.outcome}")
 
@@ -76,7 +76,7 @@ def forced_event_satisfied_when_eligible(rec: SessionRecord) -> EvalResult:
     it. (The engine validates this server-side; the evaluator double-checks
     the recorded trace.)"""
     failures: list[int] = []
-    for c in rec.cycles:
+    for c in rec.days:
         if c.forced_event_id is None:
             continue
         satisfiers = [
@@ -95,7 +95,7 @@ def forced_event_satisfied_when_eligible(rec: SessionRecord) -> EvalResult:
 
 def days_within_budget(rec: SessionRecord, max_days: int) -> EvalResult:
     """The session terminated within the authored day budget."""
-    used = rec.cycles_used()
+    used = rec.days_used()
     if used > max_days:
         return EvalResult(
             "days_within_budget",
@@ -109,7 +109,7 @@ def options_tonal_spread(rec: SessionRecord) -> EvalResult:
     """Every day drafted at least 2 distinct archetypes — sanity check
     against the drafter collapsing to a single mode."""
     failures: list[int] = []
-    for c in rec.cycles:
+    for c in rec.days:
         archetypes = {o["archetype"] for o in c.options}
         if len(archetypes) < 2:
             failures.append(c.day_index)

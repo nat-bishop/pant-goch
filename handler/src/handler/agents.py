@@ -30,7 +30,7 @@ prompts and output schemas are built per call. The selector + prose writer
 use pydantic-ai's runtime `output_type=` override on `.run()` to swap in a
 per-day schema — see `_make_selector_output_type` / `_make_prose_output_type`.
 
-This module has NO direct LLM call sites. `cycle.py` wraps the agent runs
+This module has NO direct LLM call sites. `day.py` wraps the agent runs
 into the drafter/log-writer protocols; `main.py` wires up the paced
 word-stream emitter and the persistent log message-history.
 """
@@ -62,7 +62,7 @@ from .spine import (
 
 
 # Map act phase → tone band for the log writer. Centralised so the log
-# writer can adopt the cycle's dramatic register without per-prompt churn.
+# writer can adopt the day's dramatic register without per-prompt churn.
 _TONE_BAND: dict[ActPhase, str] = {
     "setup":        "measured — the operation is establishing; cadence is unhurried, observation precedes action",
     "complication": "kinetic — the operation is in motion; sentences shorter, moves are observed and named",
@@ -186,7 +186,7 @@ def _bullet_block(
 def _standing_orders_block(mission: Mission) -> str:
     """Per-mission persistent prose constraints (4e). Injected into both
     agent system prompts so the log writer and drafter honour them every
-    cycle. Empty when the mission authored none."""
+    day. Empty when the mission authored none."""
     return _bullet_block(
         "STANDING ORDERS (honour every day — do not contradict):",
         list(mission.standing_orders),
@@ -194,8 +194,8 @@ def _standing_orders_block(mission: Mission) -> str:
 
 
 def _leans_block(leans: Sequence[str]) -> str:
-    """Per-cycle log-writer directives collected by `cycle._collect_leans`
-    from the cycle's fired events. Injected verbatim — author wrote them."""
+    """Per-day log-writer directives collected by `day._collect_leans`
+    from the day's fired events. Injected verbatim — author wrote them."""
     return _bullet_block(
         "LEAN-ON THIS DAY (honour these — they tell you what to "
         "foreground in the prose):",
@@ -381,7 +381,7 @@ RULES:
 # `agent[X].cover: N / 10` pairs and therefore can't fall back to dashboard
 # voice in any output. The log writer additionally gets a small RESOLVED
 # STATE DELTA block carrying raw numerics — that's a focused magnitude
-# signal it needs to honor the cycle's mutations, not a state summary to
+# signal it needs to honor the day's mutations, not a state summary to
 # parrot back.
 
 
@@ -450,7 +450,7 @@ def _describe_authored_quality(
     return quality.describe(value)
 
 
-# Per-cycle delta type, shared with cycle.py's aggregate computation.
+# Per-day delta type, shared with day.py's aggregate computation.
 DeltaMap = dict[str, tuple[Any, Any]]
 
 
@@ -479,7 +479,7 @@ def describe_quality_pair(
     Used by the SSE `delta_descriptors` field. Returns (None, None) for
     qualities whose descriptors don't change (e.g. cover dropped 7→6 within
     the same bucket) or for qualities with no authored / built-in descriptor
-    (e.g. one-cycle flags, lost flags).
+    (e.g. one-day flags, lost flags).
     """
     if quality == "mission.days_remaining":
         before_desc = (
@@ -738,7 +738,7 @@ def _recently_tried_block(
 
 
 def _beat_block(beat_fragment: str | None) -> str:
-    """Render the BEAT THIS DAY block. Empty when no beat fired this cycle.
+    """Render the BEAT THIS DAY block. Empty when no beat fired this day.
     The fragment is one example phrasing — the system-prompt rule directs the
     LLM to use it as framing color, not to surface verbatim."""
     if not beat_fragment:
@@ -933,7 +933,7 @@ def _make_selector_output_type(
 
 
 def _make_prose_output_type(n: int) -> type[BaseModel]:
-    """Prose writer's per-cycle output schema: a positional list of
+    """Prose writer's per-day output schema: a positional list of
     `OptionProse` pairs. No catalog identifiers — those are pinned by the
     selector and the engine zips them back positionally."""
     return create_model(
@@ -951,7 +951,7 @@ def build_agent_bundle(model: OpenAIChatModel, mission: Mission) -> AgentBundle:
     pydantic-ai handles concurrent calls.
 
     The selector and prose writer are built with `output_type=str` as a
-    placeholder. Actual per-cycle Literal-typed schemas are passed via
+    placeholder. Actual per-day Literal-typed schemas are passed via
     `agent.run(..., output_type=NativeOutput(BuiltType, strict=True))` — the
     pydantic-ai runtime-override pattern, which takes precedence over the
     construction-time type. `strict=True` is REQUIRED — without it,
@@ -959,7 +959,7 @@ def build_agent_bundle(model: OpenAIChatModel, mission: Mission) -> AgentBundle:
     llama.cpp (via inferno or the bundled llama-server) treats the schema
     as a hint rather than a sampler-grammar constraint. Gemma then ignores
     the schema and produces free-form text, parsing fails, and the call
-    falls back to engine-authored options every cycle.
+    falls back to engine-authored options every day.
     """
     selector = Agent(
         model=model,

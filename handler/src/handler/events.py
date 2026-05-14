@@ -6,11 +6,11 @@ Two flavors of log entry:
   rendered dispatches, mission start). `fold` records them but does not
   mutate state.
 - **Mutation events** — the actual state writes (effects applied, passive
-  events fired, cycle closed, mission resolved). `fold` performs the mutation
+  events fired, day closed, mission resolved). `fold` performs the mutation
   by replaying the recorded delta onto state.
 
 The live path: `spine.py` functions mutate state in place AND return a
-delta. `cycle.py` builds an event from that delta and calls `session.apply`,
+delta. `day.py` builds an event from that delta and calls `session.apply`,
 which folds the (same) delta onto state. During replay (`session.state_at`,
 `replay_into_session`), the live mutation never happens — only the fold
 path runs. Tests assert both paths converge to the same state.
