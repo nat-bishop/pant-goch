@@ -1,0 +1,20 @@
+- id: tom
+  name: Old Tom Bevan
+  default_location: the_slaughtered_lamb
+  themes:
+    - what he saw on the road that night
+  knowledge: |
+    Tom saw a Land Rover speeding from the bend the night Megan died.
+    He recognised it. He has not said whose.
+  attitude: |
+    Initially guarded. Will warm to patience, close down to pressure.
+
+- id: maud
+  name: Maud Pryce
+  default_location: the_post_office
+  themes:
+    - everyone's business
+  knowledge: |
+    Maud knows about Dylan and Megan. She has never told anyone.
+  attitude: |
+    Polite on the surface. Lies by omission to protect the village.

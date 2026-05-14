@@ -1,0 +1,8 @@
+id: the_post_office
+name: The Post Office
+adjacent_to: [the_slaughtered_lamb, the_old_vicarage]
+description: |
+  The shop and post office, run by Maud Pryce. Smells of newsprint and
+  ham. The bell over the door is loud.
+notes:
+  - Maud reads every postcard before stamping it.
