@@ -31,32 +31,32 @@ opening_briefing: |
   To: RAVEN, handler-of-record
   Re: OP. LYNX-EXFIL
 
-  You have six days.
+  You have six days. After that the file closes either way.
 
-  Forty-eight hours ago the resident's people photographed LYNX at a meet
-  that should not have happened. The image is in the Bucharest file.
-  Counter-intel — Colonel MUNTEANU, name him plainly in your reports — has
-  not moved yet. He will. The investigation is tightening; once LYNX is
-  named in MUNTEANU's report the file closes.
+  Forty-eight hours ago we photographed LYNX — our woman in Bucharest,
+  two years deep — at a meeting that should not have happened. The
+  photograph is on Colonel MUNTEANU's desk now. Counter-intel; name him
+  plainly in your reports. He has not moved yet. He will. Once he names
+  her in his report, the cover that has kept her alive for two years is
+  gone.
 
-  The eastern train is clean. The Vienna network is offline; do not ask.
+  The eastern train is the way out. The line is clean, for now.
 
-  KESTREL is in the city on a separate reconnaissance, cover intact. She
-  is yours to spend. Spend her carefully.
+  KESTREL is in the city on a separate reconnaissance, her cover intact.
+  She is yours to spend. Spend her carefully.
 
-  Treasury is interested. Treasury is not patient. The deputy chief has
-  asked twice this morning whether you are the right handler for this
-  file. I have not yet answered.
+  The deputy chief has asked twice this morning whether you are the right
+  handler for this file. I have not yet answered.
 
   Bring her home, RAVEN. Or do not. The choice is filed against your name.
 
   — M.
 
 setting: |
-  Bucharest. Tradecraft-heavy, surveillance-saturated. Counter-intelligence
-  is Colonel MUNTEANU's directorate; the photographic file on LYNX is the
+  Bucharest. Tight. Everyone is watched. Colonel MUNTEANU runs the
+  counter-intel section here; the photographic file on LYNX is the
   driver of the tightening perimeter. The Vienna network is offline. The
-  eastern train line is the planned extraction corridor — clean, for now.
+  eastern train line is the planned extraction route — clean, for now.
   REDFIELD, your fourteen-year sleeper, is the only access to the documents.
 
 # Persistent prose constraints surfaced to all three agents' system prompts.
@@ -64,8 +64,8 @@ setting: |
 # only — no LLM in the loop.
 standing_orders:
   - "LYNX must not be photographed again. MUNTEANU already has one image; a second names her in his file."
-  - "The Vienna network is offline. Do not surface Vienna assets as available."
-  - "The eastern train corridor is clean. That extraction route has not been compromised."
+  - "The Vienna network is offline. Do not surface Vienna contacts as available."
+  - "The eastern train line is clean. That extraction route has not been compromised."
   - "MUNTEANU has not yet named LYNX in his report. Once he does, the file closes."
   - "Render MUNTEANU through absence and pressure — never put words in his mouth."
 
@@ -158,7 +158,7 @@ beats:
   - id: deaddrop_temptation
     when: "mission.extraction_stage == 1 and agent[LYNX].cover <= 5"
     priority: 3
-    fragment: "A dead drop is safer than a brush pass and slower than the directorate's morning briefing. LYNX has read that paragraph in the manual; so has MUNTEANU."
+    fragment: "A dead drop is safer than a brush pass and slower than MUNTEANU's morning brief. LYNX has read that paragraph in the manual; so has he."
 
   - id: train_loaders_shift
     when: "mission.extraction_stage in 1..2"
@@ -292,7 +292,7 @@ cast:
     role: opposition
     voice_register: "never written in his own voice — his presence shows as pressure, as perimeter, as a tram-window face the agents recognise too late"
     voice_details: |
-      Colonel, Romanian counter-intelligence directorate. Forty-one.
+      Colonel, Romanian counter-intelligence. Forty-one.
       Holds the file with the compromising photograph of LYNX. Has not
       yet named her in his report — she is "the woman in the photograph"
       in his reports, which is worse, because once he names her the file
@@ -334,9 +334,9 @@ qualities:
       - threshold: 3
         variants:
           - "MUNTEANU is reading the file. He has not yet moved."
-          - "The directorate is quiet. The photograph is still in the drawer."
+          - "Counter-intel is quiet. The photograph is still in the drawer."
           - "No new sweep activity on the streets LYNX walks."
-          - "The morning brief at the directorate ran short — nothing new in it."
+          - "The morning brief at MUNTEANU's desk ran short — nothing new in it."
       - threshold: 6
         variants:
           - "The perimeter feels tighter than the file suggests. A face in a tram window LYNX did not name."
@@ -365,7 +365,7 @@ actions:
   - id: ACTIVATE_SLEEPER_FOR_PAPERS
     intent: |
       Activate the sleeper REDFIELD to surface the extraction documents.
-      Surfacing him creates noise the directorate will register.
+      Surfacing him creates noise counter-intel will register.
     when: "mission.extraction_stage == 0"
     effects:
       - "mission.extraction_stage = 1"
@@ -377,9 +377,9 @@ actions:
   # `outcomes:` is mutually-exclusive on `when:` (load-time validator).
   - id: RETRIEVE_PAPERS_VIA_AGENT
     intent: |
-      Send the bound agent to physically pick up the documents. The
-      directorate may already be there — option prose MUST name that
-      gamble in-fiction (e.g. "if MUNTEANU is closer than the file
+      Send the bound agent to physically pick up the documents.
+      MUNTEANU's people may already be there — option prose MUST name
+      that gamble in-fiction (e.g. "if MUNTEANU is closer than the file
       suggests, this puts her in his hand") without predicting the outcome.
     when: "mission.extraction_stage == 1 and agent[$agent].cover > 0"
     for_each_agent: true
@@ -401,7 +401,7 @@ actions:
           - "mission.opposition.naming_progress -= 1"
         leans:
           - "$agent was seen but not yet named — name what specifically tightened around them in the seconds after the hand-off"
-          - "the entry acknowledges the gamble paid out and what it cost the agent's posture going forward"
+          - "the entry acknowledges the gamble paid out, what it cost, and how the agent has to move from here"
 
       # FAILURE (>= 8): MUNTEANU was already there. -6 cover, stage does
       # NOT advance, naming snaps up by two. REDFIELD's fate is told by the
@@ -413,7 +413,7 @@ actions:
         leans:
           - "the entry is a REVELATION of what the previous day's memo only hinted at — MUNTEANU was already there"
           - "name one specific sensory detail of the trap (the courier's wet coat, the tram conductor's tic, the door that was open when it should not have been) that prior days did NOT make explicit"
-          - "REDFIELD is in the directorate's hand now; do not narrate his fate, but do not pretend he is reachable"
+          - "REDFIELD is in MUNTEANU's hand now; do not narrate his fate, but do not pretend he is reachable"
 
   - id: DEAD_DROP_PAPERS
     intent: "Slower, safer alternative to direct retrieval. No cover hit but doesn't progress."
@@ -432,8 +432,8 @@ actions:
   - id: RUN_EXFIL
     intent: |
       Eastern train extraction. Terminal action — clears the mission.
-      Option prose MUST name the gamble in-fiction (the directorate may be
-      at the platform already) without predicting outcome.
+      Option prose MUST name the gamble in-fiction (MUNTEANU's people
+      may be at the platform already) without predicting outcome.
     when: "mission.extraction_stage == 2 and agent[LYNX].cover > 0"
     outcomes:
       # CLEAN (naming < 6): clean exit, -2 cover.
@@ -453,7 +453,7 @@ actions:
           - "agent[KESTREL].cover = 0"
         leans:
           - "KESTREL is the cost — name her one final time, glancingly, in the eastward sentence; no eulogy"
-          - "LYNX makes the train; the dispatch acknowledges what the perimeter cost"
+          - "LYNX makes the train; the dispatch acknowledges what she paid for it"
 
       # FAILURE (>= 9): MUNTEANU was at the platform. Force naming = 10 so
       # the `lynx_named` terminal fires on the next reaction pass.
@@ -461,7 +461,7 @@ actions:
         effects:
           - "mission.opposition.naming_progress = 10"
         leans:
-          - "MUNTEANU named LYNX on the platform — write the operations register; cold, brief; the file closes"
+          - "MUNTEANU named LYNX on the platform — write in the Operations voice; cold, brief; the file closes"
           - "name the eastern train, and that LYNX is not on it"
 
   - id: DIVERSION_BY_AGENT
@@ -575,7 +575,7 @@ reactions:
     priority: 0
     when: "agent[LYNX].cover == 0"
     lean_on:
-      - "the final dispatch is from the desk, in the Operations register — terse, declarative, no decoration"
+      - "the final dispatch is from the desk, in the Operations voice — terse, declarative, no decoration"
       - "MUNTEANU has named her now; the file closes; do not show MUNTEANU directly"
       - "RAVEN's codename is on the cable header — the reader is told whose desk this lands on, no more"
 
@@ -588,7 +588,7 @@ reactions:
     priority: 0
     when: "mission.opposition.naming_progress >= 10"
     lean_on:
-      - "the cable header is operations register — terse, declarative, no decoration"
+      - "the cable header is Operations voice — terse, declarative, no decoration"
       - "MUNTEANU has named her in his report. The photograph has gone to the file's other side."
       - "name the eastern train, and that LYNX is not on it"
 
