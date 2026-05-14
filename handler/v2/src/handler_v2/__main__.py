@@ -19,27 +19,28 @@ from __future__ import annotations
 
 import asyncio
 import sys
-from dataclasses import replace
 from pathlib import Path
 
 from pydantic_ai.models.openai import OpenAIChatModel
-from pydantic_ai.profiles.openai import openai_model_profile
-from pydantic_ai.providers.openai import OpenAIProvider
 
-from .agents import build_scene_runner_bundle
+from .agents import (
+    build_scene_runner_bundle,
+    make_log_writer_runtime,
+)
 from .config import Settings
 from .launcher import resolve_config, start_llama, stop_llama, wait_healthy
-from .main import _probe_inferno_health
+from .main import _probe_inferno_health, build_model
 from .schemas import ContinueScene, EndGame, EndScene, ProsePart
-from .scene_loop import play_scene
-from .state import make_initial_state
-from .world import load_world
+from .scene_loop import play_session
+from .state import LogEntry, State, make_initial_state
+from .world import World, load_world
 
 
 async def _build_model(settings: Settings) -> tuple[OpenAIChatModel, object]:
     """Boot llama or probe inferno; build the OpenAIChatModel pointed at
-    the resulting endpoint. Returns (model, llama_proc-or-None) so the
-    caller can stop_llama on shutdown."""
+    the resulting endpoint via the shared `main.build_model` factory.
+    Returns (model, llama_proc-or-None) so the caller can stop_llama on
+    shutdown."""
     cfg = resolve_config(settings)
     llama_proc = None
     if settings.use_inferno:
@@ -49,14 +50,7 @@ async def _build_model(settings: Settings) -> tuple[OpenAIChatModel, object]:
         llama_proc = start_llama(cfg)
         await wait_healthy(host=cfg.host, port=cfg.port)
         api_url = settings.llama_base_url or f"http://{cfg.host}:{cfg.port}/v1"
-    model_name = "gemma-4-e4b"
-    base_profile = openai_model_profile(model_name)
-    # Load-bearing for the conversation-based log writer (M6); set here
-    # too so the scene-runner agent matches main.py behavior.
-    profile = replace(base_profile, openai_chat_send_back_thinking_parts=False)
-    provider = OpenAIProvider(base_url=api_url, api_key="local")
-    model = OpenAIChatModel(model_name, provider=provider, profile=profile)
-    return model, llama_proc
+    return build_model(api_url), llama_proc
 
 
 def _print_prose_part(prose_part: ProsePart) -> None:
@@ -77,6 +71,7 @@ def _print_prose_part(prose_part: ProsePart) -> None:
 
 def _prompt_pick(prose_part: ProsePart) -> int:
     assert isinstance(prose_part.next, ContinueScene)
+    _print_prose_part(prose_part)
     n = len(prose_part.next.options)
     while True:
         raw = input(f"Pick 1-{n}: ").strip()
@@ -88,6 +83,33 @@ def _prompt_pick(prose_part: ProsePart) -> int:
         if 0 <= idx < n:
             return idx
         print(f"Out of range. Pick 1-{n}.")
+
+
+def _prompt_walk(state: State, world: World) -> str:
+    """Between-scenes adjacent picker for the CLI. The web/eval drivers
+    supply their own pick_walk callback to play_session; this one reads
+    stdin."""
+    location = world.locations[state.player_location]
+    print()
+    for i, adj in enumerate(location.adjacent_to, start=1):
+        print(f"  {i}) Walk to {world.locations[adj].name}")
+    while True:
+        raw = input(f"Pick adjacent 1-{len(location.adjacent_to)}: ").strip()
+        try:
+            idx = int(raw) - 1
+        except ValueError:
+            print("Enter a number.")
+            continue
+        if 0 <= idx < len(location.adjacent_to):
+            destination = location.adjacent_to[idx]
+            print(f"\n=== Scene at {destination} ===")
+            return destination
+        print(f"Out of range. Pick 1-{len(location.adjacent_to)}.")
+
+
+def _print_log_entry(entry: LogEntry) -> None:
+    print("\n--- case-file entry ---")
+    print(f"  {entry.text}")
 
 
 async def _amain() -> int:
@@ -102,43 +124,25 @@ async def _amain() -> int:
     model, llama_proc = await _build_model(settings)
     try:
         bundle = build_scene_runner_bundle(model, world)
+        log_writer = make_log_writer_runtime(model, world)
         state = make_initial_state(world)
 
         print(f"\n=== Scene at {state.player_location} ===")
-        opening_seed = world.brief.opening_seed
-        while state.game_over is None:
-            terminal = await play_scene(
-                bundle, state,
-                opening_seed=opening_seed,
-                pick_option=_prompt_pick,
-            )
-            opening_seed = None
-            _print_prose_part(terminal)
-            if isinstance(terminal.next, EndGame):
-                ending = world.endings[terminal.next.ending_id]
-                print()
-                print(ending.epilogue.strip())
-                break
-            # EndScene — between-scenes; player picks adjacent via map.
-            # CLI surrogate: pick first adjacent.
-            location = world.locations[state.player_location]
-            if not location.adjacent_to:
-                print("[stranded — no adjacents]")
-                break
+        terminal = await play_session(
+            bundle, log_writer, state, world,
+            pick_option=_prompt_pick,
+            pick_walk=_prompt_walk,
+            opening_seed=world.brief.opening_seed,
+            on_scene_close=_print_prose_part,
+            on_log_entry=_print_log_entry,
+        )
+        if isinstance(terminal.next, EndGame):
+            ending = world.endings[terminal.next.ending_id]
             print()
-            for i, adj in enumerate(location.adjacent_to, start=1):
-                print(f"  {i}) Walk to {world.locations[adj].name}")
-            while True:
-                raw = input(f"Pick adjacent 1-{len(location.adjacent_to)}: ").strip()
-                try:
-                    idx = int(raw) - 1
-                except ValueError:
-                    print("Enter a number.")
-                    continue
-                if 0 <= idx < len(location.adjacent_to):
-                    state.player_location = location.adjacent_to[idx]
-                    break
-            print(f"\n=== Scene at {state.player_location} ===")
+            print(ending.epilogue.strip())
+        else:
+            # Stranded — only EndScene reachable, no adjacents.
+            print("[stranded — no adjacents]")
         return 0
     finally:
         stop_llama(llama_proc)

@@ -1,0 +1,22 @@
+id: the_slaughtered_lamb
+name: The Slaughtered Lamb
+adjacent_to: [the_post_office, st_caradocs]
+
+description: |
+  The village pub. Low ceiling, blackened beams, peat fire smouldering
+  in the grate even when it isn't strictly cold enough. Behind the bar:
+  a blackboard with prices written in Welsh and English, a row of
+  optics, and a faded photograph from a 1987 sheepdog trial.
+
+  Most evenings it is six or seven regulars. Mid-afternoon it is
+  usually just Old Tom Bevan at the second stool from the door, nursing
+  his bitter. The landlord, Eira Pryce, is Maud's sister-in-law and
+  they do not speak. The back room is used for funerals and the
+  occasional council meeting.
+
+notes:
+  - The fruit machine in the corner is broken and has been since 2003.
+  - The pub's name relates to a nineteenth-century smuggling story, not anything supernatural.
+  - There is a small framed photograph of Megan Pritchard on the wall behind the dartboard, easy to miss. It was put up at the funeral and has not come down.
+  - Eira will sometimes serve in silence and sometimes lean her elbows on the bar and talk. The player has no way to know which on arrival.
+  - Tom drinks Brains Bitter. He has paid for his own pints for fifty years; offering to buy him one is the right gesture only after he has invited it.

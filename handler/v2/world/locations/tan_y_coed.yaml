@@ -1,0 +1,25 @@
+id: tan_y_coed
+name: Tan-y-coed
+adjacent_to: [the_lane, lower_hafod, bryn_iago_wood]
+
+description: |
+  The Vaughn family farm — two hundred acres of sheep ground up the
+  hill from the lane, the buildings tucked under the wood that gives
+  the place its name ("under the trees"). A square stone farmhouse, a
+  modern slate-roofed extension that ruined the look of it, a yard,
+  three working barns, a Land Rover, two dogs, and a sheepdog kennel
+  out the back. The track up from the lane is poor; visitors are not
+  encouraged.
+
+  Eluned Vaughn runs the farm — has done since her husband died in
+  2014 — and her son Dylan does most of the manual work, though his
+  heart is plainly not in it. The kitchen is the only room that gets
+  proper use. There is a kettle on a hot range, an oilcloth on the
+  table, and a smell of dog and lamb fat and tea.
+
+notes:
+  - The Land Rover parked in the yard is the same Land Rover Tom Bevan saw on the night of 14 March 2019.
+  - There is a framed photograph in the kitchen of Dylan and Megan as children at the village summer fete in 2004. Eluned has never thought to remove it.
+  - The dogs (a collie called Cap and a younger one called Mab) bark at the player on first arrival; thereafter they do not.
+  - The kitchen radio is permanently tuned to BBC Radio Cymru; Eluned does not speak Welsh fluently but says she finds the rhythm of it settling.
+  - Eluned will receive a visitor in the yard, briefly. Being invited into the kitchen means something has shifted.

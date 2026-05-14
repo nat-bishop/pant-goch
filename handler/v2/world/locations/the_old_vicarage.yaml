@@ -1,0 +1,24 @@
+id: the_old_vicarage
+name: The Old Vicarage
+adjacent_to: [the_post_office]
+
+description: |
+  Your lodgings for the assignment. A stone-and-slate house set back from
+  the lane behind a yew hedge — two rooms upstairs, a kitchen, and a
+  study on the ground floor with a desk in the bay window. The previous
+  occupant — the actual vicar — was pensioned off when the parish merged
+  with Knighton; the diocese rents it to journalists and walkers now.
+  The hallway smells of damp coats.
+
+  The garden has gone to seed. From the study window you can see the
+  back wall of the post office, then a stretch of pasture, then the
+  hill rising toward St Caradoc's. Mrs Hughes, the housekeeper, comes in
+  three mornings a week to lay a fire and see to the kitchen. She does
+  not gossip.
+
+notes:
+  - On the hall table when the player arrives is a sealed letter from Iwan Pritchard, in a careful older hand.
+  - The desk drawer contains a 2017 OS map of the area, marked up in pencil by the previous occupant for reasons unclear.
+  - The phone in the hall is a corded landline. Mobile reception is one bar in the kitchen and none upstairs.
+  - The kettle is on a gas ring; there is no electric.
+  - Mrs Hughes is not a major character — she does not warm to the player and would not gossip about the village if asked. Treat as background.

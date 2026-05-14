@@ -13,19 +13,28 @@ import pytest
 from pydantic_ai.exceptions import UnexpectedModelBehavior
 from pydantic_ai.models.test import TestModel
 
-from handler_v2.agents import build_scene_runner_bundle
+from handler_v2.agents import (
+    build_scene_runner_bundle,
+    make_log_writer_runtime,
+)
 from handler_v2.engine import enter_scene
 from handler_v2.schemas import (
     ContinueScene,
+    EndGame,
     EndScene,
     Option,
     ProsePart,
     StateChangeBundle,
     UnlockBeat,
 )
-from handler_v2.scene_loop import _fallback_prose_part, play_scene, run_turn
-from handler_v2.state import make_initial_state
-from handler_v2.world import load_world
+from handler_v2.scene_loop import (
+    _fallback_prose_part,
+    play_scene,
+    play_session,
+    run_turn,
+)
+from handler_v2.state import LogEntry, State, make_initial_state
+from handler_v2.world import World, load_world
 
 
 FIXTURE_VALID = Path(__file__).parent / "fixtures" / "world_valid"
@@ -241,3 +250,144 @@ async def test_play_scene_picks_leave_option_records_leave_pick(monkeypatch):
     assert captured_leave_picks[0] is None
     assert captured_leave_picks[1] is not None
     assert captured_leave_picks[1].leaves_for == "the_post_office"
+
+
+# ───────────────────────── play_session ─────────────────────────
+
+
+def _make_session_fixtures():
+    """Helper: load world + build bundle + log writer runtime + state."""
+    world = load_world(FIXTURE_VALID)
+    bundle = build_scene_runner_bundle(TestModel(), world)
+    log_writer = make_log_writer_runtime(TestModel(custom_output_text="entry"), world)
+    state = make_initial_state(world)
+    return world, bundle, log_writer, state
+
+
+async def test_play_session_calls_both_callbacks_and_terminates_on_end_game(monkeypatch):
+    """A scripted policy ends the session on EndGame; the LogEntry and
+    closing-prose callbacks both fire; state.game_over is set."""
+    world, bundle, log_writer, state = _make_session_fixtures()
+
+    proses = iter([
+        # Scene 1: one Continue, then EndScene
+        ProsePart(prose="t1", next=ContinueScene(options=[
+            Option(text="ask"),
+            Option(text="go", leaves_for="the_post_office"),
+        ])),
+        ProsePart(prose="t1-end", next=EndScene()),
+        # Scene 2 at the post office: ends in EndGame after the validator
+        # accepts because evidence prereqs are stubbed (we patch validator).
+        ProsePart(prose="t2", next=ContinueScene(options=[
+            Option(text="ask"),
+            Option(text="leave", leaves_for="the_slaughtered_lamb"),
+        ])),
+        ProsePart(prose="t2-end", next=EndGame(ending_id="published_story")),
+    ])
+
+    async def fake_phase1(*args, **kwargs):
+        return StateChangeBundle()
+
+    async def fake_phase2(*args, **kwargs):
+        return next(proses)
+
+    monkeypatch.setattr("handler_v2.scene_loop.emit_state_changes", fake_phase1)
+    monkeypatch.setattr("handler_v2.scene_loop.emit_prose", fake_phase2)
+
+    log_entries: list[LogEntry] = []
+    closes: list[ProsePart] = []
+
+    def policy_pick(pp: ProsePart) -> int:
+        return 0  # always the first option (non-leave)
+
+    def policy_walk(state: State, world: World) -> str:
+        return world.locations[state.player_location].adjacent_to[0]
+
+    terminal = await play_session(
+        bundle, log_writer, state, world,
+        pick_option=policy_pick,
+        pick_walk=policy_walk,
+        on_log_entry=log_entries.append,
+        on_scene_close=closes.append,
+    )
+
+    # Terminated on EndGame, state reflects it.
+    assert isinstance(terminal.next, EndGame)
+    assert state.game_over is not None
+    assert state.game_over.ending_id == "published_story"
+
+    # Both callbacks fired once per scene end (two scenes = two events each).
+    assert len(closes) == 2
+    assert len(log_entries) == 2
+    # case_file_entries (caller-managed) is None here; play_session builds one.
+
+
+async def test_play_session_pick_walk_only_called_between_scenes(monkeypatch):
+    """pick_walk fires once per EndScene-but-not-EndGame transition. If
+    the session ends in EndGame on the first scene, pick_walk is never
+    called."""
+    world, bundle, log_writer, state = _make_session_fixtures()
+
+    proses = iter([
+        ProsePart(prose="opening", next=EndGame(ending_id="published_story")),
+    ])
+
+    async def fake_phase1(*args, **kwargs):
+        return StateChangeBundle()
+
+    async def fake_phase2(*args, **kwargs):
+        return next(proses)
+
+    monkeypatch.setattr("handler_v2.scene_loop.emit_state_changes", fake_phase1)
+    monkeypatch.setattr("handler_v2.scene_loop.emit_prose", fake_phase2)
+
+    walk_calls: list[str] = []
+
+    def policy_pick(pp: ProsePart) -> int:
+        return 0
+
+    def policy_walk(state: State, world: World) -> str:
+        walk_calls.append(state.player_location)
+        return world.locations[state.player_location].adjacent_to[0]
+
+    terminal = await play_session(
+        bundle, log_writer, state, world,
+        pick_option=policy_pick,
+        pick_walk=policy_walk,
+    )
+
+    assert isinstance(terminal.next, EndGame)
+    # Session ended immediately on EndGame; pick_walk never fired.
+    assert walk_calls == []
+
+
+async def test_play_session_case_file_entries_passed_through(monkeypatch):
+    """The caller-provided case_file_entries list is the same list the
+    log writer appends to — eval drivers can inspect it directly."""
+    world, bundle, log_writer, state = _make_session_fixtures()
+
+    proses = iter([
+        ProsePart(prose="t1", next=EndGame(ending_id="published_story")),
+    ])
+
+    async def fake_phase1(*args, **kwargs):
+        return StateChangeBundle()
+
+    async def fake_phase2(*args, **kwargs):
+        return next(proses)
+
+    monkeypatch.setattr("handler_v2.scene_loop.emit_state_changes", fake_phase1)
+    monkeypatch.setattr("handler_v2.scene_loop.emit_prose", fake_phase2)
+
+    caller_owned: list[str] = []
+
+    await play_session(
+        bundle, log_writer, state, world,
+        pick_option=lambda pp: 0,
+        pick_walk=lambda s, w: w.locations[s.player_location].adjacent_to[0],
+        case_file_entries=caller_owned,
+    )
+
+    # One entry written (one scene ended).
+    assert len(caller_owned) == 1
+    assert caller_owned[0] == "entry"

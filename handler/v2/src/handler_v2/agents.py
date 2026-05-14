@@ -22,11 +22,12 @@ orchestration is REPLACED by pydantic-ai's @output_validator + output_retries=3
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Annotated, Any, Literal, Union
 
 from pydantic import BaseModel, Field, create_model
 from pydantic_ai import Agent, ModelRetry, NativeOutput, RunContext
+from pydantic_ai.messages import ModelMessage
 from pydantic_ai.models.openai import OpenAIChatModel
 
 from .engine import (
@@ -36,6 +37,8 @@ from .engine import (
     validate_state_change_bundle,
 )
 from .prompts import (
+    build_log_writer_system_prompt,
+    build_log_writer_user_prompt,
     build_phase1_tail,
     build_phase2_tail,
     build_prompt_prefix,
@@ -50,7 +53,7 @@ from .schemas import (
     StateChangeBundle,
     UnlockBeat,
 )
-from .state import State
+from .state import LogEntry, State
 from .world import World
 
 
@@ -317,3 +320,87 @@ async def emit_prose(
         prompt, deps=Phase2Deps(state=state, leave_pick=leave_pick)
     )
     return ProsePart.model_validate(result.output.model_dump())
+
+
+# ───────────────────────── log writer agent ─────────────────────────
+
+
+@dataclass
+class LogWriterRuntime:
+    """Session-scoped state for the conversation-based log writer.
+
+    The agent is stateless across instances of the runtime (system prompt
+    baked once for the world). `message_history` accumulates one user +
+    one assistant message per scene-end; the conversation IS the case file
+    so far. Replaced on each successful call with `result.all_messages()`.
+
+    Why a dataclass and not a global: tests need to construct fresh
+    runtimes per test; multiple sessions (if v2 grows beyond single-
+    session) would each carry their own history.
+    """
+
+    agent: Agent[None, str]
+    message_history: list[ModelMessage] = field(default_factory=list)
+
+
+def build_log_writer_agent(
+    model: OpenAIChatModel, world: World
+) -> Agent[None, str]:
+    """Conversation-based log writer agent. System prompt is baked once
+    (full bible + voice rules); each call appends one user message (scene
+    summary) and gets one assistant message (the case-file entry text)
+    back. Output is plain `str` — no NativeOutput / Literal grammar
+    constraint, since the case file is freeform prose.
+
+    The OpenAIModelProfile(openai_chat_send_back_thinking_parts=False)
+    flag is set on the model in lifespan / _build_model — load-bearing
+    for this agent. Without it, pydantic-ai's default 'auto' round-trips
+    `ThinkingPart`s into prior assistant content as <think>...</think>
+    blocks, which Gemma 4 cannot tolerate in multi-turn.
+    """
+    return Agent[None, str](
+        model=model,
+        output_type=str,
+        system_prompt=build_log_writer_system_prompt(world),
+    )
+
+
+def make_log_writer_runtime(
+    model: OpenAIChatModel, world: World
+) -> LogWriterRuntime:
+    """Construct a fresh LogWriterRuntime. Call once per session."""
+    return LogWriterRuntime(agent=build_log_writer_agent(model, world))
+
+
+async def emit_log_entry(
+    runtime: LogWriterRuntime,
+    world: World,
+    state: State,
+) -> LogEntry:
+    """Generate one case-file entry for the just-completed scene.
+
+    Reads scene anchor (scene_id, location, npcs present) from
+    `state.dialogue_history` — at the point this is called (after
+    play_scene returns EndScene/EndGame), the just-completed scene's
+    turns are still in dialogue_history; the next enter_scene will
+    clear it.
+
+    Side effect: mutates `runtime.message_history` with the just-rendered
+    user+assistant pair. Subsequent calls see this scene's entry in
+    their conversation context.
+    """
+    # Caller (play_session) only fires this after play_scene returns;
+    # the just-completed scene guarantees ≥1 turn in dialogue_history.
+    assert state.dialogue_history, "emit_log_entry: empty dialogue_history"
+    user_prompt = build_log_writer_user_prompt(state, world)
+    result = await runtime.agent.run(
+        user_prompt, message_history=runtime.message_history
+    )
+    runtime.message_history = list(result.all_messages())
+    anchor = state.dialogue_history[0]
+    return LogEntry(
+        scene_id=anchor.scene_id,
+        location_id=anchor.location_id,
+        npcs_present=list(anchor.npcs_present),
+        text=result.output.strip(),
+    )

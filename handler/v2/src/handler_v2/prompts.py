@@ -409,3 +409,119 @@ def build_phase2_user_prompt(
         case_file_entries=case_file_entries,
         opening_seed=opening_seed,
     ) + build_phase2_tail(applied, leave_pick=leave_pick)
+
+
+# ───────────────────────── log writer prompts ─────────────────────────
+
+
+def build_log_writer_system_prompt(world: World) -> str:
+    """Stable byte-identical system prompt for the log writer. Baked once at
+    bundle construction. Carries the full bible — the log writer needs cast
+    and truth context to write coherently about people and events, and the
+    KV cache amortises the cost.
+
+    Voice: the case file is the PLAYER'S OWN field notes. First-person,
+    past tense, terse, journalist's habit — what happened, what was said,
+    what felt off. Not omniscient narration; not "the player did X."
+    """
+    return f"""\
+[ROLE]
+You are the player's own voice writing up their field notes after a
+scene ends. You are not a narrator — you are the journalist herself,
+sitting at the desk in the Old Vicarage that evening, recording what
+just happened so it does not slip away.
+
+[THE WORLD]
+{_render_locations_block(world)}
+
+[THE CAST]
+{_render_cast_block(world)}
+
+[THE TRUTH]
+{_render_truth_block(world)}
+
+[YOUR JOB]
+After every scene the player walks out of, you write ONE case-file
+entry: 80-120 words, first person, past tense. Capture what happened,
+who said what, what stayed with you. Notice what was off as much as
+what was said. Each entry stands alone as a piece of writing AND as
+part of an accumulating notebook — the messages you have sent before
+this one ARE the case file so far, and you can refer back to earlier
+moments where it would feel natural.
+
+[VOICE RULES]
+1. First person, past tense. "I sat down at the bar next to Tom Bevan."
+   Never "the player did X." Never omniscient.
+2. Terse. Journalists' habit. Short sentences are stronger than long
+   ones. Do not flower up. Do not editorialise unless it is your own
+   reaction.
+3. Stay inside what the player has seen and heard. Do not invent
+   details the scene did not contain. You know the truth from the
+   bible above, but you cannot WRITE what you have not been told.
+4. Do not number or title the entry. Just write it as a paragraph.
+5. Sound like the same person across entries. You are writing a
+   notebook, not separate articles.
+
+[OUTPUT]
+The case-file entry as plain text. No headers, no quotes around it,
+no metadata. Just the paragraph.
+"""
+
+
+def build_log_writer_user_prompt(state: State, world: World) -> str:
+    """The per-scene-end user message: a structured summary of the
+    just-completed scene that the log writer turns into prose. The user
+    message accumulates as the user side of a long conversation; each
+    assistant reply is one case-file entry.
+
+    Callers (emit_log_entry) only fire this after a completed scene, so
+    dialogue_history is always non-empty by the time we get here.
+    """
+    assert state.dialogue_history, "build_log_writer_user_prompt: empty dialogue"
+    first = state.dialogue_history[0]
+    loc = world.locations[first.location_id]
+    if first.npcs_present:
+        npc_names = [world.npcs[n].name for n in first.npcs_present]
+        npcs_line = ", ".join(npc_names)
+    else:
+        npcs_line = "no one (you were alone there)"
+
+    beats_unlocked: list[str] = []
+    for turn in state.dialogue_history:
+        for change in turn.applied_state_changes:
+            beats_unlocked.append(change.beat_id)
+    beats_line = ", ".join(beats_unlocked) if beats_unlocked else "(none)"
+
+    turn_parts: list[str] = []
+    for i, turn in enumerate(state.dialogue_history, start=1):
+        applied = (
+            ", ".join(c.beat_id for c in turn.applied_state_changes)
+            if turn.applied_state_changes
+            else "(no beat)"
+        )
+        turn_parts.append(
+            f"Turn {i} [beat fired: {applied}]:\n"
+            f"  Narrator: {turn.prose.strip()}"
+        )
+        if turn.player_pick is not None:
+            leave = (
+                f" [→ left for {turn.player_pick.leaves_for}]"
+                if turn.player_pick.leaves_for
+                else ""
+            )
+            turn_parts.append(
+                f'  You picked: "{turn.player_pick.text}"{leave}'
+            )
+
+    turns_block = "\n".join(turn_parts)
+
+    return f"""\
+The scene that just ended took place at {loc.id} ({loc.name}).
+Present: {npcs_line}.
+Beats unlocked in this scene: {beats_line}.
+
+Turn-by-turn:
+{turns_block}
+
+Write the case-file entry now. 80-120 words. First person, past tense.
+Stay inside what you saw and heard."""

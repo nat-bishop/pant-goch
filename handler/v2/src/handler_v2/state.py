@@ -29,6 +29,24 @@ class GameOver:
 
 
 @dataclass
+class LogEntry:
+    """One case-file entry. Written by the log writer after a scene ends;
+    the text is what streams to the player's case-file sidebar AND folds
+    back into the next scene's `[CASE FILE]` prompt block.
+
+    Anchors (scene_id, location_id, npcs_present) come from the
+    just-completed scene's first dialogue_history turn — all turns in a
+    scene share these. v1 had an `action` field for the picked Option;
+    v2's logs are scene-keyed (multiple turns per entry) so it's dropped.
+    """
+
+    scene_id: int
+    location_id: str
+    npcs_present: list[str]
+    text: str
+
+
+@dataclass
 class TurnRecord:
     """One completed turn within a scene. Carries the scene anchor (scene_id,
     location, npcs_present) so the renderer can group consecutive same-scene

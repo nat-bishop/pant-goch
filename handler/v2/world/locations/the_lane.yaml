@@ -1,0 +1,22 @@
+id: the_lane
+name: The Lane
+adjacent_to: [st_caradocs, knighton, tan_y_coed]
+
+description: |
+  The single through-road that connects the village to everything else.
+  Hedgerows on both sides, blackthorn and hazel; the tarmac was
+  resurfaced badly five years ago and is already going to pieces. From
+  here, north takes you up to Tan-y-coed, south to Knighton, east back
+  toward the church and the village proper.
+
+  There is no signage. The locals don't need any; everyone else takes
+  the wrong turning at least once. In the mornings the school bus
+  shudders along this stretch picking up the four children who still
+  catch it.
+
+notes:
+  - The bus stop is a concrete slab with a rusted "Bws Ysgol" sign.
+  - A gap in the hedge here gives an oblique view of Tan-y-coed farmyard a quarter-mile up the hill.
+  - This is the road Megan was driving back from Tan-y-coed on the night she died, before the bend.
+  - There is no street lighting; on a clear night the lane is genuinely dark in a way visitors from cities find disquieting.
+  - A walker found here in the evening is almost certainly Dylan Vaughn coming down from the wood. He does not stop for cars.
