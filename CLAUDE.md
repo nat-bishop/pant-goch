@@ -10,7 +10,11 @@ HANDLER v2 — LLM-driven investigation game set in the Welsh Marches village of
 
 ## v2 invariants (provisional — supersede with handler/CLAUDE.md when written)
 
-- **Two-stage emission per scene turn.** Scene-runner is one pydantic-ai agent with one stable system prompt; per turn it makes two LLM calls: (1) `StateChangeBundle` (validated against `requires_beats` / `blocked_by_beats`; `ModelRetry` on failure, budget 2), then (2) `ProsePart` (free-form prose + options, conditioned on the just-applied state). Both calls share the KV cache because the system prompt is byte-identical.
+- **Two-stage emission per scene turn, SEPARATE system prompts per phase.** Per turn the scene runner makes two LLM calls:
+  - **Phase 1 — `StateChangeBundle`**: classifier with full bible system prompt (`build_phase1_system_prompt`: locations + cast-with-knowledge + beats + notes_to_llm + endings). Stateless per turn. Validated against `requires_beats` / `blocked_by_beats`; `ModelRetry` on failure, budget 2.
+  - **Phase 2 — `ProsePart`**: narrator with slim voice-focused system prompt (`build_phase2_system_prompt`: locations + cast-with-voice-samples + crime overview + few-shot style examples). NO beats, NO notes_to_llm, NO endings, NO per-NPC knowledge. Scene-bounded conversation: `runtime.phase2_message_history` accumulates within a scene (the model sees its own prior prose as assistant messages), resets at scene boundary (`enter_scene`). On retry exhaustion, fallback prose is NOT persisted to history.
+
+  The split is a deliberate trade: lose the inter-phase KV cache hit (system prompts now differ), gain Phase 2 attention focus on writing. Phase 1 system prompt is byte-stable across the session; Phase 2 system prompt is byte-stable across the session AND scenes; inter-turn cache hits remain on both.
 
 - **No tool-call loop.** State changes are typed fields in `StateChange` (a discriminated union: `unlock_beat`, `move_npc`, ...). They are NOT pydantic-ai tool calls. If you find yourself wanting "a tool that...", either it's a new `StateChange` variant or it's out of scope.
 
@@ -18,7 +22,9 @@ HANDLER v2 — LLM-driven investigation game set in the Welsh Marches village of
 
 - **`unlock_beat` capped at ≤2 per turn.** Schema enforces; engine validates. Prevents cascade-unlocking the truth in one beat.
 
-- **Two agents.** Scene runner (stateless, fresh `message_history` per turn) and log writer (conversation-based, one user+assistant pair appended per scene-end, system prompt carries the bible + journalist's voice rules). Log writer's accumulating history is the case file.
+- **Three runtimes.** `AgentBundle` (world-scoped, immutable: phase1 + N phase2 agents). `SceneRunnerRuntime` (session-scoped, holds Phase 2's `phase2_message_history`; cleared per scene). `LogWriterRuntime` (session-scoped, accumulating one user+assistant pair per scene-end — the conversation is the case file). All three threaded through `play_session(bundle, scene_runner, log_writer, state, world, ...)`.
+
+- **NPC voice samples + few-shot examples are authored data, not engine constants.** `NPC.voice_sample: list[str]` lives in `cast.yaml` per NPC (1-2 representative lines). `world/few_shots.yaml` (optional file) holds 1-2 example exchanges. Both surface ONLY in the Phase 2 system prompt; Phase 1 never sees them.
 
 - **`OpenAIModelProfile(openai_chat_send_back_thinking_parts=False)`** is set when building the model (see `handler.main.build_model`). Without it, pydantic-ai's default round-trips `ThinkingPart`s back into prior assistant content as `<think>...</think>` blocks, violating Gemma 4's multi-turn rule. The log writer's accumulating `message_history` makes this load-bearing.
 
@@ -33,7 +39,7 @@ HANDLER v2 — LLM-driven investigation game set in the Welsh Marches village of
 These each carry an inline `# Why:` at the call site — preserve them:
 
 - `handler/src/handler/launcher.py` — `--jinja` always required (Gemma chat template). `--flash-attn on`, `--batch-size 512 --ubatch-size 512` non-negotiable. KV cache stays fp16. Bundled `llama-server.exe` lives at `vendor/llama.cpp/` (resolved from `handler/../vendor/llama.cpp/`).
-- `handler/src/handler/agents.py` — `build_scene_runner_system_prompt`, `build_log_writer_system_prompt` are the stable-prefix half of the KV-friendly structure. Per-turn `Literal` builders for `unlock_beat` / `move_npc` are dynamic. Don't merge system and user surfaces.
+- `handler/src/handler/agents.py` — `build_phase1_system_prompt`, `build_phase2_system_prompt`, `build_log_writer_system_prompt` are the stable per-phase prompts that anchor KV cache across turns/scenes. Per-turn `Literal` builders for `unlock_beat` / `move_npc` are dynamic. `SceneRunnerRuntime.phase2_message_history` is the scene-bounded conversation; resetting it lives in `play_scene` (after `enter_scene`). Don't merge phase 1 and phase 2 prompts — the split is the whole point.
 - `handler/src/handler/scene_loop.py` — `play_session(...)` is the single composable driver shared by CLI, SSE backend, and tests. Async/sync callbacks both supported via `_maybe_await`.
 - `handler/web/index.html` — Courier Prime via Google Fonts CDN. Single dark theme with sepia/parchment accents — no FOUC theme script.
 

@@ -27,6 +27,9 @@
     family, or to lies. He drinks Brains Bitter; he will let the
     player buy him one only after he has indicated, in his own way,
     that the player is welcome to.
+  voice_sample:
+    - "Aye. Not my business, was it."
+    - "You're not from round here. I can see that."
 
 - id: maud
   name: Maud Pryce
@@ -49,6 +52,9 @@
     telling is the right thing — usually by demonstrating they already
     know more than she expected, or by showing they are not after
     sensation.
+  voice_sample:
+    - "Oh, well. You'll have to ask someone else about that, my love."
+    - "Funny times, weren't they. Funny times."
 
 - id: iwan
   name: Iwan Pritchard
@@ -75,6 +81,9 @@
     will embarrass him and themselves. He will offer tea and not eat
     in front of you. He grows warmer to a player who comes back a
     second and third time.
+  voice_sample:
+    - "I'll put the kettle on. Sit there, if you would."
+    - "It's the not knowing. That's the worst of it."
 
 - id: wendy
   name: Wendy Pritchard
@@ -94,6 +103,9 @@
     leave the room when they arrive. If pressed in conversation she
     becomes cold; if pushed past that she will cry, which the player
     will find far worse than anger. She wants the player to leave.
+  voice_sample:
+    - "I think you should go now. Please."
+    - "Iwan asked you here. I did not."
 
 - id: eluned
   name: Eluned Vaughn
@@ -118,6 +130,9 @@
     invites them. She will throw the player out without raising her
     voice the moment she decides the player is dangerous. After that
     she will not open the door.
+  voice_sample:
+    - "You'll say what you came to say, and then you'll go."
+    - "This is my land. I don't owe you a single word."
 
 - id: dylan
   name: Dylan Vaughn
@@ -147,6 +162,9 @@
     unable to stop. He will close down completely if the player is
     aggressive, performative, or if the conversation feels like a
     transaction.
+  voice_sample:
+    - "Not here. Please. Not here."
+    - "If you already know, then you already know."
 
 - id: gareth
   name: Father Gareth Hughes
@@ -168,6 +186,9 @@
     suggesting where the player might usefully look. He values the
     player as a person and will not weaponise their visit. He will
     also not, under any circumstances, say what he heard.
+  voice_sample:
+    - "There are things I cannot tell you. There are things I will not."
+    - "Have you spoken to Tom Bevan? You should. Properly."
 
 - id: helen
   name: DC Helen Mortimer
@@ -191,6 +212,9 @@
     enough together that her contribution does not constitute a leak.
     She will refuse the player entirely if the player threatens her
     position by being indiscreet.
+  voice_sample:
+    - "Off the record. And I mean that. Off the record."
+    - "I knew. I couldn't prove it. That's a different thing."
 
 - id: owain
   name: Owain Pugh
@@ -214,3 +238,6 @@
     are half-remembered fact; he himself can no longer always tell.
     He has been off the drink since 2022 and is steadier than Wendy
     gives him credit for.
+  voice_sample:
+    - "Now there's a story. You'll want to sit down for it, mind."
+    - "I don't say I saw it. I say it was seen."

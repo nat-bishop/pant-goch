@@ -26,7 +26,7 @@ The engine and the LLM communicate through **structured output**, not pydantic-a
 - **`unlock_beat`, `move_npc`** — names of state-change kinds, NOT tool function names. The model emits them inside a `StateChange[]` field; the engine applies them after validation.
 - **No tool-call loop.** There is no pydantic-ai tool execution layer. There is no mid-turn tool-result feedback to the model. One LLM emission per turn-phase (see two-stage emission below).
 - **ModelRetry** — pydantic-ai's mechanism for re-prompting the model when its structured output fails application-layer validation (e.g., `unlock_beat` for a beat whose `requires_beats` aren't yet satisfied, or whose `blocked_by_beats` already are). This is the load-bearing safety mechanism that prevents AI-Dungeon-style drift; it's announced here so it isn't surprising in §3. Retry budget capped at N=2 per phase.
-- **Two-stage emission** — to make ModelRetry operationally feasible alongside word-by-word prose streaming, each turn is two LLM calls against the same scene-runner system prompt: (1) `StateChangeBundle` (state_changes only, validated; ModelRetry on failure), (2) `ProsePart` (prose + next + options, conditioned on the just-applied state). The two calls share the KV cache because the system prompt is byte-identical. Detail in §3.3 / §4.1.
+- **Two-stage emission, separate system prompts per phase** — each turn is two LLM calls with DIFFERENT system prompts: (1) `StateChangeBundle` against a classifier prompt (full bible: locations + cast-with-knowledge + beats + notes_to_llm + endings), validated, ModelRetry on failure; (2) `ProsePart` against a narrator prompt (locations + cast-with-voice-samples + crime overview + few-shot examples — NO beats, NO notes_to_llm, NO endings, NO per-NPC knowledge), prose + next + options conditioned on the just-applied state. The split costs the inter-phase KV cache hit; it buys Phase 2 attention focus on writing (vs. beat-aware prose). Each phase's system prompt is byte-stable across the session → cache hits across every turn. Phase 2 is additionally scene-bounded conversation: assistant messages accumulate within a scene and reset at scene boundary. Detail in §3.3 / §4.1.
 
 If you find yourself wanting "a tool that...", stop and reconsider. Either it's a new state-change kind (typed field in `StateChange`), or it requires a real tool-call layer that's currently out of scope.
 
@@ -584,18 +584,17 @@ The closing prose streams; SSE `scene_exit` fires; `location_change { from, to }
 
 ## 4. The LLM layer
 
-### 4.1 Two agents
+### 4.1 Three agent layers
 
-**Scene runner.** Stateless across turns. System prompt baked once at startup (the full world bible). Each turn is a **two-phase emission** (see §0.4 / §3.2 / §3.3) against the same system prompt:
+**Scene runner — Phase 1 (state-change classifier).** Stateless across turns. System prompt baked once at startup (full bible: locations + cast-with-knowledge + beats with `requires_beats`/`blocked_by_beats`/`notes_to_llm` + endings). `emit_state_changes()` → `StateChangeBundle`. Validated; ModelRetry up to N=2 on `requires_beats` / `blocked_by_beats` violations and the ≤2 cap; final failure drops the offending change.
 
-- Phase 1: `emit_state_changes()` — structured output `StateChangeBundle`. Validated; ModelRetry up to N=2 on `requires_beats` / `blocked_by_beats` violations; final failure drops the offending change.
-- Phase 2: `emit_prose()` — structured output `ProsePart`. Conditioned on the just-applied state changes (passed in the user-side prompt). Validated for ending prereqs; ModelRetry on violation. Prose streams word-by-word at ~80ms pacing.
+**Scene runner — Phase 2 (narrator).** Scene-bounded conversation. System prompt baked once at startup, separate from Phase 1's (locations + cast-with-voice-samples + crime overview + few-shot style examples — NO beats, NO notes_to_llm, NO endings, NO per-NPC knowledge). `emit_prose(runtime, …)` → `ProsePart`, conditioned on the just-applied state changes (passed in the user message). `runtime.phase2_message_history` accumulates within a scene; cleared in `enter_scene`. Validated for ending prereqs / leave-pick → EndScene / ≥1 leave option; ModelRetry on violation. On retry exhaustion, engine emits generic fallback prose that is NOT persisted to history (voice continuity preserved). Prose streams word-by-word at ~80ms pacing.
 
-Both phases share the same KV cache because the system prompt is byte-identical and the dynamic suffix is appended fresh per call. The phase-1 call is short (often empty `state_changes: []`), so its decode latency is small; phase 2 carries the prose bulk and dominates wall-clock.
+The two phases now have DIFFERENT system prompts → no inter-phase KV cache sharing within a turn. Inter-turn cache hits remain on both: Phase 1 system prompt is byte-stable across the session; Phase 2 system prompt is byte-stable across the session AND scenes, with intra-scene message history acting as additional cached prefix. The trade is deliberate: Phase 2 attention focuses on writing, not on beat structure.
 
 A third method, `emit_closing_prose(to_location)` (single phase, schema is just `closing_prose: str`), serves player-driven leave (§3.4).
 
-**Log writer.** Conversation-based, accumulating message_history across scenes. System prompt stable. Each scene-end appends one user message (scene summary: location, NPCs present, beats unlocked, key turns) + one assistant message (the case-file entry). `OpenAIModelProfile(openai_chat_send_back_thinking_parts=False)` is set in lifespan (load-bearing — without it Gemma 4 drifts in multi-turn).
+**Log writer.** Conversation-based, accumulating message_history across scenes. System prompt stable. Each scene-end appends one user message (scene summary: location, NPCs present, beats unlocked, key turns) + one assistant message (the case-file entry). `OpenAIModelProfile(openai_chat_send_back_thinking_parts=False)` is set in lifespan (load-bearing — without it Gemma 4 drifts in multi-turn). Same flag covers Phase 2's scene-bounded history.
 
 ### 4.2 Scene runner prompt structure
 
@@ -732,7 +731,7 @@ consistent with the state changes above. Then emit one of:
 - **Launcher flags:** `--jinja --flash-attn on --batch-size 512 --ubatch-size 512`. KV cache fp16.
 - **Sampling:** temp=1.0, top_p=0.95, top_k=64. Do not drop temp for "judgment" turns — the model needs creative latitude inside the constraint of the bible.
 - **Grammar sampler:** llama.cpp grammar sampling enforces the per-call `Literal[...]` enums for ids (beat, npc, location, ending). The LLM cannot emit a beat that doesn't exist.
-- **KV-cache discipline:** system prompt is baked once at startup and never edited. Every per-turn user prompt is appended after the same stable prefix. Cache hit rate is the lever for latency.
+- **KV-cache discipline:** each phase's system prompt is baked once at startup and never edited. Per-turn user prompts are appended after the same stable per-phase prefix. The Phase-1/Phase-2 split costs the intra-turn inter-phase hit (system prompts differ); it preserves the intra-session inter-turn hit on both phases and the intra-scene Phase 2 conversation-prefix hit. Cache hit rate is still the lever for latency.
 - **Dev gateway:** keep `SMALLVILLE_USE_INFERNO=1` env-var pattern. If set, lifespan probes inferno's `/health`, points pydantic-ai at inferno's `/v1`. Otherwise spawn bundled llama-server on `:8080`.
 
 ---

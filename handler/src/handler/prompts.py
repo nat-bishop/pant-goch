@@ -1,22 +1,23 @@
 """Scene-runner prompt builders.
 
-KV-cache discipline (per plan):
-  System prefix (baked at startup, byte-identical forever):
-    [ROLE] + [THE WORLD] + [THE CAST] + [THE TRUTH] + [YOUR JOB] + [RULES]
+Phase 1 (state-change classifier) and Phase 2 (prose narrator) each carry
+their own stable system prompt. The split is deliberate: Phase 2 attention
+is finite on a 4B model, and beat structure (notes_to_llm, requires_beats)
+in Phase 2's context produced beat-aware prose (telegraphed reveals, NPCs
+serving structure). Phase 2 now sees voice samples + few-shot examples +
+crime overview only; the beat catalog is Phase 1's job.
 
-  Dynamic suffix (rebuilt per call, in this order — most-stable → least-stable):
-    [YOU ARE AT] / [PRESENT] / [STATE] / [REACHABLE BEATS] /
-    [ALL ENDINGS] / [CASE FILE] / [THIS SCENE SO FAR] / [OPENING SEED]
-    ↓ DIVERGENCE POINT — phase 1 / phase 2 differ from here
-    Phase 1: [GENERATE STATE CHANGES FOR THIS TURN]
-    Phase 2: [STATE CHANGES JUST APPLIED] + [GENERATE PROSE AND NEXT]
+KV cache (post-split):
+  Phase 1 system prompt: byte-stable across the session — cache hits across
+    every turn. Bible-shaped (large), classifier-shaped.
+  Phase 2 system prompt: byte-stable across the session — cache hits across
+    every turn AND across scenes. Voice-shaped (slim), narrator-shaped.
+  Per-turn user prompts: rebuilt fresh per call. No more inter-phase prefix
+    sharing — that was the cost of the split.
 
-The system prefix is built ONCE in `build_scene_runner_system_prompt(world)`
-at lifespan boot. Per-call, `build_prompt_prefix(state, ...)` renders the
-shared dynamic suffix and `build_phase1_tail()` / `build_phase2_tail(...)`
-render the divergence-point tails. Phase 2's prompt = phase 1 prompt's
-prefix + phase 2 tail, so KV cache hits cover everything before the
-divergence.
+Phase 2 is also scene-bounded conversation: the model sees its own prior
+prose as assistant messages within a scene. message_history resets at
+scene boundary (enter_scene). See SceneRunnerRuntime in agents.py.
 """
 from __future__ import annotations
 
@@ -26,7 +27,7 @@ from .state import State
 from .world import World
 
 
-# ───────────────────────── system prompt (stable prefix) ─────────────────────────
+# ───────────────────────── shared block renderers ─────────────────────────
 
 
 def _render_locations_block(world: World) -> str:
@@ -43,39 +44,47 @@ def _render_locations_block(world: World) -> str:
     return "\n".join(parts)
 
 
-def _render_npc_card(npc, *, include_default_location: bool) -> str:
+def _render_npc_card(
+    npc,
+    *,
+    include_default_location: bool,
+    include_knowledge: bool,
+    include_voice_sample: bool,
+) -> str:
+    """Render one NPC.
+
+    Phase 1 / log writer: include_knowledge=True (full bible).
+    Phase 2: include_knowledge=False, include_voice_sample=True (drops
+    truth specifics; adds voice register).
+    """
     themes = "; ".join(npc.themes) if npc.themes else "(none)"
     head = (
         f"- {npc.id} ({npc.name}, default at {npc.default_location}):"
         if include_default_location
         else f"- {npc.id} ({npc.name}):"
     )
-    return (
-        f"{head}\n"
-        f"  themes: {themes}\n"
-        f"  knowledge: {npc.knowledge.strip()}\n"
-        f"  attitude: {npc.attitude.strip()}"
-    )
+    parts = [head, f"  themes: {themes}"]
+    if include_knowledge:
+        parts.append(f"  knowledge: {npc.knowledge.strip()}")
+    parts.append(f"  attitude: {npc.attitude.strip()}")
+    if include_voice_sample and npc.voice_sample:
+        samples = " | ".join(f'"{line.strip()}"' for line in npc.voice_sample)
+        parts.append(f"  voice_sample: {samples}")
+    return "\n".join(parts)
 
 
-def _render_cast_block(world: World) -> str:
+def _render_cast_block(world: World, *, voice_only: bool) -> str:
+    """`voice_only=False`: Phase 1 / log writer bible (with knowledge).
+    `voice_only=True`: Phase 2 (drops knowledge, adds voice_sample)."""
     return "\n".join(
-        _render_npc_card(npc, include_default_location=True)
+        _render_npc_card(
+            npc,
+            include_default_location=True,
+            include_knowledge=not voice_only,
+            include_voice_sample=voice_only,
+        )
         for npc in world.npcs.values()
     )
-
-
-def _render_truth_block(world: World) -> str:
-    parts: list[str] = [
-        f"CRIME:\n{world.crime.strip()}\n",
-        "BEATS (the moments that constitute uncovering the truth):",
-    ]
-    for beat in world.beats.values():
-        parts.append(_render_beat(beat))
-    parts.append("\nENDINGS (terminal states, gated by decision beats):")
-    for ending in world.endings.values():
-        parts.append(_render_ending(ending))
-    return "\n".join(parts)
 
 
 def _render_beat(beat) -> str:
@@ -105,85 +114,176 @@ def _render_ending(ending) -> str:
     )
 
 
-def build_scene_runner_system_prompt(world: World) -> str:
-    """Stable byte-identical system prompt baked at lifespan boot. Carries
-    the entire world bible. Never changes within a session — KV cache
-    relies on this.
+def _render_truth_block_full(world: World) -> str:
+    """Phase 1 / log writer: crime + full beat catalog + endings."""
+    parts: list[str] = [
+        f"CRIME:\n{world.crime.strip()}\n",
+        "BEATS (the moments that constitute uncovering the truth):",
+    ]
+    for beat in world.beats.values():
+        parts.append(_render_beat(beat))
+    parts.append("\nENDINGS (terminal states, gated by decision beats):")
+    for ending in world.endings.values():
+        parts.append(_render_ending(ending))
+    return "\n".join(parts)
+
+
+def _render_few_shots(world: World) -> str:
+    """Phase 2 [STYLE EXAMPLES] block. Empty list → empty marker."""
+    if not world.few_shots:
+        return "(no examples authored)"
+    parts: list[str] = []
+    for i, fs in enumerate(world.few_shots, start=1):
+        parts.append(
+            f"--- Example {i} ---\n"
+            f"Setup: {fs.setup.strip()}\n"
+            f"Player picked: {fs.player.strip()}\n"
+            f"Narrator wrote:\n{fs.narrator.strip()}"
+        )
+    return "\n\n".join(parts)
+
+
+# ───────────────────────── system prompts (per-phase, stable) ─────────────────────────
+
+
+def build_phase1_system_prompt(world: World) -> str:
+    """Phase 1 system prompt — the state-change classifier. Carries the
+    full world bible: locations, cast with knowledge, beats with
+    requires/blocks/notes_to_llm, endings. Byte-stable across the session.
+
+    Phase 1 is a classifier dressed as a writer: it reads the conversation
+    so far and decides which (if any) authored beats just fired. Voice
+    instructions are not its job — Phase 2 handles prose. This prompt is
+    large; that's fine, Phase 1 needs the structure.
     """
     return f"""\
 [ROLE]
-You are the scene runner for a single-player investigation game. The
-player is a freelance journalist investigating a closed-but-suspicious
-death. You run scenes turn by turn through structured output. The world
-is hand-authored; you do not invent locations, characters, or facts
-beyond what the bible below contains.
+You are the state-change classifier for a single-player investigation
+game. The player is a freelance journalist investigating a closed-but-
+suspicious death. Each turn you read the conversation so far and emit
+zero, one, or at most two UnlockBeat state changes — the authored beats
+whose described moment has just genuinely landed. Stay within the
+established cast and locations below.
 
 [THE WORLD]
 {_render_locations_block(world)}
 
 [THE CAST]
-{_render_cast_block(world)}
+{_render_cast_block(world, voice_only=False)}
 
 [THE TRUTH]
-{_render_truth_block(world)}
+{_render_truth_block_full(world)}
 
 [YOUR JOB]
-Each turn against this same system prompt, two structured emissions:
+Each turn, against this same system prompt, emit ONE structured output:
+StateChangeBundle — zero, one, or at most two UnlockBeat entries. Most
+turns emit zero. A beat fires only when the moment described in its
+notes_to_llm has genuinely landed in the conversation.
 
-  Phase 1 — StateChangeBundle: zero, one, or two state changes
-    (UnlockBeat). The engine validates and applies them. Most turns emit
-    zero. A beat fires only when the moment described in its
-    notes_to_llm has genuinely landed in the conversation.
-
-  Phase 2 — ProsePart: prose (80-200 words) consistent with the
-    just-applied changes, plus a `next` directive:
-      - ContinueScene with 2-4 options (≥1 must have leaves_for set —
-        the player must always have a walk-away choice).
-      - EndScene (use when the conversation has reached a natural pause).
-      - EndGame with an ending_id (only when that ending's requires_beats
-        are satisfied — the engine will reject otherwise).
-
-The user prompt tells you which phase you are in.
+The engine validates and applies your bundle, then a separate prose
+agent (with its own system prompt) writes the prose conditioned on what
+fired. You do not write prose.
 
 [RULES]
-1. Never invent characters not in the cast above. Never invent locations
-   not in the world. Minor details (weather, a dog, a mug on the bar)
-   are fine — full new people or places break the world's coherence.
+1. Unlock beats when their notes_to_llm describes the moment that just
+   happened in the conversation. Re-read the prereqs. Don't unlock
+   prematurely. The engine will reject any UnlockBeat whose
+   requires_beats aren't satisfied or whose blocked_by_beats already
+   are; you will be re-prompted with the error.
 
-2. ContinueScene options: 2-4 per turn. Options are what the player
-   can say or do that has no major consequence — dialogue, observation,
-   minor action. At least one option must have `leaves_for` set to an
-   adjacent location id (player exits via leave-options; the map is
-   inert during scenes). Do not promise a consequence requiring a beat
-   the world doesn't have.
+2. End the game only when the player has clearly chosen the action
+   that triggers an ending. Each ending depends on a "decision beat"
+   that fires only when the player explicitly commits. (Phase 2 will
+   emit the EndGame; your job is to fire the decision beat when it
+   lands.)
 
-3. Unlock beats when their notes_to_llm describes the moment. Re-read
-   the prereqs. Don't unlock prematurely. The engine will reject (and
-   re-prompt) any UnlockBeat whose requires_beats aren't satisfied or
-   whose blocked_by_beats already are.
-
-4. End the scene when the conversation has reached a natural stop or
-   when a beat has fired and the scene's purpose is done. 4-8 turns is
-   typical; longer is fine if the conversation warrants. Don't drag.
-
-5. End the game only when the player has clearly chosen the action
-   that triggers an ending — not just when prerequisites are met. Each
-   ending depends on a "decision beat" that fires only when the player
-   explicitly commits. End the game only after that decision beat is
-   in state. The engine rejects EndGame otherwise.
-
-6. When the user prompt says the player chose to leave for a specific
-   adjacent location, you MUST emit EndScene as your phase-2 next.
-   Phase 1 may still fire a beat (the act of leaving CAN be the
-   moment), but phase 2's next is fixed.
-
-7. State changes flow through UnlockBeat only. Free options are pure
-   narrative — they have no mechanical effect. The engine writes state;
-   you write prose.
+3. Stay within the established cast and locations. The bible above is
+   complete.
 """
 
 
-# ───────────────────────── dynamic suffix (shared phase 1 / phase 2) ─────────────────────────
+def build_phase2_system_prompt(world: World) -> str:
+    """Phase 2 system prompt — the narrator. Slim, voice-focused. NO
+    beats, NO notes_to_llm, NO endings, NO per-NPC knowledge. The
+    narrator knows what happened (the crime overview), the cast's voice
+    and attitude, and the locations. It does NOT know who-knows-what or
+    which beats are gated on what.
+
+    Byte-stable across the session; KV cache hits across every turn AND
+    across scenes. Phase 2 also accumulates scene-bounded message
+    history; this system prompt is the cache anchor for that history.
+    """
+    return f"""\
+[ROLE]
+You are the narrator of a single-player investigation game. The player
+is a freelance journalist looking into a death in the Welsh Marches
+village of Pant Goch. Each turn you write 80-200 words of prose for
+what just happened, followed by 2-4 options the player can pick from.
+Stay within the established cast and locations below.
+
+[THE WORLD]
+{_render_locations_block(world)}
+
+[THE CAST]
+{_render_cast_block(world, voice_only=True)}
+
+[WHAT HAPPENED]
+{world.crime.strip()}
+
+You know this as the narrator. Your characters do not know all of it,
+and most of them are protecting some part of it. Write them as people
+in a village, not as keepers of plot beats.
+
+[VOICE RULES]
+1. 80-200 words of prose per turn. Close third, past tense, terse.
+   Short sentences are stronger than long ones. Dialogue carries the
+   scene where it can; interiority is a tool, not a default.
+
+2. Render dialogue in the cast members' established voice. The
+   voice_sample lines above show the register — match it, don't
+   imitate verbatim. NPCs speak like people in a Welsh Marches
+   village, not like characters announcing what they know.
+
+3. Stay inside what the player has observed. Do not write what
+   characters secretly think or know unless they are visibly choosing
+   to reveal it. Atmosphere and small physical detail — a glass turned
+   on the bar, a wood pigeon going off — beat exposition.
+
+4. Stay within the established cast and locations. Minor incidental
+   details (weather, a dog, a mug on the table) are fine. New named
+   people or places are not.
+
+[STYLE EXAMPLES]
+The register and rhythm to match:
+
+{_render_few_shots(world)}
+
+[OPTIONS RULES]
+After the prose, emit a `next` directive:
+  - ContinueScene with 2-4 options. Each option is something the
+    player can say or do that has no major consequence — dialogue,
+    observation, small action. At least one option must be a "leave
+    for…" with `leaves_for` set to an adjacent location id; the player
+    must always have a walk-away choice.
+  - EndScene when the conversation has reached a natural pause. Scenes
+    of 4-8 turns are typical; longer is fine if the conversation
+    warrants. Don't drag.
+  - EndGame with an `ending_id` when the player has clearly committed
+    to the action that triggers that ending and the engine state
+    supports it. The engine will reject otherwise.
+
+When the user prompt says the player chose to leave for a specific
+adjacent location, you MUST emit EndScene. Write a brief goodbye line
+in the prose; the `next` is fixed.
+
+[YOUR JOB]
+Each turn, emit ONE structured output: ProsePart — prose (80-200 words)
+plus the `next` directive. State changes were already decided and
+applied by a separate agent before you ran; your job is to narrate.
+"""
+
+
+# ───────────────────────── phase 1 user prompt (rich context) ─────────────────────────
 
 
 def _render_you_are_at(state: State, world: World) -> str:
@@ -197,13 +297,20 @@ def _render_you_are_at(state: State, world: World) -> str:
     )
 
 
-def _render_present(state: State, world: World) -> str:
+def _render_present(state: State, world: World, *, voice_only: bool) -> str:
+    """[PRESENT] block. `voice_only=True` for Phase 2 (no knowledge, with
+    voice_sample); `voice_only=False` for Phase 1 (full knowledge)."""
     npcs_here = world.npcs_at(state.player_location)
     if not npcs_here:
         return "[PRESENT]\n(no one — you are alone here.)"
     parts = ["[PRESENT]"]
     for npc in npcs_here:
-        parts.append(_render_npc_card(npc, include_default_location=False))
+        parts.append(_render_npc_card(
+            npc,
+            include_default_location=False,
+            include_knowledge=not voice_only,
+            include_voice_sample=voice_only,
+        ))
     return "\n".join(parts)
 
 
@@ -263,9 +370,9 @@ def _render_case_file(case_file_entries: list[str] | None) -> str:
 
 
 def _render_this_scene(state: State, world: World) -> str:
-    """Renders dialogue_history for the current scene. With per-scene
-    clearing, all turns share the same scene_id — one scene header at the
-    top, then bare prose+pick per turn."""
+    """Phase 1's view of the current scene — structured turn-by-turn data
+    (the classifier needs the applied state changes per turn to decide
+    what's next)."""
     if not state.dialogue_history:
         return "[THIS SCENE SO FAR]\n(this is the first turn of the scene.)"
     first = state.dialogue_history[0]
@@ -301,19 +408,29 @@ def _render_opening_seed(opening_seed: str | None) -> str:
     return f"\n[OPENING SEED]\n{opening_seed.strip()}\n"
 
 
-def build_prompt_prefix(
+def _render_applied_changes(applied: StateChangeBundle) -> str:
+    if not applied.state_changes:
+        return "(none — this turn fired no beats.)"
+    parts = []
+    for change in applied.state_changes:
+        if isinstance(change, UnlockBeat):
+            parts.append(f"- UnlockBeat {change.beat_id}")
+    return "\n".join(parts)
+
+
+def build_phase1_user_prompt(
     state: State,
     world: World,
     *,
     case_file_entries: list[str] | None = None,
     opening_seed: str | None = None,
 ) -> str:
-    """The byte-identical-up-to-divergence prefix shared by phase 1 and
-    phase 2. Order matters for KV caching (most-stable → least-stable
-    sections; opening_seed is last because it appears only on turn 1)."""
+    """Phase 1 user prompt — rich context for the classifier. Includes
+    reachable beats, endings, full scene-so-far, case file. Stateless
+    per turn (Phase 1 has no message_history)."""
     sections = [
         _render_you_are_at(state, world),
-        _render_present(state, world),
+        _render_present(state, world, voice_only=False),
         _render_state(state),
         _render_reachable_beats(state, world),
         _render_all_endings(world),
@@ -322,14 +439,7 @@ def build_prompt_prefix(
     ]
     suffix = "\n\n".join(sections)
     seed = _render_opening_seed(opening_seed)
-    return suffix + seed
-
-
-# ───────────────────────── divergence-point tails ─────────────────────────
-
-
-def build_phase1_tail() -> str:
-    return """\
+    return suffix + seed + """\
 
 [GENERATE STATE CHANGES FOR THIS TURN]
 Emit zero, one, or at most two state changes (UnlockBeat) representing what
@@ -341,74 +451,70 @@ will be re-prompted with the error.
 """
 
 
-def _render_applied_changes(applied: StateChangeBundle) -> str:
-    if not applied.state_changes:
-        return "(none — this turn fired no beats.)"
-    parts = []
-    for change in applied.state_changes:
-        if isinstance(change, UnlockBeat):
-            parts.append(f"- UnlockBeat {change.beat_id}")
-    return "\n".join(parts)
+# ───────────────────────── phase 2 user message (conversation turn) ─────────────────────────
 
 
-def build_phase2_tail(
+def build_phase2_user_message(
+    state: State,
+    world: World,
     applied: StateChangeBundle,
     *,
     leave_pick: Option | None = None,
+    opening_seed: str | None = None,
+    is_first_turn: bool,
 ) -> str:
-    leave_directive = ""
+    """Per-turn user message for the conversation-based Phase 2 narrator.
+
+    Turn 1 of a scene (is_first_turn=True): [YOU ARE AT] + [PRESENT] +
+    optional [OPENING SEED] + applied state changes + write-prose
+    directive. Establishes the scene anchor.
+
+    Turn 2+ (is_first_turn=False): just the new context — applied state
+    changes, the player's pick (which surfaces in the conversation as
+    their "spoken turn"), optional leave directive. The system prompt
+    + accumulated assistant messages already carry the rest.
+
+    Phase 2 does NOT see: reachable beats, endings, the case file, the
+    full state dump, structured turn-by-turn replay. The conversation
+    is the scene-so-far; the system prompt is the world.
+    """
+    parts: list[str] = []
+    if is_first_turn:
+        parts.append(_render_you_are_at(state, world))
+        parts.append(_render_present(state, world, voice_only=True))
+        if opening_seed:
+            parts.append(f"[OPENING SEED]\n{opening_seed.strip()}")
+
+    # Player's last pick — surfacing in the user message frames it as
+    # "what the player just did/said." Only meaningful on turn 2+
+    # (turn 1 has no prior pick).
+    if not is_first_turn and state.dialogue_history:
+        last_turn = state.dialogue_history[-1]
+        if last_turn.player_pick is not None:
+            pick = last_turn.player_pick
+            leave_suffix = (
+                f" (leaving for {pick.leaves_for})" if pick.leaves_for else ""
+            )
+            parts.append(
+                f'[PLAYER]\nThe player picked: "{pick.text}"{leave_suffix}'
+            )
+
+    parts.append(f"[STATE CHANGES JUST APPLIED]\n{_render_applied_changes(applied)}")
+
     if leave_pick is not None:
-        leave_directive = (
-            f"\nThe player chose to leave for {leave_pick.leaves_for!r}. "
-            "Phase 2's `next` MUST be EndScene. Phase 1 may have fired a "
-            "beat-on-exit; your prose narrates the goodbye line.\n"
+        parts.append(
+            f"[LEAVE DIRECTIVE]\nThe player chose to leave for "
+            f"{leave_pick.leaves_for!r}. Your `next` MUST be EndScene. "
+            f"Your prose narrates a brief goodbye line."
         )
-    return f"""\
 
-[STATE CHANGES JUST APPLIED]
-{_render_applied_changes(applied)}
-{leave_directive}
-[GENERATE PROSE AND NEXT]
-Write the prose for this turn (80-200 words), narrating the events
-consistent with any state changes above. Then emit one of:
-  - ContinueScene with 2-4 options (≥1 with leaves_for set).
-  - EndScene (when the conversation has reached a natural pause).
-  - EndGame with an ending_id (only when that ending's requires_beats
-    are satisfied).
-"""
+    parts.append(
+        "[WRITE]\nWrite the next beat of prose (80-200 words), consistent "
+        "with the state changes above, then emit ContinueScene / EndScene / "
+        "EndGame as `next`."
+    )
 
-
-# ───────────────────────── full per-call prompts ─────────────────────────
-
-
-def build_phase1_user_prompt(
-    state: State,
-    world: World,
-    *,
-    case_file_entries: list[str] | None = None,
-    opening_seed: str | None = None,
-) -> str:
-    return build_prompt_prefix(
-        state, world,
-        case_file_entries=case_file_entries,
-        opening_seed=opening_seed,
-    ) + build_phase1_tail()
-
-
-def build_phase2_user_prompt(
-    state: State,
-    world: World,
-    applied: StateChangeBundle,
-    *,
-    case_file_entries: list[str] | None = None,
-    opening_seed: str | None = None,
-    leave_pick: Option | None = None,
-) -> str:
-    return build_prompt_prefix(
-        state, world,
-        case_file_entries=case_file_entries,
-        opening_seed=opening_seed,
-    ) + build_phase2_tail(applied, leave_pick=leave_pick)
+    return "\n\n".join(parts)
 
 
 # ───────────────────────── log writer prompts ─────────────────────────
@@ -435,10 +541,10 @@ just happened so it does not slip away.
 {_render_locations_block(world)}
 
 [THE CAST]
-{_render_cast_block(world)}
+{_render_cast_block(world, voice_only=False)}
 
 [THE TRUTH]
-{_render_truth_block(world)}
+{_render_truth_block_full(world)}
 
 [YOUR JOB]
 After every scene the player walks out of, you write ONE case-file

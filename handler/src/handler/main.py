@@ -38,8 +38,10 @@ from pydantic_ai.providers.openai import OpenAIProvider
 from .agents import (
     AgentBundle,
     LogWriterRuntime,
+    SceneRunnerRuntime,
     build_scene_runner_bundle,
     make_log_writer_runtime,
+    make_scene_runner_runtime,
 )
 from .config import Settings
 from .launcher import (
@@ -115,6 +117,7 @@ class SessionRuntime:
     """
 
     bundle: AgentBundle
+    scene_runner: SceneRunnerRuntime
     log_writer: LogWriterRuntime
     state: State
     world: World
@@ -323,11 +326,13 @@ async def start_session() -> dict[str, str]:
     world: World = app.state.world
     model: OpenAIChatModel = app.state.model
     bundle: AgentBundle = app.state.bundle
+    scene_runner = make_scene_runner_runtime()
     log_writer = make_log_writer_runtime(model, world)
     state = make_initial_state(world)
 
     rt = SessionRuntime(
         bundle=bundle,
+        scene_runner=scene_runner,
         log_writer=log_writer,
         state=state,
         world=world,
@@ -354,7 +359,7 @@ async def start_session() -> dict[str, str]:
     async def run() -> None:
         try:
             await play_session(
-                bundle, log_writer, state, world,
+                bundle, scene_runner, log_writer, state, world,
                 pick_option=pick,
                 pick_walk=walk,
                 opening_seed=world.brief.opening_seed,

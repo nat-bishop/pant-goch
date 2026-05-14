@@ -21,7 +21,7 @@ from typing import Any
 import yaml
 from pydantic import ValidationError
 
-from .models import Beat, Brief, Ending, Location, NPC, Truth
+from .models import Beat, Brief, Ending, FewShot, Location, NPC, Truth
 
 
 class WorldLoadError(ValueError):
@@ -41,6 +41,7 @@ class World:
     endings: dict[str, Ending]
     brief: Brief
     npcs_by_location: dict[str, list[NPC]]  # pre-grouped at load time
+    few_shots: list[FewShot]  # rendered into Phase 2 system prompt; may be empty
 
     def npcs_at(self, location_id: str) -> list[NPC]:
         """All NPCs whose default_location is `location_id`. Used by the
@@ -253,6 +254,24 @@ def load_world(path: Path) -> World:
     for npc in npcs.values():
         npcs_by_location[npc.default_location].append(npc)
 
+    # few_shots.yaml is optional — older fixtures and worlds without authored
+    # examples load with an empty list. Phase 2's renderer tolerates [].
+    few_shots_path = path / "few_shots.yaml"
+    few_shots: list[FewShot] = []
+    try:
+        few_shots_data = _load_yaml(few_shots_path)
+    except FileNotFoundError:
+        few_shots_data = None
+    if few_shots_data is not None:
+        if not isinstance(few_shots_data, list):
+            raise WorldLoadError(
+                f"few_shots.yaml: expected a list of FewShot records, got "
+                f"{type(few_shots_data).__name__}"
+            )
+        few_shots = [
+            _parse_model(FewShot, d, few_shots_path) for d in few_shots_data
+        ]
+
     return World(
         locations=locations,
         npcs=npcs,
@@ -261,4 +280,5 @@ def load_world(path: Path) -> World:
         endings=endings,
         brief=brief,
         npcs_by_location=npcs_by_location,
+        few_shots=few_shots,
     )

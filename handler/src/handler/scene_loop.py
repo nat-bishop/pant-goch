@@ -29,6 +29,7 @@ from pydantic_ai.exceptions import UnexpectedModelBehavior
 from .agents import (
     AgentBundle,
     LogWriterRuntime,
+    SceneRunnerRuntime,
     emit_log_entry,
     emit_prose,
     emit_state_changes,
@@ -38,7 +39,6 @@ from .engine import (
     append_turn_record,
     enter_scene,
 )
-from .prompts import build_prompt_prefix
 from .schemas import (
     ContinueScene,
     EndGame,
@@ -83,6 +83,7 @@ async def _maybe_await(value):
 
 async def run_turn(
     bundle: AgentBundle,
+    runtime: SceneRunnerRuntime,
     state: State,
     *,
     case_file_entries: list[str] | None = None,
@@ -94,20 +95,16 @@ async def run_turn(
     EndScene → close + maybe location_change; EndGame → terminal).
 
     State is mutated: state_changes applied, dialogue_history appended.
+    Phase 2 conversation history (`runtime.phase2_message_history`) is
+    mutated on successful Phase 2; left UNCHANGED on Phase 2 fallback.
     """
-    # Build the byte-identical prefix once and pass it to both phases — the
-    # phase 1 / phase 2 prompts share everything up to the divergence point
-    # (per plan §"Context construction"). Halves prompt-string construction
-    # per turn and gives the server's KV cache the same bytes both calls.
-    prefix = build_prompt_prefix(
-        state, bundle.world,
-        case_file_entries=case_file_entries,
-        opening_seed=opening_seed,
-    )
-
     # ── Phase 1 ────────────────────────────────────────────────────────────
     try:
-        applied = await emit_state_changes(bundle, state, prefix=prefix)
+        applied = await emit_state_changes(
+            bundle, state,
+            case_file_entries=case_file_entries,
+            opening_seed=opening_seed,
+        )
     except UnexpectedModelBehavior as e:
         logfire.warn(
             "phase1 fallback: retries exhausted; dropping state_changes",
@@ -119,11 +116,17 @@ async def run_turn(
     # ── Phase 2 ────────────────────────────────────────────────────────────
     try:
         prose_part = await emit_prose(
-            bundle, state, applied,
-            prefix=prefix,
+            bundle, runtime, state, applied,
             leave_pick=leave_pick,
+            opening_seed=opening_seed,
         )
     except UnexpectedModelBehavior as e:
+        # Why: fallback prose is engine-authored, generic, and intentionally
+        # NOT appended to runtime.phase2_message_history. Persisting it would
+        # taint the next turn's conversation context with a stand-in line that
+        # the narrator didn't actually write — breaking voice continuity.
+        # Player still sees the fallback prose; the conversation just behaves
+        # as if the failed turn didn't exist on the next call.
         logfire.warn(
             "phase2 fallback: retries exhausted; emitting generic prose",
             error=str(e),
@@ -183,6 +186,7 @@ def _fallback_prose_part(
 
 async def play_scene(
     bundle: AgentBundle,
+    runtime: SceneRunnerRuntime,
     state: State,
     *,
     case_file_entries: list[str] | None = None,
@@ -203,9 +207,14 @@ async def play_scene(
     When `emit_event` is None (tests, CLI), no events fire and no
     pacing happens — caller is responsible for surfacing the prose.
 
+    Resets `runtime.phase2_message_history` at scene start so the Phase 2
+    narrator's conversation starts fresh per scene (voice continuity is
+    intra-scene; cross-scene continuity lives in the case file).
+
     Returns the terminating ProsePart (EndScene or EndGame).
     """
     enter_scene(state, bundle.world, state.player_location)
+    runtime.phase2_message_history = []
     if emit_event is not None:
         loc = bundle.world.locations[state.player_location]
         await emit_event(scene_start_event(state.scene_id, loc.id, loc.name))
@@ -214,7 +223,7 @@ async def play_scene(
     leave_pick: Option | None = None
     while True:
         prose_part = await run_turn(
-            bundle, state,
+            bundle, runtime, state,
             case_file_entries=case_file_entries,
             opening_seed=seed,
             leave_pick=leave_pick,
@@ -265,6 +274,7 @@ async def play_scene(
 
 async def play_session(
     bundle: AgentBundle,
+    runtime: SceneRunnerRuntime,
     log_writer: LogWriterRuntime,
     state: State,
     world: World,
@@ -317,7 +327,7 @@ async def play_session(
 
     while state.game_over is None:
         terminal = await play_scene(
-            bundle, state,
+            bundle, runtime, state,
             case_file_entries=case_file_entries,
             opening_seed=seed,
             pick_option=pick_option,

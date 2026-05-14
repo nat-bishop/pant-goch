@@ -36,6 +36,11 @@ class NPC(_Frozen):
     themes: list[str] = Field(default_factory=list)
     knowledge: str
     attitude: str
+    # Why: 1-2 short representative lines used by Phase 2's narrator-voice
+    # system prompt. For a 4B model, "Aye. Not my business, was it." carries
+    # more dialogue weight than three lines of attitude prose. Defaults to []
+    # so older fixtures load; production cast should fill it.
+    voice_sample: list[str] = Field(default_factory=list)
 
 
 class Beat(_Frozen):
@@ -78,3 +83,15 @@ class Truth(_Frozen):
 class Brief(_Frozen):
     player_starts_at: str
     opening_seed: str
+
+
+class FewShot(_Frozen):
+    """One hand-authored example exchange surfaced in Phase 2's system
+    prompt as a [STYLE EXAMPLES] block. `setup` is a one-line scene-set;
+    `player` is the option text the player picked; `narrator` is the
+    prose the narrator wrote back. The biggest single lever for prose
+    quality on a 4B model."""
+
+    setup: str
+    player: str
+    narrator: str

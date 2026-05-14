@@ -38,6 +38,55 @@ def test_load_world_succeeds_on_valid_fixture():
     assert set(world.locations) == {
         "the_slaughtered_lamb", "the_post_office", "the_old_vicarage"
     }
+
+
+def test_load_world_tolerates_missing_few_shots_yaml():
+    """few_shots.yaml is optional — older fixtures load with []."""
+    world = load_world(FIXTURE_VALID)
+    assert world.few_shots == []
+
+
+def test_load_world_loads_few_shots_when_present(tmp_path):
+    """When few_shots.yaml exists, entries parse into FewShot records and
+    are accessible via world.few_shots."""
+    target = _copy_valid(tmp_path)
+    _write_yaml(target / "few_shots.yaml", [
+        {
+            "setup": "A pub. A man at the bar.",
+            "player": '"Mind if I sit?"',
+            "narrator": "He turned the glass once. Once more. Said nothing for a while.",
+        },
+    ])
+    world = load_world(target)
+    assert len(world.few_shots) == 1
+    assert world.few_shots[0].player == '"Mind if I sit?"'
+    assert "turned the glass" in world.few_shots[0].narrator
+
+
+def test_load_world_rejects_few_shots_yaml_non_list(tmp_path):
+    target = _copy_valid(tmp_path)
+    _write_yaml(target / "few_shots.yaml", {"not": "a list"})
+    with pytest.raises(WorldLoadError, match="expected a list"):
+        load_world(target)
+
+
+def test_npc_voice_sample_defaults_to_empty_for_legacy_fixture():
+    """Fixture cast.yaml doesn't author voice_sample → it loads as []
+    (Field default_factory). Production cast.yaml authors voice samples
+    per NPC."""
+    world = load_world(FIXTURE_VALID)
+    for npc in world.npcs.values():
+        assert npc.voice_sample == []
+
+
+def test_npc_voice_sample_loaded_when_authored(tmp_path):
+    target = _copy_valid(tmp_path)
+    cast = yaml.safe_load((target / "cast.yaml").read_text(encoding="utf-8"))
+    cast[0]["voice_sample"] = ["Aye.", "Not my business, was it."]
+    _write_yaml(target / "cast.yaml", cast)
+    world = load_world(target)
+    npc = world.npcs[cast[0]["id"]]
+    assert npc.voice_sample == ["Aye.", "Not my business, was it."]
     assert set(world.npcs) == {"tom", "maud"}
     assert set(world.beats) == {
         "tom_named_a_vehicle", "tom_admits_more", "tom_closes_off"

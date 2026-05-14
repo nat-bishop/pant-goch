@@ -25,6 +25,7 @@ from pydantic_ai.models.openai import OpenAIChatModel
 from .agents import (
     build_scene_runner_bundle,
     make_log_writer_runtime,
+    make_scene_runner_runtime,
 )
 from .config import Settings
 from .launcher import resolve_config, start_llama, stop_llama, wait_healthy
@@ -123,12 +124,13 @@ async def _amain() -> int:
     model, llama_proc = await _build_model(settings)
     try:
         bundle = build_scene_runner_bundle(model, world)
+        scene_runner = make_scene_runner_runtime()
         log_writer = make_log_writer_runtime(model, world)
         state = make_initial_state(world)
 
         print(f"\n=== Scene at {state.player_location} ===")
         terminal = await play_session(
-            bundle, log_writer, state, world,
+            bundle, scene_runner, log_writer, state, world,
             pick_option=_prompt_pick,
             pick_walk=_prompt_walk,
             opening_seed=world.brief.opening_seed,

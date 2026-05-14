@@ -21,6 +21,7 @@ from pydantic_ai.models.test import TestModel
 from handler.agents import (
     build_scene_runner_bundle,
     make_log_writer_runtime,
+    make_scene_runner_runtime,
 )
 from handler.schemas import (
     ContinueScene,
@@ -168,7 +169,7 @@ async def test_play_scene_emits_scene_start_then_terminal_events(monkeypatch, wo
                         _patched_paced_emitter(0.001))
 
     state.player_location = "the_slaughtered_lamb"
-    await play_scene(bundle, state, pick_option=lambda pp: 0, emit_event=emit)
+    await play_scene(bundle, make_scene_runner_runtime(), state, pick_option=lambda pp: 0, emit_event=emit)
 
     kinds = [e["event"] for e in events]
     assert kinds[0] == "scene_start"
@@ -229,7 +230,7 @@ async def test_play_scene_emits_options_event_for_continue(monkeypatch, world_an
     async def emit(e: dict) -> None:
         events.append(e)
 
-    await play_scene(bundle, state, pick_option=lambda pp: 0, emit_event=emit)
+    await play_scene(bundle, make_scene_runner_runtime(), state, pick_option=lambda pp: 0, emit_event=emit)
 
     options_events = [e for e in events if e["event"] == "options"]
     assert len(options_events) == 1
@@ -259,7 +260,7 @@ async def test_play_scene_emits_game_over_for_end_game(monkeypatch, world_and_bu
     async def emit(e: dict) -> None:
         events.append(e)
 
-    await play_scene(bundle, state, pick_option=lambda pp: 0, emit_event=emit)
+    await play_scene(bundle, make_scene_runner_runtime(), state, pick_option=lambda pp: 0, emit_event=emit)
     kinds = [e["event"] for e in events]
     assert kinds[-1] == "game_over"
     go = events[-1]
@@ -313,7 +314,7 @@ async def test_play_session_emits_location_change_and_log_entry_words(
     state.player_location = "the_slaughtered_lamb"
 
     await play_session(
-        bundle, log_writer, state, world,
+        bundle, make_scene_runner_runtime(), log_writer, state, world,
         pick_option=pick_option,
         pick_walk=pick_walk,
         emit_event=emit,

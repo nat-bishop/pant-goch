@@ -1,0 +1,44 @@
+# Hand-authored example exchanges surfaced in Phase 2's [STYLE EXAMPLES]
+# block. Per the prose-voice refactor: few-shot examples beat instructions
+# for small models. Keep these short — voice, sentence rhythm, and dialogue
+# tag style, not exposition. Two examples is enough; more risks burning
+# context budget for diminishing returns.
+
+- setup: "The Slaughtered Lamb, mid-afternoon. Old Tom Bevan is at the second stool from the door, nursing a half of bitter. The landlord, Eira Pryce, polishes a glass with the same cloth she always uses."
+  player: '"Mind if I sit?"'
+  narrator: |
+    Tom doesn't look up. He turns the glass on the bar, a quarter-turn,
+    another, as if measuring something only he can see. The peat fire
+    in the grate cracks once and settles. Eira's cloth pauses on the
+    rim of the pint glass, just long enough to register your existence,
+    then resumes.
+
+    "Free country," Tom says, eventually. He doesn't say it kindly. He
+    doesn't say it the other way either.
+
+    You take the stool. Up close, he smells of woodsmoke and wet wool.
+    He has the face of a man who has not had a full night's sleep in a
+    long time and has stopped being surprised by it. Behind the bar,
+    the dartboard photograph catches the afternoon light.
+
+- setup: "The lane between Lower Hafod and the village, late afternoon. Owain Pugh has fallen into step with you, in the unhurried way of someone who has nowhere in particular to be."
+  player: '"You said something about a dog."'
+  narrator: |
+    Owain glances at you sideways, then ahead at the hedge. The
+    blackthorn is just beginning to show. He takes his time.
+
+    "I said it was seen. There's a difference."
+
+    A wood pigeon goes off heavily from somewhere behind them. He
+    waits until the sound has finished.
+
+    "Big black thing. At the bend. The night it happened. That's what
+    I heard, anyway. From who, I couldn't tell you now. Could've been
+    Tom. Could've been my brother. Could've been a dream I had after,
+    and I dressed it up."
+
+    He stops walking. You stop with him. He looks at you with the
+    half-amused, half-mournful face of a man who knows exactly how
+    unreliable he is and does not particularly mind.
+
+    "I don't say I saw it. I say it was seen."

@@ -1,24 +1,32 @@
-"""Scene-runner pydantic-ai agent + dynamic per-call output schemas.
+"""Scene-runner pydantic-ai agents + dynamic per-call output schemas.
 
-Two-stage emission per turn (plan §"Agents (refines §3.3, §3.4, §4.1)"):
+Two-stage emission per turn:
   Phase 1 — emit_state_changes(): structured `StateChangeBundle`. Validated
             via @agent.output_validator → ModelRetry on requires/blocks
             violations, ≤2-cap, undefined ids. output_retries=3.
+            STATELESS per turn — fresh classifier on each call.
   Phase 2 — emit_prose(): structured `ProsePart`. Validated for ending
             prereqs, ≥1 leave option per ContinueScene, leave-pick forces
             EndScene. output_retries=3.
+            SCENE-BOUNDED CONVERSATION — message_history accumulates within
+            a scene (the model sees its own prior prose as assistant
+            messages), resets at scene boundary (enter_scene). See
+            SceneRunnerRuntime.
 
-The two phases share one stable system prompt (the world bible, baked at
-`build_scene_runner_bundle()`). Per-call dynamic types narrow the str-typed
-schemas in `schemas.py` to `Literal[*beat_ids]`, `Literal[*adjacent_ids]`,
-`Literal[*ending_ids]` so the llama.cpp grammar sampler rejects invalid ids
-at decode time.
+Phase 1 and Phase 2 have SEPARATE system prompts:
+  build_phase1_system_prompt: classifier + full bible (beats, notes_to_llm,
+    endings, NPC knowledge). Large; that's fine, the classifier needs it.
+  build_phase2_system_prompt: narrator + voice samples + crime overview
+    + few-shot style examples. Slim. Drops beats, notes_to_llm, endings,
+    NPC knowledge — Phase 2's attention focuses on writing scene-living
+    prose, not on beat structure.
 
-Pattern lift: stable-system / dynamic-user split (handler/src/handler/agents.py:206-390),
-NativeOutput strict=True (handler/src/handler/agents.py:1230-1232), dynamic
-Literal type builders (handler/src/handler/agents.py:919-961). The retry
-orchestration is REPLACED by pydantic-ai's @output_validator + output_retries=3
-— per `select_then_write_with_retries` lift note in plan.
+Per-call dynamic types narrow the str-typed schemas in `schemas.py` to
+`Literal[*beat_ids]`, `Literal[*adjacent_ids]`, `Literal[*ending_ids]` so
+the llama.cpp grammar sampler rejects invalid ids at decode time.
+`strict=True` on NativeOutput is non-negotiable — without it pydantic-ai
+sends `response_format.json_schema.strict=false` and llama.cpp ignores
+the schema.
 """
 from __future__ import annotations
 
@@ -39,10 +47,10 @@ from .engine import (
 from .prompts import (
     build_log_writer_system_prompt,
     build_log_writer_user_prompt,
-    build_phase1_tail,
-    build_phase2_tail,
-    build_prompt_prefix,
-    build_scene_runner_system_prompt,
+    build_phase1_system_prompt,
+    build_phase1_user_prompt,
+    build_phase2_system_prompt,
+    build_phase2_user_message,
 )
 from .schemas import (
     ContinueScene,
@@ -85,14 +93,47 @@ class AgentBundle:
     output validators")`). So we bake the per-call dynamic type at
     construction. Phase 1's `Literal[*beat_ids]` is world-scoped (one
     agent). Phase 2's `Literal[*adjacent_ids]` is location-scoped (one
-    agent per location). All N+1 agents share byte-identical system
-    prompts → KV cache hits on the system prefix regardless of which
-    agent issues the HTTP request.
+    agent per location).
+
+    Phase 1 carries the classifier system prompt (full bible); all phase 2
+    agents share the narrator system prompt (slim, voice-focused). System
+    prompts are byte-stable across the session → KV cache hits across
+    turns. The phase-1 and phase-2 prompts differ → no inter-phase cache
+    sharing within a turn (deliberate trade for Phase 2 attention focus).
     """
 
     phase1: Agent[Phase1Deps, Any]
     phase2_by_location: dict[str, Agent[Phase2Deps, Any]]
     world: World
+
+
+@dataclass
+class SceneRunnerRuntime:
+    """Scene-scoped Phase 2 conversation state. Reset at scene boundary
+    (engine.enter_scene). One per session.
+
+    Phase 2 is conversation-based within a scene: the model sees its own
+    prior turns' prose as assistant messages. Voice continuity (sentence
+    rhythm, narrator persona, dialogue tag style) accumulates naturally
+    over the 4-8 turns of a scene. Reset to empty at scene boundary so
+    the next scene's KV cache starts fresh from the (cached) system
+    prompt.
+
+    On Phase 2 retry exhaustion (UnexpectedModelBehavior → fallback
+    prose path in scene_loop), the runtime is NOT mutated. The fallback
+    prose is surfaced to the player but never persisted to message
+    history — preserves voice continuity by treating the failed turn as
+    if it didn't exist in the conversation, even though the player saw
+    generic stand-in prose.
+    """
+
+    phase2_message_history: list[ModelMessage] = field(default_factory=list)
+
+
+def make_scene_runner_runtime() -> SceneRunnerRuntime:
+    """Construct a fresh scene-runner runtime. Call once per session
+    (mirrors make_log_writer_runtime)."""
+    return SceneRunnerRuntime()
 
 
 # ───────────────────────── dynamic type builders ─────────────────────────
@@ -238,20 +279,16 @@ def _build_phase2_agent(
 
 
 def build_scene_runner_bundle(model: OpenAIChatModel, world: World) -> AgentBundle:
-    """Construct the scene-runner agent bundle for `world`. Bakes the
-    system prompt with the full bible. Builds one phase-1 agent (output_type
-    locked to the per-world StateChangeBundle) and N phase-2 agents (one
-    per location, output_type locked to that location's per-call ProsePart
-    type with adjacents-Literal in `leaves_for`).
-
-    `strict=True` on NativeOutput is non-negotiable — without it pydantic-ai
-    sends `response_format.json_schema.strict=false` and llama.cpp ignores
-    the schema (lift-comment from v1 agents.py:976-981).
+    """Construct the scene-runner agent bundle for `world`. Bakes two
+    system prompts (phase 1 classifier, phase 2 narrator) and builds one
+    phase-1 agent + N phase-2 agents (one per location, output_type locked
+    to that location's adjacents Literal).
     """
-    system_prompt = build_scene_runner_system_prompt(world)
-    phase1 = _build_phase1_agent(model, world, system_prompt)
+    phase1_system_prompt = build_phase1_system_prompt(world)
+    phase2_system_prompt = build_phase2_system_prompt(world)
+    phase1 = _build_phase1_agent(model, world, phase1_system_prompt)
     phase2_by_location = {
-        loc_id: _build_phase2_agent(model, world, system_prompt, loc_id)
+        loc_id: _build_phase2_agent(model, world, phase2_system_prompt, loc_id)
         for loc_id in world.locations
     }
     return AgentBundle(
@@ -270,55 +307,60 @@ async def emit_state_changes(
     *,
     case_file_entries: list[str] | None = None,
     opening_seed: str | None = None,
-    prefix: str | None = None,
 ) -> StateChangeBundle:
-    """Phase 1 LLM call. Returns the validated StateChangeBundle, round-tripped
-    through the canonical str-typed model from schemas.py (the dynamic type's
-    Literal-typed beat_id is a str at runtime).
+    """Phase 1 LLM call. Stateless per turn (no message_history). Builds a
+    full rich user prompt with reachable beats, endings, scene-so-far, case
+    file — everything the classifier needs to judge what just fired.
 
-    Pass `prefix` (from `build_prompt_prefix`) to share the byte-identical
-    prefix bytes with phase 2 — caller (scene_loop.run_turn) builds it once
-    per turn and passes it to both phases.
+    Returns the validated StateChangeBundle, round-tripped through the
+    canonical str-typed model from schemas.py.
     """
-    if prefix is None:
-        prefix = build_prompt_prefix(
-            state, bundle.world,
-            case_file_entries=case_file_entries,
-            opening_seed=opening_seed,
-        )
-    prompt = prefix + build_phase1_tail()
+    prompt = build_phase1_user_prompt(
+        state, bundle.world,
+        case_file_entries=case_file_entries,
+        opening_seed=opening_seed,
+    )
     result = await bundle.phase1.run(prompt, deps=Phase1Deps(state=state))
     return StateChangeBundle.model_validate(result.output.model_dump())
 
 
 async def emit_prose(
     bundle: AgentBundle,
+    runtime: SceneRunnerRuntime,
     state: State,
     applied: StateChangeBundle,
     *,
-    case_file_entries: list[str] | None = None,
-    opening_seed: str | None = None,
     leave_pick: Option | None = None,
-    prefix: str | None = None,
+    opening_seed: str | None = None,
 ) -> ProsePart:
-    """Phase 2 LLM call. Picks the per-location agent (whose output_type
-    has `Literal[*adjacent_ids]` baked in) and returns the validated
-    ProsePart in canonical form.
+    """Phase 2 LLM call. Scene-bounded conversation: the model sees its
+    own prior turns' prose as assistant messages via
+    `runtime.phase2_message_history`. On success, history is updated with
+    `result.all_messages()` (atomic: pydantic-ai's internal ModelRetry
+    loop doesn't pollute — only the final accepted result is appended).
 
-    Pass `prefix` (from `build_prompt_prefix`) to share the byte-identical
-    prefix bytes with phase 1.
+    On UnexpectedModelBehavior (retries exhausted), this function raises;
+    caller (scene_loop.run_turn) catches and emits fallback prose, which
+    does NOT mutate runtime.phase2_message_history.
+
+    `is_first_turn` is computed from the history (empty → first turn).
+    Whether the user message renders the scene anchor or just the
+    incremental delta follows from that.
     """
-    if prefix is None:
-        prefix = build_prompt_prefix(
-            state, bundle.world,
-            case_file_entries=case_file_entries,
-            opening_seed=opening_seed,
-        )
-    prompt = prefix + build_phase2_tail(applied, leave_pick=leave_pick)
+    is_first_turn = not runtime.phase2_message_history
+    user_msg = build_phase2_user_message(
+        state, bundle.world, applied,
+        leave_pick=leave_pick,
+        opening_seed=opening_seed,
+        is_first_turn=is_first_turn,
+    )
     agent = bundle.phase2_by_location[state.player_location]
     result = await agent.run(
-        prompt, deps=Phase2Deps(state=state, leave_pick=leave_pick)
+        user_msg,
+        message_history=runtime.phase2_message_history,
+        deps=Phase2Deps(state=state, leave_pick=leave_pick),
     )
+    runtime.phase2_message_history = result.all_messages()
     return ProsePart.model_validate(result.output.model_dump())
 
 
@@ -396,7 +438,7 @@ async def emit_log_entry(
     result = await runtime.agent.run(
         user_prompt, message_history=runtime.message_history
     )
-    runtime.message_history = list(result.all_messages())
+    runtime.message_history = result.all_messages()
     anchor = state.dialogue_history[0]
     return LogEntry(
         scene_id=anchor.scene_id,

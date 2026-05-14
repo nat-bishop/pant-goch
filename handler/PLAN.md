@@ -16,12 +16,21 @@ get archived once we land further; this one travels with the branch.
 | M6 — log writer | ✅ done | tests/test_log_writer.py (8 tests) |
 | **Eval/sim refactor** | ✅ done (added in flight) | `play_session(...)` + sync/async callbacks |
 | M4 — text-only frontend + SSE backend | ✅ done | 10 SSE tests; FastAPI routes wired; React/Vite frontend builds (152 kB / 49 kB gz) |
+| **Phase 1/2 prompt split + conversation Phase 2** | ✅ done | split system prompts; NPC.voice_sample; world/few_shots.yaml; SceneRunnerRuntime; scene-bounded message_history; 129 unit tests green |
 | M3.5 — beat-firing rubric gate | 🟡 **awaits human run** | rubric template at `playtest/m3.5-gate-run-1.md` |
 | M5 — clickable map | ⏳ pending | needs author-supplied map image (Gemini prompt at end of this file) |
 | M8 — full playtest in browser | ⏳ pending | runs once M3.5 + M5 are settled |
 | handler/CLAUDE.md | ⏳ pending | write after M8 |
 
-**Test totals:** 109 unit tests passing (90 baseline + 19 new across log writer / SSE / session). 1 live integration test against inferno's Gemma 4 E4B carried over from M3.
+**Test totals:** 129 unit tests passing (110 baseline + 19 new across prompt-split, conversation history, voice_sample, few_shots). 1 live integration test against inferno's Gemma 4 E4B carried over from M3.
+
+## Prose-voice refactor (2026-05-14)
+
+Split the scene-runner's single shared system prompt into two:
+- **Phase 1** (classifier) — keeps the full bible: locations + cast + beats + notes_to_llm + endings.
+- **Phase 2** (narrator) — slim, voice-focused: locations + cast-with-voice-samples + crime overview + few-shot examples. NO beats, NO notes_to_llm, NO endings, NO per-NPC `knowledge`.
+
+Phase 2 is also now scene-bounded conversation: `SceneRunnerRuntime.phase2_message_history` accumulates within a scene, resets at `enter_scene`. Failed retries don't pollute history. Trade-off: lose the inter-phase KV cache hit per turn; gain Phase 2 attention focus on prose, plus intra-scene voice continuity. New data: `NPC.voice_sample` field in `cast.yaml`, optional `world/few_shots.yaml` (one or two short example exchanges). Anti-slop list deferred (mine outputs first).
 
 ---
 

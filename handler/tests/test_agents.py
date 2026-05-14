@@ -134,14 +134,43 @@ def test_build_scene_runner_bundle_constructs_cleanly():
     assert set(bundle.phase2_by_location) == set(world.locations)
 
 
-def test_all_agents_share_system_prompt():
-    """Phase 1 + every phase 2 agent must have byte-identical system
-    prompts so they share KV cache server-side regardless of which agent
-    issues the HTTP request (cf. plan §"Context construction")."""
+def _agent_system_prompt(agent) -> str:
+    """Pull the static system prompt off a pydantic-ai Agent. Static
+    prompts (passed at construction) live in `_system_prompts` as a
+    tuple of strings."""
+    return "\n".join(agent._system_prompts)
+
+
+def test_phase2_agents_share_system_prompt():
+    """All phase 2 agents (one per location) must have byte-identical
+    system prompts. Phase 2's system prompt is the narrator's voice
+    prompt — same across every location so KV cache hits regardless of
+    which per-location agent runs."""
     world = load_world(FIXTURE_VALID)
     bundle = build_scene_runner_bundle(TestModel(), world)
-    p1_sys = str(bundle.phase1._instructions)
-    for loc_id, p2 in bundle.phase2_by_location.items():
-        assert str(p2._instructions) == p1_sys, (
-            f"phase2[{loc_id}] system prompt diverges from phase1"
-        )
+    sys_prompts = {
+        loc_id: _agent_system_prompt(p2)
+        for loc_id, p2 in bundle.phase2_by_location.items()
+    }
+    distinct = set(sys_prompts.values())
+    assert len(distinct) == 1, (
+        f"phase 2 agents have divergent system prompts: "
+        f"{sorted(sys_prompts.keys())} → {len(distinct)} distinct prompts"
+    )
+
+
+def test_phase1_and_phase2_system_prompts_diverge():
+    """Phase 1 and Phase 2 carry DIFFERENT system prompts post-split. The
+    classifier has the full bible; the narrator has voice samples and
+    crime overview only. Asserting divergence locks in the split."""
+    world = load_world(FIXTURE_VALID)
+    bundle = build_scene_runner_bundle(TestModel(), world)
+    p1_sys = _agent_system_prompt(bundle.phase1)
+    any_p2 = next(iter(bundle.phase2_by_location.values()))
+    p2_sys = _agent_system_prompt(any_p2)
+    assert p1_sys != p2_sys, "phase 1 and phase 2 must have different system prompts"
+    # Phase 1 carries beat structure; Phase 2 does not.
+    assert "[THE TRUTH]" in p1_sys
+    assert "[THE TRUTH]" not in p2_sys
+    assert "[WHAT HAPPENED]" in p2_sys
+    assert "[STYLE EXAMPLES]" in p2_sys

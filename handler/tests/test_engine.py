@@ -59,6 +59,7 @@ def _make_world(
         endings={e.id: e for e in (endings or [])},
         brief=Brief(player_starts_at=starts_at, opening_seed="x"),
         npcs_by_location=npcs_by_location,
+        few_shots=[],
     )
 
 
