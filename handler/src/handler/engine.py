@@ -1,21 +1,26 @@
-"""Scene loop + state-change validation + reachability filter.
+"""Scene-loop helpers — reachability, state application, scene lifecycle.
 
-M2 scope: pure functions (no LLM, no SSE). The functions here are
-called by:
-  - agents.py output_validators (M3) — they raise StateChangeError, which
-    the validator wraps in pydantic-ai's ModelRetry(msg).
-  - prompts.py [REACHABLE BEATS] renderer (M3) — uses reachable_beat_ids().
-  - the scene loop (M3) — calls enter_scene, apply_state_changes.
+Pure functions (no LLM, no SSE). All structural / state-dependent rules
+that used to live in `validate_state_change_bundle` and
+`validate_prose_part` have moved:
 
-Everything here is unit-testable without a running llama-server.
+  - State-INDEPENDENT rules (≤2 unlock_beat cap, no duplicate beats,
+    ≥1 leave option in ContinueScene) → `@model_validator` /
+    `Field(...)` on the canonical schemas in `schemas.py`.
+  - State-DEPENDENT enum constraints (`beat_id` ∈ reachable beats,
+    `ending_id` ∈ satisfied endings, `leaves_for` ∈ adjacent locations,
+    `next == EndScene` when leave_pick is set) → per-call `Literal[...]`
+    narrowing in `agents._build_state_change_bundle_type` /
+    `_build_prose_part_type`.
+
+`reachable_beat_ids` stays here — used by both grammar narrowing
+(`agents.py`) and prompt rendering (`prompts.py`).
 """
 from __future__ import annotations
 
 from .schemas import (
     ContinueScene,
-    EndGame,
     EndScene,
-    Option,
     ProsePart,
     StateChangeBundle,
     UnlockBeat,
@@ -24,153 +29,13 @@ from .state import State, TurnRecord
 from .world import World
 
 
-# Plan: ≤2 unlock_beat per turn cap. Allows naturally-paired beats (e.g.
-# "Helen hands over records AND admits she suspected Eluned" can land in
-# one moment without a synthetic delay); rejects bursty 3+ firings.
-UNLOCK_BEAT_CAP_PER_BUNDLE = 2
-
-
-class StateChangeError(ValueError):
-    """One of the engine's structural invariants on a state-change bundle was
-    violated. Message is suitable for ModelRetry — terse, names the offender."""
-
-
-class ProsePartError(ValueError):
-    """A ProsePart violated an engine invariant (ending prereqs, leave-pick
-    forces EndScene, ContinueScene needs ≥1 leave option). Message is
-    suitable for ModelRetry."""
-
-
-# ───────────────────────── state-change bundle validation ─────────────────────────
-
-
-def validate_state_change_bundle(
-    bundle: StateChangeBundle, world: World, state: State
-) -> None:
-    """Raise StateChangeError if the bundle violates engine rules. Used by:
-      - agents.py output_validator on the phase-1 agent (M3).
-      - apply_state_changes (defense-in-depth before mutation).
-
-    Rules:
-      - ≤2 UnlockBeat per bundle.
-      - Each UnlockBeat.beat_id resolves to a defined beat.
-      - Each beat's requires_beats ⊆ state.unlocked_beats.
-      - No beat in blocked_by_beats has fired.
-    """
-    unlock_count = sum(1 for c in bundle.state_changes if isinstance(c, UnlockBeat))
-    if unlock_count > UNLOCK_BEAT_CAP_PER_BUNDLE:
-        raise StateChangeError(
-            f"too many unlock_beat changes in one turn: {unlock_count} > "
-            f"{UNLOCK_BEAT_CAP_PER_BUNDLE}; pace beats across turns"
-        )
-
-    # Within a single bundle the LLM might also try to fire the same beat
-    # twice — defensive check.
-    seen_in_bundle: set[str] = set()
-    for change in bundle.state_changes:
-        if isinstance(change, UnlockBeat):
-            if change.beat_id in seen_in_bundle:
-                raise StateChangeError(
-                    f"unlock_beat: {change.beat_id!r} appears twice in this bundle"
-                )
-            seen_in_bundle.add(change.beat_id)
-            _validate_unlock_beat(change, world, state)
-
-
-def _validate_unlock_beat(change: UnlockBeat, world: World, state: State) -> None:
-    beat = world.beats.get(change.beat_id)
-    if beat is None:
-        raise StateChangeError(
-            f"unlock_beat: beat {change.beat_id!r} is not defined in the world"
-        )
-    if change.beat_id in state.unlocked_beats:
-        # Idempotent in principle but suspicious in practice — surface it.
-        raise StateChangeError(
-            f"unlock_beat: beat {change.beat_id!r} has already fired"
-        )
-    missing_requires = [r for r in beat.requires_beats if r not in state.unlocked_beats]
-    if missing_requires:
-        raise StateChangeError(
-            f"unlock_beat {change.beat_id!r}: requires_beats not yet satisfied: "
-            f"{missing_requires}; fire them first or don't fire this beat yet"
-        )
-    active_blockers = [b for b in beat.blocked_by_beats if b in state.unlocked_beats]
-    if active_blockers:
-        raise StateChangeError(
-            f"unlock_beat {change.beat_id!r}: blocked by already-fired "
-            f"{active_blockers}; this beat is permanently unreachable"
-        )
-
-
 def apply_state_changes(bundle: StateChangeBundle, state: State) -> None:
-    """Apply validated state changes to state. Call validate_state_change_bundle
-    first; this function does not re-validate (the M3 output_validator handles
-    that)."""
+    """Apply validated state changes to state. Validation happens upstream
+    via schema @model_validator + per-call Literal narrowing in
+    `agents._build_state_change_bundle_type`."""
     for change in bundle.state_changes:
         if isinstance(change, UnlockBeat):
             state.unlocked_beats.add(change.beat_id)
-
-
-# ───────────────────────── prose-part validation ─────────────────────────
-
-
-def validate_prose_part(
-    prose_part: ProsePart,
-    world: World,
-    state: State,
-    *,
-    leave_pick: Option | None = None,
-) -> None:
-    """Raise ProsePartError if the ProsePart violates engine rules. Used by
-    the phase-2 output_validator (M3).
-
-    Rules:
-      - If `next` is EndGame: ending exists AND ending.requires_beats ⊆ state.unlocked_beats.
-      - If `next` is ContinueScene: at least one option has leaves_for set,
-        and every leaves_for value resolves to an adjacent location of state.player_location.
-      - If `leave_pick` is not None (player picked a leave option last turn):
-        `next` MUST be EndScene.
-    """
-    if leave_pick is not None and not isinstance(prose_part.next, EndScene):
-        raise ProsePartError(
-            f"player chose to leave for {leave_pick.leaves_for!r}; you MUST "
-            f"emit EndScene as next, not {type(prose_part.next).__name__}"
-        )
-
-    if isinstance(prose_part.next, EndGame):
-        ending = world.endings.get(prose_part.next.ending_id)
-        if ending is None:
-            raise ProsePartError(
-                f"end_game: ending {prose_part.next.ending_id!r} is not defined"
-            )
-        missing = [r for r in ending.requires_beats if r not in state.unlocked_beats]
-        if missing:
-            raise ProsePartError(
-                f"end_game {ending.id!r}: requires_beats not yet satisfied: "
-                f"{missing}; the player has not committed to this ending yet"
-            )
-
-    if isinstance(prose_part.next, ContinueScene):
-        leave_options = [o for o in prose_part.next.options if o.leaves_for is not None]
-        if not leave_options:
-            raise ProsePartError(
-                "continue: at least one option must have leaves_for set "
-                "(player must always have a walk-away choice)"
-            )
-        location = world.locations.get(state.player_location)
-        if location is None:
-            # Defensive — should be impossible if state is consistent.
-            raise ProsePartError(
-                f"player_location {state.player_location!r} is not defined"
-            )
-        adjacent = set(location.adjacent_to)
-        for opt in leave_options:
-            if opt.leaves_for not in adjacent:
-                raise ProsePartError(
-                    f"option leaves_for={opt.leaves_for!r}: not adjacent to "
-                    f"current location {state.player_location!r} (adjacents: "
-                    f"{sorted(adjacent)})"
-                )
 
 
 # ───────────────────────── reachability filter ─────────────────────────
@@ -178,8 +43,10 @@ def validate_prose_part(
 
 def reachable_beat_ids(world: World, state: State) -> set[str]:
     """Return ids of beats that are *reachable* — unfired AND can eventually
-    fire given current state. Used by prompts.py to render [REACHABLE BEATS],
-    omitting transitively-blocked or transitively-unreachable beats entirely.
+    fire given current state. Used by prompts.py to render [REACHABLE BEATS]
+    and by agents._build_state_change_bundle_type to narrow the
+    grammar-sampled Literal so the model cannot emit a transitively-blocked
+    or transitively-unreachable beat.
 
     Reachability (memoized recursion):
       A beat B is reachable iff:

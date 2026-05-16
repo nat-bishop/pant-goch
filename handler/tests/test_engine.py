@@ -1,18 +1,27 @@
-"""M2 — Engine validators + reachability + state-change application."""
+"""Engine helpers (reachability, state application) + rule enforcement.
+
+After the M3 rearch, rules that used to live in `validate_state_change_bundle`
+and `validate_prose_part` are split between:
+  - Canonical schemas (state-INDEPENDENT @model_validators) — tested here
+    by directly constructing the canonical models.
+  - Per-call dynamic builders (state-DEPENDENT Literal narrowing) — tested
+    here against `_build_state_change_bundle_type` / `_build_prose_part_type`
+    via `ValidationError` at parse time.
+"""
 from __future__ import annotations
 
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
+from handler.agents import (
+    _build_prose_part_type,
+    _build_state_change_bundle_type,
+)
 from handler.engine import (
-    ProsePartError,
-    StateChangeError,
-    UNLOCK_BEAT_CAP_PER_BUNDLE,
     apply_state_changes,
     reachable_beat_ids,
-    validate_prose_part,
-    validate_state_change_bundle,
 )
 from handler.models import Beat, Brief, Ending, Location, NPC
 from handler.schemas import (
@@ -89,119 +98,299 @@ def test_apply_empty_bundle_is_noop():
     assert state.unlocked_beats == set()
 
 
-# ───────────────────────── validate_state_change_bundle ─────────────────────────
+# ───────────────────────── canonical StateChangeBundle validators ─────────────────────────
 
 
-def test_unlock_beat_undefined_id_rejected():
+def test_state_change_bundle_max_length_two_passes():
+    StateChangeBundle(state_changes=[
+        UnlockBeat(beat_id="b1"), UnlockBeat(beat_id="b2"),
+    ])
+
+
+def test_state_change_bundle_max_length_three_rejected():
+    with pytest.raises(ValidationError):
+        StateChangeBundle(state_changes=[
+            UnlockBeat(beat_id="b1"),
+            UnlockBeat(beat_id="b2"),
+            UnlockBeat(beat_id="b3"),
+        ])
+
+
+def test_state_change_bundle_duplicate_beat_rejected():
+    with pytest.raises(ValidationError, match="appears twice"):
+        StateChangeBundle(state_changes=[
+            UnlockBeat(beat_id="b1"), UnlockBeat(beat_id="b1"),
+        ])
+
+
+# ───────────────────────── canonical ContinueScene validator ─────────────────────────
+
+
+def test_continue_scene_with_leave_option_passes():
+    ContinueScene(options=[
+        Option(text="stay"),
+        Option(text="leave for B", leaves_for="loc_b"),
+    ])
+
+
+def test_continue_scene_without_leave_option_rejected():
+    with pytest.raises(ValidationError, match="leaves_for"):
+        ContinueScene(options=[
+            Option(text="stay 1"),
+            Option(text="stay 2"),
+        ])
+
+
+def test_continue_scene_empty_options_rejected():
+    with pytest.raises(ValidationError, match="leaves_for"):
+        ContinueScene(options=[])
+
+
+# ───────────────────────── dynamic StateChangeBundle (Literal narrowing) ─────────────────────────
+
+
+def test_dynamic_bundle_accepts_reachable_beat():
     world = _make_world(beats=[Beat(id="b1", description="x", notes_to_llm="y")])
     state = State(player_location="loc_a")
-    bundle = StateChangeBundle(state_changes=[UnlockBeat(beat_id="ghost")])
-    with pytest.raises(StateChangeError, match="not defined"):
-        validate_state_change_bundle(bundle, world, state)
+    BundleType = _build_state_change_bundle_type(world, state)
+    bundle = BundleType.model_validate({
+        "state_changes": [{"type": "unlock_beat", "beat_id": "b1"}]
+    })
+    assert bundle.state_changes[0].beat_id == "b1"  # type: ignore[union-attr]
 
 
-def test_unlock_beat_already_fired_rejected():
+def test_dynamic_bundle_rejects_unknown_beat():
+    world = _make_world(beats=[Beat(id="b1", description="x", notes_to_llm="y")])
+    state = State(player_location="loc_a")
+    BundleType = _build_state_change_bundle_type(world, state)
+    with pytest.raises(ValidationError):
+        BundleType.model_validate({
+            "state_changes": [{"type": "unlock_beat", "beat_id": "ghost"}]
+        })
+
+
+def test_dynamic_bundle_rejects_already_fired_beat():
+    """Reachability excludes already-fired beats → grammar Literal omits
+    them → ValidationError at parse time."""
     world = _make_world(beats=[Beat(id="b1", description="x", notes_to_llm="y")])
     state = State(player_location="loc_a", unlocked_beats={"b1"})
-    bundle = StateChangeBundle(state_changes=[UnlockBeat(beat_id="b1")])
-    with pytest.raises(StateChangeError, match="already fired"):
-        validate_state_change_bundle(bundle, world, state)
+    BundleType = _build_state_change_bundle_type(world, state)
+    with pytest.raises(ValidationError):
+        BundleType.model_validate({
+            "state_changes": [{"type": "unlock_beat", "beat_id": "b1"}]
+        })
 
 
-def test_requires_beats_unsatisfied_rejected():
+def test_dynamic_bundle_rejects_unsatisfied_requires():
+    """Reachability requires every prereq to be fired or transitively reachable.
+    If prereq is unfired and standalone-reachable, b1 is reachable too — so
+    we author a permanently-blocked prereq to test the rejection path."""
     world = _make_world(beats=[
-        Beat(id="prereq", description="x", notes_to_llm="y"),
+        Beat(id="blocker", description="x", notes_to_llm="y"),
+        Beat(id="prereq", description="x", blocked_by_beats=["blocker"], notes_to_llm="y"),
         Beat(id="b1", description="x", requires_beats=["prereq"], notes_to_llm="y"),
     ])
-    state = State(player_location="loc_a")  # prereq not fired
-    bundle = StateChangeBundle(state_changes=[UnlockBeat(beat_id="b1")])
-    with pytest.raises(StateChangeError, match="requires_beats not yet satisfied"):
-        validate_state_change_bundle(bundle, world, state)
+    state = State(player_location="loc_a", unlocked_beats={"blocker"})
+    # blocker is fired → prereq is permanently blocked → b1 is unreachable.
+    BundleType = _build_state_change_bundle_type(world, state)
+    with pytest.raises(ValidationError):
+        BundleType.model_validate({
+            "state_changes": [{"type": "unlock_beat", "beat_id": "b1"}]
+        })
 
 
-def test_requires_beats_satisfied_passes():
-    world = _make_world(beats=[
-        Beat(id="prereq", description="x", notes_to_llm="y"),
-        Beat(id="b1", description="x", requires_beats=["prereq"], notes_to_llm="y"),
-    ])
-    state = State(player_location="loc_a", unlocked_beats={"prereq"})
-    bundle = StateChangeBundle(state_changes=[UnlockBeat(beat_id="b1")])
-    # Should not raise
-    validate_state_change_bundle(bundle, world, state)
-
-
-def test_blocked_by_beats_active_rejected():
+def test_dynamic_bundle_rejects_active_blocker():
+    """blocked_by_beats with an active blocker → reachability excludes →
+    grammar Literal omits → ValidationError."""
     world = _make_world(beats=[
         Beat(id="blocker", description="x", notes_to_llm="y"),
         Beat(id="b1", description="x", blocked_by_beats=["blocker"], notes_to_llm="y"),
     ])
     state = State(player_location="loc_a", unlocked_beats={"blocker"})
-    bundle = StateChangeBundle(state_changes=[UnlockBeat(beat_id="b1")])
-    with pytest.raises(StateChangeError, match="blocked by"):
-        validate_state_change_bundle(bundle, world, state)
+    BundleType = _build_state_change_bundle_type(world, state)
+    with pytest.raises(ValidationError):
+        BundleType.model_validate({
+            "state_changes": [{"type": "unlock_beat", "beat_id": "b1"}]
+        })
 
 
-def test_blocked_by_inactive_passes():
-    world = _make_world(beats=[
-        Beat(id="blocker", description="x", notes_to_llm="y"),
-        Beat(id="b1", description="x", blocked_by_beats=["blocker"], notes_to_llm="y"),
-    ])
-    state = State(player_location="loc_a")  # blocker NOT fired
-    bundle = StateChangeBundle(state_changes=[UnlockBeat(beat_id="b1")])
-    validate_state_change_bundle(bundle, world, state)
+def test_dynamic_bundle_empty_when_no_reachable_beats():
+    """No reachable beats → bundle must be empty (max_length=0)."""
+    world = _make_world(beats=[])
+    state = State(player_location="loc_a")
+    BundleType = _build_state_change_bundle_type(world, state)
+    bundle = BundleType.model_validate({"state_changes": []})
+    assert bundle.state_changes == []
 
 
-# ───────────────────────── ≤2 unlock_beat per bundle cap ─────────────────────────
-
-
-def test_one_unlock_beat_passes():
-    world = _make_world(beats=[
-        Beat(id="b1", description="x", notes_to_llm="y"),
-    ])
-    bundle = StateChangeBundle(state_changes=[UnlockBeat(beat_id="b1")])
-    validate_state_change_bundle(bundle, world, State(player_location="loc_a"))
-
-
-def test_two_unlock_beats_passes():
-    world = _make_world(beats=[
-        Beat(id="b1", description="x", notes_to_llm="y"),
-        Beat(id="b2", description="x", notes_to_llm="y"),
-    ])
-    bundle = StateChangeBundle(state_changes=[
-        UnlockBeat(beat_id="b1"), UnlockBeat(beat_id="b2"),
-    ])
-    validate_state_change_bundle(bundle, world, State(player_location="loc_a"))
-
-
-def test_three_unlock_beats_rejected():
+def test_dynamic_bundle_max_length_three_rejected():
     world = _make_world(beats=[
         Beat(id="b1", description="x", notes_to_llm="y"),
         Beat(id="b2", description="x", notes_to_llm="y"),
         Beat(id="b3", description="x", notes_to_llm="y"),
     ])
-    bundle = StateChangeBundle(state_changes=[
-        UnlockBeat(beat_id="b1"),
-        UnlockBeat(beat_id="b2"),
-        UnlockBeat(beat_id="b3"),
-    ])
-    with pytest.raises(StateChangeError, match=f"> {UNLOCK_BEAT_CAP_PER_BUNDLE}"):
-        validate_state_change_bundle(bundle, world, State(player_location="loc_a"))
+    state = State(player_location="loc_a")
+    BundleType = _build_state_change_bundle_type(world, state)
+    with pytest.raises(ValidationError):
+        BundleType.model_validate({
+            "state_changes": [
+                {"type": "unlock_beat", "beat_id": "b1"},
+                {"type": "unlock_beat", "beat_id": "b2"},
+                {"type": "unlock_beat", "beat_id": "b3"},
+            ]
+        })
 
 
-def test_zero_unlock_beats_passes():
-    world = _make_world()
-    validate_state_change_bundle(
-        StateChangeBundle(), world, State(player_location="loc_a")
+# ───────────────────────── dynamic ProsePart (Literal narrowing) ─────────────────────────
+
+
+def test_dynamic_prose_endgame_with_satisfied_prereqs_passes():
+    world = _make_world(
+        beats=[Beat(id="decided_to_file", description="x", notes_to_llm="y")],
+        endings=[Ending(
+            id="published_story",
+            requires_beats=["decided_to_file"],
+            notes_to_llm="x",
+            epilogue="y",
+        )],
     )
+    state = State(player_location="loc_a", unlocked_beats={"decided_to_file"})
+    ProseType = _build_prose_part_type(world, state)
+    pp = ProseType.model_validate({
+        "prose": "...",
+        "next": {"type": "end_game", "ending_id": "published_story"},
+    })
+    assert pp.next.ending_id == "published_story"  # type: ignore[union-attr]
 
 
-def test_duplicate_beat_in_bundle_rejected():
-    world = _make_world(beats=[Beat(id="b1", description="x", notes_to_llm="y")])
-    bundle = StateChangeBundle(state_changes=[
-        UnlockBeat(beat_id="b1"), UnlockBeat(beat_id="b1"),
-    ])
-    with pytest.raises(StateChangeError, match="appears twice"):
-        validate_state_change_bundle(bundle, world, State(player_location="loc_a"))
+def test_dynamic_prose_endgame_with_missing_prereqs_rejected():
+    """Ending whose requires_beats aren't satisfied → not in the satisfied
+    set → grammar Literal omits → ValidationError."""
+    world = _make_world(
+        beats=[Beat(id="decided_to_file", description="x", notes_to_llm="y")],
+        endings=[Ending(
+            id="published_story",
+            requires_beats=["decided_to_file"],
+            notes_to_llm="x",
+            epilogue="y",
+        )],
+    )
+    state = State(player_location="loc_a")  # decision beat not fired
+    ProseType = _build_prose_part_type(world, state)
+    with pytest.raises(ValidationError):
+        ProseType.model_validate({
+            "prose": "...",
+            "next": {"type": "end_game", "ending_id": "published_story"},
+        })
+
+
+def test_dynamic_prose_endgame_undefined_ending_rejected():
+    world = _make_world()
+    state = State(player_location="loc_a")
+    ProseType = _build_prose_part_type(world, state)
+    with pytest.raises(ValidationError):
+        ProseType.model_validate({
+            "prose": "...",
+            "next": {"type": "end_game", "ending_id": "ghost"},
+        })
+
+
+def test_dynamic_prose_continue_without_leave_option_rejected():
+    """The ≥1-leave-option rule lives on canonical ContinueScene as
+    @model_validator. The dynamic ContinueScene inherits it via __base__=
+    so the rule fires at parse time, inside pydantic-ai's retry loop."""
+    world = _make_world()
+    state = State(player_location="loc_a")
+    ProseType = _build_prose_part_type(world, state)
+    with pytest.raises(ValidationError, match="leaves_for"):
+        ProseType.model_validate({
+            "prose": "...",
+            "next": {
+                "type": "continue",
+                "options": [{"text": "stay 1"}, {"text": "stay 2"}],
+            },
+        })
+
+
+def test_dynamic_prose_continue_with_leave_option_passes():
+    world = _make_world()
+    state = State(player_location="loc_a")
+    ProseType = _build_prose_part_type(world, state)
+    ProseType.model_validate({
+        "prose": "...",
+        "next": {
+            "type": "continue",
+            "options": [
+                {"text": "stay"},
+                {"text": "leave", "leaves_for": "loc_b"},
+            ],
+        },
+    })
+
+
+def test_dynamic_prose_continue_with_non_adjacent_leave_rejected():
+    """leaves_for narrowed to Literal[*adjacent_to] → non-adjacent
+    rejected by grammar."""
+    world = _make_world(
+        locations=[
+            Location(id="loc_a", name="A", adjacent_to=["loc_b"], description="a"),
+            Location(id="loc_b", name="B", adjacent_to=["loc_a"], description="b"),
+            Location(id="loc_c", name="C", adjacent_to=[], description="c"),
+        ],
+    )
+    state = State(player_location="loc_a")
+    ProseType = _build_prose_part_type(world, state)
+    with pytest.raises(ValidationError):
+        ProseType.model_validate({
+            "prose": "...",
+            "next": {
+                "type": "continue",
+                "options": [
+                    {"text": "leave for C", "leaves_for": "loc_c"},
+                ],
+            },
+        })
+
+
+# ───────────────────────── leave_pick → EndScene (grammar-enforced) ─────────────────────────
+
+
+def test_leave_pick_turn_grammar_only_accepts_end_scene():
+    """The regression that originally motivated `__base__=`. When leave_pick
+    is set, the dynamic ProsePart's `next` is `EndScene` (no union) — so
+    Continue/EndGame are rejected at parse time, before any application
+    validation can run."""
+    world = _make_world()
+    state = State(player_location="loc_a")
+    leave_pick = Option(text="leave", leaves_for="loc_b")
+    ProseType = _build_prose_part_type(world, state, leave_pick=leave_pick)
+
+    # ContinueScene rejected.
+    with pytest.raises(ValidationError):
+        ProseType.model_validate({
+            "prose": "...",
+            "next": {
+                "type": "continue",
+                "options": [
+                    {"text": "stay"},
+                    {"text": "leave", "leaves_for": "loc_b"},
+                ],
+            },
+        })
+
+    # EndGame rejected.
+    with pytest.raises(ValidationError):
+        ProseType.model_validate({
+            "prose": "...",
+            "next": {"type": "end_game", "ending_id": "anything"},
+        })
+
+    # EndScene accepted.
+    pp = ProseType.model_validate({
+        "prose": "...",
+        "next": {"type": "end_scene"},
+    })
+    assert pp.next.type == "end_scene"
 
 
 # ───────────────────────── reachability filter (transitive blocking) ─────────────────────────
@@ -295,161 +484,29 @@ def test_reachable_with_fired_prereq():
     assert reachable_beat_ids(world, state) == {"A"}
 
 
-# ───────────────────────── validate_prose_part ─────────────────────────
-
-
-def test_endgame_with_satisfied_prereqs_passes():
-    world = _make_world(
-        beats=[Beat(id="decided_to_file", description="x", notes_to_llm="y")],
-        endings=[Ending(
-            id="published_story",
-            requires_beats=["decided_to_file"],
-            notes_to_llm="x",
-            epilogue="y",
-        )],
-    )
-    state = State(player_location="loc_a", unlocked_beats={"decided_to_file"})
-    prose_part = ProsePart(prose="...", next=EndGame(ending_id="published_story"))
-    validate_prose_part(prose_part, world, state)
-
-
-def test_endgame_with_missing_prereqs_rejected():
-    world = _make_world(
-        beats=[Beat(id="decided_to_file", description="x", notes_to_llm="y")],
-        endings=[Ending(
-            id="published_story",
-            requires_beats=["decided_to_file"],
-            notes_to_llm="x",
-            epilogue="y",
-        )],
-    )
-    state = State(player_location="loc_a")  # decision beat not fired
-    prose_part = ProsePart(prose="...", next=EndGame(ending_id="published_story"))
-    with pytest.raises(ProsePartError, match="not yet satisfied"):
-        validate_prose_part(prose_part, world, state)
-
-
-def test_endgame_undefined_ending_rejected():
-    world = _make_world()
-    state = State(player_location="loc_a")
-    prose_part = ProsePart(prose="...", next=EndGame(ending_id="ghost"))
-    with pytest.raises(ProsePartError, match="not defined"):
-        validate_prose_part(prose_part, world, state)
-
-
-def test_continue_without_leave_option_rejected():
-    world = _make_world()
-    state = State(player_location="loc_a")
-    prose_part = ProsePart(
-        prose="...",
-        next=ContinueScene(options=[
-            Option(text="stay 1"), Option(text="stay 2"),
-        ]),
-    )
-    with pytest.raises(ProsePartError, match="leaves_for"):
-        validate_prose_part(prose_part, world, state)
-
-
-def test_continue_with_leave_option_passes():
-    world = _make_world()
-    state = State(player_location="loc_a")
-    prose_part = ProsePart(
-        prose="...",
-        next=ContinueScene(options=[
-            Option(text="stay"),
-            Option(text="leave for B", leaves_for="loc_b"),
-        ]),
-    )
-    validate_prose_part(prose_part, world, state)
-
-
-def test_continue_with_non_adjacent_leave_option_rejected():
-    world = _make_world(
-        locations=[
-            Location(id="loc_a", name="A", adjacent_to=["loc_b"], description="a"),
-            Location(id="loc_b", name="B", adjacent_to=["loc_a"], description="b"),
-            Location(id="loc_c", name="C", adjacent_to=[], description="c"),
-        ],
-    )
-    state = State(player_location="loc_a")
-    prose_part = ProsePart(
-        prose="...",
-        next=ContinueScene(options=[
-            Option(text="leave for C", leaves_for="loc_c"),  # not adjacent
-        ]),
-    )
-    with pytest.raises(ProsePartError, match="not adjacent"):
-        validate_prose_part(prose_part, world, state)
-
-
-# ───────────────────────── leave-pick forces EndScene ─────────────────────────
-
-
-def test_leave_pick_turn_forces_end_scene_continue_rejected():
-    world = _make_world()
-    state = State(player_location="loc_a")
-    leave_pick = Option(text="leave", leaves_for="loc_b")
-    prose_part = ProsePart(
-        prose="...",
-        next=ContinueScene(options=[Option(text="stay", leaves_for=None),
-                                    Option(text="leave", leaves_for="loc_b")]),
-    )
-    with pytest.raises(ProsePartError, match="MUST emit EndScene"):
-        validate_prose_part(prose_part, world, state, leave_pick=leave_pick)
-
-
-def test_leave_pick_turn_forces_end_scene_endgame_rejected():
-    world = _make_world(
-        beats=[Beat(id="d", description="x", notes_to_llm="y")],
-        endings=[Ending(id="e", requires_beats=["d"], notes_to_llm="x", epilogue="y")],
-    )
-    state = State(player_location="loc_a", unlocked_beats={"d"})
-    leave_pick = Option(text="leave", leaves_for="loc_b")
-    prose_part = ProsePart(prose="...", next=EndGame(ending_id="e"))
-    with pytest.raises(ProsePartError, match="MUST emit EndScene"):
-        validate_prose_part(prose_part, world, state, leave_pick=leave_pick)
-
-
-def test_leave_pick_turn_with_end_scene_passes():
-    world = _make_world()
-    state = State(player_location="loc_a")
-    leave_pick = Option(text="leave", leaves_for="loc_b")
-    prose_part = ProsePart(prose="...", next=EndScene())
-    validate_prose_part(prose_part, world, state, leave_pick=leave_pick)
-
-
-def test_normal_turn_no_leave_pick_continue_passes():
-    """Sanity: when leave_pick is None, ContinueScene with a leave option
-    is the normal-case path."""
-    world = _make_world()
-    state = State(player_location="loc_a")
-    prose_part = ProsePart(
-        prose="...",
-        next=ContinueScene(options=[
-            Option(text="stay"), Option(text="leave", leaves_for="loc_b"),
-        ]),
-    )
-    validate_prose_part(prose_part, world, state, leave_pick=None)
-
-
 # ───────────────────────── integration: valid fixture ─────────────────────────
 
 
-def test_validators_play_with_loaded_fixture():
-    """Sanity check: validators don't reject valid changes against the
+def test_dynamic_builder_against_loaded_fixture():
+    """Sanity check: dynamic builder accepts valid changes against the
     fixture world."""
     world = load_world(FIXTURE_VALID)
     state = make_initial_state(world)
+    BundleType = _build_state_change_bundle_type(world, state)
     # tom_named_a_vehicle has no requires, and its blocker (tom_closes_off)
-    # hasn't fired — so it's firable.
-    bundle = StateChangeBundle(
-        state_changes=[UnlockBeat(beat_id="tom_named_a_vehicle")]
-    )
-    validate_state_change_bundle(bundle, world, state)
-    apply_state_changes(bundle, state)
+    # hasn't fired — so it's reachable.
+    bundle = BundleType.model_validate({
+        "state_changes": [
+            {"type": "unlock_beat", "beat_id": "tom_named_a_vehicle"}
+        ]
+    })
+    canonical = StateChangeBundle.model_validate(bundle.model_dump())
+    apply_state_changes(canonical, state)
     assert "tom_named_a_vehicle" in state.unlocked_beats
-    # tom_admits_more requires tom_named_a_vehicle — now satisfied.
-    bundle = StateChangeBundle(
-        state_changes=[UnlockBeat(beat_id="tom_admits_more")]
-    )
-    validate_state_change_bundle(bundle, world, state)
+    # Now tom_admits_more (requires tom_named_a_vehicle) is reachable.
+    BundleType2 = _build_state_change_bundle_type(world, state)
+    BundleType2.model_validate({
+        "state_changes": [
+            {"type": "unlock_beat", "beat_id": "tom_admits_more"}
+        ]
+    })

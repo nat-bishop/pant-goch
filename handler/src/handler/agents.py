@@ -1,32 +1,35 @@
 """Scene-runner pydantic-ai agents + dynamic per-call output schemas.
 
-Two-stage emission per turn:
-  Phase 1 — emit_state_changes(): structured `StateChangeBundle`. Validated
-            via @agent.output_validator → ModelRetry on requires/blocks
-            violations, ≤2-cap, undefined ids. output_retries=3.
-            STATELESS per turn — fresh classifier on each call.
-  Phase 2 — emit_prose(): structured `ProsePart`. Validated for ending
-            prereqs, ≥1 leave option per ContinueScene, leave-pick forces
-            EndScene. output_retries=3.
-            SCENE-BOUNDED CONVERSATION — message_history accumulates within
-            a scene (the model sees its own prior prose as assistant
-            messages), resets at scene boundary (enter_scene). See
-            SceneRunnerRuntime.
+Phase 1 (`emit_state_changes`) emits `StateChangeBundle`; Phase 2
+(`emit_prose`) emits `ProsePart`. Each has its own system prompt:
+classifier (full bible) for Phase 1, narrator (slim, voice-focused) for
+Phase 2. Phase 1 is stateless per turn; Phase 2 carries a scene-bounded
+message history in `SceneRunnerRuntime.phase2_message_history` so the
+narrator sees its own prior turns as assistant messages — voice continuity
+accumulates within a scene, resets at scene boundary.
 
-Phase 1 and Phase 2 have SEPARATE system prompts:
-  build_phase1_system_prompt: classifier + full bible (beats, notes_to_llm,
-    endings, NPC knowledge). Large; that's fine, the classifier needs it.
-  build_phase2_system_prompt: narrator + voice samples + crime overview
-    + few-shot style examples. Slim. Drops beats, notes_to_llm, endings,
-    NPC knowledge — Phase 2's attention focuses on writing scene-living
-    prose, not on beat structure.
+Per-call dynamic types narrow `beat_id` to `Literal[*reachable_beat_ids]`,
+`Option.leaves_for` to `Literal[*adjacent_ids]`, and `EndGame.ending_id` to
+`Literal[*satisfied_ending_ids]` so llama.cpp's grammar sampler rejects
+invalid ids at decode time. When `leave_pick` is set, `ProsePart.next` is
+narrowed to `EndScene` (no union) — the leave-pick-forces-end-scene rule
+is grammar-enforced too.
 
-Per-call dynamic types narrow the str-typed schemas in `schemas.py` to
-`Literal[*beat_ids]`, `Literal[*adjacent_ids]`, `Literal[*ending_ids]` so
-the llama.cpp grammar sampler rejects invalid ids at decode time.
-`strict=True` on NativeOutput is non-negotiable — without it pydantic-ai
-sends `response_format.json_schema.strict=false` and llama.cpp ignores
-the schema.
+State-INDEPENDENT structural rules live on the canonical schemas in
+`schemas.py` as @model_validator / Field(...). State-DEPENDENT enum
+constraints live in the per-call Literal narrowing below. The dynamic
+StateChangeBundle and ContinueScene subclass their canonical counterparts
+(`__base__=`) so the @model_validator inheritance fires when pydantic-ai
+parses the LLM output — on ValidationError pydantic-ai's retry loop kicks
+in automatically. The remaining dynamic classes (UnlockBeat, Option,
+EndScene, EndGame, ProsePart) have no canonical-side validators, so they
+don't need `__base__=`.
+
+Why NativeOutput rather than the output-function pattern: empirical
+testing on Gemma 4 E4B via llama-server's tool-calling path showed the
+agent hung indefinitely; NativeOutput routes through
+`response_format.json_schema` which Gemma 4 handles reliably. See the
+plan's Phase 0 fallback note.
 """
 from __future__ import annotations
 
@@ -34,16 +37,11 @@ from dataclasses import dataclass, field
 from typing import Annotated, Any, Literal, Union
 
 from pydantic import BaseModel, Field, create_model
-from pydantic_ai import Agent, ModelRetry, NativeOutput, RunContext
+from pydantic_ai import Agent, NativeOutput
 from pydantic_ai.messages import ModelMessage
 from pydantic_ai.models.openai import OpenAIChatModel
 
-from .engine import (
-    ProsePartError,
-    StateChangeError,
-    validate_prose_part,
-    validate_state_change_bundle,
-)
+from .engine import reachable_beat_ids
 from .prompts import (
     build_log_writer_system_prompt,
     build_log_writer_user_prompt,
@@ -59,24 +57,9 @@ from .schemas import (
     Option,
     ProsePart,
     StateChangeBundle,
-    UnlockBeat,
 )
 from .state import LogEntry, State
 from .world import World
-
-
-# ───────────────────────── deps for output_validators ─────────────────────────
-
-
-@dataclass
-class Phase1Deps:
-    state: State
-
-
-@dataclass
-class Phase2Deps:
-    state: State
-    leave_pick: Option | None = None
 
 
 # ───────────────────────── agent bundle ─────────────────────────
@@ -87,23 +70,16 @@ class AgentBundle:
     """One world's scene-runner agents. Built once in lifespan via
     `build_scene_runner_bundle(model, world)`.
 
-    Why N+1 agents: pydantic-ai 1.93+ forbids passing `output_type=` at
-    `agent.run()` when `@agent.output_validator` is registered (it raises
-    `UserError("Cannot set a custom run output_type when the agent has
-    output validators")`). So we bake the per-call dynamic type at
-    construction. Phase 1's `Literal[*beat_ids]` is world-scoped (one
-    agent). Phase 2's `Literal[*adjacent_ids]` is location-scoped (one
-    agent per location).
-
-    Phase 1 carries the classifier system prompt (full bible); all phase 2
-    agents share the narrator system prompt (slim, voice-focused). System
-    prompts are byte-stable across the session → KV cache hits across
-    turns. The phase-1 and phase-2 prompts differ → no inter-phase cache
-    sharing within a turn (deliberate trade for Phase 2 attention focus).
+    Single phase-1 + single phase-2 agent. Per-call dynamic schemas are
+    passed at `agent.run()` time via the output-function pattern (see
+    emit_state_changes / emit_prose). System prompts are byte-stable across
+    the session → KV cache hits across turns. The phase-1 and phase-2
+    prompts differ → no inter-phase cache sharing within a turn (deliberate
+    trade for Phase 2 attention focus).
     """
 
-    phase1: Agent[Phase1Deps, Any]
-    phase2_by_location: dict[str, Agent[Phase2Deps, Any]]
+    phase1: Agent[None, StateChangeBundle]
+    phase2: Agent[None, ProsePart]
     world: World
 
 
@@ -139,168 +115,117 @@ def make_scene_runner_runtime() -> SceneRunnerRuntime:
 # ───────────────────────── dynamic type builders ─────────────────────────
 
 
-def _build_state_change_bundle_type(world: World) -> type[BaseModel]:
-    """StateChangeBundle whose UnlockBeat.beat_id is `Literal[*beat_ids]`.
-    The grammar sampler will reject any beat_id not in this enum at decode
-    time. Application-layer rules (requires_beats, blocked_by_beats, ≤2 cap)
-    are checked in the output_validator post-decode.
+def _build_state_change_bundle_type(world: World, state: State) -> type[BaseModel]:
+    """StateChangeBundle whose UnlockBeat.beat_id is
+    `Literal[*reachable_beat_ids(world, state)]`. The grammar sampler will
+    reject any beat_id not currently reachable at decode time — covers
+    requires_beats/blocked_by_beats/already-fired in one Literal. `__base__=`
+    inherits `_no_duplicate_beat_ids` from canonical so the rule fires
+    during the agent's retry loop (ValidationError → ModelRetry).
     """
-    beat_ids = tuple(world.beats.keys())
-    if not beat_ids:
-        # Edge: world with no beats. The schema can't have an empty Literal,
-        # but the LLM can still emit StateChangeBundle(state_changes=[]).
-        # Use the str-typed UnlockBeat from schemas.py — engine validator will
-        # reject any beat_id since no beats are defined.
-        DynamicUnlockBeat = UnlockBeat
-    else:
-        BeatLiteral = Literal[beat_ids]  # type: ignore[valid-type]
-        DynamicUnlockBeat = create_model(
-            "UnlockBeat",
-            type=(Literal["unlock_beat"], "unlock_beat"),
-            beat_id=(BeatLiteral, ...),
+    reachable = tuple(sorted(reachable_beat_ids(world, state)))
+    if not reachable:
+        # Nothing fireable from this state → bundle must be empty.
+        return create_model(
+            "StateChangeBundle",
+            __base__=StateChangeBundle,
+            state_changes=(
+                list[Any],
+                Field(default_factory=list, max_length=0),
+            ),
         )
+    BeatLiteral = Literal[reachable]  # type: ignore[valid-type]
+    DynamicUnlockBeat = create_model(
+        "UnlockBeat",
+        type=(Literal["unlock_beat"], "unlock_beat"),
+        beat_id=(BeatLiteral, ...),
+    )
     StateChange = Annotated[DynamicUnlockBeat, Field(discriminator="type")]
     return create_model(
         "StateChangeBundle",
-        state_changes=(list[StateChange], Field(default_factory=list)),
+        __base__=StateChangeBundle,
+        state_changes=(
+            list[StateChange],
+            Field(default_factory=list, max_length=2),
+        ),
     )
 
 
-def _build_prose_part_type(world: World, location_id: str) -> type[BaseModel]:
-    """ProsePart whose Option.leaves_for is `Literal[*adjacent_loc_ids] | None`
-    and EndGame.ending_id is `Literal[*ending_ids]`. Adjacencies are
-    location-specific, so this is built per location_id (cached in the
-    bundle's prose_part_types_by_loc dict)."""
-    location = world.locations[location_id]
+def _build_prose_part_type(
+    world: World,
+    state: State,
+    *,
+    leave_pick: Option | None = None,
+) -> type[BaseModel]:
+    """ProsePart whose Option.leaves_for is `Literal[*adjacent_ids] | None`
+    and EndGame.ending_id is `Literal[*satisfied_ending_ids]`. When
+    `leave_pick` is set, `next` is narrowed to `EndScene` (no union) so the
+    grammar physically prevents emitting ContinueScene/EndGame on a
+    leave-pick turn.
+
+    State-independent rules (≥1 leave option in ContinueScene) live on the
+    canonical schema as @model_validator and fire when the output function
+    round-trips dynamic → canonical.
+    """
+    if leave_pick is not None:
+        return create_model("ProsePart", prose=(str, ...), next=(EndScene, ...))
+
+    location = world.locations[state.player_location]
     adjacent_ids = tuple(location.adjacent_to)
-    ending_ids = tuple(world.endings.keys())
+    satisfied_endings = tuple(sorted(
+        eid for eid, e in world.endings.items()
+        if set(e.requires_beats).issubset(state.unlocked_beats)
+    ))
 
     if adjacent_ids:
         LeavesForType = Union[Literal[adjacent_ids], None]  # type: ignore[valid-type]
     else:
-        # No adjacents from this location: leaves_for can only be None.
-        # The validator will then reject ContinueScene (no leave option
-        # possible) — caller should expect EndScene from this location.
         LeavesForType = None
-    # Why __base__=: the dynamic classes must be SUBCLASSES of the base
-    # schemas, not standalone create_model() results. Otherwise
-    # `isinstance(prose_part.next, EndScene)` returns False for a
-    # DynamicEndScene instance — and the engine's validators
-    # (engine.validate_prose_part, scene_loop, __main__ CLI) all dispatch
-    # on isinstance. The previous standalone-class version produced the
-    # self-contradictory error "you MUST emit EndScene as next, not
-    # EndScene" on every leave-pick turn, exhausting Phase 2 retries.
     DynamicOption = create_model(
         "Option",
-        __base__=Option,
+        text=(str, ...),
         leaves_for=(LeavesForType, None),
     )
-
     DynamicContinue = create_model(
         "ContinueScene",
         __base__=ContinueScene,
         options=(list[DynamicOption], ...),
     )
-    DynamicEndScene = create_model("EndScene", __base__=EndScene)
-    if ending_ids:
-        EndingLiteral = Literal[ending_ids]  # type: ignore[valid-type]
+    next_variants: list[type] = [DynamicContinue, EndScene]
+    if satisfied_endings:
         DynamicEndGame = create_model(
             "EndGame",
-            __base__=EndGame,
-            ending_id=(EndingLiteral, ...),
+            type=(Literal["end_game"], "end_game"),
+            ending_id=(Literal[satisfied_endings], ...),  # type: ignore[valid-type]
         )
-        NextUnion = Union[DynamicContinue, DynamicEndScene, DynamicEndGame]
-    else:
-        # No endings authored: drop EndGame from the union entirely.
-        NextUnion = Union[DynamicContinue, DynamicEndScene]
+        next_variants.append(DynamicEndGame)
+    NextUnion = Union[tuple(next_variants)]  # type: ignore[valid-type]
     SceneNext = Annotated[NextUnion, Field(discriminator="type")]
-
-    return create_model(
-        "ProsePart",
-        __base__=ProsePart,
-        next=(SceneNext, ...),
-    )
+    return create_model("ProsePart", prose=(str, ...), next=(SceneNext, ...))
 
 
 # ───────────────────────── factory ─────────────────────────
 
 
-def _build_phase1_agent(
-    model: OpenAIChatModel, world: World, system_prompt: str
-) -> Agent[Phase1Deps, Any]:
-    state_change_bundle_type = _build_state_change_bundle_type(world)
-    agent = Agent[Phase1Deps, Any](
-        model=model,
-        deps_type=Phase1Deps,
-        output_type=NativeOutput(state_change_bundle_type, strict=True),
-        system_prompt=system_prompt,
-        output_retries=3,
-    )
-
-    @agent.output_validator
-    async def _validate(
-        ctx: RunContext[Phase1Deps], output: BaseModel
-    ) -> BaseModel:
-        try:
-            validate_state_change_bundle(output, world, ctx.deps.state)  # type: ignore[arg-type]
-        except StateChangeError as e:
-            raise ModelRetry(str(e))
-        return output
-
-    return agent
-
-
-def _build_phase2_agent(
-    model: OpenAIChatModel,
-    world: World,
-    system_prompt: str,
-    location_id: str,
-) -> Agent[Phase2Deps, Any]:
-    prose_part_type = _build_prose_part_type(world, location_id)
-    agent = Agent[Phase2Deps, Any](
-        model=model,
-        deps_type=Phase2Deps,
-        output_type=NativeOutput(prose_part_type, strict=True),
-        system_prompt=system_prompt,
-        output_retries=3,
-    )
-
-    @agent.output_validator
-    async def _validate(
-        ctx: RunContext[Phase2Deps], output: BaseModel
-    ) -> BaseModel:
-        try:
-            validate_prose_part(
-                output,  # type: ignore[arg-type]
-                world,
-                ctx.deps.state,
-                leave_pick=ctx.deps.leave_pick,
-            )
-        except ProsePartError as e:
-            raise ModelRetry(str(e))
-        return output
-
-    return agent
-
-
-def build_scene_runner_bundle(model: OpenAIChatModel, world: World) -> AgentBundle:
+def build_scene_runner_bundle(
+    model: OpenAIChatModel, world: World
+) -> AgentBundle:
     """Construct the scene-runner agent bundle for `world`. Bakes two
     system prompts (phase 1 classifier, phase 2 narrator) and builds one
-    phase-1 agent + N phase-2 agents (one per location, output_type locked
-    to that location's adjacents Literal).
+    phase-1 agent + one phase-2 agent. Per-call dynamic output_type is
+    passed at agent.run() time via the output-function pattern.
     """
-    phase1_system_prompt = build_phase1_system_prompt(world)
-    phase2_system_prompt = build_phase2_system_prompt(world)
-    phase1 = _build_phase1_agent(model, world, phase1_system_prompt)
-    phase2_by_location = {
-        loc_id: _build_phase2_agent(model, world, phase2_system_prompt, loc_id)
-        for loc_id in world.locations
-    }
-    return AgentBundle(
-        phase1=phase1,
-        phase2_by_location=phase2_by_location,
-        world=world,
+    phase1 = Agent[None, StateChangeBundle](
+        model=model,
+        system_prompt=build_phase1_system_prompt(world),
+        output_retries=3,
     )
+    phase2 = Agent[None, ProsePart](
+        model=model,
+        system_prompt=build_phase2_system_prompt(world),
+        output_retries=3,
+    )
+    return AgentBundle(phase1=phase1, phase2=phase2, world=world)
 
 
 # ───────────────────────── per-call run wrappers ─────────────────────────
@@ -317,15 +242,21 @@ async def emit_state_changes(
     full rich user prompt with reachable beats, endings, scene-so-far, case
     file — everything the classifier needs to judge what just fired.
 
-    Returns the validated StateChangeBundle, round-tripped through the
-    canonical str-typed model from schemas.py.
+    `output_type=NativeOutput(DynamicBundle, strict=True)` baked per call;
+    DynamicBundle subclasses canonical so @model_validators fire during
+    pydantic-ai's retry loop. The post-run round-trip canonicalizes the
+    instance for downstream isinstance() dispatch.
     """
     prompt = build_phase1_user_prompt(
         state, bundle.world,
         case_file_entries=case_file_entries,
         opening_seed=opening_seed,
     )
-    result = await bundle.phase1.run(prompt, deps=Phase1Deps(state=state))
+    DynamicBundle = _build_state_change_bundle_type(bundle.world, state)
+    result = await bundle.phase1.run(
+        prompt,
+        output_type=NativeOutput(DynamicBundle, strict=True),
+    )
     return StateChangeBundle.model_validate(result.output.model_dump())
 
 
@@ -359,11 +290,13 @@ async def emit_prose(
         opening_seed=opening_seed,
         is_first_turn=is_first_turn,
     )
-    agent = bundle.phase2_by_location[state.player_location]
-    result = await agent.run(
+    DynamicProsePart = _build_prose_part_type(
+        bundle.world, state, leave_pick=leave_pick
+    )
+    result = await bundle.phase2.run(
         user_msg,
         message_history=runtime.phase2_message_history,
-        deps=Phase2Deps(state=state, leave_pick=leave_pick),
+        output_type=NativeOutput(DynamicProsePart, strict=True),
     )
     runtime.phase2_message_history = result.all_messages()
     return ProsePart.model_validate(result.output.model_dump())

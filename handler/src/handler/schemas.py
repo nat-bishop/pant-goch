@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal, Union
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class _Strict(BaseModel):
@@ -40,7 +40,19 @@ StateChange = Annotated[UnlockBeat, Field(discriminator="type")]
 
 
 class StateChangeBundle(_Strict):
-    state_changes: list[StateChange] = Field(default_factory=list)
+    state_changes: list[StateChange] = Field(default_factory=list, max_length=2)
+
+    @model_validator(mode="after")
+    def _no_duplicate_beat_ids(self) -> StateChangeBundle:
+        seen: set[str] = set()
+        for change in self.state_changes:
+            if isinstance(change, UnlockBeat):
+                if change.beat_id in seen:
+                    raise ValueError(
+                        f"beat_id {change.beat_id!r} appears twice in bundle"
+                    )
+                seen.add(change.beat_id)
+        return self
 
 
 # ───────────────────────── Phase 2: prose + next ─────────────────────────
@@ -49,11 +61,11 @@ class StateChangeBundle(_Strict):
 class Option(_Strict):
     """One player-facing choice within a ContinueScene.
 
-    `leaves_for` non-None marks this option as a leave option. The engine
-    schema-validates that every ContinueScene includes ≥1 leave option, so
-    the player always has a walk-away choice. When the player picks a leave
-    option, phase 2 of the *next* turn must emit EndScene (engine output_validator
-    enforces).
+    `leaves_for` non-None marks this option as a leave option.
+    `ContinueScene._has_at_least_one_leave_option` enforces ≥1 leave
+    option per ContinueScene (player always has a walk-away choice). When
+    the player picks a leave option, the next turn's dynamic ProsePart
+    schema narrows `next` to `EndScene` — grammar-enforced.
     """
 
     text: str
@@ -63,6 +75,15 @@ class Option(_Strict):
 class ContinueScene(_Strict):
     type: Literal["continue"] = "continue"
     options: list[Option]
+
+    @model_validator(mode="after")
+    def _has_at_least_one_leave_option(self) -> ContinueScene:
+        if not any(o.leaves_for is not None for o in self.options):
+            raise ValueError(
+                "ContinueScene must include at least one option with "
+                "leaves_for set (player must always have a walk-away choice)"
+            )
+        return self
 
 
 class EndScene(_Strict):

@@ -22,17 +22,28 @@ Per scene turn, the engine makes **two LLM calls with separate system prompts**:
 | Phase 2 narrator | `build_phase2_system_prompt` (slim, voice) | `SceneRunnerRuntime.phase2_message_history`, scene-bounded | retries exhausted → engine `_fallback_prose_part`, NOT persisted to history |
 | Log writer | `build_log_writer_system_prompt` (full bible + journalist's voice rules) | `LogWriterRuntime.message_history`, session-bounded | no fallback authored; failures bubble |
 
-`AgentBundle` (world-scoped, immutable) holds `phase1` + N `phase2_by_location` agents — one Phase 2 agent per location so `Literal[*adjacent_ids]` for `Option.leaves_for` is baked into the per-location output schema. All N+1 agents are constructed at lifespan boot in `build_scene_runner_bundle`. `SceneRunnerRuntime` and `LogWriterRuntime` are session-scoped, mutable, threaded through `play_session(bundle, scene_runner, log_writer, state, world, ...)`.
+`AgentBundle` (world-scoped, immutable) holds a single `phase1` agent and a single `phase2` agent. Per-call dynamic schemas (Literal-narrowed `beat_id` / `leaves_for` / `ending_id` / leave-pick → `EndScene`) are passed at `agent.run()` time via the pydantic-ai output-function pattern (see `agents.emit_state_changes` / `emit_prose`). Both agents are constructed at lifespan boot in `build_scene_runner_bundle`. `SceneRunnerRuntime` and `LogWriterRuntime` are session-scoped, mutable, threaded through `play_session(bundle, scene_runner, log_writer, state, world, ...)`.
 
 ## No tool-call loop
 
 State changes are typed fields in `StateChange` (a discriminated union: currently just `UnlockBeat`). They are NOT pydantic-ai tool calls. There is no mid-turn tool-result feedback. If you want "a tool that…", either it's a new `StateChange` variant or it's out of scope.
 
-## Grammar-sampled enums + ≤2 cap
+## Grammar-sampled enums + rule placement
 
-Per-turn dynamic schema builders narrow `UnlockBeat.beat_id` to `Literal[*beat_ids]` and `Option.leaves_for` to `Literal[*adjacent_ids] | None`. llama.cpp's grammar sampler rejects invalid ids at decode time — the model literally cannot emit an undefined id. Application-layer rules (`requires_beats`, `blocked_by_beats`, ≤2 `UnlockBeat` per bundle) are checked in the `@agent.output_validator` and raise `ModelRetry` on failure. `output_retries=3`.
+Per-turn dynamic schema builders narrow:
+- `UnlockBeat.beat_id` → `Literal[*reachable_beat_ids(world, state)]`. Reachability covers `requires_beats` / `blocked_by_beats` / already-fired in one Literal — the grammar sampler physically cannot emit an unfireable beat.
+- `Option.leaves_for` → `Literal[*adjacent_ids] | None`.
+- `EndGame.ending_id` → `Literal[*satisfied_ending_ids]`. Only endings whose `requires_beats` are currently satisfied are emittable.
+- `ProsePart.next` → `EndScene` (no union) when `leave_pick` is set. Leave-pick-forces-EndScene is grammar-enforced.
 
-`UNLOCK_BEAT_CAP_PER_BUNDLE = 2` in `engine.py` is non-negotiable — prevents cascade-unlocking the truth in one beat. Naturally-paired beats are still allowed.
+State-INDEPENDENT structural rules live on the canonical schemas in `schemas.py`:
+- `StateChangeBundle.state_changes: Field(max_length=2)` — the ≤2-cap, was `UNLOCK_BEAT_CAP_PER_BUNDLE`. Non-negotiable: prevents cascade-unlocking the truth in one beat.
+- `StateChangeBundle._no_duplicate_beat_ids` `@model_validator` — same beat firing twice in one bundle is a smell, fail loud.
+- `ContinueScene._has_at_least_one_leave_option` `@model_validator` — player always has a walk-away choice.
+
+**No `@agent.output_validator` is registered.** Instead, `emit_state_changes` / `emit_prose` use pydantic-ai's output-function pattern: the function's parameter type is the per-call dynamic schema (decode-time grammar enforcement); the function body round-trips dynamic → canonical via `Canonical.model_validate(data.model_dump())` so the canonical schemas' `@model_validator`s fire at the boundary; on `ValidationError` the function raises `ModelRetry` so pydantic-ai's retry loop kicks in. `output_retries=3`.
+
+This is the load-bearing pattern that lets us have per-call dynamic schemas AND comprehensive validators without N+1 agents and without `__base__=` workarounds.
 
 ## Leave-pick semantics
 
@@ -96,6 +107,7 @@ These each carry an inline `# Why:` at the call site — preserve them:
 - `prompts.py::build_phase1_system_prompt` / `build_phase2_system_prompt` — the split, with `[THE TRUTH]` deliberately absent from Phase 2.
 - `agents.py::SceneRunnerRuntime` — scene-bounded history; reset in `play_scene` after `enter_scene`; fallback prose intentionally NOT persisted.
 - `agents.py::emit_prose` — `is_first_turn = not runtime.phase2_message_history` computes from runtime, not state. The runtime is the source of truth for scene-conversation lifecycle.
+- `agents.py::emit_state_changes` / `emit_prose` — the inner `finalize` is a pydantic-ai output function. Its parameter type is the per-call dynamic schema (grammar narrowing); the body round-trips to canonical so canonical `@model_validator`s fire; on `ValidationError` it raises `ModelRetry` so pydantic-ai's retry loop runs. Don't move validation into a separate `@agent.output_validator` — that would re-impose pydantic-ai's "can't combine per-call output_type with output_validator" constraint and force the N+1-agents-per-location workaround back.
 - `scene_loop.py::play_session` — single composable driver shared by CLI, SSE backend, and tests. Async/sync callbacks both supported via `_maybe_await`. Threads `bundle, scene_runner, log_writer, state, world` in that order.
 - `main.py::build_model` — `OpenAIModelProfile(openai_chat_send_back_thinking_parts=False)`. See above.
 - `world/few_shots.yaml`, `world/map.yaml` — optional files; loader tolerates missing. Don't make them required without thinking through the test fixtures (`tests/fixtures/world_valid/` does NOT author them).

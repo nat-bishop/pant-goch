@@ -5,7 +5,9 @@ bundled llama-server. Skipped by default; run with:
 
 Verifies the M3 scene-runner round-trips against an actual LLM:
   - phase 1 + phase 2 emit valid schemas
-  - output_validators don't reject obviously-valid output
+  - output functions don't reject obviously-valid output (canonical
+    @model_validators pass; grammar-narrowed Literals don't reject
+    valid ids)
   - prose is non-empty + options include a leave option
 """
 from __future__ import annotations
