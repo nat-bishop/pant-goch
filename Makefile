@@ -12,6 +12,7 @@ help:
 	@echo "  make sidecar             Run the FastAPI sidecar (spawns its own llama-server)"
 	@echo "  make sidecar-inferno     Run the sidecar against the inferno gateway (skips bundled llama)"
 	@echo "  make web                 Run the Vite dev server"
+	@echo "  make dev                 Run sidecar (inferno) + web together via concurrently"
 	@echo "  make cli                 Run the text-only CLI playthrough (uses inferno)"
 	@echo "  make download-model      Fetch the Gemma 4 E4B Q8_0 GGUF (~8 GB)"
 	@echo "  make test                Run pytest (unit suite, skips live-llama integration)"
@@ -21,7 +22,8 @@ help:
 	@echo "  make kill                Force-kill stragglers on :8000/:8080/:5173-5176"
 	@echo "  make clean               Remove __pycache__"
 	@echo ""
-	@echo "Browser dev flow: 'make sidecar' (terminal 1) + 'make web' (terminal 2), open http://localhost:5173"
+	@echo "Browser dev flow: 'make dev' (one terminal, inferno-routed) — open http://localhost:5173"
+	@echo "Or: 'make sidecar' (terminal 1) + 'make web' (terminal 2) for the bundled-llama path"
 
 $(MODEL):
 	mkdir -p models
@@ -44,6 +46,13 @@ sidecar-inferno:
 .PHONY: web
 web:
 	cd handler/web && npm run dev
+
+# Spawn sidecar (inferno-routed) + Vite dev server together via concurrently.
+# Ctrl-C kills both (--kill-others). Backend env var is set here, not in the
+# npm script, so the package.json stays portable (no cross-env dep needed).
+.PHONY: dev
+dev:
+	cd handler/web && SMALLVILLE_USE_INFERNO=1 npm run dev:all
 
 # Text-only CLI playthrough — stdin pick/walk, paced prose to stdout, log
 # entries indented after each scene. Routes at inferno by default.
@@ -73,17 +82,14 @@ clean:
 
 # Two-pass kill — single-pass misses multiprocessing-fork orphans that inherit
 # listening sockets. Exits non-zero if any port is still bound after the kill.
+#
+# Why Python (not inline PowerShell): when make's SHELL is bash (git bash on
+# Windows), bash eats `$var` references in the recipe before PowerShell ever
+# sees them, so every variable in the previous inline PowerShell script
+# collapsed to empty (`Write-Host "killed pid  on :"` etc.) and the brace
+# parser then died with "Unexpected token ')'". Python via `uv run` dodges
+# the whole shell-quoting + reserved-`$pid` mess — and `uv run` is already
+# the project's standard invocation.
 .PHONY: kill
 kill:
-	@powershell -NoProfile -ExecutionPolicy Bypass -Command "& { \
-	  $$ports = 8000,8080,5173,5174,5175,5176; \
-	  foreach ($$pass in 1..2) { \
-	    foreach ($$p in $$ports) { \
-	      $$pids = (Get-NetTCPConnection -LocalPort $$p -ErrorAction SilentlyContinue).OwningProcess | Sort-Object -Unique; \
-	      foreach ($$pid in $$pids) { try { Stop-Process -Id $$pid -Force -ErrorAction Stop; Write-Host \"killed pid $$pid on :$$p\" } catch {} } \
-	    } \
-	    Start-Sleep -Milliseconds 300 \
-	  } \
-	  $$still = @(); foreach ($$p in $$ports) { if (Get-NetTCPConnection -LocalPort $$p -ErrorAction SilentlyContinue) { $$still += $$p } } \
-	  if ($$still.Count) { Write-Host \"still bound: $$($$still -join ',')\"; exit 1 } else { Write-Host 'all clear' } \
-	}"
+	cd handler && uv run python scripts/kill_dev_ports.py

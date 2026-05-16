@@ -1,15 +1,24 @@
 import { memo, useEffect, useMemo, useState } from "react";
 import { postPick, postWalk, startSession } from "./api";
+import { Map, type MapLocation } from "./components/Map";
 import { useStream } from "./hooks/useStream";
 import { useStore, type SceneSnapshot } from "./store";
 
 interface WorldMeta {
   player_starts_at: string;
-  locations: { id: string; name: string; adjacent_to: string[] }[];
+  locations: {
+    id: string;
+    name: string;
+    adjacent_to: string[];
+    map_xy: [number, number] | null;
+  }[];
+  has_map: boolean;
 }
 
 interface LocationLookup {
-  byId: Record<string, { name: string; adjacent_to: string[] }>;
+  byId: Record<string, MapLocation>;
+  ordered: MapLocation[];
+  has_map: boolean;
 }
 
 function useWorld(): LocationLookup | null {
@@ -24,9 +33,9 @@ function useWorld(): LocationLookup | null {
     if (!meta) return null;
     const byId: LocationLookup["byId"] = {};
     for (const loc of meta.locations) {
-      byId[loc.id] = { name: loc.name, adjacent_to: loc.adjacent_to };
+      byId[loc.id] = loc;
     }
-    return { byId };
+    return { byId, ordered: meta.locations, has_map: meta.has_map };
   }, [meta]);
 }
 
@@ -60,10 +69,25 @@ export default function App() {
 
   // ── render ─────────────────────────────────────────────────────────
 
+  // Map is active when the player can actually walk: between scenes.
+  // Active=false means scene play in progress; hotspots dim, tooltip
+  // explains the player must use a "Leave for…" option to walk away.
+  const mapActive = phase === "between_scenes";
+  const adjacent =
+    current && world ? world.byId[current.location_id]?.adjacent_to ?? [] : [];
+
   return (
     <div className="app">
       <div className="scene-pane">
         <Header location={phase === "idle" ? "" : currentLocation} />
+        {phase !== "idle" && world && world.has_map && current && (
+          <Map
+            currentId={current.location_id}
+            locations={world.ordered}
+            adjacent={adjacent}
+            active={mapActive}
+          />
+        )}
         <div className="scene-body">
           {phase === "idle" ? (
             <IdleStage onStart={onStart} error={error} />
@@ -75,8 +99,13 @@ export default function App() {
                   options={current.turns[current.turns.length - 1]?.options ?? []}
                 />
               )}
-              {phase === "between_scenes" && current && world && (
+              {phase === "between_scenes" && current && world && !world.has_map && (
                 <WalkPanel currentId={current.location_id} world={world} />
+              )}
+              {phase === "between_scenes" && world && world.has_map && (
+                <div className="walk-hint">
+                  Click an adjacent location on the map to walk there.
+                </div>
               )}
               {phase === "game_over" && (
                 <GameOverPanel ending={game_over_ending ?? ""} onRestart={onRestart} />
@@ -219,7 +248,7 @@ function OptionsPanel({ options }: { options: { text: string; leaves_for: string
   );
 }
 
-// ─── walk targets (between scenes) ────────────────────────────────────────
+// ─── walk targets (between scenes, fallback when no map authored) ────────
 
 function WalkPanel({
   currentId,

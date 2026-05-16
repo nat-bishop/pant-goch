@@ -271,6 +271,101 @@ button:disabled {
   font-style: italic;
 }
 
+/* ── map ────────────────────────────────────────────────────────────── */
+
+.map {
+  /* Container MUST match the image's aspect-ratio exactly — hotspots are
+   * absolutely positioned at fractional (x, y) of the container, so any
+   * letterboxing inside the container would push them off the image.
+   * Cap width via `min(...)` so the container never grows past 38vh tall
+   * while keeping aspect intact (a plain `max-height` would clamp height
+   * and leave width full, breaking the ratio). */
+  position: relative;
+  width: min(100%, calc(38vh * 1408 / 768));
+  aspect-ratio: 1408 / 768;
+  margin: 0 auto;
+  overflow: hidden;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border);
+}
+
+.map-image {
+  width: 100%;
+  height: 100%;
+  display: block;
+  user-select: none;
+  pointer-events: none;
+}
+
+.map-hotspot {
+  position: absolute;
+  width: 1.4rem;
+  height: 1.4rem;
+  padding: 0;
+  margin: 0;
+  border-radius: 50%;
+  border: 1px solid transparent;
+  background: transparent;
+  transform: translate(-50%, -50%);
+  cursor: pointer;
+  transition: background 120ms, border-color 120ms, box-shadow 120ms;
+}
+
+.map-hotspot:hover {
+  background: transparent;
+}
+
+.map-hotspot-clickable {
+  border-color: var(--sepia);
+  background: rgba(200, 169, 120, 0.18);
+  box-shadow: 0 0 12px rgba(200, 169, 120, 0.35);
+}
+
+.map-hotspot-clickable:hover {
+  background: rgba(200, 169, 120, 0.42);
+  box-shadow: 0 0 18px rgba(200, 169, 120, 0.7);
+}
+
+.map-hotspot-current {
+  border-color: var(--ink);
+  background: rgba(216, 211, 196, 0.35);
+  box-shadow: 0 0 10px rgba(216, 211, 196, 0.4);
+  cursor: default;
+}
+
+.map-hotspot-dim {
+  border-color: transparent;
+  background: transparent;
+  cursor: not-allowed;
+}
+
+.map-hotspot-dim:hover {
+  background: rgba(90, 83, 70, 0.18);
+  border-color: var(--ink-faint);
+}
+
+.map-hotspot-label {
+  position: absolute;
+  left: 50%;
+  top: -1.6rem;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  padding: 0.2rem 0.5rem;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  color: var(--ink);
+  font-size: 0.78rem;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.walk-hint {
+  color: var(--ink-dim);
+  font-style: italic;
+  text-align: center;
+  margin-top: 1rem;
+}
+
 /* ── streaming text ─────────────────────────────────────────────────── */
 
 .streamed-word {

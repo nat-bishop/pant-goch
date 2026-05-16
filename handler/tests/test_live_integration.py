@@ -19,7 +19,7 @@ from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.profiles.openai import openai_model_profile
 from pydantic_ai.providers.openai import OpenAIProvider
 
-from handler.agents import build_scene_runner_bundle
+from handler.agents import build_scene_runner_bundle, make_scene_runner_runtime
 from handler.config import Settings
 from handler.engine import enter_scene
 from handler.schemas import ContinueScene, EndGame, EndScene
@@ -53,11 +53,12 @@ async def test_live_one_turn_at_pub():
     and options include at least one leave option (schema-enforced)."""
     world = load_world(FIXTURE)
     bundle = build_scene_runner_bundle(_make_model(), world)
+    runtime = make_scene_runner_runtime()
     state = make_initial_state(world)
     enter_scene(state, world, "the_slaughtered_lamb")
 
     prose_part = await run_turn(
-        bundle, state,
+        bundle, runtime, state,
         opening_seed=(
             "The journalist has just walked in. Tom is at the bar, "
             "nursing his bitter."

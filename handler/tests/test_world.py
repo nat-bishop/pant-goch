@@ -79,6 +79,41 @@ def test_npc_voice_sample_defaults_to_empty_for_legacy_fixture():
         assert npc.voice_sample == []
 
 
+def test_load_world_tolerates_missing_map_yaml():
+    """map.yaml is optional; fixtures without one load with empty
+    map_coords and the frontend falls back to the text walk panel."""
+    world = load_world(FIXTURE_VALID)
+    assert world.map_coords == {}
+
+
+def test_load_world_loads_map_coords_when_present(tmp_path):
+    target = _copy_valid(tmp_path)
+    _write_yaml(target / "map.yaml", {
+        "the_old_vicarage": {"x": 0.87, "y": 0.83},
+        "the_post_office": {"x": 0.60, "y": 0.83},
+        "the_slaughtered_lamb": {"x": 0.66, "y": 0.60},
+    })
+    world = load_world(target)
+    assert world.map_coords["the_old_vicarage"] == (0.87, 0.83)
+    assert world.map_coords["the_post_office"] == (0.60, 0.83)
+
+
+def test_load_world_rejects_map_yaml_unknown_location(tmp_path):
+    target = _copy_valid(tmp_path)
+    _write_yaml(target / "map.yaml", {"ghost_location": {"x": 0.5, "y": 0.5}})
+    with pytest.raises(WorldLoadError, match="not a defined location"):
+        load_world(target)
+
+
+def test_load_world_rejects_map_yaml_out_of_range(tmp_path):
+    target = _copy_valid(tmp_path)
+    _write_yaml(target / "map.yaml", {
+        "the_old_vicarage": {"x": 1.5, "y": 0.83},
+    })
+    with pytest.raises(WorldLoadError, match="out of"):
+        load_world(target)
+
+
 def test_npc_voice_sample_loaded_when_authored(tmp_path):
     target = _copy_valid(tmp_path)
     cast = yaml.safe_load((target / "cast.yaml").read_text(encoding="utf-8"))

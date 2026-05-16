@@ -42,6 +42,10 @@ class World:
     brief: Brief
     npcs_by_location: dict[str, list[NPC]]  # pre-grouped at load time
     few_shots: list[FewShot]  # rendered into Phase 2 system prompt; may be empty
+    # Fractional (x, y) ∈ [0, 1] per location id for the clickable map
+    # frontend. Optional file (`world/map.yaml`); when missing or empty,
+    # the frontend falls back to the text walk panel.
+    map_coords: dict[str, tuple[float, float]]
 
     def npcs_at(self, location_id: str) -> list[NPC]:
         """All NPCs whose default_location is `location_id`. Used by the
@@ -272,6 +276,36 @@ def load_world(path: Path) -> World:
             _parse_model(FewShot, d, few_shots_path) for d in few_shots_data
         ]
 
+    # map.yaml is optional — fixtures without a drawn map load with {} and
+    # the frontend falls back to the text walk panel.
+    map_path = path / "map.yaml"
+    map_coords: dict[str, tuple[float, float]] = {}
+    try:
+        map_data = _load_yaml(map_path)
+    except FileNotFoundError:
+        map_data = None
+    if map_data is not None:
+        if not isinstance(map_data, dict):
+            raise WorldLoadError(
+                f"map.yaml: expected a mapping of location_id → {{x, y}}, "
+                f"got {type(map_data).__name__}"
+            )
+        for loc_id, entry in map_data.items():
+            if loc_id not in locations:
+                raise WorldLoadError(
+                    f"map.yaml: {loc_id!r} is not a defined location"
+                )
+            if not isinstance(entry, dict) or "x" not in entry or "y" not in entry:
+                raise WorldLoadError(
+                    f"map.yaml[{loc_id!r}]: expected {{x: <float>, y: <float>}}"
+                )
+            x, y = entry["x"], entry["y"]
+            if not (0.0 <= x <= 1.0 and 0.0 <= y <= 1.0):
+                raise WorldLoadError(
+                    f"map.yaml[{loc_id!r}]: x={x} y={y} out of [0, 1]"
+                )
+            map_coords[loc_id] = (float(x), float(y))
+
     return World(
         locations=locations,
         npcs=npcs,
@@ -281,4 +315,5 @@ def load_world(path: Path) -> World:
         brief=brief,
         npcs_by_location=npcs_by_location,
         few_shots=few_shots,
+        map_coords=map_coords,
     )

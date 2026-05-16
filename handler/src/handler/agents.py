@@ -182,26 +182,31 @@ def _build_prose_part_type(world: World, location_id: str) -> type[BaseModel]:
         # The validator will then reject ContinueScene (no leave option
         # possible) — caller should expect EndScene from this location.
         LeavesForType = None
+    # Why __base__=: the dynamic classes must be SUBCLASSES of the base
+    # schemas, not standalone create_model() results. Otherwise
+    # `isinstance(prose_part.next, EndScene)` returns False for a
+    # DynamicEndScene instance — and the engine's validators
+    # (engine.validate_prose_part, scene_loop, __main__ CLI) all dispatch
+    # on isinstance. The previous standalone-class version produced the
+    # self-contradictory error "you MUST emit EndScene as next, not
+    # EndScene" on every leave-pick turn, exhausting Phase 2 retries.
     DynamicOption = create_model(
         "Option",
-        text=(str, ...),
+        __base__=Option,
         leaves_for=(LeavesForType, None),
     )
 
     DynamicContinue = create_model(
         "ContinueScene",
-        type=(Literal["continue"], "continue"),
+        __base__=ContinueScene,
         options=(list[DynamicOption], ...),
     )
-    DynamicEndScene = create_model(
-        "EndScene",
-        type=(Literal["end_scene"], "end_scene"),
-    )
+    DynamicEndScene = create_model("EndScene", __base__=EndScene)
     if ending_ids:
         EndingLiteral = Literal[ending_ids]  # type: ignore[valid-type]
         DynamicEndGame = create_model(
             "EndGame",
-            type=(Literal["end_game"], "end_game"),
+            __base__=EndGame,
             ending_id=(EndingLiteral, ...),
         )
         NextUnion = Union[DynamicContinue, DynamicEndScene, DynamicEndGame]
@@ -212,7 +217,7 @@ def _build_prose_part_type(world: World, location_id: str) -> type[BaseModel]:
 
     return create_model(
         "ProsePart",
-        prose=(str, ...),
+        __base__=ProsePart,
         next=(SceneNext, ...),
     )
 

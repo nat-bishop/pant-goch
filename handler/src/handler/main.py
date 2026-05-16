@@ -29,7 +29,7 @@ import httpx
 import logfire
 from logfire import ConsoleOptions
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.profiles.openai import openai_model_profile
@@ -252,10 +252,21 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                     "id": loc.id,
                     "name": loc.name,
                     "adjacent_to": list(loc.adjacent_to),
+                    "map_xy": (
+                        list(world.map_coords[loc.id])
+                        if loc.id in world.map_coords
+                        else None
+                    ),
                 }
                 for loc in world.locations.values()
             ],
+            "has_map": bool(world.map_coords),
         }
+        # Resolve the map asset path once at lifespan. Stays None if the
+        # world has no drawn map; the frontend's /world response will set
+        # has_map=false and fall back to the text walk panel.
+        map_png_path = world_path / "map.png"
+        app.state.map_png = map_png_path if map_png_path.is_file() else None
 
         try:
             yield
@@ -293,6 +304,17 @@ def get_world() -> dict:
     and walk targets. Pre-rendered in lifespan; safe to fetch before
     starting a session."""
     return app.state.world_meta
+
+
+@app.get("/world/map.png")
+def get_world_map_png() -> FileResponse:
+    """Serve the drawn village map. The frontend overlays clickable
+    hotspots over this background using the fractional coordinates
+    returned by GET /world. 404 if the world has no map authored."""
+    map_path = app.state.map_png
+    if map_path is None:
+        raise HTTPException(404, "no map authored for this world")
+    return FileResponse(map_path, media_type="image/png")
 
 
 # ───────────────────────── session API ─────────────────────────
