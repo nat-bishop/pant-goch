@@ -372,7 +372,7 @@ async def play_session(
         # EndGame. The just-completed scene is still in dialogue_history;
         # the next enter_scene will clear it. Decompose into the two
         # state channels right here so the callback sees a settled state.
-        output = await emit_chronicle_entry(chronicler, world, state)
+        output = await emit_chronicle_entry(bundle, chronicler, world, state)
         state.case_file_entries.append(output.case_file_entry)
         for upd in output.npc_memory_updates:
             state.npc_memory[upd.npc_id].append(upd.note)

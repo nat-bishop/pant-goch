@@ -301,9 +301,7 @@ async def test_play_session_emits_location_change_and_log_entry_words(
     """Cross-scene events: location_change fires between scenes;
     log_entry_word events stream the case file entry."""
     world, bundle = world_and_bundle
-    chronicler = make_chronicler_runtime(
-        TestModel(custom_output_text="The pub, the road. Tom was at the bar."), world
-    )
+    chronicler = make_chronicler_runtime()
     state = make_initial_state(world)
 
     # First scene at pub: ends in EndScene. Second scene at post office:

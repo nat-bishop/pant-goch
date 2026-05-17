@@ -57,6 +57,7 @@ from .schemas import (
     ContinueScene,
     EndGame,
     EndScene,
+    NpcMemoryUpdate,
     NpcPlacementBundle,
     Option,
     ProsePart,
@@ -72,21 +73,22 @@ from .world import World
 
 @dataclass
 class AgentBundle:
-    """One world's scene-runner agents. Built once in lifespan via
+    """One world's agents. Built once in lifespan via
     `build_scene_runner_bundle(model, world)`.
 
-    Phase 1 (classifier), Phase 2 (narrator), and the populator (scene-
-    entry NPC placement) each have their own system prompt and are
-    constructed once at bundle-build time. Per-call dynamic schemas are
-    passed at `agent.run()` time via NativeOutput (see emit_state_changes
-    / emit_prose / emit_placements). System prompts are byte-stable
-    across the session → KV cache hits across turns / scenes for each
-    agent independently.
+    All four agents (Phase 1 classifier, Phase 2 narrator, populator,
+    chronicler) have world-scoped system prompts and are constructed
+    once at bundle-build time. Per-call dynamic schemas are passed at
+    `agent.run()` time via NativeOutput (see emit_state_changes /
+    emit_prose / emit_placements / emit_chronicle_entry). System
+    prompts are byte-stable across the session → KV cache hits across
+    turns / scenes for each agent independently.
     """
 
     phase1: Agent[None, StateChangeBundle]
     phase2: Agent[None, ProsePart]
     populator: Agent[None, NpcPlacementBundle]
+    chronicler: Agent[None, ChronicleEntry]
     world: World
 
 
@@ -326,9 +328,9 @@ def _build_chronicle_entry_type(
 def build_scene_runner_bundle(
     model: OpenAIChatModel, world: World
 ) -> AgentBundle:
-    """Construct the scene-runner agent bundle for `world`. Bakes three
-    system prompts (phase 1 classifier, phase 2 narrator, populator) and
-    builds one agent per phase. Per-call dynamic output_type is passed
+    """Construct the agent bundle for `world`. Bakes four system prompts
+    (phase 1 classifier, phase 2 narrator, populator, chronicler) and
+    builds one agent per role. Per-call dynamic output_type is passed
     at agent.run() time via NativeOutput.
     """
     phase1 = Agent[None, StateChangeBundle](
@@ -346,8 +348,13 @@ def build_scene_runner_bundle(
         system_prompt=build_populator_system_prompt(world),
         output_retries=3,
     )
+    chronicler = build_chronicler_agent(model, world)
     return AgentBundle(
-        phase1=phase1, phase2=phase2, populator=populator, world=world
+        phase1=phase1,
+        phase2=phase2,
+        populator=populator,
+        chronicler=chronicler,
+        world=world,
     )
 
 
@@ -463,18 +470,16 @@ async def emit_prose(
 @dataclass
 class ChroniclerRuntime:
     """Session-scoped state for the conversation-based chronicler.
+    Symmetric with `SceneRunnerRuntime` — both are thin holders for the
+    accumulating `message_history`. The chronicler agent lives on the
+    world-scoped `AgentBundle` (its system prompt is baked from the
+    world bible).
 
-    The agent is stateless across instances of the runtime (system prompt
-    baked once for the world). `message_history` accumulates one user +
-    one assistant message per scene-end; the conversation IS the case file
-    so far. Replaced on each successful call with `result.all_messages()`.
-
-    Why a dataclass and not a global: tests need to construct fresh
-    runtimes per test; multiple sessions (if v2 grows beyond single-
-    session) would each carry their own history.
+    `message_history` accumulates one user + one assistant message per
+    scene-end; the conversation IS the case file so far. Replaced on
+    each successful call with `result.all_messages()`.
     """
 
-    agent: Agent[None, ChronicleEntry]
     message_history: list[ModelMessage] = field(default_factory=list)
 
 
@@ -510,14 +515,15 @@ def build_chronicler_agent(
     )
 
 
-def make_chronicler_runtime(
-    model: OpenAIChatModel, world: World
-) -> ChroniclerRuntime:
-    """Construct a fresh ChroniclerRuntime. Call once per session."""
-    return ChroniclerRuntime(agent=build_chronicler_agent(model, world))
+def make_chronicler_runtime() -> ChroniclerRuntime:
+    """Construct a fresh ChroniclerRuntime. Call once per session.
+    Mirrors `make_scene_runner_runtime` — the agent itself lives on
+    `AgentBundle.chronicler`."""
+    return ChroniclerRuntime()
 
 
 async def emit_chronicle_entry(
+    bundle: AgentBundle,
     runtime: ChroniclerRuntime,
     world: World,
     state: State,
@@ -547,22 +553,21 @@ async def emit_chronicle_entry(
     )
     user_prompt = build_chronicler_user_prompt(state, world)
     DynamicChronicleEntry = _build_chronicle_entry_type(present_npc_ids)
-    result = await runtime.agent.run(
+    result = await bundle.chronicler.run(
         user_prompt,
         message_history=runtime.message_history,
         output_type=NativeOutput(DynamicChronicleEntry, strict=True),
     )
     runtime.message_history = result.all_messages()
-    # Round-trip dynamic → canonical so the _no_duplicate_npc_ids
-    # validator fires at this boundary too (defense in depth).
-    output: ChronicleEntry = ChronicleEntry.model_validate(
-        result.output.model_dump()
-    )
-    # Drop whitespace-only notes (the one rule grammar sampling can't
-    # enforce). Strip case_file_entry the same way.
+    # Single canonical construction: fires _no_duplicate_npc_ids and applies
+    # the engine-side whitespace filter (the one rule grammar can't enforce)
+    # in one pass.
+    raw = result.output
     return ChronicleEntry(
-        case_file_entry=output.case_file_entry.strip(),
+        case_file_entry=raw.case_file_entry.strip(),
         npc_memory_updates=[
-            u for u in output.npc_memory_updates if u.note.strip()
+            NpcMemoryUpdate(npc_id=u.npc_id, note=u.note.strip())
+            for u in raw.npc_memory_updates
+            if u.note.strip()
         ],
     )

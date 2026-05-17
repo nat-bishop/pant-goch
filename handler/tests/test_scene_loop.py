@@ -351,7 +351,7 @@ def _make_session_fixtures():
     world = load_world(FIXTURE_VALID)
     bundle = build_scene_runner_bundle(TestModel(), world)
     runtime = make_scene_runner_runtime()
-    chronicler = make_chronicler_runtime(TestModel(custom_output_text="entry"), world)
+    chronicler = make_chronicler_runtime()
     state = make_initial_state(world)
     return world, bundle, runtime, chronicler, state
 

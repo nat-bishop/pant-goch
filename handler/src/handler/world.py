@@ -21,7 +21,7 @@ from typing import Any
 import yaml
 from pydantic import ValidationError
 
-from .models import Beat, Brief, Ending, FewShot, Location, NPC, Truth
+from .models import Beat, Brief, Ending, FewShot, Gloss, Location, NPC, Truth
 
 
 class WorldLoadError(ValueError):
@@ -46,6 +46,9 @@ class World:
     # frontend. Optional file (`world/map.yaml`); when missing or empty,
     # the frontend falls back to the text walk panel.
     map_coords: dict[str, tuple[float, float]]
+    # Hover-popup entries for the frontend. Optional file (`world/glosses.yaml`);
+    # empty list when absent. Frontend-only data — never surfaced to any agent.
+    glosses: list[Gloss]
     # Built at load time from `beats`; the inverse of `Beat.name → Beat.id`.
     # Used by agents.emit_state_changes to translate the LLM-facing
     # `beat_name` back to the canonical `beat_id` after grammar-sampled
@@ -324,6 +327,23 @@ def load_world(path: Path) -> World:
             _parse_model(FewShot, d, few_shots_path) for d in few_shots_data
         ]
 
+    # glosses.yaml is optional — older fixtures load with []. Loader
+    # tolerates missing; frontend renders no hover-popups when empty.
+    glosses_path = path / "glosses.yaml"
+    glosses: list[Gloss] = []
+    try:
+        glosses_data = _load_yaml(glosses_path)
+    except FileNotFoundError:
+        glosses_data = None
+    if glosses_data is not None:
+        if not isinstance(glosses_data, list):
+            raise WorldLoadError(
+                f"glosses.yaml: expected a list of Gloss records, got "
+                f"{type(glosses_data).__name__}"
+            )
+        glosses = [_parse_model(Gloss, d, glosses_path) for d in glosses_data]
+        _check_unique_ids(glosses, "gloss", str(glosses_path))
+
     # map.yaml is optional — fixtures without a drawn map load with {} and
     # the frontend falls back to the text walk panel.
     map_path = path / "map.yaml"
@@ -364,5 +384,6 @@ def load_world(path: Path) -> World:
         npcs_by_location=npcs_by_location,
         few_shots=few_shots,
         map_coords=map_coords,
+        glosses=glosses,
         beat_name_to_id=beat_name_to_id,
     )

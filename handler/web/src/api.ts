@@ -35,6 +35,44 @@ export async function postWalk(to_location: string): Promise<void> {
   await ensureOk(r, "walk");
 }
 
+// ─── /world payload ──────────────────────────────────────────────────
+
+export interface WorldLocation {
+  id: string;
+  name: string;
+  adjacent_to: string[];
+  map_xy: [number, number] | null;
+}
+
+export interface WorldNpc {
+  id: string;
+  name: string;
+  default_location: string;
+}
+
+export interface GlossDef {
+  id: string;
+  kind: "npc" | "location" | "object";
+  name: string;
+  aliases: string[];
+  body: string;
+  cross_ref: string | null;
+}
+
+export interface WorldMeta {
+  player_starts_at: string;
+  locations: WorldLocation[];
+  has_map: boolean;
+  npcs: WorldNpc[];
+  glosses: GlossDef[];
+}
+
+export async function fetchWorld(): Promise<WorldMeta> {
+  const r = await fetch(`${API}/world`);
+  await ensureOk(r, "world");
+  return r.json();
+}
+
 // ─── SSE event vocabulary (must match handler/sse.py) ─────────────────
 
 export interface OptionPayload {
@@ -59,6 +97,7 @@ export type SseEvent =
   | { event: "options"; options: OptionPayload[] }
   | { event: "scene_exit" }
   | { event: "location_change"; from: string; to: string }
+  | { event: "npc_moved"; npc_id: string; from: string; to: string }
   | {
       event: "log_entry_word";
       scene_id: number;

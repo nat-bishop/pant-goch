@@ -170,7 +170,7 @@ def _render_truth_block_full(world: World) -> str:
         parts.append(_render_beat(beat, world))
     parts.append("\nENDINGS (terminal states, gated by decision beats):")
     for ending in world.endings.values():
-        parts.append(_render_ending(ending, world))
+        parts.append(_render_ending(ending, world, include_epilogue=True))
     return "\n".join(parts)
 
 
@@ -398,11 +398,7 @@ def _render_all_endings(world: World) -> str:
         return "[ALL ENDINGS]\n(none authored.)"
     parts = ["[ALL ENDINGS]"]
     for ending in world.endings.values():
-        parts.append(
-            f"- {ending.id}:\n"
-            f"  requires_beats: {_beat_names(world, ending.requires_beats)}\n"
-            f"  notes_to_llm: {ending.notes_to_llm.strip()}"
-        )
+        parts.append(_render_ending(ending, world, include_epilogue=False))
     return "\n".join(parts)
 
 
@@ -435,11 +431,7 @@ def _render_this_scene(state: State, world: World) -> str:
         f"--- Scene {state.scene_id} at {loc.id} ({loc.name}) — present: {npcs} ---",
     ]
     for i, turn in enumerate(state.dialogue_history, start=1):
-        applied = (
-            ", ".join(world.beats[c.beat_id].name for c in turn.applied_state_changes)
-            if turn.applied_state_changes
-            else "(none)"
-        )
+        applied = _applied_beat_names(world, turn.applied_state_changes, empty="(none)")
         parts.append(
             f"\nTurn {i} prose: {turn.prose.strip()}\n"
             f"Turn {i} state_changes_applied: {applied}"
@@ -679,19 +671,14 @@ def build_chronicler_user_prompt(state: State, world: World) -> str:
     else:
         npcs_line = "no one (you were alone there)"
 
-    beats_unlocked: list[str] = []
-    for turn in state.dialogue_history:
-        for change in turn.applied_state_changes:
-            beats_unlocked.append(world.beats[change.beat_id].name)
-    beats_line = ", ".join(beats_unlocked) if beats_unlocked else "(none)"
+    all_scene_changes = [
+        c for turn in state.dialogue_history for c in turn.applied_state_changes
+    ]
+    beats_line = _applied_beat_names(world, all_scene_changes, empty="(none)")
 
     turn_parts: list[str] = []
     for i, turn in enumerate(state.dialogue_history, start=1):
-        applied = (
-            ", ".join(world.beats[c.beat_id].name for c in turn.applied_state_changes)
-            if turn.applied_state_changes
-            else "(no beat)"
-        )
+        applied = _applied_beat_names(world, turn.applied_state_changes, empty="(no beat)")
         turn_parts.append(
             f"Turn {i} [beat fired: {applied}]:\n"
             f"  Narrator: {turn.prose.strip()}"
@@ -843,7 +830,7 @@ def build_populator_user_prompt(state: State, world: World) -> str:
 {current_placements}
 
 [STATE]
-unlocked_beats: {", ".join(sorted(world.beats[bid].name for bid in state.unlocked_beats)) if state.unlocked_beats else "(none)"}
+unlocked_beats: {_unlocked_beat_names(state, world, empty="(none)")}
 scene_id: {state.scene_id}
 
 {case_file_block}

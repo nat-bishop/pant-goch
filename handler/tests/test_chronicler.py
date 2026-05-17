@@ -18,9 +18,11 @@ from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart
 from pydantic_ai.models.test import TestModel
 
 from handler.agents import (
+    AgentBundle,
     ChroniclerRuntime,
     _build_chronicle_entry_type,
     build_chronicler_agent,
+    build_scene_runner_bundle,
     emit_chronicle_entry,
     make_chronicler_runtime,
 )
@@ -52,27 +54,27 @@ class _FakeRunResult:
         return list(self.messages)
 
 
-def _runtime_with_canned_outputs(
+def _bundle_and_runtime_with_canned_outputs(
     world, outputs: list[ChronicleEntry]
-) -> ChroniclerRuntime:
-    """Build a real ChroniclerRuntime and monkeypatch its agent.run with
-    a sequence of canned `ChronicleEntry` responses. Each call appends
-    a single placeholder ModelMessage to `messages` so the runtime's
+) -> tuple[AgentBundle, ChroniclerRuntime]:
+    """Build a real AgentBundle (whose chronicler agent we monkeypatch)
+    and a fresh ChroniclerRuntime. Each `bundle.chronicler.run` call
+    returns the next canned `ChronicleEntry` and appends a single
+    placeholder ModelMessage to `messages` so the runtime's
     `message_history` grows by one per call (the production code
     receives all_messages() and overwrites with the result)."""
-    runtime = make_chronicler_runtime(TestModel(), world)
+    bundle = build_scene_runner_bundle(TestModel(), world)
+    runtime = make_chronicler_runtime()
     iter_outputs = iter(outputs)
     history: list[Any] = []
 
     async def fake_run(*args, **kwargs):  # type: ignore[no-untyped-def]
         output = next(iter_outputs)
-        # Grow the simulated history by a marker message per call so the
-        # length-grows test can observe accumulation.
         history.append(("call", output))
         return _FakeRunResult(output=output, messages=list(history))
 
-    runtime.agent.run = fake_run  # type: ignore[assignment]
-    return runtime
+    bundle.chronicler.run = fake_run  # type: ignore[assignment]
+    return bundle, runtime
 
 
 FIXTURE_VALID = Path(__file__).parent / "fixtures" / "world_valid"
@@ -143,8 +145,7 @@ def test_chronicler_user_prompt_includes_leave_pick_marker():
 
 
 def test_make_chronicler_runtime_starts_with_empty_history():
-    world = load_world(FIXTURE_VALID)
-    runtime = make_chronicler_runtime(TestModel(), world)
+    runtime = make_chronicler_runtime()
     assert isinstance(runtime, ChroniclerRuntime)
     assert runtime.message_history == []
 
@@ -178,7 +179,7 @@ async def test_emit_chronicle_entry_returns_chronicle_entry_with_case_file_and_m
         "eventually, and looked relieved when he did. I did not buy him a "
         "drink."
     )
-    runtime = _runtime_with_canned_outputs(world, [ChronicleEntry(
+    bundle, runtime = _bundle_and_runtime_with_canned_outputs(world, [ChronicleEntry(
         case_file_entry=custom_text,
         npc_memory_updates=[
             NpcMemoryUpdate(
@@ -187,7 +188,7 @@ async def test_emit_chronicle_entry_returns_chronicle_entry_with_case_file_and_m
             ),
         ],
     )])
-    output = await emit_chronicle_entry(runtime, world, state)
+    output = await emit_chronicle_entry(bundle, runtime, world, state)
 
     assert isinstance(output, ChronicleEntry)
     assert output.case_file_entry == custom_text.strip()
@@ -204,11 +205,11 @@ async def test_emit_chronicle_entry_drops_empty_string_memory_updates():
     enforce; the engine-side strip is belt-and-braces."""
     world = load_world(FIXTURE_VALID)
     state = _state_with_one_scene()
-    runtime = _runtime_with_canned_outputs(world, [ChronicleEntry(
+    bundle, runtime = _bundle_and_runtime_with_canned_outputs(world, [ChronicleEntry(
         case_file_entry="Scene.",
         npc_memory_updates=[NpcMemoryUpdate(npc_id="tom", note="   ")],
     )])
-    output = await emit_chronicle_entry(runtime, world, state)
+    output = await emit_chronicle_entry(bundle, runtime, world, state)
     assert output.npc_memory_updates == []
 
 
@@ -219,7 +220,7 @@ async def test_emit_chronicle_entry_grows_message_history():
     the case file."""
     world = load_world(FIXTURE_VALID)
     state = _state_with_one_scene()
-    runtime = _runtime_with_canned_outputs(
+    bundle, runtime = _bundle_and_runtime_with_canned_outputs(
         world,
         [
             ChronicleEntry(
@@ -238,12 +239,12 @@ async def test_emit_chronicle_entry_grows_message_history():
     )
 
     assert len(runtime.message_history) == 0
-    await emit_chronicle_entry(runtime, world, state)
+    await emit_chronicle_entry(bundle, runtime, world, state)
     after_one = len(runtime.message_history)
     assert after_one > 0
 
     # Second scene-end — history grows but the existing entries stay.
-    await emit_chronicle_entry(runtime, world, state)
+    await emit_chronicle_entry(bundle, runtime, world, state)
     after_two = len(runtime.message_history)
     assert after_two > after_one
 

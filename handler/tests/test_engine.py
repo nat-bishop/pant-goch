@@ -81,6 +81,7 @@ def _make_world(
         npcs_by_location=npcs_by_location,
         few_shots=[],
         map_coords={},
+        glosses=[],
         beat_name_to_id={b.name: b.id for b in beat_dict.values()},
     )
 

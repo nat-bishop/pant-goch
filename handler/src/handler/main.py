@@ -243,7 +243,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         model = build_model(api_url)
         bundle = build_scene_runner_bundle(model, world)
         app.state.world = world
-        app.state.model = model
         app.state.bundle = bundle
         # Pre-render the /world response once — the data is static for
         # the session and the frontend fetches it on every page load.
@@ -263,12 +262,22 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 for loc in world.locations.values()
             ],
             "has_map": bool(world.map_coords),
+            "npcs": [
+                {"id": n.id, "name": n.name, "default_location": n.default_location}
+                for n in world.npcs.values()
+            ],
+            "glosses": [g.model_dump() for g in world.glosses],
         }
         # Resolve the map asset path once at lifespan. Stays None if the
         # world has no drawn map; the frontend's /world response will set
         # has_map=false and fall back to the text walk panel.
         map_png_path = world_path / "map.png"
         app.state.map_png = map_png_path if map_png_path.is_file() else None
+        # Backdrops directory — one PNG per location, named <location_id>.png.
+        # Optional and partial: the route 404s for locations without an asset
+        # and the frontend falls back to a neutral dark vignette.
+        backdrops_dir = world_path / "backdrops"
+        app.state.backdrops_dir = backdrops_dir if backdrops_dir.is_dir() else None
 
         try:
             yield
@@ -319,6 +328,24 @@ def get_world_map_png() -> FileResponse:
     return FileResponse(map_path, media_type="image/png")
 
 
+@app.get("/world/backdrops/{location_id}.png")
+def get_world_backdrop(location_id: str) -> FileResponse:
+    """Per-location backdrop image shown in the left pane. 404 when no
+    asset is authored for the given location — frontend falls back to a
+    neutral vignette. `location_id` is grammar-checked against the
+    loaded world to keep this route from doubling as a generic file
+    server."""
+    backdrops_dir = app.state.backdrops_dir
+    if backdrops_dir is None:
+        raise HTTPException(404, "no backdrops directory for this world")
+    if location_id not in app.state.world.locations:
+        raise HTTPException(404, f"unknown location {location_id!r}")
+    backdrop_path = backdrops_dir / f"{location_id}.png"
+    if not backdrop_path.is_file():
+        raise HTTPException(404, f"no backdrop authored for {location_id!r}")
+    return FileResponse(backdrop_path, media_type="image/png")
+
+
 # ───────────────────────── session API ─────────────────────────
 
 
@@ -348,10 +375,9 @@ async def start_session() -> dict[str, str]:
             await SESSION.play_task
 
     world: World = app.state.world
-    model: OpenAIChatModel = app.state.model
     bundle: AgentBundle = app.state.bundle
     scene_runner = make_scene_runner_runtime()
-    chronicler = make_chronicler_runtime(model, world)
+    chronicler = make_chronicler_runtime()
     state = make_initial_state(world)
 
     rt = SessionRuntime(

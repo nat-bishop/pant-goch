@@ -11,6 +11,8 @@ are unlock units identified by id. Schema mirrors that simplicity.
 """
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
@@ -118,3 +120,17 @@ class FewShot(_Frozen):
     setup: str
     player: str
     narrator: str
+
+
+class Gloss(_Frozen):
+    """Hover-popup entry for a phrase that may appear in prose. Frontend
+    only — Phase 2 never sees these. `name` matches in prose along with
+    every string in `aliases`; the matched phrase opens a popup whose
+    heading is `name` and body is `body`."""
+
+    id: str
+    kind: Literal["npc", "location", "object"]
+    name: str
+    aliases: list[str] = Field(default_factory=list)
+    body: str
+    cross_ref: str | None = None

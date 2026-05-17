@@ -125,7 +125,7 @@ async def _amain() -> int:
     try:
         bundle = build_scene_runner_bundle(model, world)
         scene_runner = make_scene_runner_runtime()
-        chronicler = make_chronicler_runtime(model, world)
+        chronicler = make_chronicler_runtime()
         state = make_initial_state(world)
 
         print(f"\n=== Scene at {state.player_location} ===")
