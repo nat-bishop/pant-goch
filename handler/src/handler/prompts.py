@@ -100,6 +100,13 @@ def _render_cast_block(world: World, *, voice_only: bool) -> str:
     )
 
 
+def _present_npc_ids(state: State, world: World) -> list[str]:
+    """Ids of NPCs at the player's current location. Stable across a
+    scene (populator only runs at scene entry), so prompt renderers can
+    call this freely."""
+    return [n.id for n in world.npcs_at(state.player_location, state=state)]
+
+
 def _render_beat(beat) -> str:
     requires = ", ".join(beat.requires_beats) if beat.requires_beats else "(none)"
     blocks = ", ".join(beat.blocked_by_beats) if beat.blocked_by_beats else "(none)"
@@ -350,17 +357,7 @@ def _render_state(state: State) -> str:
         if state.unlocked_beats
         else "(none yet)"
     )
-    if state.npc_scenes_co_present:
-        co_pres = ", ".join(
-            f"{npc}={n}" for npc, n in sorted(state.npc_scenes_co_present.items())
-        )
-    else:
-        co_pres = "(no NPCs tracked)"
-    return (
-        f"[STATE]\n"
-        f"unlocked_beats: {unlocked}\n"
-        f"npc_scenes_co_present (player has been in the same room as): {co_pres}"
-    )
+    return f"[STATE]\nunlocked_beats: {unlocked}"
 
 
 def _render_reachable_beats(state: State, world: World) -> str:
@@ -390,11 +387,11 @@ def _render_all_endings(world: World) -> str:
     return "\n".join(parts)
 
 
-def _render_case_file(case_file_entries: list[str] | None) -> str:
-    if not case_file_entries:
+def _render_case_file(state: State) -> str:
+    if not state.case_file_entries:
         return "[CASE FILE]\n(empty — no scenes have ended yet.)"
     parts = ["[CASE FILE]"]
-    for i, entry in enumerate(case_file_entries, start=1):
+    for i, entry in enumerate(state.case_file_entries, start=1):
         parts.append(f"--- Entry {i} ---\n{entry.strip()}")
     return "\n".join(parts)
 
@@ -402,15 +399,21 @@ def _render_case_file(case_file_entries: list[str] | None) -> str:
 def _render_this_scene(state: State, world: World) -> str:
     """Phase 1's view of the current scene — structured turn-by-turn data
     (the classifier needs the applied state changes per turn to decide
-    what's next)."""
+    what's next).
+
+    The scene anchor (scene_id, location, npcs_present) is constant
+    across all turns in `dialogue_history` (cleared per scene) and lives
+    on state. Derive once at the prologue rather than denormalizing it
+    onto every TurnRecord.
+    """
     if not state.dialogue_history:
         return "[THIS SCENE SO FAR]\n(this is the first turn of the scene.)"
-    first = state.dialogue_history[0]
-    loc = world.locations[first.location_id]
-    npcs = ", ".join(first.npcs_present) if first.npcs_present else "no one"
+    loc = world.locations[state.player_location]
+    present_ids = _present_npc_ids(state, world)
+    npcs = ", ".join(present_ids) if present_ids else "no one"
     parts = [
         f"[THIS SCENE SO FAR]",
-        f"--- Scene {first.scene_id} at {loc.id} ({loc.name}) — present: {npcs} ---",
+        f"--- Scene {state.scene_id} at {loc.id} ({loc.name}) — present: {npcs} ---",
     ]
     for i, turn in enumerate(state.dialogue_history, start=1):
         applied = (
@@ -432,12 +435,6 @@ def _render_this_scene(state: State, world: World) -> str:
     return "\n".join(parts)
 
 
-def _render_opening_seed(opening_seed: str | None) -> str:
-    if not opening_seed:
-        return ""
-    return f"\n[OPENING SEED]\n{opening_seed.strip()}\n"
-
-
 def _render_applied_changes(applied: StateChangeBundle, world: World) -> str:
     """Phase 2 sees the beat's description (not just the slug) when a beat
     fires. Phase 2's system prompt deliberately omits the beat catalog —
@@ -455,13 +452,7 @@ def _render_applied_changes(applied: StateChangeBundle, world: World) -> str:
     return "\n".join(parts)
 
 
-def build_phase1_user_prompt(
-    state: State,
-    world: World,
-    *,
-    case_file_entries: list[str] | None = None,
-    opening_seed: str | None = None,
-) -> str:
+def build_phase1_user_prompt(state: State, world: World) -> str:
     """Phase 1 user prompt — rich context for the classifier. Includes
     reachable beats, endings, full scene-so-far, case file. Stateless
     per turn (Phase 1 has no message_history)."""
@@ -471,12 +462,11 @@ def build_phase1_user_prompt(
         _render_state(state),
         _render_reachable_beats(state, world),
         _render_all_endings(world),
-        _render_case_file(case_file_entries),
+        _render_case_file(state),
         _render_this_scene(state, world),
     ]
     suffix = "\n\n".join(sections)
-    seed = _render_opening_seed(opening_seed)
-    return suffix + seed + """\
+    return suffix + """
 
 [GENERATE STATE CHANGES FOR THIS TURN]
 Emit zero, one, or at most two state changes (UnlockBeat) representing what
@@ -655,13 +645,16 @@ def build_log_writer_user_prompt(state: State, world: World) -> str:
     assistant reply is one case-file entry.
 
     Callers (emit_log_entry) only fire this after a completed scene, so
-    dialogue_history is always non-empty by the time we get here.
+    dialogue_history is always non-empty by the time we get here. The
+    scene anchor (location, who was present) is read off the live state
+    — the populator only places NPCs at scene entry, so the live state
+    reflects the whole-scene composition.
     """
     assert state.dialogue_history, "build_log_writer_user_prompt: empty dialogue"
-    first = state.dialogue_history[0]
-    loc = world.locations[first.location_id]
-    if first.npcs_present:
-        npc_names = [world.npcs[n].name for n in first.npcs_present]
+    loc = world.locations[state.player_location]
+    present_ids = _present_npc_ids(state, world)
+    if present_ids:
+        npc_names = [world.npcs[n].name for n in present_ids]
         npcs_line = ", ".join(npc_names)
     else:
         npcs_line = "no one (you were alone there)"
@@ -699,11 +692,11 @@ def build_log_writer_user_prompt(state: State, world: World) -> str:
     # `npc_memory_updates` to a length-N list of records with
     # `npc_id` ∈ Literal[*present_npc_ids]; naming each NPC by id here
     # makes the expected records unambiguous to the narrator.
-    if first.npcs_present:
+    if present_ids:
         npc_directive_lines = [
             f'    - one record with npc_id="{npc_id}" → 1-2 sentence note '
             f"about {world.npcs[npc_id].name}"
-            for npc_id in first.npcs_present
+            for npc_id in present_ids
         ]
         npc_directive = (
             "  REQUIRED records in `npc_memory_updates` (the schema "
@@ -805,12 +798,7 @@ it. Examples of legitimate movements:
 """
 
 
-def build_populator_user_prompt(
-    state: State,
-    world: World,
-    *,
-    case_file_entries: list[str] | None = None,
-) -> str:
+def build_populator_user_prompt(state: State, world: World) -> str:
     """Per-call user prompt for the populator. Static-first / dynamic-last
     ordering: location + current placements first (small, stable for the
     scene), then the case file (grows over the session), then the job
@@ -819,12 +807,12 @@ def build_populator_user_prompt(
     loc = world.locations[state.player_location]
     placements_lines: list[str] = []
     for npc in world.npcs.values():
-        current = state.npc_locations.get(npc.id, npc.default_location)
+        current = state.npc_locations[npc.id]
         marker = " (default)" if current == npc.default_location else ""
         placements_lines.append(f"  - {npc.id}: {current}{marker}")
     current_placements = "\n".join(placements_lines)
 
-    case_file_block = _render_case_file(case_file_entries)
+    case_file_block = _render_case_file(state)
 
     return f"""\
 [PLAYER JUST ENTERED]

@@ -91,7 +91,7 @@ async def test_emit_placements_returns_canonical_bundle(monkeypatch):
 
     monkeypatch.setattr(bundle.populator, "run", fake_run)
 
-    result = await emit_placements(bundle, state, case_file_entries=[])
+    result = await emit_placements(bundle, state)
     assert isinstance(result, NpcPlacementBundle)
     assert len(result.placements) == 1
     assert result.placements[0].npc_id == "tom"
@@ -128,7 +128,6 @@ async def test_play_scene_applies_populator_placements(monkeypatch):
         StateChangeBundle,
     )
     from handler.scene_loop import play_scene
-    from handler.state import LogEntry
 
     world = load_world(FIXTURE_VALID)
     bundle = build_scene_runner_bundle(TestModel(), world)

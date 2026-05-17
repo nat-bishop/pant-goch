@@ -32,7 +32,8 @@ from .launcher import resolve_config, start_llama, stop_llama, wait_healthy
 from .main import _probe_inferno_health, build_model
 from .schemas import ContinueScene, EndGame, EndScene, ProsePart
 from .scene_loop import play_session
-from .state import LogEntry, State, make_initial_state
+from .schemas import LogWriterOutput
+from .state import State, make_initial_state
 from .world import World, load_world
 
 
@@ -107,9 +108,9 @@ def _prompt_walk(state: State, world: World) -> str:
         print(f"Out of range. Pick 1-{len(location.adjacent_to)}.")
 
 
-def _print_log_entry(entry: LogEntry) -> None:
-    print("\n--- case-file entry ---")
-    print(f"  {entry.text}")
+def _print_log_entry(state: State, output: LogWriterOutput) -> None:
+    print(f"\n--- case-file entry (scene {state.scene_id}) ---")
+    print(f"  {output.case_file_entry}")
 
 
 async def _amain() -> int:
@@ -133,7 +134,6 @@ async def _amain() -> int:
             bundle, scene_runner, log_writer, state, world,
             pick_option=_prompt_pick,
             pick_walk=_prompt_walk,
-            opening_seed=world.brief.opening_seed,
             on_scene_close=_print_prose_part,
             on_log_entry=_print_log_entry,
         )

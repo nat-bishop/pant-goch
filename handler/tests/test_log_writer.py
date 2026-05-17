@@ -84,37 +84,21 @@ def _state_with_one_scene() -> State:
     turns, with tom_named_a_vehicle fired in the middle turn."""
     state = State(player_location="the_slaughtered_lamb")
     state.scene_id = 1
-    state.npc_scenes_co_present = {"tom": 1, "maud": 0}
     state.unlocked_beats = {"tom_named_a_vehicle"}
     state.dialogue_history = [
         TurnRecord(
-            scene_id=1,
-            location_id="the_slaughtered_lamb",
-            npcs_present=["tom"],
             prose="The peat fire was going. Tom glanced up.",
             applied_state_changes=[],
-            next_kind="continue",
-            options=[Option(text="Sit a few stools down"), Option(text="Take the stool next to him")],
             player_pick=Option(text="Take the stool next to him"),
         ),
         TurnRecord(
-            scene_id=1,
-            location_id="the_slaughtered_lamb",
-            npcs_present=["tom"],
             prose="Tom set the pint down very slowly. 'Saw a Land Rover. Eluned Vaughn's.'",
             applied_state_changes=[UnlockBeat(beat_id="tom_named_a_vehicle")],
-            next_kind="continue",
-            options=[Option(text="'Why didn't you tell them?'"), Option(text="Stay quiet")],
             player_pick=Option(text="Stay quiet"),
         ),
         TurnRecord(
-            scene_id=1,
-            location_id="the_slaughtered_lamb",
-            npcs_present=["tom"],
             prose="He finished the pint. 'I'd best be off.'",
             applied_state_changes=[],
-            next_kind="end_scene",
-            options=[],
             player_pick=None,
         ),
     ]
@@ -181,10 +165,11 @@ def test_build_log_writer_agent_constructs_cleanly():
 
 
 @pytest.mark.asyncio
-async def test_emit_log_entry_returns_log_entry_with_correct_anchors():
-    """The LogEntry's scene_id / location / npcs_present come from the
-    just-completed scene's first dialogue_history turn; case_file_entry
-    and npc_memory_updates come from the log writer's structured output."""
+async def test_emit_log_entry_returns_log_writer_output_with_case_file_and_memory():
+    """`emit_log_entry` returns the canonical `LogWriterOutput`; the
+    caller (scene_loop.play_session) decomposes it into
+    `state.case_file_entries` and `state.npc_memory`. The scene anchor
+    lives on state — no denormalization on the output."""
     world = load_world(FIXTURE_VALID)
     state = _state_with_one_scene()
     custom_text = (
@@ -202,14 +187,13 @@ async def test_emit_log_entry_returns_log_entry_with_correct_anchors():
             ),
         ],
     )])
-    entry = await emit_log_entry(runtime, world, state)
+    output = await emit_log_entry(runtime, world, state)
 
-    assert entry.scene_id == 1
-    assert entry.location_id == "the_slaughtered_lamb"
-    assert entry.npcs_present == ["tom"]
-    assert entry.text == custom_text.strip()
-    assert "tom" in entry.npc_memory_updates
-    assert "Land Rover" in entry.npc_memory_updates["tom"]
+    assert isinstance(output, LogWriterOutput)
+    assert output.case_file_entry == custom_text.strip()
+    assert len(output.npc_memory_updates) == 1
+    assert output.npc_memory_updates[0].npc_id == "tom"
+    assert "Land Rover" in output.npc_memory_updates[0].note
 
 
 @pytest.mark.asyncio
@@ -224,8 +208,8 @@ async def test_emit_log_entry_drops_empty_string_memory_updates():
         case_file_entry="Scene.",
         npc_memory_updates=[NpcMemoryUpdate(npc_id="tom", note="   ")],
     )])
-    entry = await emit_log_entry(runtime, world, state)
-    assert entry.npc_memory_updates == {}
+    output = await emit_log_entry(runtime, world, state)
+    assert output.npc_memory_updates == []
 
 
 @pytest.mark.asyncio

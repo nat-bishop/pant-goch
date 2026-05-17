@@ -224,10 +224,13 @@ If <8/10, add per-beat floors per the cheapest rung that addresses the
 observed failure mode. Each rung is a small engine extension:
 
 - **(a) `min_co_presence: int` on Beat** — `models.py` adds field,
-  `engine.validate_state_change_bundle` checks against
-  `state.npc_scenes_co_present[<primary_npc>]`, `engine.reachable_beat_ids`
-  filters unreachable, `prompts._render_reachable_beats` shows the floor.
-  Authoring: add `min_co_presence: 2` + `primary_npc: tom` to the beat.
+  `engine.reachable_beat_ids` filters unreachable, `prompts._render_reachable_beats`
+  shows the floor. Authoring: add `min_co_presence: 2` + `primary_npc: tom`
+  to the beat. **Note:** the counter (`state.npc_scenes_co_present`) and
+  `record_scene_co_presence` engine hook were deleted in the May 2026
+  state-elegance pass (they had no consumer); restoring them is ~30
+  lines (field on State, increment hook in scene_loop after the
+  populator). Cheaper than (b)/(c)/(d).
 - **(b) `min_scene_turns: int` on Beat** — same shape, checks
   `len(state.dialogue_history)` at firing time.
 - **(c) Third-stage classifier** — new short LLM call after phase 2;

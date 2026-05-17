@@ -59,13 +59,7 @@ async def test_live_one_turn_at_pub():
     state = make_initial_state(world)
     enter_scene(state, world, "the_slaughtered_lamb")
 
-    prose_part = await run_turn(
-        bundle, runtime, state,
-        opening_seed=(
-            "The journalist has just walked in. Tom is at the bar, "
-            "nursing his bitter."
-        ),
-    )
+    prose_part = await run_turn(bundle, runtime, state)
 
     print(f"\n=== PROSE ===\n{prose_part.prose}\n")
     print(f"=== NEXT === {type(prose_part.next).__name__}")

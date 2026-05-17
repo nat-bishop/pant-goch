@@ -181,16 +181,6 @@ def test_phase1_reachable_beats_hides_fired_and_blocked():
     assert "(none" in reachable_block
 
 
-def test_phase1_opening_seed_only_on_first_turn():
-    world = load_world(FIXTURE_VALID)
-    state = make_initial_state(world)
-    with_seed = build_phase1_user_prompt(state, world, opening_seed="just arrived")
-    without_seed = build_phase1_user_prompt(state, world)
-    assert "[OPENING SEED]" in with_seed
-    assert "just arrived" in with_seed
-    assert "[OPENING SEED]" not in without_seed
-
-
 def test_phase1_present_block_lists_npcs_at_current_location():
     world = load_world(FIXTURE_VALID)
     state = make_initial_state(world)
@@ -294,13 +284,8 @@ def test_phase2_user_message_includes_player_pick_on_subsequent_turn():
     # Simulate a turn 1 with the player having picked an option.
     from handler.state import TurnRecord
     state.dialogue_history.append(TurnRecord(
-        scene_id=state.scene_id,
-        location_id="the_slaughtered_lamb",
-        npcs_present=["tom"],
         prose="t1",
         applied_state_changes=[],
-        next_kind="continue",
-        options=[Option(text="Ask Tom about the night")],
         player_pick=Option(text="Ask Tom about the night"),
     ))
     msg = build_phase2_user_message(
@@ -388,9 +373,8 @@ def test_populator_user_prompt_includes_current_placements_and_case_file():
     world = load_world(FIXTURE_VALID)
     state = make_initial_state(world)
     state.player_location = "the_slaughtered_lamb"
-    prompt = build_populator_user_prompt(
-        state, world, case_file_entries=["A prior scene at the pub."]
-    )
+    state.case_file_entries = ["A prior scene at the pub."]
+    prompt = build_populator_user_prompt(state, world)
     assert "[PLAYER JUST ENTERED]" in prompt
     assert "the_slaughtered_lamb" in prompt
     assert "[CURRENT NPC LOCATIONS]" in prompt

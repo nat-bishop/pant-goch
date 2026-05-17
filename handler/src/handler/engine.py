@@ -18,13 +18,7 @@ that used to live in `validate_state_change_bundle` and
 """
 from __future__ import annotations
 
-from .schemas import (
-    ContinueScene,
-    EndScene,
-    ProsePart,
-    StateChangeBundle,
-    UnlockBeat,
-)
+from .schemas import StateChangeBundle, UnlockBeat
 from .state import State, TurnRecord
 from .world import World
 
@@ -91,63 +85,27 @@ def enter_scene(state: State, world: World, location_id: str) -> None:
     """Begin a new scene at `location_id`. Increments scene_id, clears
     dialogue_history, sets player_location.
 
-    Co-presence counting is NOT done here — it must run AFTER the
-    populator has updated `state.npc_locations`, otherwise the counter
-    reflects pre-populator positions rather than who actually showed up.
-    See `record_scene_co_presence` and the call ordering in
-    `scene_loop.play_scene`.
-
-    SSE / log-writer triggering happens at the scene_loop layer; this
-    function only mutates state.
+    SSE / log-writer / populator triggering happens at the scene_loop
+    layer; this function only mutates state.
     """
     state.scene_id += 1
     state.dialogue_history = []
     state.player_location = location_id
 
 
-def record_scene_co_presence(state: State, world: World) -> None:
-    """Increment `state.npc_scenes_co_present` once for each NPC whose
-    current position (per `state.npc_locations`) is `state.player_location`.
-
-    Called by `scene_loop.play_scene` immediately after the populator has
-    resolved placements for the new scene. Must run exactly once per
-    scene entry; calling twice would double-count.
-    """
-    for npc in world.npcs_at(state.player_location, state=state):
-        state.npc_scenes_co_present[npc.id] = (
-            state.npc_scenes_co_present.get(npc.id, 0) + 1
-        )
-
-
 def append_turn_record(
     state: State,
     *,
-    location_id: str,
-    npcs_present: list[str],
     prose: str,
-    applied_state_changes: list,  # validated to be UnlockBeat-only by the bundle validator
-    prose_part: ProsePart,
+    applied_state_changes: list[UnlockBeat],
 ) -> None:
     """Pack a completed turn's data into a TurnRecord and append it to
-    dialogue_history. The renderer groups records by scene_id for the
-    [THIS SCENE SO FAR] block."""
-    if isinstance(prose_part.next, ContinueScene):
-        next_kind = "continue"
-        options = list(prose_part.next.options)
-    elif isinstance(prose_part.next, EndScene):
-        next_kind = "end_scene"
-        options = []
-    else:  # EndGame
-        next_kind = "end_game"
-        options = []
+    dialogue_history. The scene anchor (scene_id, location, npcs_present)
+    is constant across `dialogue_history` and lives on `state`, so
+    renderers derive it once per scene."""
     state.dialogue_history.append(
         TurnRecord(
-            scene_id=state.scene_id,
-            location_id=location_id,
-            npcs_present=npcs_present,
             prose=prose,
             applied_state_changes=list(applied_state_changes),
-            next_kind=next_kind,
-            options=options,
         )
     )

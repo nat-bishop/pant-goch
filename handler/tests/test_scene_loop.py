@@ -18,11 +18,12 @@ from handler.agents import (
     make_log_writer_runtime,
     make_scene_runner_runtime,
 )
-from handler.engine import enter_scene, record_scene_co_presence
+from handler.engine import enter_scene
 from handler.schemas import (
     ContinueScene,
     EndGame,
     EndScene,
+    LogWriterOutput,
     NpcPlacementBundle,
     Option,
     ProsePart,
@@ -35,7 +36,7 @@ from handler.scene_loop import (
     play_session,
     run_turn,
 )
-from handler.state import LogEntry, State, make_initial_state
+from handler.state import State, make_initial_state
 from handler.world import World, load_world
 
 
@@ -51,17 +52,6 @@ async def _empty_placements(*args, **kwargs):
     return NpcPlacementBundle()
 
 
-def _stub_log_entry(text: str = "entry"):
-    """Build a LogEntry the way scene_loop.play_session reads one back."""
-    return LogEntry(
-        scene_id=1,
-        location_id="the_slaughtered_lamb",
-        npcs_present=[],
-        text=text,
-        npc_memory_updates={},
-    )
-
-
 def _patch_populator(monkeypatch):
     """Most scene_loop tests don't drive the populator; the default is
     no-op (no NPCs moved). Tests that DO want to exercise the populator
@@ -70,20 +60,13 @@ def _patch_populator(monkeypatch):
 
 
 def _patch_log_writer(monkeypatch, text: str = "entry"):
-    """Bypass the real log writer for play_session tests. emit_log_entry
-    is called once per scene close; we return a constant LogEntry."""
+    """Bypass the real log writer for play_session tests. `emit_log_entry`
+    is called once per scene close; we return a constant LogWriterOutput
+    with empty per-NPC notes (tests here don't exercise that channel)."""
     async def fake_emit(*args, **kwargs):
-        anchor_state = args[2] if len(args) >= 3 else kwargs.get("state")
-        # Best-effort anchor recovery; fall back to defaults for tests
-        # that don't rely on anchor fields.
-        scene_id = anchor_state.scene_id if anchor_state else 1
-        location_id = anchor_state.player_location if anchor_state else "the_slaughtered_lamb"
-        return LogEntry(
-            scene_id=scene_id,
-            location_id=location_id,
-            npcs_present=[],
-            text=text,
-            npc_memory_updates={},
+        return LogWriterOutput(
+            case_file_entry=text,
+            npc_memory_updates=[],
         )
     monkeypatch.setattr("handler.scene_loop.emit_log_entry", fake_emit)
 
@@ -95,7 +78,6 @@ def bundle_and_state():
     runtime = make_scene_runner_runtime()
     state = make_initial_state(world)
     enter_scene(state, world, "the_slaughtered_lamb")  # tom is here
-    record_scene_co_presence(state, world)
     return bundle, runtime, state
 
 
@@ -129,14 +111,10 @@ async def test_run_turn_applies_state_changes_and_appends_record(monkeypatch, bu
     assert result is canned_prose
     # State change applied.
     assert "tom_named_a_vehicle" in state.unlocked_beats
-    # TurnRecord appended with scene anchor + applied changes.
+    # TurnRecord appended with prose + applied changes.
     assert len(state.dialogue_history) == 1
     record = state.dialogue_history[0]
-    assert record.scene_id == state.scene_id
-    assert record.location_id == "the_slaughtered_lamb"
-    assert record.npcs_present == ["tom"]
-    assert record.next_kind == "continue"
-    assert len(record.options) == 2
+    assert record.prose == canned_prose.prose
     assert record.applied_state_changes[0].beat_id == "tom_named_a_vehicle"
 
 
@@ -378,8 +356,8 @@ def _make_session_fixtures():
 
 
 async def test_play_session_calls_both_callbacks_and_terminates_on_end_game(monkeypatch):
-    """A scripted policy ends the session on EndGame; the LogEntry and
-    closing-prose callbacks both fire; state.game_over is set."""
+    """A scripted policy ends the session on EndGame; the on_log_entry
+    and on_scene_close callbacks both fire; state.game_over is set."""
     world, bundle, runtime, log_writer, state = _make_session_fixtures()
 
     proses = iter([
@@ -409,7 +387,7 @@ async def test_play_session_calls_both_callbacks_and_terminates_on_end_game(monk
     monkeypatch.setattr("handler.scene_loop.emit_state_changes", fake_phase1)
     monkeypatch.setattr("handler.scene_loop.emit_prose", fake_phase2)
 
-    log_entries: list[LogEntry] = []
+    log_entries: list[tuple[State, LogWriterOutput]] = []
     closes: list[ProsePart] = []
 
     def policy_pick(pp: ProsePart) -> int:
@@ -418,11 +396,14 @@ async def test_play_session_calls_both_callbacks_and_terminates_on_end_game(monk
     def policy_walk(state: State, world: World) -> str:
         return world.locations[state.player_location].adjacent_to[0]
 
+    def record_log(s: State, o: LogWriterOutput) -> None:
+        log_entries.append((s, o))
+
     terminal = await play_session(
         bundle, runtime, log_writer, state, world,
         pick_option=policy_pick,
         pick_walk=policy_walk,
-        on_log_entry=log_entries.append,
+        on_log_entry=record_log,
         on_scene_close=closes.append,
     )
 
@@ -434,7 +415,8 @@ async def test_play_session_calls_both_callbacks_and_terminates_on_end_game(monk
     # Both callbacks fired once per scene end (two scenes = two events each).
     assert len(closes) == 2
     assert len(log_entries) == 2
-    # case_file_entries (caller-managed) is None here; play_session builds one.
+    # Case file accumulated on state.
+    assert len(state.case_file_entries) == 2
 
 
 async def test_play_session_pick_walk_only_called_between_scenes(monkeypatch):
@@ -478,9 +460,10 @@ async def test_play_session_pick_walk_only_called_between_scenes(monkeypatch):
     assert walk_calls == []
 
 
-async def test_play_session_case_file_entries_passed_through(monkeypatch):
-    """The caller-provided case_file_entries list is the same list the
-    log writer appends to — eval drivers can inspect it directly."""
+async def test_play_session_case_file_entries_accumulate_on_state(monkeypatch):
+    """case_file_entries lives on State now (symmetric with npc_memory).
+    play_session appends to it as each scene closes; eval drivers can
+    read it off the same state object."""
     world, bundle, runtime, log_writer, state = _make_session_fixtures()
 
     proses = iter([
@@ -498,15 +481,12 @@ async def test_play_session_case_file_entries_passed_through(monkeypatch):
     monkeypatch.setattr("handler.scene_loop.emit_state_changes", fake_phase1)
     monkeypatch.setattr("handler.scene_loop.emit_prose", fake_phase2)
 
-    caller_owned: list[str] = []
-
     await play_session(
         bundle, runtime, log_writer, state, world,
         pick_option=lambda pp: 0,
         pick_walk=lambda s, w: w.locations[s.player_location].adjacent_to[0],
-        case_file_entries=caller_owned,
     )
 
     # One entry written (one scene ended).
-    assert len(caller_owned) == 1
-    assert caller_owned[0] == "entry"
+    assert len(state.case_file_entries) == 1
+    assert state.case_file_entries[0] == "entry"

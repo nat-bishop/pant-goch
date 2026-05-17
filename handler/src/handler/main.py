@@ -105,15 +105,18 @@ SESSION: "SessionRuntime | None" = None
 
 @dataclass
 class SessionRuntime:
-    """Per-session live state for the SSE backend.
+    """Per-session async glue for the SSE backend.
+
+    Holds only what binds the FastAPI side to the scene loop: the live
+    state, the three runtimes, the event queue, and the pick/walk
+    futures resolved by POST /pick and POST /walk. Session-persistent
+    data (case_file_entries, npc_memory, dialogue_history, ...) lives
+    on `state` so the save-game shape is unambiguous.
 
     The `event_queue` is single-consumer (per the lift note on
     `useStream`: React StrictMode dev-mode double-mounts; the
     `setTimeout(0)` deferred-fetch trick in the frontend prevents two
-    consumers racing). The `pick_future` / `walk_future` are resolved by
-    POST /pick / POST /walk respectively; the `play_task` awaits them
-    from inside the pick_option/pick_walk callbacks passed to
-    play_session.
+    consumers racing).
     """
 
     bundle: AgentBundle
@@ -121,7 +124,6 @@ class SessionRuntime:
     log_writer: LogWriterRuntime
     state: State
     world: World
-    case_file_entries: list[str] = field(default_factory=list)
     event_queue: "asyncio.Queue[dict]" = field(default_factory=asyncio.Queue)
     pick_future: "asyncio.Future[int] | None" = None
     walk_future: "asyncio.Future[str] | None" = None
@@ -384,8 +386,6 @@ async def start_session() -> dict[str, str]:
                 bundle, scene_runner, log_writer, state, world,
                 pick_option=pick,
                 pick_walk=walk,
-                opening_seed=world.brief.opening_seed,
-                case_file_entries=rt.case_file_entries,
                 emit_event=emit,
             )
         except asyncio.CancelledError:

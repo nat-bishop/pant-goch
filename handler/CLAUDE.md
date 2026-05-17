@@ -27,9 +27,9 @@ Per scene turn, the engine makes **two LLM calls with separate system prompts**:
 
 ## Populator: scene-entry NPC placement
 
-NPCs are not static. The populator (`emit_placements` in `agents.py`) runs once per scene entry — after `enter_scene` and before `record_scene_co_presence` / Phase 1 of turn 1. It emits an `NpcPlacementBundle` (possibly empty) which the engine applies to `state.npc_locations` and surfaces as `npc_moved` SSE events. Restraint is the right instinct: most scene entries produce an empty bundle (defaults stand). Movements are dramatic, traceable to case-file evidence (e.g., Dylan retreats to `bryn_iago_wood` after a tense Tan-y-coed scene; Eluned does not leave Tan-y-coed unless beats indicate she went to Knighton police).
+NPCs are not static. The populator (`emit_placements` in `agents.py`) runs once per scene entry — after `enter_scene` and before Phase 1 of turn 1. It emits an `NpcPlacementBundle` (possibly empty) which the engine applies to `state.npc_locations` and surfaces as `npc_moved` SSE events. Restraint is the right instinct: most scene entries produce an empty bundle (defaults stand). Movements are dramatic, traceable to case-file evidence (e.g., Dylan retreats to `bryn_iago_wood` after a tense Tan-y-coed scene; Eluned does not leave Tan-y-coed unless beats indicate she went to Knighton police).
 
-`world.npcs_at(location_id, state=state)` is the state-aware lookup; with `state=None` (test path) it falls back to the default-location view. The split between `engine.enter_scene` (scene-init: scene_id, dialogue_history, player_location) and `engine.record_scene_co_presence` (counter increment over the populator's final positions) exists *because* the populator runs between them — counting co-presence before the populator would miss any NPC the populator brought into the scene.
+`world.npcs_at(location_id, state=state)` is the state-aware lookup; with `state=None` (test path) it falls back to the default-location view. "Who was present this scene" reads off the live state at any point during or after the scene — the populator only places NPCs at scene entry, so the live composition is stable across the scene.
 
 ## No tool-call loop
 
@@ -64,12 +64,12 @@ Endings gate on **decision beats** authored as mutually exclusive (pairwise `blo
 
 ## Cross-scene memory (per-NPC + case file)
 
-Cross-scene continuity uses **two distinct channels**, separated by responsibility:
+Cross-scene continuity uses **two distinct channels**, separated by responsibility. Both live on `State` (`state.case_file_entries`, `state.npc_memory`) — symmetric homes, since both are session-persistent and both are written by the same log-writer call.
 
-- **Case file** (`case_file_entries: list[str]`) — the player-facing UI artifact, streamed to the sidebar. Phase 1 reads it as the prose record of what's happened across the session.
+- **Case file** (`state.case_file_entries: list[str]`) — the player-facing UI artifact, streamed to the sidebar. Phase 1 reads it as the prose record of what's happened across the session.
 - **Per-NPC memory** (`state.npc_memory: dict[str, list[str]]`) — the structured memory channel surfaced to **Phase 2** as part of the `[PRESENT]` NPC card. One short note per NPC per scene they were present in. Phase 2 reads `history with player:` lines inside the NPC briefing, not as conversational user content — instructional framing, not "the player did X" framing.
 
-Both artifacts are emitted in a **single LLM call** at scene close: `LogWriterOutput` has `case_file_entry: str` (UI prose) and `npc_memory_updates: dict[npc_id, str]` (per-NPC notes). `emit_log_entry` filters `npc_memory_updates` to NPCs actually present that scene and to NPCs defined in the world; `play_session` appends each surviving note to `state.npc_memory[npc_id]`.
+Both artifacts are emitted in a **single LLM call** at scene close: `LogWriterOutput` has `case_file_entry: str` (UI prose) and `npc_memory_updates: list[NpcMemoryUpdate]` (per-NPC notes). `emit_log_entry` returns the canonical `LogWriterOutput` directly; `play_session` decomposes it at the call site — `state.case_file_entries.append(output.case_file_entry)` and `state.npc_memory[upd.npc_id].append(upd.note)` for each update. The grammar sampler narrows `NpcMemoryUpdate.npc_id` to NPCs present this scene, so the dict-shape conversion is safe; whitespace-only notes are dropped engine-side as belt-and-braces.
 
 Phase 2's `[PRESENT]` card renders the most recent 3 entries (`history_limit=3` in `_render_npc_card`); attention stays bounded as the game progresses. Phase 1 deliberately does **not** receive per-NPC memory — it has the full prose case file for beat-firing decisions.
 
@@ -164,11 +164,12 @@ These each carry an inline `# Why:` at the call site — preserve them:
 - `prompts.py::build_populator_system_prompt` — populator's job is **restraint**: empty bundle is the default for most scene entries. Movements must be traceable to case-file evidence.
 - `agents.py::SceneRunnerRuntime` — scene-bounded history; reset in `play_scene` after `enter_scene`; fallback prose intentionally NOT persisted.
 - `agents.py::emit_prose` — `is_first_turn = not runtime.phase2_message_history` computes from runtime, not state. The runtime is the source of truth for scene-conversation lifecycle.
-- `agents.py::emit_log_entry` — builds the per-call dynamic `LogWriterOutput` via `_build_log_writer_output_type(present_npc_ids)`; grammar sampling enforces exactly-one-record-per-present-NPC and `npc_id ∈ present`. Engine still drops whitespace-only notes (the one rule the grammar can't enforce) and collapses the list-of-records back to the `dict[str, str]` shape `LogEntry.npc_memory_updates` exposes.
+- `agents.py::emit_log_entry` — builds the per-call dynamic `LogWriterOutput` via `_build_log_writer_output_type(present_npc_ids)`; grammar sampling enforces exactly-one-record-per-present-NPC and `npc_id ∈ present`. Returns the canonical `LogWriterOutput` directly — caller (`scene_loop.play_session`) decomposes into `state.case_file_entries` and `state.npc_memory`. Engine still drops whitespace-only notes (the one rule the grammar can't enforce).
 - `agents.py::_build_npc_placement_bundle_type` — narrows `NpcPlacement.npc_id` and `.location_id` to Literals; the populator literally cannot emit an undefined id.
-- `engine.py::enter_scene` / `record_scene_co_presence` — the split exists because the populator runs between them. Don't re-merge.
-- `scene_loop.py::play_session` — single composable driver shared by CLI, SSE backend, and tests. Async/sync callbacks both supported via `_maybe_await`. Threads `bundle, scene_runner, log_writer, state, world` in that order. Merges `entry.npc_memory_updates` into `state.npc_memory` after each scene close.
-- `scene_loop.py::play_scene` — sequence is `enter_scene` → populator (`emit_placements` + `_apply_placements`) → `record_scene_co_presence` → reset Phase 2 history → first `run_turn`. Don't reorder.
+- `agents.py::emit_prose` — `is_first_turn = not runtime.phase2_message_history` computes from runtime. When `is_first_turn AND state.scene_id == 1`, reads `world.brief.opening_seed` directly. No `opening_seed` kwarg threading.
+- `engine.py::enter_scene` — scene-init (scene_id, dialogue_history, player_location). The populator runs after, before the first turn's Phase 1.
+- `scene_loop.py::play_session` — single composable driver shared by CLI, SSE backend, and tests. Async/sync callbacks both supported via `_maybe_await`. Threads `bundle, scene_runner, log_writer, state, world` in that order. Decomposes `LogWriterOutput` into `state.case_file_entries.append(...)` and `state.npc_memory` merges at the call site — keeps the side-effect surface explicit and lets the `on_log_entry` callback see a settled state.
+- `scene_loop.py::play_scene` — sequence is `enter_scene` → populator (`emit_placements` + `_apply_placements`) → reset Phase 2 history → first `run_turn`. Don't reorder.
 - `main.py::build_model` — `OpenAIModelProfile(openai_chat_send_back_thinking_parts=False)`. See above.
 - `world/few_shots.yaml`, `world/map.yaml` — optional files; loader tolerates missing. Don't make them required without thinking through the test fixtures (`tests/fixtures/world_valid/` does NOT author them).
 

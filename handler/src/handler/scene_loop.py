@@ -39,12 +39,12 @@ from .engine import (
     apply_state_changes,
     append_turn_record,
     enter_scene,
-    record_scene_co_presence,
 )
 from .schemas import (
     ContinueScene,
     EndGame,
     EndScene,
+    LogWriterOutput,
     NpcPlacementBundle,
     Option,
     ProsePart,
@@ -61,7 +61,7 @@ from .sse import (
     scene_start_event,
     state_change_event,
 )
-from .state import GameOver, LogEntry, State
+from .state import GameOver, State
 from .world import World
 
 
@@ -72,7 +72,9 @@ EmitEvent = Callable[[dict], Awaitable[None]]
 # SSE backend uses async (await a Future resolved by POST /pick).
 PickOption = Callable[["ProsePart"], Union[int, Awaitable[int]]]
 PickWalk = Callable[[State, World], Union[str, Awaitable[str]]]
-OnLogEntry = Callable[[LogEntry], Union[None, Awaitable[None]]]
+OnLogEntry = Callable[
+    [State, LogWriterOutput], Union[None, Awaitable[None]]
+]
 OnSceneClose = Callable[["ProsePart"], Union[None, Awaitable[None]]]
 
 
@@ -90,8 +92,6 @@ async def run_turn(
     runtime: SceneRunnerRuntime,
     state: State,
     *,
-    case_file_entries: list[str] | None = None,
-    opening_seed: str | None = None,
     leave_pick: Option | None = None,
 ) -> ProsePart:
     """One full turn end-to-end. Returns the ProsePart so the caller can
@@ -104,11 +104,7 @@ async def run_turn(
     """
     # ── Phase 1 ────────────────────────────────────────────────────────────
     try:
-        applied = await emit_state_changes(
-            bundle, state,
-            case_file_entries=case_file_entries,
-            opening_seed=opening_seed,
-        )
+        applied = await emit_state_changes(bundle, state)
     except UnexpectedModelBehavior as e:
         logfire.warn(
             "phase1 fallback: retries exhausted; dropping state_changes",
@@ -120,9 +116,7 @@ async def run_turn(
     # ── Phase 2 ────────────────────────────────────────────────────────────
     try:
         prose_part = await emit_prose(
-            bundle, runtime, state, applied,
-            leave_pick=leave_pick,
-            opening_seed=opening_seed,
+            bundle, runtime, state, applied, leave_pick=leave_pick,
         )
     except UnexpectedModelBehavior as e:
         # Why: fallback prose is engine-authored, generic, and intentionally
@@ -137,17 +131,10 @@ async def run_turn(
         )
         prose_part = _fallback_prose_part(state, bundle, leave_pick=leave_pick)
 
-    # ── Append turn record ────────────────────────────────────────────────
-    npcs_present = [
-        n.id for n in bundle.world.npcs_at(state.player_location, state=state)
-    ]
     append_turn_record(
         state,
-        location_id=state.player_location,
-        npcs_present=npcs_present,
         prose=prose_part.prose,
         applied_state_changes=list(applied.state_changes),
-        prose_part=prose_part,
     )
 
     return prose_part
@@ -227,8 +214,6 @@ async def play_scene(
     runtime: SceneRunnerRuntime,
     state: State,
     *,
-    case_file_entries: list[str] | None = None,
-    opening_seed: str | None = None,
     pick_option: PickOption,
     emit_event: EmitEvent | None = None,
 ) -> ProsePart:
@@ -248,9 +233,7 @@ async def play_scene(
     Scene-entry sequence: (1) enter_scene → init scene_id, clear
     dialogue_history, set player_location. (2) populator (emit_placements)
     decides NPC overrides; we apply them and emit npc_moved events.
-    (3) record_scene_co_presence counts NPCs whose final positions are at
-    the player's location. (4) reset Phase 2 message history. (5) first
-    run_turn.
+    (3) reset Phase 2 message history. (4) first run_turn.
 
     On populator failure (retries exhausted), defaults stand — scene
     continues without crashing.
@@ -261,9 +244,7 @@ async def play_scene(
 
     # ── populator: resolve scene-entry NPC placements ──
     try:
-        placements = await emit_placements(
-            bundle, state, case_file_entries=case_file_entries,
-        )
+        placements = await emit_placements(bundle, state)
     except UnexpectedModelBehavior as e:
         logfire.warn(
             "populator fallback: retries exhausted; using default placements",
@@ -272,22 +253,16 @@ async def play_scene(
         placements = NpcPlacementBundle()
     await _apply_placements(state, bundle, placements, emit_event=emit_event)
 
-    record_scene_co_presence(state, bundle.world)
     runtime.phase2_message_history = []
     if emit_event is not None:
         loc = bundle.world.locations[state.player_location]
         await emit_event(scene_start_event(state.scene_id, loc.id, loc.name))
 
-    seed = opening_seed
     leave_pick: Option | None = None
     while True:
         prose_part = await run_turn(
-            bundle, runtime, state,
-            case_file_entries=case_file_entries,
-            opening_seed=seed,
-            leave_pick=leave_pick,
+            bundle, runtime, state, leave_pick=leave_pick,
         )
-        seed = None  # only on first turn
 
         # ── emit state_change events ──
         if emit_event is not None:
@@ -340,8 +315,6 @@ async def play_session(
     *,
     pick_option: PickOption,
     pick_walk: PickWalk,
-    opening_seed: str | None = None,
-    case_file_entries: list[str] | None = None,
     on_log_entry: OnLogEntry | None = None,
     on_scene_close: OnSceneClose | None = None,
     emit_event: EmitEvent | None = None,
@@ -365,9 +338,11 @@ async def play_session(
             and world; returns the destination location id (MUST be in
             the current location's adjacent_to).
         on_log_entry: optional callback fired after each scene-end log
-            writer call. Receives the LogEntry; useful for eval traces,
-            SSE streaming, or printing in the CLI. The text is also
-            appended to `case_file_entries` automatically.
+            writer call. Receives `(state, LogWriterOutput)`; useful for
+            eval traces, SSE streaming, or printing in the CLI. The
+            engine has already merged case_file_entry into
+            `state.case_file_entries` and per-NPC notes into
+            `state.npc_memory` by the time the callback fires.
         on_scene_close: optional callback fired with the terminal
             ProsePart (EndScene or EndGame) BEFORE the log writer runs.
             Lets the driver surface the closing prose to the player.
@@ -376,24 +351,16 @@ async def play_session(
 
     Side effects:
         - Mutates `state` (location, scene_id, dialogue_history,
-          unlocked_beats, npc_scenes_co_present, npc_locations,
-          npc_memory, game_over).
-        - Appends to `case_file_entries` (caller-owned).
+          unlocked_beats, npc_locations, npc_memory, case_file_entries,
+          game_over).
         - Mutates `log_writer.message_history`.
     """
-    if case_file_entries is None:
-        case_file_entries = []
-    seed = opening_seed
-
     while state.game_over is None:
         terminal = await play_scene(
             bundle, runtime, state,
-            case_file_entries=case_file_entries,
-            opening_seed=seed,
             pick_option=pick_option,
             emit_event=emit_event,
         )
-        seed = None  # only on first scene of the session
 
         # Surface the closing prose before the log writer runs — the
         # player should read the scene's last line before the case file
@@ -403,27 +370,24 @@ async def play_session(
 
         # Log writer fires after every scene close — both EndScene and
         # EndGame. The just-completed scene is still in dialogue_history;
-        # the next enter_scene will clear it.
-        entry = await emit_log_entry(log_writer, world, state)
-        case_file_entries.append(entry.text)
-        # Merge the structured per-NPC memory updates from the log writer
-        # into state. Phase 2's [PRESENT] NPC card on subsequent scenes
-        # renders these as 'history with player'. Filter already applied
-        # in emit_log_entry; here we just append.
-        for npc_id, note in entry.npc_memory_updates.items():
-            state.npc_memory.setdefault(npc_id, []).append(note)
+        # the next enter_scene will clear it. Decompose into the two
+        # state channels right here so the callback sees a settled state.
+        output = await emit_log_entry(log_writer, world, state)
+        state.case_file_entries.append(output.case_file_entry)
+        for upd in output.npc_memory_updates:
+            state.npc_memory[upd.npc_id].append(upd.note)
         if on_log_entry is not None:
-            await _maybe_await(on_log_entry(entry))
+            await _maybe_await(on_log_entry(state, output))
 
-        # Pace the log entry's words out as SSE log_entry_word events.
-        # Frontend renders into the case-file sidebar in cadence with the
+        # Pace the case-file entry's words out as SSE log_entry_word
+        # events. Frontend renders into the sidebar in cadence with the
         # prose stream.
         if emit_event is not None:
             await paced_word_emitter(
-                _words_from_text(entry.text),
+                _words_from_text(output.case_file_entry),
                 emit_event,
                 event_kind="log_entry_word",
-                extra={"scene_id": entry.scene_id},
+                extra={"scene_id": state.scene_id},
             )
 
         if isinstance(terminal.next, EndGame):

@@ -62,7 +62,7 @@ from .schemas import (
     ProsePart,
     StateChangeBundle,
 )
-from .state import LogEntry, State
+from .state import State
 from .world import World
 
 
@@ -328,9 +328,6 @@ def build_scene_runner_bundle(
 async def emit_state_changes(
     bundle: AgentBundle,
     state: State,
-    *,
-    case_file_entries: list[str] | None = None,
-    opening_seed: str | None = None,
 ) -> StateChangeBundle:
     """Phase 1 LLM call. Stateless per turn (no message_history). Builds a
     full rich user prompt with reachable beats, endings, scene-so-far, case
@@ -341,11 +338,7 @@ async def emit_state_changes(
     pydantic-ai's retry loop. The post-run round-trip canonicalizes the
     instance for downstream isinstance() dispatch.
     """
-    prompt = build_phase1_user_prompt(
-        state, bundle.world,
-        case_file_entries=case_file_entries,
-        opening_seed=opening_seed,
-    )
+    prompt = build_phase1_user_prompt(state, bundle.world)
     DynamicBundle = _build_state_change_bundle_type(bundle.world, state)
     result = await bundle.phase1.run(
         prompt,
@@ -357,8 +350,6 @@ async def emit_state_changes(
 async def emit_placements(
     bundle: AgentBundle,
     state: State,
-    *,
-    case_file_entries: list[str] | None = None,
 ) -> NpcPlacementBundle:
     """Populator LLM call. Runs ONCE at scene entry (before Phase 1 of
     turn 1). Decides which NPCs are at which locations now in light of
@@ -369,12 +360,11 @@ async def emit_placements(
     placements to `state.npc_locations` before the populator-aware
     Phase 1 / Phase 2 prompts render `[PRESENT]`.
 
-    Stateless across scenes (no message_history); the case file is the
-    cross-scene context the populator reads.
+    Stateless across scenes (no message_history); the case file
+    (`state.case_file_entries`) is the cross-scene context the populator
+    reads.
     """
-    prompt = build_populator_user_prompt(
-        state, bundle.world, case_file_entries=case_file_entries
-    )
+    prompt = build_populator_user_prompt(state, bundle.world)
     DynamicBundle = _build_npc_placement_bundle_type(bundle.world)
     result = await bundle.populator.run(
         prompt,
@@ -390,7 +380,6 @@ async def emit_prose(
     applied: StateChangeBundle,
     *,
     leave_pick: Option | None = None,
-    opening_seed: str | None = None,
 ) -> ProsePart:
     """Phase 2 LLM call. Scene-bounded conversation: the model sees its
     own prior turns' prose as assistant messages via
@@ -402,11 +391,17 @@ async def emit_prose(
     caller (scene_loop.run_turn) catches and emits fallback prose, which
     does NOT mutate runtime.phase2_message_history.
 
-    `is_first_turn` is computed from the history (empty → first turn).
-    Whether the user message renders the scene anchor or just the
-    incremental delta follows from that.
+    `is_first_turn` is derived from runtime.phase2_message_history being
+    empty. On the first turn of the first scene, the opening seed from
+    `world.brief.opening_seed` is rendered into the user message; the
+    flag is `state.scene_id == 1 and not state.dialogue_history`. The
+    data lives in `world`; no kwarg threading needed.
     """
     is_first_turn = not runtime.phase2_message_history
+    is_session_opening = is_first_turn and state.scene_id == 1
+    opening_seed = (
+        bundle.world.brief.opening_seed if is_session_opening else None
+    )
     user_msg = build_phase2_user_message(
         state, bundle.world, applied,
         leave_pick=leave_pick,
@@ -488,33 +483,29 @@ async def emit_log_entry(
     runtime: LogWriterRuntime,
     world: World,
     state: State,
-) -> LogEntry:
+) -> LogWriterOutput:
     """Generate one case-file entry (+ structured per-NPC memory updates)
-    for the just-completed scene.
+    for the just-completed scene. Returns the canonical `LogWriterOutput`
+    directly; caller (scene_loop.play_session) decomposes it into
+    `state.case_file_entries.append(...)` and per-NPC memory merges.
 
-    Reads scene anchor (scene_id, location, npcs present) from
-    `state.dialogue_history` — at the point this is called (after
-    play_scene returns EndScene/EndGame), the just-completed scene's
-    turns are still in dialogue_history; the next enter_scene will
-    clear it.
+    Scene anchor (scene_id, location, npcs present) is read from `state`
+    — at the point this is called (after play_scene returns
+    EndScene/EndGame), the just-completed scene's turns are still in
+    `state.dialogue_history` and `state.player_location` still points
+    at the scene's location.
 
     Side effects:
       - Mutates `runtime.message_history` with the just-rendered
         user+assistant pair. Subsequent calls see this scene's entry in
         their conversation context.
-      - Does NOT mutate `state.npc_memory` — caller (play_session)
-        merges `LogEntry.npc_memory_updates` into state to keep the
-        side-effect surface explicit.
+      - Does NOT mutate `state` — caller merges fields explicitly.
     """
     assert state.dialogue_history, "emit_log_entry: empty dialogue_history"
-    anchor = state.dialogue_history[0]
-    # Source of truth for "who was present": the anchor's npcs_present
-    # (set by run_turn from world.npcs_at(...)). Defensively drop any
-    # id not in the cast — that same tuple drives both the Literal
-    # narrowing and the list length constraint, so an unknown id would
-    # crash create_model rather than producing a confusing run.
+    # The populator only runs at scene entry, so the live state matches
+    # who was there for the whole scene.
     present_npc_ids = tuple(
-        n for n in anchor.npcs_present if n in world.npcs
+        n.id for n in world.npcs_at(state.player_location, state=state)
     )
     user_prompt = build_log_writer_user_prompt(state, world)
     DynamicLogWriterOutput = _build_log_writer_output_type(present_npc_ids)
@@ -529,19 +520,11 @@ async def emit_log_entry(
     output: LogWriterOutput = LogWriterOutput.model_validate(
         result.output.model_dump()
     )
-    # Collapse list-of-records to the dict shape LogEntry / state.npc_memory
-    # consume. Grammar enforced membership + count; we keep the
-    # note.strip() filter as belt-and-braces against whitespace-only
-    # notes (the grammar can't enforce non-empty strings).
-    npc_memory_updates: dict[str, str] = {
-        u.npc_id: u.note.strip()
-        for u in output.npc_memory_updates
-        if u.note.strip()
-    }
-    return LogEntry(
-        scene_id=anchor.scene_id,
-        location_id=anchor.location_id,
-        npcs_present=list(anchor.npcs_present),
-        text=output.case_file_entry.strip(),
-        npc_memory_updates=npc_memory_updates,
+    # Drop whitespace-only notes (the one rule grammar sampling can't
+    # enforce). Strip case_file_entry the same way.
+    return LogWriterOutput(
+        case_file_entry=output.case_file_entry.strip(),
+        npc_memory_updates=[
+            u for u in output.npc_memory_updates if u.note.strip()
+        ],
     )

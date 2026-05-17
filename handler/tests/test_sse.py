@@ -27,6 +27,7 @@ from handler.schemas import (
     ContinueScene,
     EndGame,
     EndScene,
+    LogWriterOutput,
     NpcPlacementBundle,
     Option,
     ProsePart,
@@ -40,7 +41,7 @@ from handler.sse import (
     _words_from_text,
     paced_word_emitter,
 )
-from handler.state import LogEntry, State, make_initial_state
+from handler.state import State, make_initial_state
 from handler.world import World, load_world
 
 
@@ -60,13 +61,9 @@ def _patch_populator(monkeypatch):
 
 def _patch_log_writer(monkeypatch, text: str = "case-file entry"):
     async def fake_emit(*args, **kwargs):
-        anchor_state = args[2] if len(args) >= 3 else kwargs.get("state")
-        return LogEntry(
-            scene_id=anchor_state.scene_id if anchor_state else 1,
-            location_id=anchor_state.player_location if anchor_state else "the_slaughtered_lamb",
-            npcs_present=[],
-            text=text,
-            npc_memory_updates={},
+        return LogWriterOutput(
+            case_file_entry=text,
+            npc_memory_updates=[],
         )
     monkeypatch.setattr("handler.scene_loop.emit_log_entry", fake_emit)
 
