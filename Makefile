@@ -4,44 +4,26 @@ LLAMA_BIN   := vendor/llama.cpp/llama-server.exe
 LLAMA_HOST  := 127.0.0.1
 LLAMA_PORT  := 8080
 
-# Eval llama: Qwen 3.6 35B-A3B (MoE, ~3B active) on mainline llama.cpp,
-# routed through the same `launcher.py` path as the engine (config in
-# config.py:eval_llama_*; argv in launcher.build_command). Powers the
-# synthetic-player agent and every LLM judge in the playtester. Different
-# family from Gemma (the SUT) to mitigate same-family preference leakage
-# in judging — see arxiv 2502.01534.
-EVAL_MODEL      := models/Qwen3.6-35B-A3B-Q8_0.gguf
-EVAL_MODEL_URL  := https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/Qwen3.6-35B-A3B-Q8_0.gguf
-
 .DEFAULT_GOAL := help
 
 .PHONY: help
 help:
-	@echo "Inbox targets:"
-	@echo "  make run             Boot sidecar (spawns llama) + web dev server in parallel"
-	@echo "  make download-model       Fetch the Gemma 4 E4B Q8_0 GGUF (~8 GB)"
-	@echo "  make download-eval-model  Fetch the Qwen 3.6 35B-A3B Q8_0 GGUF (~37 GB)"
-	@echo "  make llama                Run engine llama-server (Gemma on :8080, single-user KV)"
-	@echo "  make llama-playtest       Run engine llama with bumped KV pool for the playtester (~2M ctx, 64 concurrent)"
-	@echo "  make llama-eval           Run eval llama-server (Qwen 35B-A3B on :8081, -np 16 -c 512k, ~78 GB VRAM)"
-	@echo "  make sidecar              Run Python sidecar, no llama   (terminal 2)"
-	@echo "  make web                  Run Vite dev server            (terminal 3)"
-	@echo "  make test                 Run pytest"
-	@echo "  make playtest             Run the LLM playtester (requires both llamas up)"
-	@echo "  make lint-scenario   Lint npc_service/scenario.yaml (fast; spec rules only)"
-	@echo "  make analyze-scenario  Run ASP-backed reachability analyzer (clingo; sub-second on 13b)"
-	@echo "  make typecheck       Run TS typecheck on web/"
-	@echo "  make clean           Remove __pycache__ and logs/*.log"
-	@echo "  make kill-zombies    Force-kill stragglers on :8000/:8080/:5173-5176 (recovery)"
-
-# `run` boots sidecar and web in parallel via `concurrently` (npm). Ctrl-C
-# propagates through concurrently → tree-kill → both children die. The
-# sidecar spawns llama-server itself (LAUNCH_LLAMA=true default) and its
-# Job Object (launcher.py) ensures llama dies when the sidecar dies.
-.PHONY: run
-run: $(MODEL)
-	@echo "Starting sidecar (spawns llama) and web in parallel. Browser: http://localhost:5173"
-	cd web && npm run dev:all
+	@echo "HANDLER v2 targets:"
+	@echo "  make sidecar             Run the FastAPI sidecar (spawns its own llama-server)"
+	@echo "  make sidecar-inferno     Run the sidecar against the inferno gateway (skips bundled llama)"
+	@echo "  make web                 Run the Vite dev server"
+	@echo "  make dev                 Run sidecar (inferno) + web together via concurrently"
+	@echo "  make cli                 Run the text-only CLI playthrough (uses inferno)"
+	@echo "  make download-model      Fetch the Gemma 4 E4B Q8_0 GGUF (~8 GB)"
+	@echo "  make test                Run pytest (unit suite, skips live-llama integration)"
+	@echo "  make test-integration    Run pytest including the live-llama integration test"
+	@echo "  make typecheck           Run TS typecheck on handler/web/"
+	@echo "  make build               Production build of handler/web/"
+	@echo "  make kill                Force-kill stragglers on :8000/:8080/:5173-5176"
+	@echo "  make clean               Remove __pycache__"
+	@echo ""
+	@echo "Browser dev flow: 'make dev' (one terminal, inferno-routed) — open http://localhost:5173"
+	@echo "Or: 'make sidecar' (terminal 1) + 'make web' (terminal 2) for the bundled-llama path"
 
 $(MODEL):
 	mkdir -p models
@@ -50,97 +32,64 @@ $(MODEL):
 .PHONY: download-model
 download-model: $(MODEL)
 
-$(EVAL_MODEL):
-	mkdir -p models
-	curl -L -o $(EVAL_MODEL) $(EVAL_MODEL_URL)
-
-.PHONY: download-eval-model
-download-eval-model: $(EVAL_MODEL)
-
-# Boots llama-server via npc_service.run_llama so the argv comes from the
-# same `launcher.build_command` the sidecar uses. Don't reintroduce a
-# hardcoded llama-server invocation here — it will drift from Settings
-# (this is exactly how `-np` got stuck at 8 while config.py said 128).
-.PHONY: llama
-llama: $(MODEL)
-	cd npc_service && uv run python -m npc_service.run_llama
-
-# Engine llama, sized for the playtester at --parallel 64. Bumps `-np` to
-# 64 (matches max concurrency) and lets launcher.py auto-size `-c` to
-# `n_parallel × llama_ctx = 64 × 32k = 2M`. Single-session llama_ctx stays
-# 32k, so the chat agent's history-compaction threshold is unaffected.
-# KV cost ≈ 64 × 32k × ~4 KB/tok (Gemma MQA) ≈ ~8 GB VRAM. The default
-# `--no-kv-unified` (see config.py:llama_kv_unified) means llama-server
-# divides `-c` by `-np` per slot — each slot gets the full 32k budget.
-.PHONY: llama-playtest
-llama-playtest: $(MODEL)
-	cd npc_service && LLAMA_N_PARALLEL=64 uv run python -m npc_service.run_llama
-
-# Eval llama: Qwen 3.6 35B-A3B (MoE) on mainline llama.cpp. Routed through
-# the same `npc_service.run_llama` entry point as the engine — `--role eval`
-# selects `resolve_eval_config` (config.py:eval_llama_*) which omits the
-# Gemma-specific `--reasoning` flags but keeps `--jinja` (Qwen has its own
-# bundled chat template + thinking handling). Defaults size for the
-# playtester at `--parallel 64`: -np 64 --kv-unified, auto-sized -c=2M.
-.PHONY: llama-eval
-llama-eval: $(EVAL_MODEL)
-	cd npc_service && uv run python -m npc_service.run_llama --role eval
-
 .PHONY: sidecar
 sidecar:
-	cd npc_service && LAUNCH_LLAMA=false uv run python -m npc_service
+	cd handler && uv run uvicorn handler.main:app --reload --port 8000
+
+# Inferno mode: skip bundled llama, route pydantic-ai at inferno's /v1.
+# Requires inferno running on :7770. See handler/CLAUDE.md (when written) or
+# the root CLAUDE.md "Inferno gateway" section for env var details.
+.PHONY: sidecar-inferno
+sidecar-inferno:
+	cd handler && SMALLVILLE_USE_INFERNO=1 uv run uvicorn handler.main:app --reload --port 8000
 
 .PHONY: web
 web:
-	cd web && npm run dev
+	cd handler/web && npm run dev
+
+# Spawn sidecar (inferno-routed) + Vite dev server together via concurrently.
+# Ctrl-C kills both (--kill-others). Backend env var is set here, not in the
+# npm script, so the package.json stays portable (no cross-env dep needed).
+.PHONY: dev
+dev:
+	cd handler/web && SMALLVILLE_USE_INFERNO=1 npm run dev:all
+
+# Text-only CLI playthrough — stdin pick/walk, paced prose to stdout, log
+# entries indented after each scene. Routes at inferno by default.
+.PHONY: cli
+cli:
+	cd handler && SMALLVILLE_USE_INFERNO=1 uv run python -m handler
 
 .PHONY: test
 test:
-	cd npc_service && uv run pytest
+	cd handler && uv run pytest -q --ignore=tests/test_live_integration.py
 
-# Scenario linter. Runs against `npc_service/scenario.yaml` by default.
-# Loads the scenario via the Pydantic models (so `_cross_references`
-# parse errors surface first), then applies the author-facing checks the
-# model doesn't catch on its own. Fast — spec rules only. The state-space
-# analyzer is opt-in via `--analyzer`; run `make analyze-scenario` to
-# invoke it as its own target. See `npc_service/scripts/lint_rules.md`
-# for what each check does and why.
-.PHONY: lint-scenario
-lint-scenario:
-	cd npc_service && uv run python scripts/lint_scenario.py scenario.yaml
-
-# Static reachability analyzer (ASP-backed via clingo). Computes which
-# beats are reachable from boot, per-quality value bounds, and orphan/
-# bound-mismatch findings that the spec lint can't see. Sub-second on
-# the production scenario thanks to clingo's brave-mode consequence
-# reasoning — see DendryScope (Robison & Mateas, AIIDE 2023) for the
-# encoding precedent. Run before commit / in CI alongside `lint-scenario`.
-.PHONY: analyze-scenario
-analyze-scenario:
-	cd npc_service && uv run python scripts/analyze_scenario.py scenario.yaml
-
-# LLM playtester. Probes /health on BOTH llama servers (engine on :8080,
-# eval on :8081) before booting; errors clearly if either isn't up. Boot
-# them in separate terminals first via `make llama-playtest` (bumped KV
-# pool) and `make llama-eval`. Installs the optional pydantic-evals dep on
-# first run via `uv sync --extra playtest`. PYTHONIOENCODING=utf-8 keeps
-# pydantic-evals' rich-rendered evaluation summary from crashing on the
-# Windows cp1252 console when it prints `✓` / `✗` glyphs. `python -u`
-# disables stdout buffering so progress is visible while the run is in
-# flight (default-buffered subprocesses don't flush until exit).
-.PHONY: playtest
-playtest:
-	cd npc_service && uv sync --extra playtest && PYTHONIOENCODING=utf-8 uv run python -u -m scripts.playtest
+.PHONY: test-integration
+test-integration:
+	cd handler && uv run pytest -q
 
 .PHONY: typecheck
 typecheck:
-	cd web && npm run typecheck
+	cd handler/web && npm run typecheck
+
+.PHONY: build
+build:
+	cd handler/web && npm run build
 
 .PHONY: clean
 clean:
-	rm -f logs/*.log
 	find . -type d -name __pycache__ -prune -exec rm -rf {} +
 
-.PHONY: kill-zombies
-kill-zombies:
-	@powershell -Command 'Get-NetTCPConnection -LocalPort 8000,8080,8081,5173,5174,5175,5176 -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $$_.OwningProcess -Force -ErrorAction SilentlyContinue }; Write-Host "killed any processes holding :8000/:8080/:8081/:5173-5176"'
+# Two-pass kill — single-pass misses multiprocessing-fork orphans that inherit
+# listening sockets. Exits non-zero if any port is still bound after the kill.
+#
+# Why Python (not inline PowerShell): when make's SHELL is bash (git bash on
+# Windows), bash eats `$var` references in the recipe before PowerShell ever
+# sees them, so every variable in the previous inline PowerShell script
+# collapsed to empty (`Write-Host "killed pid  on :"` etc.) and the brace
+# parser then died with "Unexpected token ')'". Python via `uv run` dodges
+# the whole shell-quoting + reserved-`$pid` mess — and `uv run` is already
+# the project's standard invocation.
+.PHONY: kill
+kill:
+	cd handler && uv run python scripts/kill_dev_ports.py

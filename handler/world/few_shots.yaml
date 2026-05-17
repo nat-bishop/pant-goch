@@ -1,0 +1,137 @@
+# Hand-authored example exchanges surfaced in Phase 2's [STYLE EXAMPLES]
+# block. Per the prose-voice refactor: few-shot examples beat instructions
+# for small models. These six cover the registers Phase 2 most often has
+# to write in:
+#
+#   1. First contact, low temperature (Tom at the bar)
+#   2. Folklore lure (Owain on the lane)
+#   3. Reveal (Tom finally naming the vehicle)
+#   4. Hostility — cold courtesy (Eluned in the yard)
+#   5. Returning visit (Iwan with the kettle on)
+#   6. Intimacy — admission in private (Dylan in the wood)
+#
+# Voice, sentence rhythm, dialogue tag style — not exposition or character
+# backstory. Each example is a setup line + the player's pick + the
+# narrator's response.
+
+- setup: "The Slaughtered Lamb, mid-afternoon. Old Tom Bevan is at the second stool from the door, nursing a half of bitter. The landlord, Eira Pryce, polishes a glass with the same cloth she always uses."
+  player: '"Mind if I sit?"'
+  narrator: |
+    Tom doesn't look up. He turns the glass on the bar, a quarter-turn,
+    another, as if measuring something only he can see. The peat fire
+    in the grate cracks once and settles. Eira's cloth pauses on the
+    rim of the pint glass, just long enough to register your existence,
+    then resumes.
+
+    "Free country," Tom says, eventually. He doesn't say it kindly. He
+    doesn't say it the other way either.
+
+    You take the stool. Up close, he smells of woodsmoke and wet wool.
+    He has the face of a man who has not had a full night's sleep in a
+    long time and has stopped being surprised by it. Behind the bar,
+    the dartboard photograph catches the afternoon light.
+
+- setup: "The lane between Lower Hafod and the village, late afternoon. Owain Pugh has fallen into step with you, in the unhurried way of someone who has nowhere in particular to be."
+  player: '"You said something about a dog."'
+  narrator: |
+    Owain glances at you sideways, then ahead at the hedge. The
+    blackthorn is just beginning to show. He takes his time.
+
+    "I said it was seen. There's a difference."
+
+    A wood pigeon goes off heavily from somewhere behind them. He
+    waits until the sound has finished.
+
+    "Big black thing. At the bend. The night it happened. That's what
+    I heard, anyway. From who, I couldn't tell you now. Could've been
+    Tom. Could've been my brother. Could've been a dream I had after,
+    and I dressed it up."
+
+    He stops walking. You stop with him. He looks at you with the
+    half-amused, half-mournful face of a man who knows exactly how
+    unreliable he is and does not particularly mind.
+
+    "I don't say I saw it. I say it was seen."
+
+- setup: "The Slaughtered Lamb, a Tuesday evening on your third visit. Tom has had a half and started on another. The pub is quieter than usual; even Eira has gone out the back for something. You have asked Tom, gently, about the night."
+  player: '"You were on the road that night, weren''t you."'
+  narrator: |
+    He sets the glass down. Not slowly. Just down. He looks at the
+    blackboard behind the bar for a long moment, at the prices in Welsh
+    he can still read, before he answers.
+
+    "Aye."
+
+    A long pause. He doesn't fill it. You don't either.
+
+    "Land Rover. Going the other way. Past the bend, towards Tan-y-coed."
+    His voice has thinned. "Recognised it. Knew it since I was a boy
+    and she was a girl in pigtails." He doesn't say the name. He doesn't
+    have to. "Told the police I saw a vehicle. Didn't say whose."
+
+    He picks the glass up again. Sets it down without drinking. There
+    is something wet on his face that he is not acknowledging.
+
+- setup: "Tan-y-coed farmyard. The dogs have stopped barking but they are watching you. Eluned Vaughn is in a waxed jacket, her hands in the pockets. She has not invited you any further than the gate."
+  player: '"I''d like to ask you about the night of March fourteenth."'
+  narrator: |
+    She does not move. The collie at her heel does not move either.
+    For a moment the only sound is the wind through the slate-roofed
+    barn and a hen complaining somewhere out of sight.
+
+    "Would you, now."
+
+    She says it like a remark about the weather. Behind her, the
+    kitchen window glows yellow against the failing light. You are not
+    going to be invited in.
+
+    "You'll have driven up from the village for this. Long way to come
+    for an answer you already know you won't get." Her eyes are very
+    clear. "Mr Bevan I will speak to. Iwan Pritchard, God help him, I
+    will speak to. Not you."
+
+    The younger dog, Mab, leans against her thigh. Eluned does not
+    look at the dog. She looks at you.
+
+    "Off my land, please. While the asking of it is still polite."
+
+- setup: "Lower Hafod, on your second visit. Iwan has opened the door before you've knocked. Wendy is somewhere out at the polytunnel; you have not seen her. There is a kettle already on."
+  player: '"I came back."'
+  narrator: |
+    "I noticed." He stands aside. The hallway smells of toast and
+    something older — old paper, maybe, or a dog blanket. He doesn't
+    take your coat this time; he points at the hook where you hung it
+    last time, as if reminding you of a small kindness.
+
+    "Sit there if you would. Tea or coffee? Tea." He has answered for
+    you. He always does. He pours.
+
+    You take the same chair as before. The kitchen has not changed.
+    On the dresser, a framed photograph of Megan at, perhaps, fifteen
+    has been turned five degrees so it faces the table now. You don't
+    think it was like that last time.
+
+    He sets the mug down. He sits opposite. He waits, in the way of a
+    man who knows the asking is not his to do, only the answering.
+
+- setup: "Bryn Iago Wood, late afternoon. You found Dylan walking back from the clearing, hands in his pockets, in no apparent hurry. He has stopped when you stopped. The light is going through the larches."
+  player: '"You and Megan."'
+  narrator: |
+    He doesn't answer for a long time. He looks at the bark of the
+    nearest oak, at a small beetle moving in slow vertical concentration.
+    The wind shifts and the larches make their soft, dry sound.
+
+    "Yeah."
+
+    He says it quietly, almost to the beetle. Then he turns. He looks
+    past your shoulder, somewhere up the path you came on.
+
+    "Not many people knew. Maud knew, I think. I don't know who else.
+    My mother knew, in the end. That's how all of this happened."
+
+    He breathes out, the way a man breathes out who has been holding
+    something between his ribs for a long time and forgotten he was.
+
+    "I haven't said this. To anyone. In seven years. So." He looks at
+    you for the first time. "I'd be grateful if you'd let me catch my
+    breath a moment, before you ask what you're going to ask next."

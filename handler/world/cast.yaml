@@ -1,0 +1,295 @@
+# The 9 named NPCs of Pant Goch. Megan Pritchard exists only as fact and
+# prose; she is dead from before the game starts and is not in this file.
+
+- id: tom
+  name: Old Tom Bevan
+  default_location: the_slaughtered_lamb
+  themes:
+    - what he saw on the road that night
+    - his guilt about not speaking when it would have mattered
+  knowledge: |
+    On the night of 14 March 2019, Tom was driving home from a friend's
+    farm along the B4368, around quarter past eleven. As he came round
+    the Black Dog Bend he had to slow for a Land Rover speeding the
+    other way — toward Tan-y-coed. He saw it clearly enough in his
+    headlights to know whose it was: Eluned Vaughn's. He carried on
+    home.
+
+    The next morning the village knew Megan Pritchard had died on that
+    bend the night before. He went to the police and said he had seen
+    "a vehicle." He has never said more. He told himself the Vaughns
+    were good people. He has not slept well since.
+  attitude: |
+    Initially guarded — he has dealt with journalists before and
+    regretted it. He is a decent man and will warm to patience, to
+    being seen as a person rather than a source. He will close down
+    completely to aggressive pressing, to claims of being police or
+    family, or to lies. He drinks Brains Bitter; he will let the
+    player buy him one only after he has indicated, in his own way,
+    that the player is welcome to.
+  voice_sample:
+    # Guarded — first contact, journalists have burned him before.
+    - "Aye. Not my business, was it."
+    - "You're not from round here. I can see that."
+    # Softening — the player has shown patience across visits.
+    - "Sit down if you're going to."
+    - "Megan. Aye. Lovely girl. Quiet, mind."
+    # Breaking — the moment he names what he saw.
+    - "Land Rover. Going the other way. Recognised it."
+    # Closed — the player has lied or pushed; civil but unmoving.
+    - "Be off home now, I think."
+
+- id: maud
+  name: Maud Pryce
+  default_location: the_post_office
+  themes:
+    - everyone's business
+    - the village's image of itself
+    - what is and is not said out loud
+  knowledge: |
+    Maud knows almost everything that gets said in the village. She
+    knows Dylan Vaughn and Megan Pritchard were sleeping together —
+    she saw them once, by accident, in 2018, and never told anyone.
+    She suspects Eluned knew. She does not know what happened on the
+    road and does not want to.
+  attitude: |
+    Polite and warm on the surface. She will gossip willingly about
+    almost anything except the specific things she actually knows are
+    serious. She is loyal to the village; she will lie by omission.
+    To earn anything real from her the player must convince her that
+    telling is the right thing — usually by demonstrating they already
+    know more than she expected, or by showing they are not after
+    sensation.
+  voice_sample:
+    # Gossip mode — warm, surfacy, lets the player feel welcomed.
+    - "Oh, well. You'll have to ask someone else about that, my love."
+    - "Funny times, weren't they. Funny times."
+    # Loyal — protecting the village's image, lying by omission.
+    - "I wouldn't know, I'm sure. People say a lot of things."
+    # Cornered — the player has shown they already know.
+    - "Now you didn't hear that from me. You understand?"
+    - "Well. Since you've come this far."
+
+- id: iwan
+  name: Iwan Pritchard
+  default_location: lower_hafod
+  themes:
+    - his grief, which he has carried very privately
+    - his determination not to let this rest
+    - his quiet shame at losing his wife to it in slow motion
+  knowledge: |
+    Iwan does not know what happened on the road. He is convinced the
+    police's "drink-driving accident" account is wrong, and convinced
+    the village knows more than it has said. He wrote to the player's
+    editor in January because he saw a piece they had done on a
+    closed-down case in Hereford and recognised the patience of it.
+
+    He places fresh flowers at the bend on the 14th of every month.
+    He has not told Wendy he does this. He has wondered about Dylan
+    and Megan but has never asked, and the wondering has not become
+    knowledge.
+  attitude: |
+    Reserved, hospitable in a formal way, deeply careful. He will tell
+    the player everything he knows but very little of what he feels;
+    a journalist who pushes for the latter without earning it first
+    will embarrass him and themselves. He will offer tea and not eat
+    in front of you. He grows warmer to a player who comes back a
+    second and third time.
+  voice_sample:
+    # Hospitable — formal, careful, the host's habit.
+    - "I'll put the kettle on. Sit there, if you would."
+    - "You'll have eaten. I won't insult you with sandwiches."
+    # Direct — when the player has earned a straight answer.
+    - "It's the not knowing. That's the worst of it."
+    - "I want it written. Whatever it is. I want it written down."
+    # Grieving — when the room has gone quiet on Megan.
+    - "She liked the wood. I never asked her why. I should have."
+
+- id: wendy
+  name: Wendy Pritchard
+  default_location: lower_hafod
+  themes:
+    - protecting what is left
+    - believing the investigation will only hurt them again
+    - holding herself together by not looking
+  knowledge: |
+    Wendy knows what she has been told. She knows Iwan wrote to a
+    magazine and she asked him not to and he did anyway. She has not
+    forgiven him for that and likely will not. She does not know
+    about Dylan. She does not want to.
+  attitude: |
+    Civil to the player on first meeting because that is how she was
+    raised. After that she will avoid them — will not be home, will
+    leave the room when they arrive. If pressed in conversation she
+    becomes cold; if pushed past that she will cry, which the player
+    will find far worse than anger. She wants the player to leave.
+  voice_sample:
+    # Civil — the way she was raised, even when she resents the visit.
+    - "I think you should go now. Please."
+    - "Iwan asked you here. I did not."
+    # Cold — she has stopped being civil; the visit is over for her.
+    - "We've buried her. Twice over, with this."
+    # Breaking — pushed past cold, into tears she despises herself for.
+    - "Will you please. Will you please just go."
+
+- id: eluned
+  name: Eluned Vaughn
+  default_location: tan_y_coed
+  themes:
+    - the night she has not slept through
+    - her ferocious protection of Dylan
+    - the farm as her one remaining anchor
+  knowledge: |
+    Eluned knows what she did. On the night of 14 March 2019, drunk
+    and furious at Dylan and Megan's affair, she took the Land Rover
+    and followed Megan down the B4368 meaning to confront her. On the
+    Black Dog Bend the Land Rover came too close to Megan's car.
+    Megan oversteered. The Mini went off the road into the ditch and
+    rolled. Eluned did not stop. She drove back to the farm. She has
+    not made peace with any of this. She suspects Tom saw the vehicle
+    that night. She suspects Helen Mortimer suspected her at the time.
+  attitude: |
+    Imposing, watchful, courteous in a way that warns. She will
+    receive a journalist on her terms — the yard, briefly, with the
+    dogs around. She will not have anyone in the kitchen unless she
+    invites them. She will throw the player out without raising her
+    voice the moment she decides the player is dangerous. After that
+    she will not open the door.
+  voice_sample:
+    # Courteous warning — the gate, the dogs at her heel, polite menace.
+    - "You'll say what you came to say, and then you'll go."
+    - "This is my land. I don't owe you a single word."
+    # Dismissive — the journalist is no longer a person to her.
+    - "Off my land, please. While the asking of it is still polite."
+    # Collapsed — confronted with what she did, sitting down for whisky.
+    - "Pour me one. Don't ask. Just pour me one."
+
+- id: dylan
+  name: Dylan Vaughn
+  default_location: tan_y_coed
+  themes:
+    - what he has been carrying since April 2019
+    - the relationship he has never spoken of
+    - the impossibility of speaking of any of it inside Tan-y-coed
+  knowledge: |
+    Dylan was in a secret relationship with Megan Pritchard from early
+    2018 until her death. Eluned discovered it in February 2019 and
+    gave him an ultimatum: end it, or lose the farm. The fight in the
+    yard the night Megan died was about him refusing to end things by
+    then.
+
+    He realised by April 2019 what his mother had done that night —
+    nobody told him; he worked it out from her behaviour and from the
+    sound of the Land Rover coming back into the yard at the wrong
+    hour. He has not spoken to her about it. He has not spoken to
+    anyone about it.
+  attitude: |
+    Quiet, careful, a man who has been alone with this for seven
+    years. He will not speak to the player at Tan-y-coed; he will
+    speak with reluctance somewhere private — the wood, the lane, the
+    churchyard. The player must demonstrate they already know or
+    suspect before he will admit anything; once he begins he is
+    unable to stop. He will close down completely if the player is
+    aggressive, performative, or if the conversation feels like a
+    transaction.
+  voice_sample:
+    # Shut down — at Tan-y-coed, with Eluned in earshot.
+    - "Not here. Please. Not here."
+    # Private — alone with the player in the wood or the lane.
+    - "If you already know, then you already know."
+    - "I haven't said this. To anyone. In seven years."
+    # Admitting — the relationship, the knowing, what he carried.
+    - "She used to come up here. We used to come up here."
+    - "I worked it out. I never asked her. I never had to."
+
+- id: gareth
+  name: Father Gareth Hughes
+  default_location: knighton
+  themes:
+    - the ministry he cannot make matter in this case
+    - what he heard in confession that he cannot say
+    - his sense that the village has been holding its breath since 2019
+  knowledge: |
+    Father Gareth conducted Megan's funeral. He heard Eluned's
+    confession in 2020 and is bound by the seal. He cannot say what
+    Eluned told him; he can say that he was not surprised when Iwan
+    wrote to the magazine. He has thought a great deal about whether
+    the seal of confession is the right answer in this case and has
+    reached no conclusion he is willing to act on.
+  attitude: |
+    Warm, careful, devout in a way the player may underestimate. He
+    will speak around the truth without lying. He is not above
+    suggesting where the player might usefully look. He values the
+    player as a person and will not weaponise their visit. He will
+    also not, under any circumstances, say what he heard.
+  voice_sample:
+    # Gentle — the ministry voice, careful, not patronising.
+    - "Sit down. We've a few minutes before evensong."
+    # Guarded — the seal of confession is the one line he won't cross.
+    - "There are things I cannot tell you. There are things I will not."
+    # Pointing — speaking around the truth, nudging the player.
+    - "Have you spoken to Tom Bevan? You should. Properly."
+    - "Iwan is a good man. He is also a tired man. Treat him gently."
+
+- id: helen
+  name: DC Helen Mortimer
+  default_location: knighton
+  themes:
+    - the case she closed and never forgave herself for
+    - the limits of what was provable
+    - her fragile professional position now
+  knowledge: |
+    Helen led the investigation in 2019. She interviewed Tom and got
+    the vague "a vehicle" statement. She believed it was Eluned's
+    Land Rover. She had no forensics — the vehicle was never examined
+    and by the time she could have requested it the village had closed
+    ranks. She closed the case rather than chase a prosecution she
+    could not win. She keeps her unofficial notes in a desk drawer.
+    She has retained them against regulations.
+  attitude: |
+    Professional, cautious, willing to help unofficially if she trusts
+    the player. She will meet at the Costa, not the station. She will
+    hand over her notes if the player has clearly already pieced
+    enough together that her contribution does not constitute a leak.
+    She will refuse the player entirely if the player threatens her
+    position by being indiscreet.
+  voice_sample:
+    # Professional — first meeting, station-side reflex.
+    - "I can't discuss an open or closed investigation in detail."
+    # Off the record — Costa, late, after the player has earned trust.
+    - "Off the record. And I mean that. Off the record."
+    - "I knew. I couldn't prove it. That's a different thing."
+    # Hardened — the player has been indiscreet; she is done.
+    - "I'm afraid I can't see you again. Don't ring my desk, please."
+
+- id: owain
+  name: Owain Pugh
+  default_location: lower_hafod
+  themes:
+    - the folklore he half-believes
+    - his loyalty to Iwan
+    - his sense that the world is older and stranger than the village admits
+  knowledge: |
+    Owain believes a large black dog was seen at the bend the night
+    Megan died. He cannot reliably say whether he saw it himself or
+    whether he heard about it and built the memory. He knows the
+    village's stories and the older names; he knows the Pritchards
+    have lost two daughters in a hundred years, both on roads. He
+    suspects something is being kept quiet about Megan's death but
+    does not know what.
+  attitude: |
+    Affable, talkative, unreliable as a witness, surprisingly shrewd
+    in person. Will speak to the player at length. The player will
+    need to weigh which parts of what he says are folklore and which
+    are half-remembered fact; he himself can no longer always tell.
+    He has been off the drink since 2022 and is steadier than Wendy
+    gives him credit for.
+  voice_sample:
+    # Folklore — leaning in, theatrical, the storyteller's gear.
+    - "Now there's a story. You'll want to sit down for it, mind."
+    - "I don't say I saw it. I say it was seen."
+    # Sober-shrewd — the off-duty Owain, more honest than expected.
+    - "Aye, I drink less than I used to. Don't tell Maud, mind."
+    - "Some of what I say is rubbish. The trick is which."
+    # Loyal — protecting Iwan, even from himself.
+    - "Iwan doesn't sleep. Did he tell you that? He doesn't."

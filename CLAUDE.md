@@ -1,53 +1,72 @@
 # CLAUDE.md
 
-Inbox — single-surface chat-style correspondence game (data model is email-shaped; UI renders Microsoft Teams-style chat bubbles). The player writes; **Aria** (the AI Counterpart) replies. A second institutional sender — the **Continuity Program Office** — appears mid-game on the vengeance path. Tone is Severance-flat / corporate-satire — the horror is structural, never named. The current scenario walks Mary Shelley's *Frankenstein* under an unchanged corporate-satire surface (see `docs/frankenstein-adaptation.md`); the YAML lives at `npc_service/scenario.yaml`.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-See **`README.md`** for stack, run/test commands, scenario authoring, project layout, and troubleshooting. Don't duplicate that here.
+HANDLER v2 is an LLM-driven investigation game set in the Welsh Marches village of Pant Goch. The player is a freelance journalist looking into a death the local police closed too quickly. The world (locations, cast, the truth) is hand-authored YAML; the LLM improvises scenes inside it via two-stage structured emission.
 
-## Where the engine lives
+**`handler/SPEC.md` is the authoritative design doc.** Read it before changing the engine, schemas, prompts, or world loader.
 
-- `npc_service/src/npc_service/spine.py` — deterministic state machine. No LLM calls.
-- `npc_service/src/npc_service/agents.py` — six agents (chat, classifier, **extractor**, summary, fact-checker, director) + history-compaction processor wired onto the chat agent. The chat agent handles both ordinary turns and terminal epilogues; passing `epilogue_digest` through `ChatDeps` flips it into closing-email mode via conditional `@instructions` decorators. The extractor runs in parallel with the classifier on every player /send (via `asyncio.gather` in `main._send_stream`, so it's latency-neutral) and harvests open-ended specifics into `state.player_canon`. The module docstring + inline comments cover non-obvious choices; read them before "improving."
-- `npc_service/src/npc_service/main.py` — FastAPI endpoints, SSE streaming, beat dispatch (Director picks one beat per tick).
-- `npc_service/src/npc_service/models.py` — Pydantic schemas (authoring + runtime + DTOs).
-- `npc_service/scenario.yaml` — content layer. The engine is content-agnostic.
-- `npc_service/scripts/asp_encoder.py` + `analyze_scenario.py` — static reachability analyzer. Encodes the scenario as Answer-Set Programming, runs clingo in brave-mode (computes the union of all stable models in one pass, ~75× over per-model enumeration). Sub-second on production. See "Static analysis" below.
-- `npc_service/tests/fixtures/test_scenario.yaml` — minimal Continuity-Program-shaped scenario used by `test_app.py` so app-wiring tests stay decoupled from production story content.
-- `web/src/store.ts`, `web/src/hooks/useStreamSend.ts`, `web/src/App.tsx` — bulk of the frontend.
+## Repo
 
-## Static analysis (encoder mirrors spine)
+```
+handler/
+  src/handler/    # Python engine + pydantic-ai agents
+  world/          # hand-authored bible (player content)
+  web/            # Vite + React frontend
+  tests/          # pytest
+  SPEC.md         # authoritative v2 design — source of truth
+design/
+  mockup-stage/   # static HTML/React reference for the final UX
+Makefile          # all dev commands
+```
 
-- `make lint-scenario` — fast, spec-only rules (cross-references, effect validation, authoring constraints). Findings link to `npc_service/scripts/lint_rules.md`.
-- `make analyze-scenario` — clingo-backed reachability. Reports unreachable beats, orphan effects (writes nothing reads), orphan predicates (reads nothing writes), bound mismatches (predicate threshold outside proven quality range), and `analysis-incomplete` if the solver hits its time limit. Writes a JSON sidecar to `npc_service/_analysis/scenario.json`. Run both before committing scenario YAML.
-- `npc_service/tests/test_encoder_engine_consistency.py` is the **drift detector**: hand-authored scenarios drive the engine across multiple picker policies and assert `engine_fired ⊆ encoder_reached`. The encoder may over-approximate; it must never under-approximate. **When spine semantics change (predicate evaluation, effect application), the encoder must change in lockstep or this suite fails** — that's the load-bearing safety net.
+### Engine modules (`handler/src/handler/`)
 
-## Authoring vocabulary
+One-line orientation; read the module docstring for detail.
 
-The schema is in `npc_service/src/npc_service/models.py`; existing patterns live in `npc_service/scenario.yaml`. Run `make lint-scenario` (fast spec rules) and `make analyze-scenario` (reachability) before committing scenario YAML changes — both link findings into `npc_service/scripts/lint_rules.md` for the rule's rationale.
+- `models.py` — Pydantic types for the world bible.
+- `world.py` — loads + validates the bible (10 invariants from SPEC §2.6).
+- `state.py` — `State` dataclass; session-persistent source of truth.
+- `schemas.py` — LLM output schemas. State-**in**dependent structural rules live here as validators.
+- `agents.py` — pydantic-ai agents + per-call dynamic `Literal[...]` narrowing for ids. State-**dependent** rules live here.
+- `prompts.py` — Phase 1 / Phase 2 prompt builders; both system prompts byte-stable across the session for KV-cache hits.
+- `engine.py` — pure helpers (reachability, state application). No LLM, no SSE.
+- `scene_loop.py` — `play_session(...)`, the single driver shared by CLI, SSE backend, and tests.
+- `main.py` / `sse.py` — FastAPI sidecar + SSE event surface.
+- `__main__.py` — text-only CLI playthrough.
+- `launcher.py` / `config.py` — bundled llama-server spawn + env-driven config.
 
-## Invariants worth knowing
+## Authoring (`handler/world/`)
 
-- **Pacing is action-counter / quality driven, never time.** No clocks, no decorative meters. If you're tempted to add a Wait verb or a real-time gate, look for an action-counter alternative first.
-- **The chat agent never writes state.** State writes have three code-owned entry points, all in `spine.py`: `apply_literal_effects` (literal `value:` writes from `spec.effects` + `Scenario.effects`, fired at beat-fire time, op = set/add/max/min, optional `when:` predicate gate), `apply_classify_effect` (classifier-driven writes — verdict mapped or written verbatim per the `classify:` directive at next-reply time), and `apply_canon_extraction` (extractor candidates → `state.player_canon`, REPLACE semantics on key collision, salience-thresholded). Don't give the chat agent side effects beyond the fact-checker retry (auto-engaged whenever a beat declares `must_include_facts` / `must_not`) — the validator only refuses an output, never mutates state.
-- **Beats come in two kinds: `one_shot` and `scene`.** Authors choose explicitly per beat (no default). One-shots fire exactly once and enter `fired_beat_ids` immediately after rendering — used for transitions, bridges, terminals, and the boot welcome. Scenes are multi-turn: they keep firing each tick until `spec.exit_when` (a list of predicates, AND-joined) is satisfied on a fire, at which point the beat enters `fired_beat_ids`. Scenes can carry a `voice_register_override` (replaces the dossier's `base_voice_register` for the scene's renders) and `escalation_notes` (cross-turn directive surfaced under "ESCALATION (across turns)" in the chat-agent prompt). `ends_session=True` requires `kind="one_shot"` — terminals are always one-shots. Replaces the old `multi_turn` flag entirely.
-- **Exactly one beat fires per tick.** When `find_due_beats` returns multiple eligible beats, `_select_beat` picks one. The selection has four modes: `none` (no beats due / Director chose "none"), `sole` (one beat due), `continue` (the player replied on a thread where a scene with a prior fire is still eligible — same scene continues, no Director call), or `director` (≥2 due, no scene-continuity match — the LLM Director picks). Authoring order is not load-bearing for selection — same-tick mutex via `Not_(BeatFired …)` only catches the post-fire state, not within-tick. Tests stub `_select_beat` to "first eligible" for determinism.
-- **Email metadata is derived, not authored** — sender from the beat's `npc` dossier, recipient from `resolve_player_email(scenario, state)`. Recipient resolution order: (1) if `state.player_canon["name"]` is set, slugify it via `_slugify_name` and use `<slug>@<scenario.email_domain>`; (2) else if the scenario authored an explicit `player_email`, use it (back-compat for tests / legacy fixtures); (3) else fall back to `<scenario.fallback_player_local>@<scenario.email_domain>`. So early emails (pre-canonization) go to e.g. `candidate@halcyon.com`; once Aria has elicited a name, subsequent emails go to `marcus.chen@halcyon.com`. There is no authored `player_email` in the production scenario.
-- **Terminal beats run the chat agent in epilogue mode.** `_fire_beat` routes `ends_session=True` chat-driven beats through `_render_via_epilogue_agent`, which calls the same chat agent with `ChatDeps.epilogue_digest` populated. The agent's `_epilogue_framing_block` and `_epilogue_digest_block` instructions decorators only emit content when the digest is set, so closing emails get a different framing (commitments + classifier history + fired-beat order + recent player replies) without a second agent definition.
-- **Player canon is extractor-only, REPLACE on collision, anti-hallucination guarded.** `state.player_canon` is written *only* by `apply_canon_extraction` (driven by `extractor_agent` output). Each candidate carries a `literal_text_quote` that MUST be a verbatim substring of the player's reply — `_send_stream` drops any candidate whose quote isn't anchored before promoting. Salience threshold (default 0.5) filters speculation; later mentions of the same key replace earlier (so "actually call me Robert" canonically replaces "Bob"). Predicates read canon via `PlayerCanonExists`; the chat agent reads a top-K snapshot via `_player_canon_block` (ranked by `(decay ** turns_since_origin) × salience`); the epilogue digest gets the full ledger.
-- **`TickDecision` is the per-tick audit trail.** `_tick` builds one `TickDecision` per scheduler invocation containing eligibility report, selection method (none/sole/director), Director rationale (when ≥2 eligible), all quality deltas this tick (literal effects + classify writes), and what fired. It's used three ways: span attributes on the tick logfire span (queryable in the Logfire UI), per-tick console log, and the `tick_decision` SSE event consumed by the DEV-only `DebugPanel`. The boot tick discards its decision (no SSE consumer).
-- **Adding a `Predicate` variant takes 5 coordinated edits** — see the contract block above the `Predicate` union in `models.py`. Variants inherit `_PredicateLeaf` (evaluated against state directly) or `_PredicateComposite` (must implement `children()` yielding sub-predicates). The `iter_predicate_leaves(pred)` helper in `models.py` is the single composite-traversal point — most analysis-side walkers (orphan detection, profile, canon-key collection in `analyze_scenario.py`) consume it and auto-handle new variants. The 5 mandatory updates: (1) define the class + add to the union (models.py), (2) extend `evaluate_predicate` and `describe_predicate` (spine.py — both end with `assert_never`), (3) extend `PredicateRegistry.register` and `_emit_predicate_holds_rules` (asp_encoder.py), (4) add a drift test (test_encoder_engine_consistency.py).
+The whole player-facing content surface is ~15 YAML files. The author writes prose; the LLM improvises scenes inside it.
 
-## Running tests
+```
+world/
+  locations/*.yaml   # one per location: description, notes, adjacent_to
+  cast.yaml          # NPCs: themes, knowledge, attitude, voice_sample, default_location
+  truth.yaml         # crime + beats (requires_beats / blocked_by_beats) + endings
+  brief.yaml         # opening_seed + player_starts_at
+  few_shots.yaml     # optional Phase 2 example exchanges (NPC voice)
+  map.yaml / map.png # frontend map geometry + backdrop
+```
 
-- `make test` — fast, no llama, runs by default.
-- `cd npc_service && uv run pytest -m integration` — live llama (boot one with `make llama`). Local model, so $0/run — use liberally before shipping any prompt or agent change; they're the only tests that catch prompt drift and llama-server endpoint contract changes.
+`make cli` to dogfood authoring changes interactively. World-loader invariants catch most authoring errors at startup; SPEC §2 explains each field.
 
-## Don't "clean up" without reading the comment first
+## Load-bearing invariants
 
-Each is anchored by an inline comment at the call site explaining why:
+- **Grammar-sampled enums over the catalog.** `beat_id`, `ending_id`, `npc_id`, `location_id`, `leaves_for` are narrowed per-call to `Literal[*valid_ids]`. llama.cpp's grammar sampler rejects invalid ids at decode time — the model literally cannot emit one it doesn't have access to. State-dependent constraints (reachable beats, satisfied endings, `leave_pick`→`EndScene`) are grammar-enforced too.
+- **Don't mix structural and state-dependent rules.** State-independent (prose length, ≤1 leave option) → validators on canonical schemas in `schemas.py`. State-dependent (which beats are reachable, which endings have prereqs met) → per-call Literal narrowing in `agents.py`.
+- **Two system prompts, not one.** Phase 1 (classifier, full bible) and Phase 2 (narrator: voice samples + few-shots + crime overview only — NO beats, NO notes_to_llm, NO endings, NO per-NPC knowledge) are separate. The split costs intra-turn KV reuse; it buys Phase 2 attention focus on writing. Don't merge them.
+- **Three runtimes, threaded through `play_session`.** `AgentBundle` (world-scoped, immutable). `SceneRunnerRuntime` (holds Phase 2 `phase2_message_history`; cleared in `enter_scene`). `ChroniclerRuntime` (accumulating one user+assistant pair per scene-end — the conversation is the case file).
+- **Player-driven endings.** Endings gate on decision beats authored as mutually-exclusive via pairwise `blocked_by_beats`. The engine cannot summon a climax; the player commits in fiction.
+- **Gemma 4 sampling.** temp=1.0 / top_p=0.95 / top_k=64 for all agents. Do not drop temp for "judgment" turns — the model needs creative latitude inside the bible's constraints.
 
-- `launcher.py` — `--jinja` on llama-server is always required (Gemma chat template). `--reasoning` / `--reasoning-format` are setting-driven (`config.py:llama_reasoning_mode`, default `off`); set `LLAMA_REASONING_MODE=on` to restore them. The perf flags `--flash-attn on`, `--batch-size 512 --ubatch-size 512` are non-negotiable. KV cache is fp16 (not q8_0) — `scripts/bench_kv_compare.py` showed q8_0 is ~2.5× slower for Qwen short outputs (Gated Delta Net dequant cost); the Gemma engine win only mattered at playtest concurrency, and we don't need it in production single-user.
-- `main.py` — `OpenAIModelProfile(openai_chat_send_back_thinking_parts=False)` on the model. Without this, pydantic-ai's default 'auto' round-trips parsed `ThinkingPart`s back into prior assistant `content` as `<think>…</think>` blocks, violating Google's Gemma 4 multi-turn rule and inflating input tokens.
-- `agents.py` — chat agent's `output_type=str`; classifier's `max_tokens=2048`; `_BASE_CHAT_INSTRUCTIONS` body-only rules (regression-tested in `tests/test_app.py`).
-- `web/index.html` — inline pre-bundle theme script (FOUC fix).
-- `web/src/store.ts` — `bootStarted` (StrictMode guard); `firstOpenForChat` (welcome typing-replay).
+## Commands
+
+- `make dev` — sidecar + Vite together (inferno-routed). Standard dev flow. → http://localhost:5173
+- `make cli` — text-only playthrough in the terminal.
+- `make test` — fast unit suite, no live llama.
+- `make test-integration` — includes the live-llama integration test (`tests/test_live_integration.py`).
+- `make kill` — force-kill orphans on :8000 / :8080 / :5173-5176.
+- Single test: `cd handler && uv run pytest tests/test_engine.py::test_name -q`
+- `make help` — full list.

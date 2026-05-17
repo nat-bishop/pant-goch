@@ -38,6 +38,16 @@ Thumbs.db
 # Local-only Claude artifacts
 .claude/settings.local.json
 
+# Local-only Playwright MCP session artifacts (browser logs, page snapshots)
+.playwright-mcp/
+
+# TypeScript incremental build cache
+*.tsbuildinfo
+
+# Node / Vite
+node_modules/
+dist/
+
 # Logfire project credentials (per-machine, contains write token)
 .logfire/
 

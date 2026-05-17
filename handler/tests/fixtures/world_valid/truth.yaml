@@ -1,0 +1,38 @@
+crime: |
+  Megan Pritchard, 19, died on the Black Dog Bend in 2019. Eluned Vaughn
+  ran her off the road in a fit of rage. Tom Bevan saw the Land Rover.
+  The case was closed.
+
+beats:
+  - id: tom_named_a_vehicle
+    name: Tom named a vehicle
+    description: |
+      Tom tells the player he saw Eluned Vaughn's Land Rover speeding
+      from the bend the night Megan died.
+    blocked_by_beats: [tom_closes_off]
+    notes_to_llm: |
+      Earn through patience. Tom won't volunteer.
+
+  - id: tom_admits_more
+    name: Tom admits more
+    description: |
+      Tom expands on what he saw — speed, sound, time.
+    requires_beats: [tom_named_a_vehicle]
+    notes_to_llm: |
+      Only after he has named the vehicle. Don't fire prematurely.
+
+  - id: tom_closes_off
+    name: Tom closes off
+    description: |
+      Tom decides he will not speak to the player again about anything
+      that matters.
+    notes_to_llm: |
+      Fire when the player has lied, threatened, or pressed too hard.
+
+endings:
+  - id: published_story
+    requires_beats: [tom_named_a_vehicle]
+    notes_to_llm: |
+      Fire when the player has chosen to file the story.
+    epilogue: |
+      The story runs Friday. Eluned is questioned within the week.

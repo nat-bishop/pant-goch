@@ -1,0 +1,8 @@
+id: the_old_vicarage
+name: The Old Vicarage
+adjacent_to: [the_post_office]
+description: |
+  Your lodgings for the duration of the assignment. Two rooms upstairs,
+  a kitchen, a study with a desk by the window.
+notes:
+  - The kettle is on a gas ring, no electric.

@@ -1,0 +1,9 @@
+id: the_slaughtered_lamb
+name: The Slaughtered Lamb
+adjacent_to: [the_post_office]
+description: |
+  The village pub. Low ceiling, blackened beams, peat fire smouldering in
+  the grate. Old Tom Bevan at the second stool from the door, nursing
+  his bitter.
+notes:
+  - The fruit machine in the corner is broken and has been since 2003.

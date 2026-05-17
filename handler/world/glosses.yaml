@@ -1,0 +1,147 @@
+# The case-file lexicon. Each entry is a hover gloss.
+#
+# Match: `name` and every string in `aliases` trigger the popup when they
+#   appear in streaming prose (case-insensitive, word-bounded). Longest
+#   match wins (frontend sorts alternation by length).
+# Render: `name` becomes the popup heading. `body` is the popup paragraph.
+#   `cross_ref` renders as a small footer if set.
+# Voice: terse, factual, the journalist's notebook register. Body lines
+#   read as something m. pritchard might have set down on the train.
+
+- id: iwan
+  kind: npc
+  name: Iwan Pritchard
+  aliases: [Mr Pritchard]
+  body: |
+    Megan's father. Sheep farmer at Lower Hafod, sixty. Wrote the letter
+    that brought you here. Places flowers monthly at the bend; has not
+    told Wendy.
+
+- id: megan
+  kind: npc
+  name: Megan Pritchard
+  aliases: [Megan]
+  body: |
+    Died March 2019, aged 23. Single-vehicle off the road at the Black
+    Dog Bend. Inquest: misadventure. Iwan disputes.
+  cross_ref: see the Bend, S-W of the village
+
+- id: wendy
+  kind: npc
+  name: Wendy Pritchard
+  aliases: [Mrs Pritchard]
+  body: |
+    Megan's mother. Wants you to leave. Did not know about the letter
+    until you arrived.
+
+- id: tom
+  kind: npc
+  name: Old Tom Bevan
+  aliases: [Tom Bevan, Old Tom]
+  body: |
+    Regular at the Slaughtered Lamb. Wednesdays in the corner. Drove
+    the milk lorry on the B-roads for forty years. Brains Bitter.
+
+- id: maud
+  kind: npc
+  name: Maud Pryce
+  aliases: [Maud, the postmistress]
+  body: |
+    Postmistress. Knows almost everything anyone says in the village.
+    Knows by what she chooses not to say which parts are serious.
+
+- id: eluned
+  kind: npc
+  name: Eluned Vaughn
+  aliases: [Mrs Vaughn]
+  body: |
+    Farms Tan-y-coed alone with Dylan. Dogs at the gate; courtesy with
+    teeth in it. The Land Rover lives in the yard.
+
+- id: dylan
+  kind: npc
+  name: Dylan Vaughn
+  aliases: [Dylan]
+  body: |
+    Eluned's son, late twenties. Quiet. Will not speak inside the farm.
+
+- id: gareth
+  kind: npc
+  name: Father Gareth Hughes
+  aliases: [Father Gareth, Father Hughes]
+  body: |
+    Parish priest. Conducted Megan's funeral. Warm; careful with what
+    he can and cannot say.
+
+- id: helen
+  kind: npc
+  name: DC Helen Mortimer
+  aliases: [Helen Mortimer, DC Mortimer]
+  body: |
+    Knighton CID. Led the 2019 investigation; closed it. Will not meet
+    at the station. Keeps her unofficial notes in a desk drawer.
+
+- id: owain
+  kind: npc
+  name: Owain Pugh
+  aliases: [Owain]
+  body: |
+    Lower Hafod neighbour. Folklore-man, talkative, off the drink since
+    2022. Says he saw something at the bend; cannot always tell you
+    which of the things he says are true.
+
+- id: black_dog_bend
+  kind: location
+  name: Black Dog Bend
+  aliases: [the Bend]
+  body: |
+    Unmarked. B4368, two miles south-west of the village. The lay-by
+    is recent — the council put it in after the inquest.
+
+- id: tan_y_coed
+  kind: location
+  name: Tan-y-coed
+  aliases: [the Vaughn farm]
+  body: |
+    Eluned's farm. Yard, sheep dogs, kitchen rarely opened to strangers.
+
+- id: lower_hafod
+  kind: location
+  name: Lower Hafod
+  aliases: [the Pritchards' farm]
+  body: |
+    Iwan and Wendy's farmhouse, easternmost in the parish. The smoke
+    pulls sideways out of the chimney.
+
+- id: the_letter
+  kind: object
+  name: the letter
+  aliases: [Iwan's letter]
+  body: |
+    Two pages of older hand. Iwan brought it to the vicarage himself
+    on the Tuesday before you arrived. A line under the signature you
+    read three times.
+
+- id: the_flowers
+  kind: object
+  name: the flowers
+  aliases: [the bouquet]
+  body: |
+    Plastic-wrapped. Blue ribbon, faded. Recent. Iwan brings them
+    monthly — that much you know.
+
+- id: the_mini
+  kind: object
+  name: the Mini
+  aliases: [Megan's Mini]
+  body: |
+    The car Megan was driving the night she died. Left the road at the
+    Black Dog Bend; the verge there falls steeply into hedge.
+
+- id: the_land_rover
+  kind: object
+  name: the Land Rover
+  aliases: [the Landy, Eluned's Land Rover]
+  body: |
+    Eluned's vehicle. Tom saw it going the other way on the B4368 the
+    night Megan died.

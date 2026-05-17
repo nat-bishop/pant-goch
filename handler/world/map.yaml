@@ -1,0 +1,21 @@
+# Fractional (x, y) hotspot coordinates for each location, keyed to
+# `handler/world/map.png` (1408×768). Origin (0,0) is the top-left of
+# the image; (1,1) is the bottom-right. The frontend overlays a
+# clickable hotspot at each (x, y) over the rendered map at whatever
+# rendered size. Fractional coords keep the map responsive.
+#
+# These are positioned approximately over the building illustration or
+# the centre of the label, whichever reads more like "the place" on
+# the drawn map. Tune visually after a manual smoke if a hotspot
+# lands somewhere awkward.
+
+bryn_iago_wood:    { x: 0.30, y: 0.10 }
+tan_y_coed:        { x: 0.27, y: 0.34 }
+lower_hafod:       { x: 0.85, y: 0.22 }
+the_lane:          { x: 0.46, y: 0.56 }
+st_caradocs:       { x: 0.69, y: 0.41 }
+the_slaughtered_lamb: { x: 0.70, y: 0.62 }
+the_post_office:   { x: 0.59, y: 0.79 }
+the_old_vicarage:  { x: 0.87, y: 0.83 }
+knighton:          { x: 0.10, y: 0.71 }
+the_black_dog_bend: { x: 0.27, y: 0.83 }

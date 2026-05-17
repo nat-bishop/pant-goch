@@ -1,0 +1,22 @@
+id: knighton
+name: Knighton
+adjacent_to: [the_lane, the_black_dog_bend]
+
+description: |
+  The market town nine miles south, on the English side of the border
+  but only just. Two thousand-odd residents, a Tuesday market on the
+  square, a Co-op, a Spar, a chemist, two pubs, a primary school, and
+  the county police station. From here the Heart-of-Wales railway
+  ambles its slow way to Swansea once every couple of hours.
+
+  This is where the player drives if they want the police, or a
+  Costa, or a signal long enough to load anything on their phone. The
+  station is on the high street; DC Helen Mortimer's office is at the
+  back, second door past the front desk.
+
+notes:
+  - The Costa is what Helen Mortimer drinks when she meets people unofficially. There is a window seat near the back she favours.
+  - The market includes a few of the village's farmers; Eluned Vaughn sometimes sells fleeces here in autumn.
+  - Father Gareth Hughes lives in a small flat above the chemist; he is rarely home before evening.
+  - The B4368 between Knighton and Pant Goch passes the Black Dog Bend a mile north of town. From the station car park you can see the road begin its climb.
+  - The desk sergeant remembers everyone who has come asking about the Pritchard case; she does not volunteer the list.
