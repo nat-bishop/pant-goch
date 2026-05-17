@@ -310,6 +310,95 @@ def test_phase2_user_message_includes_player_pick_on_subsequent_turn():
     assert "Ask Tom about the night" in msg
 
 
+# ───────────────────────── npc_memory + beat description ─────────────────────────
+
+
+def test_phase2_user_message_renders_npc_history_when_present():
+    """Phase 2's [PRESENT] NPC card includes 'history with player' when
+    state.npc_memory has entries for that NPC. Phase 1's [PRESENT] does
+    NOT (it sees the prose case file separately)."""
+    world = load_world(FIXTURE_VALID)
+    state = make_initial_state(world)
+    state.player_location = "the_slaughtered_lamb"
+    state.npc_memory["tom"] = [
+        "Met Tom; guarded but warming. Did not name what he saw.",
+        "Tom on visit two; he asked after my editor.",
+    ]
+    msg = build_phase2_user_message(
+        state, world, StateChangeBundle(), is_first_turn=True
+    )
+    assert "history with player" in msg
+    assert "Did not name what he saw" in msg
+
+
+def test_phase1_user_prompt_omits_npc_history():
+    """Phase 1 must NOT render per-NPC history in its NPC card — Phase 1
+    reads the prose case file via _render_case_file instead. Per-NPC
+    memory is Phase 2-only."""
+    from handler.prompts import build_phase1_user_prompt
+    world = load_world(FIXTURE_VALID)
+    state = make_initial_state(world)
+    state.player_location = "the_slaughtered_lamb"
+    state.npc_memory["tom"] = ["Tom note that must not appear in Phase 1."]
+    prompt = build_phase1_user_prompt(state, world)
+    assert "Tom note that must not appear" not in prompt
+
+
+def test_phase2_applied_changes_includes_beat_description():
+    """When a beat fires, Phase 2's [STATE CHANGES JUST APPLIED] block
+    surfaces the beat description (not just the slug). This is the
+    load-bearing channel for Phase 2 to write the reveal moment with
+    specifics — Phase 2's system prompt has no beat catalog."""
+    world = load_world(FIXTURE_VALID)
+    state = make_initial_state(world)
+    state.player_location = "the_slaughtered_lamb"
+    applied = StateChangeBundle(
+        state_changes=[UnlockBeat(beat_id="tom_named_a_vehicle")]
+    )
+    msg = build_phase2_user_message(state, world, applied, is_first_turn=True)
+    assert "[STATE CHANGES JUST APPLIED]" in msg
+    assert "tom_named_a_vehicle" in msg
+    # Beat description should surface in some form — at minimum a phrase
+    # from the fixture beat's description.
+    beat = world.beats["tom_named_a_vehicle"]
+    description_words = beat.description.strip().split()
+    # First few words of the description should appear in the prompt.
+    assert " ".join(description_words[:4]) in msg
+
+
+# ───────────────────────── populator prompts ─────────────────────────
+
+
+def test_populator_system_prompt_carries_full_bible():
+    """Populator needs cast knowledge + beats + endings to reason
+    dramatically about where NPCs should be."""
+    from handler.prompts import build_populator_system_prompt
+    world = load_world(FIXTURE_VALID)
+    prompt = build_populator_system_prompt(world)
+    # Cast knowledge appears.
+    assert "Old Tom Bevan" in prompt
+    # Beats + ending structure appears.
+    assert "BEATS" in prompt
+    # Job directive establishes restraint.
+    assert "empty bundle" in prompt or "empty placements" in prompt
+
+
+def test_populator_user_prompt_includes_current_placements_and_case_file():
+    from handler.prompts import build_populator_user_prompt
+    world = load_world(FIXTURE_VALID)
+    state = make_initial_state(world)
+    state.player_location = "the_slaughtered_lamb"
+    prompt = build_populator_user_prompt(
+        state, world, case_file_entries=["A prior scene at the pub."]
+    )
+    assert "[PLAYER JUST ENTERED]" in prompt
+    assert "the_slaughtered_lamb" in prompt
+    assert "[CURRENT NPC LOCATIONS]" in prompt
+    assert "tom:" in prompt
+    # Case file accumulation surfaces (the populator reads it for context).
+    assert "A prior scene at the pub" in prompt
+
+
 # ───────────────────────── log writer (unchanged) ─────────────────────────
 
 
@@ -318,3 +407,13 @@ def test_log_writer_system_prompt_byte_stable():
     a = build_log_writer_system_prompt(world)
     b = build_log_writer_system_prompt(world)
     assert a == b
+
+
+def test_log_writer_system_prompt_describes_dual_output():
+    """The dual-output instruction (case_file_entry + npc_memory_updates)
+    must surface in the system prompt; the log writer needs to know about
+    both fields."""
+    world = load_world(FIXTURE_VALID)
+    prompt = build_log_writer_system_prompt(world)
+    assert "case_file_entry" in prompt
+    assert "npc_memory_updates" in prompt

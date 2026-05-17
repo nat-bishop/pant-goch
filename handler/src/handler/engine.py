@@ -89,16 +89,31 @@ def reachable_beat_ids(world: World, state: State) -> set[str]:
 
 def enter_scene(state: State, world: World, location_id: str) -> None:
     """Begin a new scene at `location_id`. Increments scene_id, clears
-    dialogue_history, increments npc_scenes_co_present for each NPC at
-    the new location.
+    dialogue_history, sets player_location.
 
-    SSE / log-writer triggering happens in the engine layer (M3); this
+    Co-presence counting is NOT done here — it must run AFTER the
+    populator has updated `state.npc_locations`, otherwise the counter
+    reflects pre-populator positions rather than who actually showed up.
+    See `record_scene_co_presence` and the call ordering in
+    `scene_loop.play_scene`.
+
+    SSE / log-writer triggering happens at the scene_loop layer; this
     function only mutates state.
     """
     state.scene_id += 1
     state.dialogue_history = []
     state.player_location = location_id
-    for npc in world.npcs_at(location_id):
+
+
+def record_scene_co_presence(state: State, world: World) -> None:
+    """Increment `state.npc_scenes_co_present` once for each NPC whose
+    current position (per `state.npc_locations`) is `state.player_location`.
+
+    Called by `scene_loop.play_scene` immediately after the populator has
+    resolved placements for the new scene. Must run exactly once per
+    scene entry; calling twice would double-count.
+    """
+    for npc in world.npcs_at(state.player_location, state=state):
         state.npc_scenes_co_present[npc.id] = (
             state.npc_scenes_co_present.get(npc.id, 0) + 1
         )

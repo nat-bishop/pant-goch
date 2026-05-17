@@ -1,15 +1,19 @@
 """M6 — log writer agent + emit_log_entry.
 
 The log writer is conversation-based: one user+assistant pair per scene
-end, accumulating in `runtime.message_history`. Tests stub the agent with
-TestModel so message history mechanics + LogEntry assembly can be
-verified without a live llama.
+end, accumulating in `runtime.message_history`. Tests stub the agent's
+`run` method directly so the structured output (LogWriterOutput) can be
+returned without a live llama and without TestModel's native-output
+profile check kicking in.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import pytest
+from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart
 from pydantic_ai.models.test import TestModel
 
 from handler.agents import (
@@ -19,9 +23,53 @@ from handler.agents import (
     make_log_writer_runtime,
 )
 from handler.prompts import build_log_writer_user_prompt
-from handler.schemas import ContinueScene, EndScene, Option, UnlockBeat
+from handler.schemas import (
+    ContinueScene,
+    EndScene,
+    LogWriterOutput,
+    Option,
+    UnlockBeat,
+)
 from handler.state import State, TurnRecord
 from handler.world import load_world
+
+
+# ───────────────────────── fake agent helpers ─────────────────────────
+
+
+@dataclass
+class _FakeRunResult:
+    """Minimal stand-in for pydantic_ai's RunResult. `emit_log_entry`
+    accesses `.output` and `.all_messages()` only."""
+
+    output: LogWriterOutput
+    messages: list[Any] = field(default_factory=list)
+
+    def all_messages(self) -> list[Any]:
+        return list(self.messages)
+
+
+def _runtime_with_canned_outputs(
+    world, outputs: list[LogWriterOutput]
+) -> LogWriterRuntime:
+    """Build a real LogWriterRuntime and monkeypatch its agent.run with
+    a sequence of canned `LogWriterOutput` responses. Each call appends
+    a single placeholder ModelMessage to `messages` so the runtime's
+    `message_history` grows by one per call (the production code
+    receives all_messages() and overwrites with the result)."""
+    runtime = make_log_writer_runtime(TestModel(), world)
+    iter_outputs = iter(outputs)
+    history: list[Any] = []
+
+    async def fake_run(*args, **kwargs):  # type: ignore[no-untyped-def]
+        output = next(iter_outputs)
+        # Grow the simulated history by a marker message per call so the
+        # length-grows test can observe accumulation.
+        history.append(("call", output))
+        return _FakeRunResult(output=output, messages=list(history))
+
+    runtime.agent.run = fake_run  # type: ignore[assignment]
+    return runtime
 
 
 FIXTURE_VALID = Path(__file__).parent / "fixtures" / "world_valid"
@@ -132,7 +180,8 @@ def test_build_log_writer_agent_constructs_cleanly():
 @pytest.mark.asyncio
 async def test_emit_log_entry_returns_log_entry_with_correct_anchors():
     """The LogEntry's scene_id / location / npcs_present come from the
-    just-completed scene's first dialogue_history turn."""
+    just-completed scene's first dialogue_history turn; case_file_entry
+    and npc_memory_updates come from the log writer's structured output."""
     world = load_world(FIXTURE_VALID)
     state = _state_with_one_scene()
     custom_text = (
@@ -141,26 +190,68 @@ async def test_emit_log_entry_returns_log_entry_with_correct_anchors():
         "eventually, and looked relieved when he did. I did not buy him a "
         "drink."
     )
-    runtime = make_log_writer_runtime(
-        TestModel(custom_output_text=custom_text), world
-    )
+    runtime = _runtime_with_canned_outputs(world, [LogWriterOutput(
+        case_file_entry=custom_text,
+        npc_memory_updates={
+            "tom": "Tom unburdened. Named Eluned's Land Rover. Walked himself home.",
+        },
+    )])
     entry = await emit_log_entry(runtime, world, state)
 
     assert entry.scene_id == 1
     assert entry.location_id == "the_slaughtered_lamb"
     assert entry.npcs_present == ["tom"]
     assert entry.text == custom_text.strip()
+    assert "tom" in entry.npc_memory_updates
+    assert "Land Rover" in entry.npc_memory_updates["tom"]
+
+
+@pytest.mark.asyncio
+async def test_emit_log_entry_filters_memory_updates_to_present_npcs():
+    """The log writer must not emit memory for NPCs who weren't in the
+    scene. Anchor's `npcs_present` is the source of truth; emit_log_entry
+    drops keys outside it and keys not in the world."""
+    world = load_world(FIXTURE_VALID)
+    state = _state_with_one_scene()  # tom present, maud not
+    runtime = _runtime_with_canned_outputs(world, [LogWriterOutput(
+        case_file_entry="The scene.",
+        npc_memory_updates={
+            "tom": "Tom note.",
+            "maud": "Maud was NOT in this scene; should be filtered.",
+            "ghost_npc": "Not a real NPC; should be filtered.",
+        },
+    )])
+    entry = await emit_log_entry(runtime, world, state)
+    assert set(entry.npc_memory_updates.keys()) == {"tom"}
+
+
+@pytest.mark.asyncio
+async def test_emit_log_entry_drops_empty_string_memory_updates():
+    """If the log writer emits an empty/whitespace note for a present
+    NPC, drop it rather than carrying noise forward into npc_memory."""
+    world = load_world(FIXTURE_VALID)
+    state = _state_with_one_scene()
+    runtime = _runtime_with_canned_outputs(world, [LogWriterOutput(
+        case_file_entry="Scene.",
+        npc_memory_updates={"tom": "   "},
+    )])
+    entry = await emit_log_entry(runtime, world, state)
+    assert entry.npc_memory_updates == {}
 
 
 @pytest.mark.asyncio
 async def test_emit_log_entry_grows_message_history():
-    """After the first call, message_history holds the user+assistant
-    pair (plus the system message). After the second call, it holds
-    two pairs — the conversation IS the case file."""
+    """After the first call, message_history holds the runtime-captured
+    messages. After the second call, it holds more — the conversation IS
+    the case file."""
     world = load_world(FIXTURE_VALID)
     state = _state_with_one_scene()
-    runtime = make_log_writer_runtime(
-        TestModel(custom_output_text="An entry."), world
+    runtime = _runtime_with_canned_outputs(
+        world,
+        [
+            LogWriterOutput(case_file_entry="An entry.", npc_memory_updates={}),
+            LogWriterOutput(case_file_entry="Another entry.", npc_memory_updates={}),
+        ],
     )
 
     assert len(runtime.message_history) == 0

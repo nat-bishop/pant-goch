@@ -133,6 +133,23 @@ def test_npc_voice_sample_loaded_when_authored(tmp_path):
     assert [n.id for n in world.npcs_at("the_old_vicarage")] == []
 
 
+def test_npcs_at_state_aware_uses_npc_locations_override():
+    """When `state` is passed, npcs_at reads `state.npc_locations` as the
+    override (populator's output). NPCs missing from the dict fall back
+    to default_location. None / no state == default-only view."""
+    from handler.state import make_initial_state
+    world = load_world(FIXTURE_VALID)
+    state = make_initial_state(world)
+    # Defaults: tom at pub, maud at post office.
+    assert [n.id for n in world.npcs_at("the_slaughtered_lamb", state=state)] == ["tom"]
+    # Override: move tom to the_post_office; npcs_at follows.
+    state.npc_locations["tom"] = "the_post_office"
+    assert [n.id for n in world.npcs_at("the_slaughtered_lamb", state=state)] == []
+    assert {n.id for n in world.npcs_at("the_post_office", state=state)} == {"tom", "maud"}
+    # No state → defaults (overrides ignored).
+    assert [n.id for n in world.npcs_at("the_slaughtered_lamb")] == ["tom"]
+
+
 # ───────────────────────── invariant 1: location id uniqueness ─────────────────────────
 
 

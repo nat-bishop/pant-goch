@@ -49,11 +49,15 @@ from .prompts import (
     build_phase1_user_prompt,
     build_phase2_system_prompt,
     build_phase2_user_message,
+    build_populator_system_prompt,
+    build_populator_user_prompt,
 )
 from .schemas import (
     ContinueScene,
     EndGame,
     EndScene,
+    LogWriterOutput,
+    NpcPlacementBundle,
     Option,
     ProsePart,
     StateChangeBundle,
@@ -70,16 +74,18 @@ class AgentBundle:
     """One world's scene-runner agents. Built once in lifespan via
     `build_scene_runner_bundle(model, world)`.
 
-    Single phase-1 + single phase-2 agent. Per-call dynamic schemas are
-    passed at `agent.run()` time via the output-function pattern (see
-    emit_state_changes / emit_prose). System prompts are byte-stable across
-    the session → KV cache hits across turns. The phase-1 and phase-2
-    prompts differ → no inter-phase cache sharing within a turn (deliberate
-    trade for Phase 2 attention focus).
+    Phase 1 (classifier), Phase 2 (narrator), and the populator (scene-
+    entry NPC placement) each have their own system prompt and are
+    constructed once at bundle-build time. Per-call dynamic schemas are
+    passed at `agent.run()` time via NativeOutput (see emit_state_changes
+    / emit_prose / emit_placements). System prompts are byte-stable
+    across the session → KV cache hits across turns / scenes for each
+    agent independently.
     """
 
     phase1: Agent[None, StateChangeBundle]
     phase2: Agent[None, ProsePart]
+    populator: Agent[None, NpcPlacementBundle]
     world: World
 
 
@@ -204,16 +210,49 @@ def _build_prose_part_type(
     return create_model("ProsePart", prose=(str, ...), next=(SceneNext, ...))
 
 
+# ───────────────────────── populator dynamic schema ─────────────────────────
+
+
+def _build_npc_placement_bundle_type(world: World) -> type[BaseModel]:
+    """NpcPlacementBundle whose NpcPlacement.npc_id is `Literal[*npc_ids]`
+    and .location_id is `Literal[*location_ids]`. Grammar sampler rejects
+    invalid ids at decode time.
+
+    No reachability-style state narrowing here: any NPC can be moved to
+    any location in principle (the populator's prompt teaches it
+    restraint).
+    """
+    npc_ids = tuple(world.npcs.keys())
+    location_ids = tuple(world.locations.keys())
+    if not npc_ids or not location_ids:
+        # Edge: empty cast or world — placements must be empty.
+        return create_model(
+            "NpcPlacementBundle",
+            __base__=NpcPlacementBundle,
+            placements=(list[Any], Field(default_factory=list, max_length=0)),
+        )
+    DynamicNpcPlacement = create_model(
+        "NpcPlacement",
+        npc_id=(Literal[npc_ids], ...),  # type: ignore[valid-type]
+        location_id=(Literal[location_ids], ...),  # type: ignore[valid-type]
+    )
+    return create_model(
+        "NpcPlacementBundle",
+        __base__=NpcPlacementBundle,
+        placements=(list[DynamicNpcPlacement], Field(default_factory=list)),
+    )
+
+
 # ───────────────────────── factory ─────────────────────────
 
 
 def build_scene_runner_bundle(
     model: OpenAIChatModel, world: World
 ) -> AgentBundle:
-    """Construct the scene-runner agent bundle for `world`. Bakes two
-    system prompts (phase 1 classifier, phase 2 narrator) and builds one
-    phase-1 agent + one phase-2 agent. Per-call dynamic output_type is
-    passed at agent.run() time via the output-function pattern.
+    """Construct the scene-runner agent bundle for `world`. Bakes three
+    system prompts (phase 1 classifier, phase 2 narrator, populator) and
+    builds one agent per phase. Per-call dynamic output_type is passed
+    at agent.run() time via NativeOutput.
     """
     phase1 = Agent[None, StateChangeBundle](
         model=model,
@@ -225,7 +264,14 @@ def build_scene_runner_bundle(
         system_prompt=build_phase2_system_prompt(world),
         output_retries=3,
     )
-    return AgentBundle(phase1=phase1, phase2=phase2, world=world)
+    populator = Agent[None, NpcPlacementBundle](
+        model=model,
+        system_prompt=build_populator_system_prompt(world),
+        output_retries=3,
+    )
+    return AgentBundle(
+        phase1=phase1, phase2=phase2, populator=populator, world=world
+    )
 
 
 # ───────────────────────── per-call run wrappers ─────────────────────────
@@ -258,6 +304,35 @@ async def emit_state_changes(
         output_type=NativeOutput(DynamicBundle, strict=True),
     )
     return StateChangeBundle.model_validate(result.output.model_dump())
+
+
+async def emit_placements(
+    bundle: AgentBundle,
+    state: State,
+    *,
+    case_file_entries: list[str] | None = None,
+) -> NpcPlacementBundle:
+    """Populator LLM call. Runs ONCE at scene entry (before Phase 1 of
+    turn 1). Decides which NPCs are at which locations now in light of
+    the case file, beats so far, and dramatic logic.
+
+    Empty bundle is the common case — most scene entries don't need
+    movement. Caller (scene_loop.play_scene) applies non-empty
+    placements to `state.npc_locations` before the populator-aware
+    Phase 1 / Phase 2 prompts render `[PRESENT]`.
+
+    Stateless across scenes (no message_history); the case file is the
+    cross-scene context the populator reads.
+    """
+    prompt = build_populator_user_prompt(
+        state, bundle.world, case_file_entries=case_file_entries
+    )
+    DynamicBundle = _build_npc_placement_bundle_type(bundle.world)
+    result = await bundle.populator.run(
+        prompt,
+        output_type=NativeOutput(DynamicBundle, strict=True),
+    )
+    return NpcPlacementBundle.model_validate(result.output.model_dump())
 
 
 async def emit_prose(
@@ -319,18 +394,24 @@ class LogWriterRuntime:
     session) would each carry their own history.
     """
 
-    agent: Agent[None, str]
+    agent: Agent[None, LogWriterOutput]
     message_history: list[ModelMessage] = field(default_factory=list)
 
 
 def build_log_writer_agent(
     model: OpenAIChatModel, world: World
-) -> Agent[None, str]:
+) -> Agent[None, LogWriterOutput]:
     """Conversation-based log writer agent. System prompt is baked once
     (full bible + voice rules); each call appends one user message (scene
-    summary) and gets one assistant message (the case-file entry text)
-    back. Output is plain `str` — no NativeOutput / Literal grammar
-    constraint, since the case file is freeform prose.
+    summary) and gets one assistant message back. Output is structured
+    `LogWriterOutput` = case_file_entry (UI prose) + npc_memory_updates
+    (per-NPC notes surfaced to Phase 2).
+
+    Output spec is passed at `agent.run()` time (in `emit_log_entry`) via
+    `NativeOutput(LogWriterOutput, strict=True)` — same pattern as Phase
+    1/2. Keeping the agent's construction free of `NativeOutput` lets
+    TestModel-based unit tests bypass the native-output profile check
+    by monkeypatching `emit_log_entry` or supplying `custom_output_args`.
 
     The OpenAIModelProfile(openai_chat_send_back_thinking_parts=False)
     flag is set on the model in lifespan / _build_model — load-bearing
@@ -338,9 +419,8 @@ def build_log_writer_agent(
     `ThinkingPart`s into prior assistant content as <think>...</think>
     blocks, which Gemma 4 cannot tolerate in multi-turn.
     """
-    return Agent[None, str](
+    return Agent[None, LogWriterOutput](
         model=model,
-        output_type=str,
         system_prompt=build_log_writer_system_prompt(world),
     )
 
@@ -357,7 +437,8 @@ async def emit_log_entry(
     world: World,
     state: State,
 ) -> LogEntry:
-    """Generate one case-file entry for the just-completed scene.
+    """Generate one case-file entry (+ structured per-NPC memory updates)
+    for the just-completed scene.
 
     Reads scene anchor (scene_id, location, npcs present) from
     `state.dialogue_history` — at the point this is called (after
@@ -365,22 +446,39 @@ async def emit_log_entry(
     turns are still in dialogue_history; the next enter_scene will
     clear it.
 
-    Side effect: mutates `runtime.message_history` with the just-rendered
-    user+assistant pair. Subsequent calls see this scene's entry in
-    their conversation context.
+    Side effects:
+      - Mutates `runtime.message_history` with the just-rendered
+        user+assistant pair. Subsequent calls see this scene's entry in
+        their conversation context.
+      - Does NOT mutate `state.npc_memory` — caller (play_session)
+        merges `LogEntry.npc_memory_updates` into state to keep the
+        side-effect surface explicit.
     """
-    # Caller (play_session) only fires this after play_scene returns;
-    # the just-completed scene guarantees ≥1 turn in dialogue_history.
     assert state.dialogue_history, "emit_log_entry: empty dialogue_history"
     user_prompt = build_log_writer_user_prompt(state, world)
     result = await runtime.agent.run(
-        user_prompt, message_history=runtime.message_history
+        user_prompt,
+        message_history=runtime.message_history,
+        output_type=NativeOutput(LogWriterOutput, strict=True),
     )
     runtime.message_history = result.all_messages()
+    output: LogWriterOutput = LogWriterOutput.model_validate(
+        result.output.model_dump()
+    )
     anchor = state.dialogue_history[0]
+    # Filter npc_memory_updates to NPCs actually present in the scene and
+    # defined in the world. Belt-and-braces against the model emitting
+    # updates for NPCs who weren't in the room or aren't part of the cast.
+    present = set(anchor.npcs_present)
+    filtered_updates = {
+        npc_id: note.strip()
+        for npc_id, note in output.npc_memory_updates.items()
+        if npc_id in present and npc_id in world.npcs and note.strip()
+    }
     return LogEntry(
         scene_id=anchor.scene_id,
         location_id=anchor.location_id,
         npcs_present=list(anchor.npcs_present),
-        text=result.output.strip(),
+        text=output.case_file_entry.strip(),
+        npc_memory_updates=filtered_updates,
     )

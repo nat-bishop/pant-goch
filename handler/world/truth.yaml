@@ -58,11 +58,58 @@ crime: |
 beats:
   # ─────────────────────── Positive investigative beats ───────────────────────
 
+  # Tom Bevan's ladder — five rungs from "stranger at the bar" to "going
+  # into Knighton on Monday". Each rung is one quiet shift in conversation;
+  # together they pace Tom's unburdening across multiple scenes so the player
+  # feels progress rather than a binary reveal.
+
+  - id: tom_speaks_of_megan_as_a_person
+    description: |
+      Tom shares a memory of Megan Pritchard that has nothing to do with
+      the road — a small, particular thing (a school sports day, a song
+      she liked, the way she said his name). The first time he treats
+      the journalist as a person rather than a threat.
+    blocked_by_beats: [tom_closes_off]
+    prerequisites: |
+      Tom has been in the same room as the player at least once before,
+      OR the player has stayed at the bar through one quiet exchange
+      without pressing. The player has not lied, not claimed to be
+      police or family, not pushed about the road.
+    notes_to_llm: |
+      The lightest of Tom's beats. Fires when the player has shown they
+      care about Megan as a person — asked a gentle question, sat
+      quietly through a pause, accepted a partial answer. Narrate Tom's
+      shift sparingly: a glance, a smaller voice, the memory itself in
+      one or two sentences. After this, subsequent scenes with Tom feel
+      different even before he says anything else. Do not fire on the
+      player's very first turn at the bar; he needs to have seen them
+      stay through a silence first.
+
+  - id: tom_alludes_to_being_on_the_road
+    description: |
+      Tom mentions, obliquely, that he was driving the B4368 the night
+      Megan died — coming back from a friend's farm. He does not yet
+      say what he saw. He may say "I was out that night" or "I came
+      past the bend" or similar.
+    requires_beats: [tom_speaks_of_megan_as_a_person]
+    blocked_by_beats: [tom_closes_off]
+    prerequisites: |
+      The conversation has reached a point where Tom feels safe enough
+      to put himself in the geography of it. The player has not asked
+      him directly to confess; he is offering this himself.
+    notes_to_llm: |
+      The middle rung of Tom's ladder. Fires when Tom edges toward the
+      road on his own. Narrate plainly — he sets down his pint, looks
+      at the bar in front of him, and says it as a small admission, not
+      as testimony. After this, the player knows Tom was there; what he
+      saw is still ahead.
+
   - id: tom_named_a_vehicle
     description: |
       Tom Bevan tells the player he saw a Land Rover speeding away from
       the Black Dog Bend the night Megan died, and that he recognised
       it as Eluned Vaughn's.
+    requires_beats: [tom_alludes_to_being_on_the_road]
     blocked_by_beats: [tom_closes_off]
     prerequisites: |
       Tom has been in the same room as the player at least twice before.
@@ -108,16 +155,41 @@ beats:
       "this is the right thing to say." She will frame it as gossip
       she should not have repeated.
 
+  # Dylan Vaughn's ladder — four rungs. He cannot speak at Tan-y-coed;
+  # the populator may relocate him to the wood or the lane after a tense
+  # encounter, which is when these beats become reachable.
+
+  - id: dylan_acknowledges_the_player
+    description: |
+      Dylan Vaughn, in a private setting away from Tan-y-coed, agrees
+      to speak with the player at all. He does not admit anything yet —
+      he simply stops walking, or sits down, or otherwise signals that
+      the conversation is allowed to happen.
+    blocked_by_beats: [dylan_refuses_to_speak_again]
+    prerequisites: |
+      The player has found Dylan somewhere private — the wood, the
+      lane, the churchyard, not Tan-y-coed. The player has approached
+      without performance and without threat. Dylan does not have to
+      be alone for this, but he must not feel watched by his mother.
+    notes_to_llm: |
+      The bottom rung of Dylan's ladder. Fires when Dylan signals — by
+      stopping, sitting, or replying with more than two words — that
+      he is willing to be in this conversation. Narrate the moment
+      physically (he stops; he looks at the bark of a tree; he says
+      "yeah"), not as a verbal commitment. Without this beat in state,
+      the further Dylan beats are unreachable.
+
   - id: dylan_admits_the_relationship
     description: |
       Dylan Vaughn admits to the player that he and Megan were
       together. He does not (yet) admit knowing what his mother did.
+    requires_beats: [dylan_acknowledges_the_player]
     blocked_by_beats: [dylan_refuses_to_speak_again]
     prerequisites: |
-      The player has approached Dylan in a private setting — the wood,
-      the lane, the churchyard — not at Tan-y-coed with Eluned around.
+      Dylan has already acknowledged the player (the previous beat).
       The player has demonstrated they already know or suspect,
-      through Maud's leak or directly asking.
+      through Maud's leak or directly asking. The setting is still
+      private.
     notes_to_llm: |
       Dylan is in his late twenties, quiet, has not been able to put
       this down for seven years. He will admit the relationship more
@@ -126,42 +198,104 @@ beats:
       If the player is at Tan-y-coed, Dylan will not engage at all;
       the scene reads as polite stonewalling.
 
+  - id: dylan_speaks_of_megan
+    description: |
+      Dylan talks about Megan as a person — what she was like, what
+      they did together, what he misses. Not as evidence. The
+      conversation lifts; for a moment they are two people remembering
+      her, not a journalist and a source.
+    requires_beats: [dylan_admits_the_relationship]
+    blocked_by_beats: [dylan_refuses_to_speak_again]
+    prerequisites: |
+      The relationship is admitted. The player has not immediately
+      pushed for what Dylan's mother did. The setting is still private
+      and the conversation has space in it.
+    notes_to_llm: |
+      The shift between "she and I" and "I know what my mother did."
+      Fires when the player gives Dylan the room to remember her —
+      asks about her, or accepts a silence, or doesn't fill a pause.
+      Narrate the change in him: shoulders down, eyes elsewhere, a
+      small laugh or a small wince at a memory. After this, the
+      hardest beat is reachable; the player has earned the standing.
+
   - id: dylan_admits_he_knows
     description: |
       Dylan tells the player he has known since April 2019 what his
       mother did on the road that night.
-    requires_beats: [dylan_admits_the_relationship]
+    requires_beats: [dylan_speaks_of_megan]
     blocked_by_beats: [dylan_refuses_to_speak_again]
     prerequisites: |
-      The relationship has already been admitted. The conversation is
-      private. The player has been kind across the encounter — has not
-      pressed, has not bargained, has not promised to publish or to
-      keep quiet. Has let Dylan move at his own pace.
+      The relationship has been admitted and Dylan has spoken of Megan
+      as a person. The conversation is private. The player has been
+      kind across the encounter — has not pressed, has not bargained,
+      has not promised to publish or to keep quiet. Has let Dylan move
+      at his own pace.
     notes_to_llm: |
-      Hardest beat for Dylan. Even after the relationship is admitted
-      he will only break here if the conversation has earned the
-      weight. Narrate the moment quietly — he does not weep, he does
-      not gesture; he simply tells the player, looking elsewhere.
-      After this beat, Dylan is no longer carrying it alone.
+      Hardest beat for Dylan. Even after the previous two rungs he
+      will only break here if the conversation has earned the weight.
+      Narrate the moment quietly — he does not weep, he does not
+      gesture; he simply tells the player, looking elsewhere. After
+      this beat, Dylan is no longer carrying it alone.
 
-  - id: helen_admits_she_suspected
+  # DC Helen Mortimer's ladder — three rungs from "off-record meeting"
+  # to "manila envelope changes hands". She will not give notes to a
+  # player who hasn't earned it; each rung gates a specific shift.
+
+  - id: helen_will_meet_off_record
     description: |
-      DC Helen Mortimer tells the player, off the record, that she
-      always suspected Eluned Vaughn, and shows or hands over her
-      unofficial notes from 2019.
+      DC Helen Mortimer agrees to meet the player at the Costa in
+      Knighton (not the station). She makes the off-record framing
+      explicit: nothing she says here can be quoted by name.
     blocked_by_beats: [helen_wont_take_your_call]
     prerequisites: |
-      The meeting is at the Costa in Knighton, not the station. The
-      player has come with at least one piece of independent evidence
-      — either Tom's account or the affair — so that Helen's
-      contribution is not the leak. The player has been discreet about
-      Helen's involvement to this point.
+      The player has approached Helen with discretion — at the desk
+      politely, not via the press office; or has been pointed to her
+      by Father Gareth or another sympathetic source. The player has
+      not yet been indiscreet anywhere in the village about Helen.
     notes_to_llm: |
-      Helen will not give the notes to a player who has only
-      suspicion. She needs the player to already have a load-bearing
-      piece. Narrate the handover plainly — a manila envelope, a few
-      sheets of A4. She will not be quoted; this must be made explicit
-      in dialogue.
+      The bottom rung. Fires when Helen says — in the station or on a
+      call or by note — that she will meet, but only at the Costa,
+      only off the record. Narrate the agreement plainly; the meeting
+      itself is the next beat.
+
+  - id: helen_confirms_she_suspected
+    description: |
+      Helen tells the player, in conversation at the Costa, that she
+      always suspected Eluned Vaughn was on the road that night. She
+      does not yet show her notes; she is testing whether the player
+      can be trusted with what comes next.
+    requires_beats: [helen_will_meet_off_record]
+    blocked_by_beats: [helen_wont_take_your_call]
+    prerequisites: |
+      The off-record meeting is happening. The player has demonstrated
+      they are not chasing a quote — has not asked Helen to be named,
+      has not threatened to publish her involvement.
+    notes_to_llm: |
+      The middle rung. Fires when Helen says it aloud — "I knew. I
+      couldn't prove it. That's a different thing." Narrate her
+      professional caution: she does not look at the player; she looks
+      at her coffee, at the window, at the door. After this, the notes
+      are still hers; she has not given them up.
+
+  - id: helen_hands_over_notes
+    description: |
+      Helen hands the player a manila envelope containing her
+      unofficial notes from the 2019 investigation. The handover is
+      itself the moment; the conversation around it is brief.
+    requires_beats: [helen_confirms_she_suspected]
+    blocked_by_beats: [helen_wont_take_your_call]
+    prerequisites: |
+      The player has come with at least one piece of independent
+      evidence — Tom's account, or the affair — so that Helen's
+      contribution is not the leak. The player has been discreet about
+      Helen's involvement to this point. The verbal suspicion has
+      already been admitted (previous beat).
+    notes_to_llm: |
+      The top rung of Helen's ladder. Fires when the manila envelope
+      moves across the table. Narrate the handover plainly — a few
+      sheets of A4, the envelope itself unmarked. She will not be
+      quoted; this must be made explicit in the dialogue around the
+      handover, not after.
 
   - id: iwan_grants_you_intimacy
     description: |
@@ -230,8 +364,10 @@ beats:
       grief, or pushed aggressively after he had asked them to stop.
       Once this fires, scenes with Tom are short and cold — he drinks,
       he leaves. He will not be moved. One of the failure paths;
-      it permanently blocks tom_named_a_vehicle, tom_admits_full_silence,
-      and tom_decides_to_speak_to_police.
+      it permanently blocks the entire Tom ladder
+      (tom_speaks_of_megan_as_a_person → tom_alludes_to_being_on_the_road
+      → tom_named_a_vehicle → tom_admits_full_silence →
+      tom_decides_to_speak_to_police).
 
   - id: dylan_refuses_to_speak_again
     description: |
@@ -252,8 +388,9 @@ beats:
       Fire when the player has been indiscreet — has named Helen at
       Tan-y-coed, has cited her in earshot of others, has talked about
       her unofficial cooperation. After this fires, Helen is
-      unavailable for the rest of the game; helen_admits_she_suspected
-      is permanently blocked.
+      unavailable for the rest of the game; the entire Helen ladder
+      (helen_will_meet_off_record → helen_confirms_she_suspected →
+      helen_hands_over_notes) is permanently blocked.
 
   - id: eluned_throws_you_out
     description: |

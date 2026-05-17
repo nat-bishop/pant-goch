@@ -31,6 +31,7 @@ from .agents import (
     LogWriterRuntime,
     SceneRunnerRuntime,
     emit_log_entry,
+    emit_placements,
     emit_prose,
     emit_state_changes,
 )
@@ -38,11 +39,13 @@ from .engine import (
     apply_state_changes,
     append_turn_record,
     enter_scene,
+    record_scene_co_presence,
 )
 from .schemas import (
     ContinueScene,
     EndGame,
     EndScene,
+    NpcPlacementBundle,
     Option,
     ProsePart,
     StateChangeBundle,
@@ -51,6 +54,7 @@ from .sse import (
     _words_from_text,
     game_over_event,
     location_change_event,
+    npc_moved_event,
     options_event,
     paced_word_emitter,
     scene_exit_event,
@@ -134,7 +138,9 @@ async def run_turn(
         prose_part = _fallback_prose_part(state, bundle, leave_pick=leave_pick)
 
     # ── Append turn record ────────────────────────────────────────────────
-    npcs_present = [n.id for n in bundle.world.npcs_at(state.player_location)]
+    npcs_present = [
+        n.id for n in bundle.world.npcs_at(state.player_location, state=state)
+    ]
     append_turn_record(
         state,
         location_id=state.player_location,
@@ -145,6 +151,38 @@ async def run_turn(
     )
 
     return prose_part
+
+
+async def _apply_placements(
+    state: State,
+    bundle: AgentBundle,
+    placements: NpcPlacementBundle,
+    *,
+    emit_event: EmitEvent | None,
+) -> None:
+    """Apply the populator's NPC placements to `state.npc_locations` and
+    fire one `npc_moved` SSE event per actual change. Silently ignores
+    no-op placements (NPC moved to where they already were). Defensive
+    against unknown npc_ids / location_ids — those shouldn't reach here
+    given the populator's grammar-narrowed Literal, but skip rather than
+    crash.
+    """
+    for placement in placements.placements:
+        if placement.npc_id not in bundle.world.npcs:
+            continue
+        if placement.location_id not in bundle.world.locations:
+            continue
+        npc = bundle.world.npcs[placement.npc_id]
+        prev = state.npc_locations.get(placement.npc_id, npc.default_location)
+        if prev == placement.location_id:
+            continue
+        state.npc_locations[placement.npc_id] = placement.location_id
+        if emit_event is not None:
+            await emit_event(npc_moved_event(
+                npc_id=placement.npc_id,
+                from_id=prev,
+                to_id=placement.location_id,
+            ))
 
 
 def _fallback_prose_part(
@@ -207,13 +245,34 @@ async def play_scene(
     When `emit_event` is None (tests, CLI), no events fire and no
     pacing happens — caller is responsible for surfacing the prose.
 
-    Resets `runtime.phase2_message_history` at scene start so the Phase 2
-    narrator's conversation starts fresh per scene (voice continuity is
-    intra-scene; cross-scene continuity lives in the case file).
+    Scene-entry sequence: (1) enter_scene → init scene_id, clear
+    dialogue_history, set player_location. (2) populator (emit_placements)
+    decides NPC overrides; we apply them and emit npc_moved events.
+    (3) record_scene_co_presence counts NPCs whose final positions are at
+    the player's location. (4) reset Phase 2 message history. (5) first
+    run_turn.
+
+    On populator failure (retries exhausted), defaults stand — scene
+    continues without crashing.
 
     Returns the terminating ProsePart (EndScene or EndGame).
     """
     enter_scene(state, bundle.world, state.player_location)
+
+    # ── populator: resolve scene-entry NPC placements ──
+    try:
+        placements = await emit_placements(
+            bundle, state, case_file_entries=case_file_entries,
+        )
+    except UnexpectedModelBehavior as e:
+        logfire.warn(
+            "populator fallback: retries exhausted; using default placements",
+            error=str(e),
+        )
+        placements = NpcPlacementBundle()
+    await _apply_placements(state, bundle, placements, emit_event=emit_event)
+
+    record_scene_co_presence(state, bundle.world)
     runtime.phase2_message_history = []
     if emit_event is not None:
         loc = bundle.world.locations[state.player_location]
@@ -317,7 +376,8 @@ async def play_session(
 
     Side effects:
         - Mutates `state` (location, scene_id, dialogue_history,
-          unlocked_beats, npc_scenes_co_present, game_over).
+          unlocked_beats, npc_scenes_co_present, npc_locations,
+          npc_memory, game_over).
         - Appends to `case_file_entries` (caller-owned).
         - Mutates `log_writer.message_history`.
     """
@@ -346,6 +406,12 @@ async def play_session(
         # the next enter_scene will clear it.
         entry = await emit_log_entry(log_writer, world, state)
         case_file_entries.append(entry.text)
+        # Merge the structured per-NPC memory updates from the log writer
+        # into state. Phase 2's [PRESENT] NPC card on subsequent scenes
+        # renders these as 'history with player'. Filter already applied
+        # in emit_log_entry; here we just append.
+        for npc_id, note in entry.npc_memory_updates.items():
+            state.npc_memory.setdefault(npc_id, []).append(note)
         if on_log_entry is not None:
             await _maybe_await(on_log_entry(entry))
 

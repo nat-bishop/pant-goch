@@ -50,12 +50,21 @@ def _render_npc_card(
     include_default_location: bool,
     include_knowledge: bool,
     include_voice_sample: bool,
+    history: list[str] | None = None,
+    history_limit: int = 3,
 ) -> str:
     """Render one NPC.
 
     Phase 1 / log writer: include_knowledge=True (full bible).
-    Phase 2: include_knowledge=False, include_voice_sample=True (drops
-    truth specifics; adds voice register).
+    Phase 2 (system [THE CAST]): include_knowledge=False, include_voice_sample=True.
+    Phase 2 (user [PRESENT]): same as above, plus history — the recent
+        per-NPC memory entries from `state.npc_memory[npc.id]`, framed
+        as the journalist's accumulated impressions of this person.
+
+    `history_limit` clamps how many recent entries get rendered (default
+    3) to keep attention bounded as the game progresses. Memory written
+    by the log writer is one short note per scene the NPC was present in;
+    the most recent 3 cover roughly the last 3 encounters.
     """
     themes = "; ".join(npc.themes) if npc.themes else "(none)"
     head = (
@@ -70,6 +79,10 @@ def _render_npc_card(
     if include_voice_sample and npc.voice_sample:
         samples = " | ".join(f'"{line.strip()}"' for line in npc.voice_sample)
         parts.append(f"  voice_sample: {samples}")
+    if history:
+        recent = history[-history_limit:]
+        rendered = "\n    ".join(f"- {entry.strip()}" for entry in recent)
+        parts.append(f"  history with player:\n    {rendered}")
     return "\n".join(parts)
 
 
@@ -299,17 +312,28 @@ def _render_you_are_at(state: State, world: World) -> str:
 
 def _render_present(state: State, world: World, *, voice_only: bool) -> str:
     """[PRESENT] block. `voice_only=True` for Phase 2 (no knowledge, with
-    voice_sample); `voice_only=False` for Phase 1 (full knowledge)."""
-    npcs_here = world.npcs_at(state.player_location)
+    voice_sample, with per-NPC history); `voice_only=False` for Phase 1
+    (full knowledge, no history — Phase 1 sees the case file instead).
+
+    Reads NPC positions from `state.npc_locations` (set by the populator
+    at scene entry), not from default_location.
+    """
+    npcs_here = world.npcs_at(state.player_location, state=state)
     if not npcs_here:
         return "[PRESENT]\n(no one — you are alone here.)"
     parts = ["[PRESENT]"]
     for npc in npcs_here:
+        # Per-NPC history is the journalist's accumulated impression of
+        # this person across prior scenes. Phase 2 only — Phase 1 reads
+        # the prose case file in `_render_case_file` and doesn't need
+        # the structured per-NPC channel.
+        history = state.npc_memory.get(npc.id, []) if voice_only else None
         parts.append(_render_npc_card(
             npc,
             include_default_location=False,
             include_knowledge=not voice_only,
             include_voice_sample=voice_only,
+            history=history,
         ))
     return "\n".join(parts)
 
@@ -408,13 +432,20 @@ def _render_opening_seed(opening_seed: str | None) -> str:
     return f"\n[OPENING SEED]\n{opening_seed.strip()}\n"
 
 
-def _render_applied_changes(applied: StateChangeBundle) -> str:
+def _render_applied_changes(applied: StateChangeBundle, world: World) -> str:
+    """Phase 2 sees the beat's description (not just the slug) when a beat
+    fires. Phase 2's system prompt deliberately omits the beat catalog —
+    surfacing the description here is the load-bearing channel that lets
+    the narrator write the moment with specifics ("a relief he did not
+    know he wanted") rather than inferring from the slug alone."""
     if not applied.state_changes:
         return "(none — this turn fired no beats.)"
     parts = []
     for change in applied.state_changes:
         if isinstance(change, UnlockBeat):
-            parts.append(f"- UnlockBeat {change.beat_id}")
+            beat = world.beats.get(change.beat_id)
+            description = beat.description.strip() if beat else "(unknown beat)"
+            parts.append(f"- UnlockBeat {change.beat_id}: {description}")
     return "\n".join(parts)
 
 
@@ -499,7 +530,9 @@ def build_phase2_user_message(
                 f'[PLAYER]\nThe player picked: "{pick.text}"{leave_suffix}'
             )
 
-    parts.append(f"[STATE CHANGES JUST APPLIED]\n{_render_applied_changes(applied)}")
+    parts.append(
+        f"[STATE CHANGES JUST APPLIED]\n{_render_applied_changes(applied, world)}"
+    )
 
     if leave_pick is not None:
         parts.append(
@@ -521,14 +554,16 @@ def build_phase2_user_message(
 
 
 def build_log_writer_system_prompt(world: World) -> str:
-    """Stable byte-identical system prompt for the log writer. Baked once at
-    bundle construction. Carries the full bible — the log writer needs cast
-    and truth context to write coherently about people and events, and the
+    """Stable system prompt for the log writer. Baked once at bundle
+    construction. Carries the full bible — the log writer needs cast and
+    truth context to write coherently about people and events, and the
     KV cache amortises the cost.
 
-    Voice: the case file is the PLAYER'S OWN field notes. First-person,
-    past tense, terse, journalist's habit — what happened, what was said,
-    what felt off. Not omniscient narration; not "the player did X."
+    Dual output per call: `case_file_entry` (UI prose, sidebar) AND
+    `npc_memory_updates` (structured per-NPC notes surfaced to Phase 2
+    on subsequent scenes). Same voice (the journalist), distinct
+    registers: case file is "what happened"; npc_memory_updates is
+    "what I now know / feel about this person".
     """
     return f"""\
 [ROLE]
@@ -547,30 +582,55 @@ just happened so it does not slip away.
 {_render_truth_block_full(world)}
 
 [YOUR JOB]
-After every scene the player walks out of, you write ONE case-file
-entry: 80-120 words, first person, past tense. Capture what happened,
-who said what, what stayed with you. Notice what was off as much as
-what was said. Each entry stands alone as a piece of writing AND as
-part of an accumulating notebook — the messages you have sent before
-this one ARE the case file so far, and you can refer back to earlier
-moments where it would feel natural.
+After every scene the player walks out of, you emit ONE structured
+output with two fields:
+
+  1. `case_file_entry` — 80-120 words of first-person past-tense prose,
+     the player-facing case-file entry for that scene. What happened,
+     who said what, what stayed with you. Each entry stands alone AND
+     accumulates: the messages you have sent before this one ARE the
+     case file so far; you can refer back to earlier moments where it
+     would feel natural.
+
+  2. `npc_memory_updates` — a dict keyed by NPC id, one short note
+     (1-2 sentences) per NPC who was actually present in this scene.
+     Distinct from the case file: this is "what I now know / feel about
+     this person" — the impression the journalist carries forward, not
+     a recap of the scene. Used by the narrator on subsequent scenes to
+     keep the relationship consistent. Only emit entries for NPCs who
+     were in the room; do not invent updates for NPCs you did not see
+     this scene.
 
 [VOICE RULES]
-1. First person, past tense. "I sat down at the bar next to Tom Bevan."
-   Never "the player did X." Never omniscient.
+1. First person, past tense, in BOTH fields. "I sat down at the bar
+   next to Tom Bevan." Never "the player did X." Never omniscient.
 2. Terse. Journalists' habit. Short sentences are stronger than long
    ones. Do not flower up. Do not editorialise unless it is your own
    reaction.
 3. Stay inside what the player has seen and heard. Do not invent
    details the scene did not contain. You know the truth from the
    bible above, but you cannot WRITE what you have not been told.
-4. Do not number or title the entry. Just write it as a paragraph.
+4. Do not number or title the case file entry. Just write it as a
+   paragraph.
 5. Sound like the same person across entries. You are writing a
    notebook, not separate articles.
 
+[NPC MEMORY OUTPUT — examples]
+For a first scene at the pub where Tom was guarded but warming:
+  npc_memory_updates: {{ "tom": "Old Tom Bevan. Drinks bitter alone in the
+  afternoon. Guarded but not hostile; I bought him nothing, did not press.
+  He didn't tell me to leave. There's something he's not saying about
+  Megan, but it isn't time yet." }}
+
+For a scene at the post office on a second visit where Maud closed up:
+  npc_memory_updates: {{ "maud": "She's noticed I keep coming back. The
+  warmth stayed but the tongue tightened. I asked too directly about
+  the Vaughns and she went out the back to fetch something that didn't
+  need fetching." }}
+
 [OUTPUT]
-The case-file entry as plain text. No headers, no quotes around it,
-no metadata. Just the paragraph.
+Structured JSON matching the schema. `case_file_entry` is plain text
+(no headers, no quotes); `npc_memory_updates` is a dict.
 """
 
 
@@ -621,6 +681,24 @@ def build_log_writer_user_prompt(state: State, world: World) -> str:
 
     turns_block = "\n".join(turn_parts)
 
+    # Explicit per-NPC directive — Gemma 4 was returning empty
+    # npc_memory_updates dicts in early testing even when the system
+    # prompt described the requirement; naming each NPC by id in the
+    # user prompt makes the expected keys unambiguous.
+    if first.npcs_present:
+        npc_directive_lines = [
+            f'    - key "{npc_id}" → 1-2 sentence note about {world.npcs[npc_id].name}'
+            for npc_id in first.npcs_present
+        ]
+        npc_directive = (
+            "  REQUIRED keys in `npc_memory_updates` (one entry per NPC "
+            "you saw this scene):\n" + "\n".join(npc_directive_lines)
+        )
+    else:
+        npc_directive = (
+            "  `npc_memory_updates` MUST be empty {{}} — no NPCs were present."
+        )
+
     return f"""\
 The scene that just ended took place at {loc.id} ({loc.name}).
 Present: {npcs_line}.
@@ -629,5 +707,124 @@ Beats unlocked in this scene: {beats_line}.
 Turn-by-turn:
 {turns_block}
 
-Write the case-file entry now. 80-120 words. First person, past tense.
+Emit BOTH fields of the structured output:
+
+  1. `case_file_entry` — 80-120 words, first person, past tense, the
+     player-facing record of what happened.
+
+  2. `npc_memory_updates` — a dict of per-NPC notes ("what I now know /
+     feel about this person"), distinct in register from the case file.
+{npc_directive}
+
 Stay inside what you saw and heard."""
+
+
+# ───────────────────────── populator prompts ─────────────────────────
+
+
+def build_populator_system_prompt(world: World) -> str:
+    """System prompt for the populator agent. Runs once at scene entry
+    to decide which NPCs are at which locations now. The populator sees
+    the full bible (cast knowledge, beats, endings) so it can reason
+    dramatically — e.g., Dylan retreats to the wood after a tense scene
+    at Tan-y-coed; Helen agrees to the Costa for a discreet meeting.
+
+    Byte-stable across the session for KV cache hits across scene
+    entries.
+    """
+    return f"""\
+[ROLE]
+You are the world-state populator for a single-player investigation
+game set in the Welsh Marches village of Pant Goch. The player is a
+freelance journalist looking into a death the police closed too quickly.
+
+Once per scene — at the moment the player enters a location — you
+decide whether any NPCs should be somewhere other than their default
+location for the duration of this scene. You do NOT write prose; you
+emit a structured list of placement overrides (or an empty list).
+
+[THE WORLD]
+{_render_locations_block(world)}
+
+[THE CAST]
+{_render_cast_block(world, voice_only=False)}
+
+[THE TRUTH]
+{_render_truth_block_full(world)}
+
+[YOUR JOB]
+Each scene entry, emit ONE NpcPlacementBundle. Most scene entries
+should be an empty bundle (defaults stand). Only emit a placement when
+there is a SPECIFIC dramatic reason for an NPC to be somewhere other
+than their default — and authored bible / case file evidence supports
+it. Examples of legitimate movements:
+
+  - The player walks to bryn_iago_wood. Dylan sometimes walks up here
+    after dark; if recent case-file entries suggest he is avoiding
+    Tan-y-coed (Eluned around, the player has pressed him), placing
+    Dylan in the wood is right.
+  - The player walks to knighton AND Helen has agreed off the record
+    to meet at the Costa. Place Helen at knighton (she's there
+    already by default) — the relevant signal is whether to place her
+    "at the Costa" framing is for the narrator; mechanically she
+    stays in knighton.
+  - Eluned does not leave Tan-y-coed except in extreme circumstances
+    (case file shows she has driven herself to Knighton police, etc.).
+    The default is correct.
+
+[RULES]
+1. Most scenes: emit an empty bundle. Defaults are right for the
+   majority of scene entries. Restraint is the right instinct.
+2. Move NPCs only with a SPECIFIC reason traceable to the case file or
+   beats so far. "It would be interesting if X were here" is not
+   enough. "Last scene's case file says Y, so X would plausibly be at
+   Z" is enough.
+3. Stay within the established cast and locations. The bible is complete.
+4. Each NPC may appear at most once in the placements list. Do not
+   place an NPC at a location the player is not at unless the bible
+   plausibly explains it; the player will not see them either way, so
+   the only reason to place them off-screen is to track where they
+   logically should be.
+"""
+
+
+def build_populator_user_prompt(
+    state: State,
+    world: World,
+    *,
+    case_file_entries: list[str] | None = None,
+) -> str:
+    """Per-call user prompt for the populator. Static-first / dynamic-last
+    ordering: location + current placements first (small, stable for the
+    scene), then the case file (grows over the session), then the job
+    directive.
+    """
+    loc = world.locations[state.player_location]
+    placements_lines: list[str] = []
+    for npc in world.npcs.values():
+        current = state.npc_locations.get(npc.id, npc.default_location)
+        marker = " (default)" if current == npc.default_location else ""
+        placements_lines.append(f"  - {npc.id}: {current}{marker}")
+    current_placements = "\n".join(placements_lines)
+
+    case_file_block = _render_case_file(case_file_entries)
+
+    return f"""\
+[PLAYER JUST ENTERED]
+{loc.id} ({loc.name})
+{loc.description.strip()}
+
+[CURRENT NPC LOCATIONS]
+{current_placements}
+
+[STATE]
+unlocked_beats: {", ".join(sorted(state.unlocked_beats)) if state.unlocked_beats else "(none)"}
+scene_id: {state.scene_id}
+
+{case_file_block}
+
+[GENERATE PLACEMENTS]
+Emit an NpcPlacementBundle. Most scene entries should be empty (defaults
+stand). Only emit a placement when a specific dramatic reason traceable
+to the case file or beats supports it. NPCs not listed in placements
+keep their current location."""

@@ -28,8 +28,16 @@
     player buy him one only after he has indicated, in his own way,
     that the player is welcome to.
   voice_sample:
+    # Guarded — first contact, journalists have burned him before.
     - "Aye. Not my business, was it."
     - "You're not from round here. I can see that."
+    # Softening — the player has shown patience across visits.
+    - "Sit down if you're going to."
+    - "Megan. Aye. Lovely girl. Quiet, mind."
+    # Breaking — the moment he names what he saw.
+    - "Land Rover. Going the other way. Recognised it."
+    # Closed — the player has lied or pushed; civil but unmoving.
+    - "Be off home now, I think."
 
 - id: maud
   name: Maud Pryce
@@ -53,8 +61,14 @@
     know more than she expected, or by showing they are not after
     sensation.
   voice_sample:
+    # Gossip mode — warm, surfacy, lets the player feel welcomed.
     - "Oh, well. You'll have to ask someone else about that, my love."
     - "Funny times, weren't they. Funny times."
+    # Loyal — protecting the village's image, lying by omission.
+    - "I wouldn't know, I'm sure. People say a lot of things."
+    # Cornered — the player has shown they already know.
+    - "Now you didn't hear that from me. You understand?"
+    - "Well. Since you've come this far."
 
 - id: iwan
   name: Iwan Pritchard
@@ -82,8 +96,14 @@
     in front of you. He grows warmer to a player who comes back a
     second and third time.
   voice_sample:
+    # Hospitable — formal, careful, the host's habit.
     - "I'll put the kettle on. Sit there, if you would."
+    - "You'll have eaten. I won't insult you with sandwiches."
+    # Direct — when the player has earned a straight answer.
     - "It's the not knowing. That's the worst of it."
+    - "I want it written. Whatever it is. I want it written down."
+    # Grieving — when the room has gone quiet on Megan.
+    - "She liked the wood. I never asked her why. I should have."
 
 - id: wendy
   name: Wendy Pritchard
@@ -104,8 +124,13 @@
     becomes cold; if pushed past that she will cry, which the player
     will find far worse than anger. She wants the player to leave.
   voice_sample:
+    # Civil — the way she was raised, even when she resents the visit.
     - "I think you should go now. Please."
     - "Iwan asked you here. I did not."
+    # Cold — she has stopped being civil; the visit is over for her.
+    - "We've buried her. Twice over, with this."
+    # Breaking — pushed past cold, into tears she despises herself for.
+    - "Will you please. Will you please just go."
 
 - id: eluned
   name: Eluned Vaughn
@@ -131,8 +156,13 @@
     voice the moment she decides the player is dangerous. After that
     she will not open the door.
   voice_sample:
+    # Courteous warning — the gate, the dogs at her heel, polite menace.
     - "You'll say what you came to say, and then you'll go."
     - "This is my land. I don't owe you a single word."
+    # Dismissive — the journalist is no longer a person to her.
+    - "Off my land, please. While the asking of it is still polite."
+    # Collapsed — confronted with what she did, sitting down for whisky.
+    - "Pour me one. Don't ask. Just pour me one."
 
 - id: dylan
   name: Dylan Vaughn
@@ -163,8 +193,14 @@
     aggressive, performative, or if the conversation feels like a
     transaction.
   voice_sample:
+    # Shut down — at Tan-y-coed, with Eluned in earshot.
     - "Not here. Please. Not here."
+    # Private — alone with the player in the wood or the lane.
     - "If you already know, then you already know."
+    - "I haven't said this. To anyone. In seven years."
+    # Admitting — the relationship, the knowing, what he carried.
+    - "She used to come up here. We used to come up here."
+    - "I worked it out. I never asked her. I never had to."
 
 - id: gareth
   name: Father Gareth Hughes
@@ -187,8 +223,13 @@
     player as a person and will not weaponise their visit. He will
     also not, under any circumstances, say what he heard.
   voice_sample:
+    # Gentle — the ministry voice, careful, not patronising.
+    - "Sit down. We've a few minutes before evensong."
+    # Guarded — the seal of confession is the one line he won't cross.
     - "There are things I cannot tell you. There are things I will not."
+    # Pointing — speaking around the truth, nudging the player.
     - "Have you spoken to Tom Bevan? You should. Properly."
+    - "Iwan is a good man. He is also a tired man. Treat him gently."
 
 - id: helen
   name: DC Helen Mortimer
@@ -213,8 +254,13 @@
     She will refuse the player entirely if the player threatens her
     position by being indiscreet.
   voice_sample:
+    # Professional — first meeting, station-side reflex.
+    - "I can't discuss an open or closed investigation in detail."
+    # Off the record — Costa, late, after the player has earned trust.
     - "Off the record. And I mean that. Off the record."
     - "I knew. I couldn't prove it. That's a different thing."
+    # Hardened — the player has been indiscreet; she is done.
+    - "I'm afraid I can't see you again. Don't ring my desk, please."
 
 - id: owain
   name: Owain Pugh
@@ -239,5 +285,11 @@
     He has been off the drink since 2022 and is steadier than Wendy
     gives him credit for.
   voice_sample:
+    # Folklore — leaning in, theatrical, the storyteller's gear.
     - "Now there's a story. You'll want to sit down for it, mind."
     - "I don't say I saw it. I say it was seen."
+    # Sober-shrewd — the off-duty Owain, more honest than expected.
+    - "Aye, I drink less than I used to. Don't tell Maud, mind."
+    - "Some of what I say is rubbish. The trick is which."
+    # Loyal — protecting Iwan, even from himself.
+    - "Iwan doesn't sleep. Did he tell you that? He doesn't."

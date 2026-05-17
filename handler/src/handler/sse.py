@@ -142,6 +142,20 @@ def location_change_event(from_id: str, to_id: str) -> dict:
     return {"event": "location_change", "from": from_id, "to": to_id}
 
 
+def npc_moved_event(npc_id: str, from_id: str, to_id: str) -> dict:
+    """Emitted by `scene_loop.play_scene` after the populator places an NPC
+    somewhere other than their previous location. Frontend may surface
+    this as a quiet marker on the map; for v1 it's informational only.
+    Sent once per moved NPC at the start of the scene (before any prose).
+    """
+    return {
+        "event": "npc_moved",
+        "npc_id": npc_id,
+        "from": from_id,
+        "to": to_id,
+    }
+
+
 def game_over_event(ending_id: str) -> dict:
     return {"event": "game_over", "ending_id": ending_id}
 

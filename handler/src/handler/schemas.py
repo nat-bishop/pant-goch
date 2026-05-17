@@ -104,3 +104,49 @@ SceneNext = Annotated[
 class ProsePart(_Strict):
     prose: str  # 80-200 words; streamed
     next: SceneNext
+
+
+# ───────────────────────── Log writer dual output ─────────────────────────
+
+
+class LogWriterOutput(_Strict):
+    """Scene-end log writer emission. The case file entry is the
+    player-facing UI artifact (streams to the sidebar); npc_memory_updates
+    is the structured memory channel surfaced to Phase 2 on subsequent
+    scenes. One LLM call emits both under one set of voice rules so the
+    journalist's interpretation of the scene is coherent across artifacts.
+
+    `npc_memory_updates` keys are NPC ids; values are 1-2 sentence notes
+    framed as "what the journalist now knows / feels about this person",
+    distinct from the prose case file's "what happened" register. Only
+    NPCs the journalist actually saw this scene should appear; the engine
+    merges these into `state.npc_memory[npc_id]` as an appended entry per
+    scene.
+    """
+
+    case_file_entry: str
+    npc_memory_updates: dict[str, str] = Field(default_factory=dict)
+
+
+# ───────────────────────── Populator (scene-entry NPC placement) ─────────────────────────
+
+
+class NpcPlacement(_Strict):
+    """One NPC-at-a-location override emitted by the populator agent.
+
+    The populator runs once at scene entry. It decides which NPCs are
+    where in light of the case file, beats so far, and dramatic logic
+    (e.g., Dylan retreats to the wood after a tense Tan-y-coed scene).
+    Defaults remain in effect for NPCs the populator doesn't move.
+    """
+
+    npc_id: str
+    location_id: str
+
+
+class NpcPlacementBundle(_Strict):
+    """Populator output. `placements` is a (possibly empty) list of
+    NPC overrides. Empty bundle = default placements stand for this scene
+    — the common case (most scene entries don't need movement)."""
+
+    placements: list[NpcPlacement] = Field(default_factory=list)

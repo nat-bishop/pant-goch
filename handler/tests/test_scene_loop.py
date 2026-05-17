@@ -18,11 +18,12 @@ from handler.agents import (
     make_log_writer_runtime,
     make_scene_runner_runtime,
 )
-from handler.engine import enter_scene
+from handler.engine import enter_scene, record_scene_co_presence
 from handler.schemas import (
     ContinueScene,
     EndGame,
     EndScene,
+    NpcPlacementBundle,
     Option,
     ProsePart,
     StateChangeBundle,
@@ -41,6 +42,52 @@ from handler.world import World, load_world
 FIXTURE_VALID = Path(__file__).parent / "fixtures" / "world_valid"
 
 
+# ───────────────────────── populator / log writer no-ops ─────────────────────────
+
+
+async def _empty_placements(*args, **kwargs):
+    """Default populator stub for tests that don't care about NPC
+    placement. Returns an empty bundle (defaults stand)."""
+    return NpcPlacementBundle()
+
+
+def _stub_log_entry(text: str = "entry"):
+    """Build a LogEntry the way scene_loop.play_session reads one back."""
+    return LogEntry(
+        scene_id=1,
+        location_id="the_slaughtered_lamb",
+        npcs_present=[],
+        text=text,
+        npc_memory_updates={},
+    )
+
+
+def _patch_populator(monkeypatch):
+    """Most scene_loop tests don't drive the populator; the default is
+    no-op (no NPCs moved). Tests that DO want to exercise the populator
+    can override this attribute after calling _patch_populator."""
+    monkeypatch.setattr("handler.scene_loop.emit_placements", _empty_placements)
+
+
+def _patch_log_writer(monkeypatch, text: str = "entry"):
+    """Bypass the real log writer for play_session tests. emit_log_entry
+    is called once per scene close; we return a constant LogEntry."""
+    async def fake_emit(*args, **kwargs):
+        anchor_state = args[2] if len(args) >= 3 else kwargs.get("state")
+        # Best-effort anchor recovery; fall back to defaults for tests
+        # that don't rely on anchor fields.
+        scene_id = anchor_state.scene_id if anchor_state else 1
+        location_id = anchor_state.player_location if anchor_state else "the_slaughtered_lamb"
+        return LogEntry(
+            scene_id=scene_id,
+            location_id=location_id,
+            npcs_present=[],
+            text=text,
+            npc_memory_updates={},
+        )
+    monkeypatch.setattr("handler.scene_loop.emit_log_entry", fake_emit)
+
+
 @pytest.fixture
 def bundle_and_state():
     world = load_world(FIXTURE_VALID)
@@ -48,6 +95,7 @@ def bundle_and_state():
     runtime = make_scene_runner_runtime()
     state = make_initial_state(world)
     enter_scene(state, world, "the_slaughtered_lamb")  # tom is here
+    record_scene_co_presence(state, world)
     return bundle, runtime, state
 
 
@@ -230,6 +278,7 @@ async def test_play_scene_drives_until_endscene(monkeypatch):
     async def fake_phase2(*args, **kwargs):
         return next(proses)
 
+    _patch_populator(monkeypatch)
     monkeypatch.setattr("handler.scene_loop.emit_state_changes", fake_phase1)
     monkeypatch.setattr("handler.scene_loop.emit_prose", fake_phase2)
 
@@ -269,6 +318,7 @@ async def test_play_scene_picks_leave_option_records_leave_pick(monkeypatch):
             ]))
         return ProsePart(prose="t2", next=EndScene())
 
+    _patch_populator(monkeypatch)
     monkeypatch.setattr("handler.scene_loop.emit_state_changes", fake_phase1)
     monkeypatch.setattr("handler.scene_loop.emit_prose", fake_phase2)
 
@@ -303,6 +353,7 @@ async def test_play_scene_resets_phase2_message_history_at_scene_start(monkeypat
         captured.append(list(rt.phase2_message_history))
         return ProsePart(prose="end", next=EndScene())
 
+    _patch_populator(monkeypatch)
     monkeypatch.setattr("handler.scene_loop.emit_state_changes", fake_phase1)
     monkeypatch.setattr("handler.scene_loop.emit_prose", fake_phase2)
 
@@ -353,6 +404,8 @@ async def test_play_session_calls_both_callbacks_and_terminates_on_end_game(monk
     async def fake_phase2(*args, **kwargs):
         return next(proses)
 
+    _patch_populator(monkeypatch)
+    _patch_log_writer(monkeypatch)
     monkeypatch.setattr("handler.scene_loop.emit_state_changes", fake_phase1)
     monkeypatch.setattr("handler.scene_loop.emit_prose", fake_phase2)
 
@@ -400,6 +453,8 @@ async def test_play_session_pick_walk_only_called_between_scenes(monkeypatch):
     async def fake_phase2(*args, **kwargs):
         return next(proses)
 
+    _patch_populator(monkeypatch)
+    _patch_log_writer(monkeypatch)
     monkeypatch.setattr("handler.scene_loop.emit_state_changes", fake_phase1)
     monkeypatch.setattr("handler.scene_loop.emit_prose", fake_phase2)
 
@@ -438,6 +493,8 @@ async def test_play_session_case_file_entries_passed_through(monkeypatch):
     async def fake_phase2(*args, **kwargs):
         return next(proses)
 
+    _patch_populator(monkeypatch)
+    _patch_log_writer(monkeypatch)
     monkeypatch.setattr("handler.scene_loop.emit_state_changes", fake_phase1)
     monkeypatch.setattr("handler.scene_loop.emit_prose", fake_phase2)
 

@@ -27,6 +27,7 @@ from handler.schemas import (
     ContinueScene,
     EndGame,
     EndScene,
+    NpcPlacementBundle,
     Option,
     ProsePart,
     StateChangeBundle,
@@ -39,11 +40,35 @@ from handler.sse import (
     _words_from_text,
     paced_word_emitter,
 )
-from handler.state import State, make_initial_state
+from handler.state import LogEntry, State, make_initial_state
 from handler.world import World, load_world
 
 
 FIXTURE_VALID = Path(__file__).parent / "fixtures" / "world_valid"
+
+
+# ───────────────────────── populator / log writer no-ops ─────────────────────────
+
+
+async def _empty_placements(*args, **kwargs):
+    return NpcPlacementBundle()
+
+
+def _patch_populator(monkeypatch):
+    monkeypatch.setattr("handler.scene_loop.emit_placements", _empty_placements)
+
+
+def _patch_log_writer(monkeypatch, text: str = "case-file entry"):
+    async def fake_emit(*args, **kwargs):
+        anchor_state = args[2] if len(args) >= 3 else kwargs.get("state")
+        return LogEntry(
+            scene_id=anchor_state.scene_id if anchor_state else 1,
+            location_id=anchor_state.player_location if anchor_state else "the_slaughtered_lamb",
+            npcs_present=[],
+            text=text,
+            npc_memory_updates={},
+        )
+    monkeypatch.setattr("handler.scene_loop.emit_log_entry", fake_emit)
 
 
 # ───────────────────────── paced_word_emitter ─────────────────────────
@@ -154,6 +179,7 @@ async def test_play_scene_emits_scene_start_then_terminal_events(monkeypatch, wo
     async def fake_phase2(*args, **kwargs):
         return ProsePart(prose="Tom spoke at last.", next=EndScene())
 
+    _patch_populator(monkeypatch)
     monkeypatch.setattr("handler.scene_loop.emit_state_changes", fake_phase1)
     monkeypatch.setattr("handler.scene_loop.emit_prose", fake_phase2)
 
@@ -220,6 +246,7 @@ async def test_play_scene_emits_options_event_for_continue(monkeypatch, world_an
     async def fake_phase2(*args, **kwargs):
         return next(proses)
 
+    _patch_populator(monkeypatch)
     monkeypatch.setattr("handler.scene_loop.emit_state_changes", fake_phase1)
     monkeypatch.setattr("handler.scene_loop.emit_prose", fake_phase2)
     monkeypatch.setattr("handler.scene_loop.paced_word_emitter",
@@ -250,6 +277,7 @@ async def test_play_scene_emits_game_over_for_end_game(monkeypatch, world_and_bu
     async def fake_phase2(*args, **kwargs):
         return ProsePart(prose="The story runs.", next=EndGame(ending_id="published_story"))
 
+    _patch_populator(monkeypatch)
     monkeypatch.setattr("handler.scene_loop.emit_state_changes", fake_phase1)
     monkeypatch.setattr("handler.scene_loop.emit_prose", fake_phase2)
     monkeypatch.setattr("handler.scene_loop.paced_word_emitter",
@@ -294,6 +322,8 @@ async def test_play_session_emits_location_change_and_log_entry_words(
     async def fake_phase2(*args, **kwargs):
         return next(proses)
 
+    _patch_populator(monkeypatch)
+    _patch_log_writer(monkeypatch, text="The pub, the road. Tom was at the bar.")
     monkeypatch.setattr("handler.scene_loop.emit_state_changes", fake_phase1)
     monkeypatch.setattr("handler.scene_loop.emit_prose", fake_phase2)
     monkeypatch.setattr("handler.scene_loop.paced_word_emitter",

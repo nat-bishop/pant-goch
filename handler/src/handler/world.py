@@ -47,11 +47,27 @@ class World:
     # the frontend falls back to the text walk panel.
     map_coords: dict[str, tuple[float, float]]
 
-    def npcs_at(self, location_id: str) -> list[NPC]:
-        """All NPCs whose default_location is `location_id`. Used by the
-        prompt builder to render the [PRESENT] block. v1 has no MoveNPC, so
-        this is the authoritative answer for who's at a location."""
-        return self.npcs_by_location.get(location_id, [])
+    def npcs_at(self, location_id: str, state: object | None = None) -> list[NPC]:
+        """All NPCs at `location_id` right now.
+
+        When `state` is provided, reads `state.npc_locations[npc.id]` as the
+        override (the populator agent writes to this map at scene entry).
+        NPCs missing from the override map fall back to their
+        `default_location`. When `state` is None, returns the default-only
+        view (used by tests and one-off renderers that don't have state).
+
+        Type-checking note: `state` is duck-typed (any object with an
+        `npc_locations: Mapping[str, str]` attribute works) to avoid a
+        circular import with state.py.
+        """
+        if state is None:
+            return self.npcs_by_location.get(location_id, [])
+        overrides = getattr(state, "npc_locations", {}) or {}
+        return [
+            npc
+            for npc in self.npcs.values()
+            if overrides.get(npc.id, npc.default_location) == location_id
+        ]
 
 
 # ───────────────────────── YAML helpers ─────────────────────────
