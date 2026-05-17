@@ -28,6 +28,8 @@ from pydantic_ai.exceptions import UnexpectedModelBehavior
 
 from .agents import (
     AgentBundle,
+    AwaitContinue,
+    AwaitFreeText,
     ChroniclerRuntime,
     SceneRunnerRuntime,
     emit_chronicle_entry,
@@ -93,14 +95,25 @@ async def run_turn(
     state: State,
     *,
     leave_pick: Option | None = None,
+    emit_event: EmitEvent | None = None,
+    await_continue: AwaitContinue | None = None,
+    await_free_text: AwaitFreeText | None = None,
 ) -> ProsePart:
     """One full turn end-to-end. Returns the ProsePart so the caller can
     dispatch on `prose_part.next` (ContinueScene → wait for player pick;
     EndScene → close + maybe location_change; EndGame → terminal).
 
+    `emit_event` is threaded through emit_prose for paced prose-word
+    streaming; it now lives inside the prose-writer tool loop because
+    prose can stream across multiple tool boundaries.
+
+    `await_continue` / `await_free_text` are the suspend hooks for the
+    pause_for_continue / request_free_text tools. Pass None in tests
+    that don't exercise those tools.
+
     State is mutated: state_changes applied, dialogue_history appended.
-    Phase 2 conversation history (`runtime.phase2_message_history`) is
-    mutated on successful Phase 2; left UNCHANGED on Phase 2 fallback.
+    Prose-writer conversation history (`runtime.phase2_message_history`)
+    is mutated on successful prose write; left UNCHANGED on fallback.
     """
     # ── Phase 1 ────────────────────────────────────────────────────────────
     try:
@@ -113,10 +126,22 @@ async def run_turn(
         applied = StateChangeBundle()
     apply_state_changes(applied, state)
 
-    # ── Phase 2 ────────────────────────────────────────────────────────────
+    # ── state-change SSE events fire before prose so the frontend can
+    # render "beat unlocked" badges in front of the streaming prose.
+    if emit_event is not None:
+        for change in applied.state_changes:
+            await emit_event(state_change_event(
+                kind="unlock_beat", payload={"beat_id": change.beat_id}
+            ))
+
+    # ── Prose writer (with tool loop) + choice author ──────────────────────
     try:
         prose_part = await emit_prose(
-            bundle, runtime, state, applied, leave_pick=leave_pick,
+            bundle, runtime, state, applied,
+            leave_pick=leave_pick,
+            emit_event=emit_event,
+            await_continue=await_continue,
+            await_free_text=await_free_text,
         )
     except UnexpectedModelBehavior as e:
         # Why: fallback prose is engine-authored, generic, and intentionally
@@ -130,6 +155,15 @@ async def run_turn(
             error=str(e),
         )
         prose_part = _fallback_prose_part(state, bundle, leave_pick=leave_pick)
+        # Fallback path: emit_prose didn't run, so the prose stream
+        # didn't get paced. Pace the fallback prose here so the frontend
+        # still sees prose_word events for the canned text.
+        if emit_event is not None:
+            await paced_word_emitter(
+                _words_from_text(prose_part.prose),
+                emit_event,
+                event_kind="prose_word",
+            )
 
     append_turn_record(
         state,
@@ -216,6 +250,8 @@ async def play_scene(
     *,
     pick_option: PickOption,
     emit_event: EmitEvent | None = None,
+    await_continue: AwaitContinue | None = None,
+    await_free_text: AwaitFreeText | None = None,
 ) -> ProsePart:
     """Run a scene from the current player_location until EndScene or
     EndGame. `pick_option(prose_part) -> int` is the caller-supplied
@@ -262,23 +298,14 @@ async def play_scene(
     while True:
         prose_part = await run_turn(
             bundle, runtime, state, leave_pick=leave_pick,
+            emit_event=emit_event,
+            await_continue=await_continue,
+            await_free_text=await_free_text,
         )
 
-        # ── emit state_change events ──
-        if emit_event is not None:
-            last_turn = state.dialogue_history[-1]
-            for change in last_turn.applied_state_changes:
-                await emit_event(state_change_event(
-                    kind="unlock_beat", payload={"beat_id": change.beat_id}
-                ))
-
-        # ── pace prose words ──
-        if emit_event is not None:
-            await paced_word_emitter(
-                _words_from_text(prose_part.prose),
-                emit_event,
-                event_kind="prose_word",
-            )
+        # state_change SSE events fire inside run_turn now (before prose
+        # streams). Paced prose-word events also fire inside run_turn /
+        # emit_prose, so streaming spans the whole prose-writer tool loop.
 
         # ── dispatch on next ──
         if isinstance(prose_part.next, ContinueScene):
@@ -318,6 +345,8 @@ async def play_session(
     on_chronicle_entry: OnChronicleEntry | None = None,
     on_scene_close: OnSceneClose | None = None,
     emit_event: EmitEvent | None = None,
+    await_continue: AwaitContinue | None = None,
+    await_free_text: AwaitFreeText | None = None,
 ) -> ProsePart:
     """Play one full session (multiple scenes) from `state` until the
     LLM fires EndGame or the player gets stranded at a location with no
@@ -360,6 +389,8 @@ async def play_session(
             bundle, runtime, state,
             pick_option=pick_option,
             emit_event=emit_event,
+            await_continue=await_continue,
+            await_free_text=await_free_text,
         )
 
         # Surface the closing prose before the chronicler runs — the

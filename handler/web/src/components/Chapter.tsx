@@ -7,7 +7,7 @@
 // at top with ~56px padding. Lifted from design/mockup-stage/app.jsx.
 
 import { useEffect, useRef, useState } from "react";
-import { postPick } from "../api";
+import { postContinue, postFreeText, postPick } from "../api";
 import { useStore, type SceneSnapshot } from "../store";
 import { StreamingProse } from "./StreamingProse";
 import { ChoicesBlock } from "./ChoicesBlock";
@@ -35,7 +35,12 @@ export function Chapter({
   const fastForward = useStore((s) => s.fastForward);
   const attachPick = useStore((s) => s.attachPick);
   const world = useStore((s) => s.world);
+  const awaitingContinue = useStore((s) => s.awaitingContinue);
+  const freeTextRequest = useStore((s) => s.freeTextRequest);
   const [pickBusy, setPickBusy] = useState(false);
+  const [continueBusy, setContinueBusy] = useState(false);
+  const [freeTextBusy, setFreeTextBusy] = useState(false);
+  const [freeTextDraft, setFreeTextDraft] = useState("");
 
   const lastTurn = scene.turns[scene.turns.length - 1];
   const streamingThisChapter = isCurrent && lastTurn?.streaming;
@@ -60,6 +65,36 @@ export function Chapter({
       setPickBusy(false);
     }
   };
+
+  const onContinue = async () => {
+    if (continueBusy) return;
+    setContinueBusy(true);
+    // Clear the flag immediately so the button disappears on click;
+    // the backend will resume prose streaming.
+    useStore.setState({ awaitingContinue: false });
+    try {
+      await postContinue();
+    } finally {
+      setContinueBusy(false);
+    }
+  };
+
+  const onFreeTextSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const text = freeTextDraft.trim();
+    if (!text || freeTextBusy) return;
+    setFreeTextBusy(true);
+    useStore.setState({ freeTextRequest: null });
+    setFreeTextDraft("");
+    try {
+      await postFreeText(text);
+    } finally {
+      setFreeTextBusy(false);
+    }
+  };
+
+  const showContinue = isCurrent && awaitingContinue;
+  const showFreeText = isCurrent && freeTextRequest !== null;
 
   return (
     <section
@@ -89,6 +124,47 @@ export function Chapter({
             )}
           </div>
         ))}
+        {showContinue && (
+          <div className="pause-wrap">
+            <button
+              className="pause-continue"
+              onClick={onContinue}
+              disabled={continueBusy}
+              autoFocus
+            >
+              Continue
+            </button>
+          </div>
+        )}
+        {showFreeText && freeTextRequest && (
+          <form className="free-text-wrap" onSubmit={onFreeTextSubmit}>
+            <label className="free-text-prompt">
+              {freeTextRequest.prompt}
+              {freeTextRequest.npc_id && (
+                <span className="free-text-npc">
+                  {" "}
+                  ({world?.npcs.find((n) => n.id === freeTextRequest.npc_id)?.name ?? freeTextRequest.npc_id})
+                </span>
+              )}
+            </label>
+            <input
+              className="free-text-input"
+              type="text"
+              value={freeTextDraft}
+              onChange={(e) => setFreeTextDraft(e.target.value)}
+              autoFocus
+              disabled={freeTextBusy}
+              placeholder="Speak…"
+            />
+            <button
+              type="submit"
+              className="free-text-submit"
+              disabled={freeTextBusy || !freeTextDraft.trim()}
+            >
+              Say it
+            </button>
+          </form>
+        )}
         {choicesReady && (
           <ChoicesBlock
             options={lastTurn.options}

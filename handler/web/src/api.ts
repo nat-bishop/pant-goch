@@ -35,6 +35,20 @@ export async function postWalk(to_location: string): Promise<void> {
   await ensureOk(r, "walk");
 }
 
+export async function postContinue(): Promise<void> {
+  const r = await fetch(`${API}/continue`, { method: "POST" });
+  await ensureOk(r, "continue");
+}
+
+export async function postFreeText(text: string): Promise<void> {
+  const r = await fetch(`${API}/free_text`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+  });
+  await ensureOk(r, "free_text");
+}
+
 // ─── /world payload ──────────────────────────────────────────────────
 
 export interface WorldLocation {
@@ -106,6 +120,8 @@ export type SseEvent =
       is_last?: boolean;
     }
   | { event: "game_over"; ending_id: string }
+  | { event: "pause_for_continue" }
+  | { event: "free_text_request"; prompt: string; npc_id: string | null }
   | { event: "error"; message: string }
   | { event: "session_done" };
 

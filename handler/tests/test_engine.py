@@ -16,7 +16,7 @@ import pytest
 from pydantic import ValidationError
 
 from handler.agents import (
-    _build_prose_part_type,
+    _build_choice_bundle_type,
     _build_state_change_bundle_type,
 )
 from handler.engine import (
@@ -25,6 +25,7 @@ from handler.engine import (
 )
 from handler.models import Beat, Brief, Ending, Location, NPC
 from handler.schemas import (
+    ChoiceBundle,
     ContinueScene,
     EndGame,
     EndScene,
@@ -136,27 +137,27 @@ def test_state_change_bundle_duplicate_beat_rejected():
         ])
 
 
-# ───────────────────────── canonical ContinueScene validator ─────────────────────────
+# ───────────────────────── canonical ChoiceBundle validator ─────────────────────────
 
 
-def test_continue_scene_with_leave_option_passes():
-    ContinueScene(options=[
+def test_choice_bundle_with_leave_option_passes():
+    ChoiceBundle(options=[
         Option(text="stay"),
         Option(text="leave for B", leaves_for="loc_b"),
     ])
 
 
-def test_continue_scene_without_leave_option_rejected():
+def test_choice_bundle_without_leave_option_rejected():
     with pytest.raises(ValidationError, match="leaves_for"):
-        ContinueScene(options=[
+        ChoiceBundle(options=[
             Option(text="stay 1"),
             Option(text="stay 2"),
         ])
 
 
-def test_continue_scene_empty_options_rejected():
+def test_choice_bundle_empty_options_rejected():
     with pytest.raises(ValidationError, match="leaves_for"):
-        ContinueScene(options=[])
+        ChoiceBundle(options=[])
 
 
 # ───────────────────────── dynamic StateChangeBundle (Literal narrowing) ─────────────────────────
@@ -254,94 +255,35 @@ def test_dynamic_bundle_max_length_three_rejected():
         })
 
 
-# ───────────────────────── dynamic ProsePart (Literal narrowing) ─────────────────────────
+# ───────────────────────── dynamic ChoiceBundle (Literal narrowing) ─────────────────────────
 
 
-def test_dynamic_prose_endgame_with_satisfied_prereqs_passes():
-    world = _make_world(
-        beats=[_beat("decided_to_file")],
-        endings=[Ending(
-            id="published_story",
-            requires_beats=["decided_to_file"],
-            notes_to_llm="x",
-            epilogue="y",
-        )],
-    )
-    state = State(player_location="loc_a", unlocked_beats={"decided_to_file"})
-    ProseType = _build_prose_part_type(world, state)
-    pp = ProseType.model_validate({
-        "prose": "...",
-        "next": {"type": "end_game", "ending_id": "published_story"},
-    })
-    assert pp.next.ending_id == "published_story"  # type: ignore[union-attr]
-
-
-def test_dynamic_prose_endgame_with_missing_prereqs_rejected():
-    """Ending whose requires_beats aren't satisfied → not in the satisfied
-    set → grammar Literal omits → ValidationError."""
-    world = _make_world(
-        beats=[_beat("decided_to_file")],
-        endings=[Ending(
-            id="published_story",
-            requires_beats=["decided_to_file"],
-            notes_to_llm="x",
-            epilogue="y",
-        )],
-    )
-    state = State(player_location="loc_a")  # decision beat not fired
-    ProseType = _build_prose_part_type(world, state)
-    with pytest.raises(ValidationError):
-        ProseType.model_validate({
-            "prose": "...",
-            "next": {"type": "end_game", "ending_id": "published_story"},
-        })
-
-
-def test_dynamic_prose_endgame_undefined_ending_rejected():
-    world = _make_world()
-    state = State(player_location="loc_a")
-    ProseType = _build_prose_part_type(world, state)
-    with pytest.raises(ValidationError):
-        ProseType.model_validate({
-            "prose": "...",
-            "next": {"type": "end_game", "ending_id": "ghost"},
-        })
-
-
-def test_dynamic_prose_continue_without_leave_option_rejected():
-    """The ≥1-leave-option rule lives on canonical ContinueScene as
-    @model_validator. The dynamic ContinueScene inherits it via __base__=
+def test_dynamic_choice_bundle_without_leave_option_rejected():
+    """The ≥1-leave-option rule lives on canonical ChoiceBundle as
+    @model_validator. The dynamic ChoiceBundle inherits it via __base__=
     so the rule fires at parse time, inside pydantic-ai's retry loop."""
     world = _make_world()
     state = State(player_location="loc_a")
-    ProseType = _build_prose_part_type(world, state)
+    ChoiceType = _build_choice_bundle_type(world, state)
     with pytest.raises(ValidationError, match="leaves_for"):
-        ProseType.model_validate({
-            "prose": "...",
-            "next": {
-                "type": "continue",
-                "options": [{"text": "stay 1"}, {"text": "stay 2"}],
-            },
+        ChoiceType.model_validate({
+            "options": [{"text": "stay 1"}, {"text": "stay 2"}],
         })
 
 
-def test_dynamic_prose_continue_with_leave_option_passes():
+def test_dynamic_choice_bundle_with_leave_option_passes():
     world = _make_world()
     state = State(player_location="loc_a")
-    ProseType = _build_prose_part_type(world, state)
-    ProseType.model_validate({
-        "prose": "...",
-        "next": {
-            "type": "continue",
-            "options": [
-                {"text": "stay"},
-                {"text": "leave", "leaves_for": "loc_b"},
-            ],
-        },
+    ChoiceType = _build_choice_bundle_type(world, state)
+    ChoiceType.model_validate({
+        "options": [
+            {"text": "stay"},
+            {"text": "leave", "leaves_for": "loc_b"},
+        ],
     })
 
 
-def test_dynamic_prose_continue_with_non_adjacent_leave_rejected():
+def test_dynamic_choice_bundle_non_adjacent_leave_rejected():
     """leaves_for narrowed to Literal[*adjacent_to] → non-adjacent
     rejected by grammar."""
     world = _make_world(
@@ -352,58 +294,13 @@ def test_dynamic_prose_continue_with_non_adjacent_leave_rejected():
         ],
     )
     state = State(player_location="loc_a")
-    ProseType = _build_prose_part_type(world, state)
+    ChoiceType = _build_choice_bundle_type(world, state)
     with pytest.raises(ValidationError):
-        ProseType.model_validate({
-            "prose": "...",
-            "next": {
-                "type": "continue",
-                "options": [
-                    {"text": "leave for C", "leaves_for": "loc_c"},
-                ],
-            },
+        ChoiceType.model_validate({
+            "options": [
+                {"text": "leave for C", "leaves_for": "loc_c"},
+            ],
         })
-
-
-# ───────────────────────── leave_pick → EndScene (grammar-enforced) ─────────────────────────
-
-
-def test_leave_pick_turn_grammar_only_accepts_end_scene():
-    """The regression that originally motivated `__base__=`. When leave_pick
-    is set, the dynamic ProsePart's `next` is `EndScene` (no union) — so
-    Continue/EndGame are rejected at parse time, before any application
-    validation can run."""
-    world = _make_world()
-    state = State(player_location="loc_a")
-    leave_pick = Option(text="leave", leaves_for="loc_b")
-    ProseType = _build_prose_part_type(world, state, leave_pick=leave_pick)
-
-    # ContinueScene rejected.
-    with pytest.raises(ValidationError):
-        ProseType.model_validate({
-            "prose": "...",
-            "next": {
-                "type": "continue",
-                "options": [
-                    {"text": "stay"},
-                    {"text": "leave", "leaves_for": "loc_b"},
-                ],
-            },
-        })
-
-    # EndGame rejected.
-    with pytest.raises(ValidationError):
-        ProseType.model_validate({
-            "prose": "...",
-            "next": {"type": "end_game", "ending_id": "anything"},
-        })
-
-    # EndScene accepted.
-    pp = ProseType.model_validate({
-        "prose": "...",
-        "next": {"type": "end_scene"},
-    })
-    assert pp.next.type == "end_scene"
 
 
 # ───────────────────────── reachability filter (transitive blocking) ─────────────────────────

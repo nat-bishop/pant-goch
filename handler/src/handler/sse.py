@@ -134,6 +134,27 @@ def options_event(options: list[dict]) -> dict:
     return {"event": "options", "options": options}
 
 
+def pause_for_continue_event() -> dict:
+    """Emitted when the prose writer calls `pause_for_continue()`. The
+    frontend renders a Continue button beneath the streaming prose. On
+    click, the frontend POSTs /continue to resolve the agent's
+    suspended tool call."""
+    return {"event": "pause_for_continue"}
+
+
+def free_text_request_event(prompt: str, npc_id: str | None) -> dict:
+    """Emitted when the prose writer calls `request_free_text(prompt,
+    npc_id)`. The frontend renders a text input box with `prompt` as
+    label. On submit, the frontend POSTs /free_text {text} to resolve
+    the agent's suspended tool call. `npc_id` is optional context for
+    framing the input visually (e.g., "Speak to Tom Bevan: …")."""
+    return {
+        "event": "free_text_request",
+        "prompt": prompt,
+        "npc_id": npc_id,
+    }
+
+
 def scene_exit_event() -> dict:
     return {"event": "scene_exit"}
 

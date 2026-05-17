@@ -13,6 +13,16 @@ export type Phase =
   | "game_over"
   | "stranded"; // EndScene at a location with no adjacents (shouldn't happen with Pant Goch)
 
+// Narrator-driven suspensions live on `awaitingContinue` and
+// `freeTextRequest` rather than expanding `phase` — the consumer (Chapter)
+// can derive its UI state from those flags alongside `phase: "in_scene"`,
+// and there is no need to keep `phase` in lockstep with the flag.
+
+export interface FreeTextRequest {
+  prompt: string;
+  npc_id: string | null;
+}
+
 export type WorldMode = "location" | "map" | "notes";
 
 export interface TurnPayload {
@@ -70,6 +80,12 @@ interface Store {
    * sentinel. */
   case_file: CaseFileEntry[];
   game_over_ending: string | null;
+  /** Set when prose writer calls pause_for_continue. Cleared when the
+   * user taps Continue (which fires POST /continue). */
+  awaitingContinue: boolean;
+  /** Set when prose writer calls request_free_text. Cleared on POST
+   * /free_text submission. */
+  freeTextRequest: FreeTextRequest | null;
   error: string | null;
 
   /** Static world metadata; loaded once on mount. Null until /world resolves. */
@@ -113,6 +129,8 @@ export const useStore = create<Store>((set) => ({
   scenes: [],
   case_file: [],
   game_over_ending: null,
+  awaitingContinue: false,
+  freeTextRequest: null,
   error: null,
 
   world: null,
@@ -146,6 +164,8 @@ export const useStore = create<Store>((set) => ({
         scenes: [],
         case_file: [],
         game_over_ending: null,
+        awaitingContinue: false,
+        freeTextRequest: null,
         error: null,
         npcLocations,
         worldMode: "location",
@@ -292,6 +312,19 @@ export const useStore = create<Store>((set) => ({
 
         case "game_over": {
           return { phase: "game_over", game_over_ending: event.ending_id };
+        }
+
+        case "pause_for_continue": {
+          // Narrator paused mid-prose. Phase stays "in_scene" — the
+          // turn is still streaming. Chapter reads awaitingContinue to
+          // render the Continue button.
+          return { awaitingContinue: true };
+        }
+
+        case "free_text_request": {
+          return {
+            freeTextRequest: { prompt: event.prompt, npc_id: event.npc_id },
+          };
         }
 
         case "error": {

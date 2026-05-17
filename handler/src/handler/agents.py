@@ -1,58 +1,71 @@
 """Scene-runner pydantic-ai agents + dynamic per-call output schemas.
 
-Phase 1 (`emit_state_changes`) emits `StateChangeBundle`; Phase 2
-(`emit_prose`) emits `ProsePart`. Each has its own system prompt:
-classifier (full bible) for Phase 1, narrator (slim, voice-focused) for
-Phase 2. Phase 1 is stateless per turn; Phase 2 carries a scene-bounded
-message history in `SceneRunnerRuntime.phase2_message_history` so the
-narrator sees its own prior turns as assistant messages — voice continuity
-accumulates within a scene, resets at scene boundary.
+Per turn, three LLM calls plus side agents:
 
-Per-call dynamic types narrow `beat_id` to `Literal[*reachable_beat_ids]`,
-`Option.leaves_for` to `Literal[*adjacent_ids]`, and `EndGame.ending_id` to
-`Literal[*satisfied_ending_ids]` so llama.cpp's grammar sampler rejects
-invalid ids at decode time. When `leave_pick` is set, `ProsePart.next` is
-narrowed to `EndScene` (no union) — the leave-pick-forces-end-scene rule
-is grammar-enforced too.
+  Phase 1 (`emit_state_changes`) — classifier emitting `StateChangeBundle`.
+      Stateless per turn (no message_history). Bible-loaded system prompt.
+
+  Prose writer (`emit_prose`) — narrator with a tool loop. Output type is
+      `str` (PoL 2026-05-17 confirmed `NativeOutput` + tools is incompatible
+      on Gemma 4 + llama.cpp). Scene-bounded message history in
+      `SceneRunnerRuntime.phase2_message_history` accumulates prior prose
+      as assistant content; voice continuity rides on it.
+
+      Four tools registered on the prose writer:
+        - `pause_for_continue()` — suspend mid-prose, resume on player tap.
+        - `request_free_text(prompt, npc_id?)` — suspend, return player text.
+        - `end_scene(location_id?)` — set termination flag on deps.
+        - `end_game(ending_id)` — set termination flag on deps.
+
+      Termination is a side effect on `ProseWriterDeps.termination`; the
+      engine inspects it after the agent.run completes and assembles the
+      composite ProsePart.next accordingly.
+
+  Choice author (`emit_choices`) — runs only when prose writer terminated
+      without an end_scene/end_game tool call AND leave_pick was not set.
+      Emits `ChoiceBundle.options` (a list of 2-4 options, ≥1 leave).
+      Stateless per cycle (no message_history). Slim system prompt — no
+      bible, no voice samples, no endings.
+
+Per-call dynamic types narrow `Option.leaves_for` to
+`Literal[*adjacent_ids] | None` (choice author) — same pattern as Phase 1.
+
+Tool args (npc_id, location_id, ending_id) are validated post-hoc inside
+the tool function bodies in v1 (str type at the agent level), not via
+per-call grammar narrowing. Promoting to prepare-callback narrowing is a
+follow-up if the looser tool-arg surface causes drift.
 
 State-INDEPENDENT structural rules live on the canonical schemas in
-`schemas.py` as @model_validator / Field(...). State-DEPENDENT enum
-constraints live in the per-call Literal narrowing below. The dynamic
-StateChangeBundle and ContinueScene subclass their canonical counterparts
-(`__base__=`) so the @model_validator inheritance fires when pydantic-ai
-parses the LLM output — on ValidationError pydantic-ai's retry loop kicks
-in automatically. The remaining dynamic classes (UnlockBeat, Option,
-EndScene, EndGame, ProsePart) have no canonical-side validators, so they
-don't need `__base__=`.
-
-Why NativeOutput rather than the output-function pattern: empirical
-testing on Gemma 4 E4B via llama-server's tool-calling path showed the
-agent hung indefinitely; NativeOutput routes through
-`response_format.json_schema` which Gemma 4 handles reliably. See the
-plan's Phase 0 fallback note.
+`schemas.py` (`ChoiceBundle._has_at_least_one_leave_option`,
+`StateChangeBundle.max_length=2`). State-DEPENDENT enum constraints live
+in the per-call Literal narrowing below.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Annotated, Any, Literal, Union
+from typing import Annotated, Any, Awaitable, Callable, Literal, Union
 
+import logfire
 from pydantic import BaseModel, Field, create_model, model_validator
-from pydantic_ai import Agent, NativeOutput
+from pydantic_ai import Agent, ModelRetry, NativeOutput, RunContext
 from pydantic_ai.messages import ModelMessage
 from pydantic_ai.models.openai import OpenAIChatModel
 
 from .engine import reachable_beat_ids
 from .prompts import (
+    build_choice_author_system_prompt,
+    build_choice_author_user_message,
     build_chronicler_system_prompt,
     build_chronicler_user_prompt,
     build_phase1_system_prompt,
     build_phase1_user_prompt,
-    build_phase2_system_prompt,
-    build_phase2_user_message,
     build_populator_system_prompt,
     build_populator_user_prompt,
+    build_prose_writer_system_prompt,
+    build_prose_writer_user_message,
 )
 from .schemas import (
+    ChoiceBundle,
     ChronicleEntry,
     ContinueScene,
     EndGame,
@@ -68,6 +81,46 @@ from .state import State
 from .world import World
 
 
+# ───────────────────────── prose writer deps ─────────────────────────
+
+
+AwaitContinue = Callable[[], Awaitable[None]]
+AwaitFreeText = Callable[[str, str | None], Awaitable[str]]
+
+
+@dataclass
+class ProseWriterDeps:
+    """Injected per-call via `agent.run(deps=...)`. The async callbacks
+    (`await_continue`, `await_free_text`) are how the pause_for_continue
+    and request_free_text tools suspend until the engine resolves them
+    (typically via a future bound to an HTTP POST in the SSE backend, or
+    an asyncio.Event in tests / CLI).
+
+    `termination` is set in place by the `end_scene` / `end_game` tools
+    via `terminate_scene` / `terminate_game`. After the agent.run
+    completes, the engine reads this field to decide which composite
+    `ProsePart.next` variant to construct. Priority is in `emit_prose`.
+
+    `present_npc_ids`, `adjacent_ids`, `satisfied_ending_ids` are passed
+    per-call so the tool bodies can validate args against the current
+    state (v1 uses str-typed tool args + post-hoc validation rather than
+    per-call grammar narrowing).
+    """
+
+    await_continue: AwaitContinue
+    await_free_text: AwaitFreeText
+    present_npc_ids: tuple[str, ...] = ()
+    adjacent_ids: tuple[str, ...] = ()
+    satisfied_ending_ids: tuple[str, ...] = ()
+    termination: tuple[Literal["scene", "game"], str | None] | None = None
+
+    def terminate_scene(self, location_id: str | None) -> None:
+        self.termination = ("scene", location_id)
+
+    def terminate_game(self, ending_id: str) -> None:
+        self.termination = ("game", ending_id)
+
+
 # ───────────────────────── agent bundle ─────────────────────────
 
 
@@ -76,17 +129,18 @@ class AgentBundle:
     """One world's agents. Built once in lifespan via
     `build_scene_runner_bundle(model, world)`.
 
-    All four agents (Phase 1 classifier, Phase 2 narrator, populator,
-    chronicler) have world-scoped system prompts and are constructed
-    once at bundle-build time. Per-call dynamic schemas are passed at
-    `agent.run()` time via NativeOutput (see emit_state_changes /
-    emit_prose / emit_placements / emit_chronicle_entry). System
-    prompts are byte-stable across the session → KV cache hits across
-    turns / scenes for each agent independently.
+    All five agents (Phase 1 classifier, prose writer, choice author,
+    populator, chronicler) have world-scoped system prompts and are
+    constructed once at bundle-build time. Per-call dynamic schemas are
+    passed at `agent.run()` time via NativeOutput (for Phase 1, choice
+    author, populator, chronicler — output_type=str for prose writer).
+    System prompts are byte-stable across the session → KV cache hits
+    across turns / scenes for each agent independently.
     """
 
     phase1: Agent[None, StateChangeBundle]
-    phase2: Agent[None, ProsePart]
+    prose_writer: Agent[ProseWriterDeps, str]
+    choice_author: Agent[None, ChoiceBundle]
     populator: Agent[None, NpcPlacementBundle]
     chronicler: Agent[None, ChronicleEntry]
     world: World
@@ -94,17 +148,17 @@ class AgentBundle:
 
 @dataclass
 class SceneRunnerRuntime:
-    """Scene-scoped Phase 2 conversation state. Reset at scene boundary
-    (engine.enter_scene). One per session.
+    """Scene-scoped prose-writer conversation state. Reset at scene
+    boundary (engine.enter_scene). One per session.
 
-    Phase 2 is conversation-based within a scene: the model sees its own
-    prior turns' prose as assistant messages. Voice continuity (sentence
-    rhythm, narrator persona, dialogue tag style) accumulates naturally
-    over the 4-8 turns of a scene. Reset to empty at scene boundary so
-    the next scene's KV cache starts fresh from the (cached) system
-    prompt.
+    Prose writer is conversation-based within a scene: the model sees
+    its own prior turns' prose as assistant messages. Voice continuity
+    (sentence rhythm, narrator persona, dialogue tag style) accumulates
+    naturally over the 4-8 turns of a scene. Reset to empty at scene
+    boundary so the next scene's KV cache starts fresh from the (cached)
+    system prompt.
 
-    On Phase 2 retry exhaustion (UnexpectedModelBehavior → fallback
+    On prose-writer retry exhaustion (UnexpectedModelBehavior → fallback
     prose path in scene_loop), the runtime is NOT mutated. The fallback
     prose is surfaced to the player but never persisted to message
     history — preserves voice continuity by treating the failed turn as
@@ -188,32 +242,22 @@ def _build_state_change_bundle_type(world: World, state: State) -> type[BaseMode
     )
 
 
-def _build_prose_part_type(
-    world: World,
-    state: State,
-    *,
-    leave_pick: Option | None = None,
-) -> type[BaseModel]:
-    """ProsePart whose Option.leaves_for is `Literal[*adjacent_ids] | None`
-    and EndGame.ending_id is `Literal[*satisfied_ending_ids]`. When
-    `leave_pick` is set, `next` is narrowed to `EndScene` (no union) so the
-    grammar physically prevents emitting ContinueScene/EndGame on a
-    leave-pick turn.
+def _build_choice_bundle_type(world: World, state: State) -> type[BaseModel]:
+    """ChoiceBundle whose Option.leaves_for is
+    `Literal[*adjacent_ids] | None`. The grammar sampler physically
+    cannot emit a non-adjacent walk target.
 
-    State-independent rules (≥1 leave option in ContinueScene) live on the
-    canonical schema as @model_validator and fire when the output function
-    round-trips dynamic → canonical.
+    State-independent rules (≥1 leave option) live on the canonical
+    ChoiceBundle as @model_validator and fire on round-trip in
+    `emit_choices`.
+
+    Stranded-location edge: when adjacent_ids is empty, leaves_for
+    Literal collapses to None — choice author cannot emit a leave option
+    at all. The canonical `_has_at_least_one_leave_option` validator
+    will then ALWAYS fail; the engine fallback path handles this case.
     """
-    if leave_pick is not None:
-        return create_model("ProsePart", prose=(str, ...), next=(EndScene, ...))
-
     location = world.locations[state.player_location]
     adjacent_ids = tuple(location.adjacent_to)
-    satisfied_endings = tuple(sorted(
-        eid for eid, e in world.endings.items()
-        if set(e.requires_beats).issubset(state.unlocked_beats)
-    ))
-
     if adjacent_ids:
         LeavesForType = Union[Literal[adjacent_ids], None]  # type: ignore[valid-type]
     else:
@@ -223,22 +267,11 @@ def _build_prose_part_type(
         text=(str, ...),
         leaves_for=(LeavesForType, None),
     )
-    DynamicContinue = create_model(
-        "ContinueScene",
-        __base__=ContinueScene,
+    return create_model(
+        "ChoiceBundle",
+        __base__=ChoiceBundle,
         options=(list[DynamicOption], ...),
     )
-    next_variants: list[type] = [DynamicContinue, EndScene]
-    if satisfied_endings:
-        DynamicEndGame = create_model(
-            "EndGame",
-            type=(Literal["end_game"], "end_game"),
-            ending_id=(Literal[satisfied_endings], ...),  # type: ignore[valid-type]
-        )
-        next_variants.append(DynamicEndGame)
-    NextUnion = Union[tuple(next_variants)]  # type: ignore[valid-type]
-    SceneNext = Annotated[NextUnion, Field(discriminator="type")]
-    return create_model("ProsePart", prose=(str, ...), next=(SceneNext, ...))
 
 
 # ───────────────────────── populator dynamic schema ─────────────────────────
@@ -328,19 +361,26 @@ def _build_chronicle_entry_type(
 def build_scene_runner_bundle(
     model: OpenAIChatModel, world: World
 ) -> AgentBundle:
-    """Construct the agent bundle for `world`. Bakes four system prompts
-    (phase 1 classifier, phase 2 narrator, populator, chronicler) and
-    builds one agent per role. Per-call dynamic output_type is passed
-    at agent.run() time via NativeOutput.
+    """Construct the agent bundle for `world`. Bakes five system prompts
+    (Phase 1 classifier, prose writer, choice author, populator,
+    chronicler) and builds one agent per role. Per-call dynamic
+    output_type / tool-arg validation happens at agent.run() time.
     """
     phase1 = Agent[None, StateChangeBundle](
         model=model,
         system_prompt=build_phase1_system_prompt(world),
         output_retries=3,
     )
-    phase2 = Agent[None, ProsePart](
+    prose_writer: Agent[ProseWriterDeps, str] = Agent(
         model=model,
-        system_prompt=build_phase2_system_prompt(world),
+        deps_type=ProseWriterDeps,
+        system_prompt=build_prose_writer_system_prompt(world),
+        output_retries=3,
+    )
+    _register_prose_writer_tools(prose_writer)
+    choice_author = Agent[None, ChoiceBundle](
+        model=model,
+        system_prompt=build_choice_author_system_prompt(world),
         output_retries=3,
     )
     populator = Agent[None, NpcPlacementBundle](
@@ -351,11 +391,91 @@ def build_scene_runner_bundle(
     chronicler = build_chronicler_agent(model, world)
     return AgentBundle(
         phase1=phase1,
-        phase2=phase2,
+        prose_writer=prose_writer,
+        choice_author=choice_author,
         populator=populator,
         chronicler=chronicler,
         world=world,
     )
+
+
+# ───────────────────────── prose writer tools ─────────────────────────
+
+
+def _register_prose_writer_tools(agent: Agent[ProseWriterDeps, str]) -> None:
+    """Register the four prose-writer tools on `agent`. Called once at
+    bundle build. Tool args are str-typed; per-cycle valid sets
+    (present_npc_ids, adjacent_ids, satisfied_ending_ids) live on
+    `ProseWriterDeps` and the tool bodies validate against them — invalid
+    args raise `ModelRetry` so pydantic-ai's retry loop kicks in.
+
+    Promoting to per-call grammar narrowing via the `prepare` callback
+    is a follow-up if the looser surface causes drift in practice.
+    """
+
+    @agent.tool
+    async def pause_for_continue(ctx: RunContext[ProseWriterDeps]) -> str:
+        """Pause the scene mid-prose. The player sees what you've written,
+        taps Continue, and you resume. Returns an empty string when the
+        player has tapped continue (pydantic-ai tools must return JSON-
+        serialisable; '' is the no-payload signal)."""
+        await ctx.deps.await_continue()
+        return ""
+
+    @agent.tool
+    async def request_free_text(
+        ctx: RunContext[ProseWriterDeps],
+        prompt: str,
+        npc_id: str | None = None,
+    ) -> str:
+        """Ask the player to type a response. Returns the player's typed
+        text. `npc_id` (optional) scopes the input to an NPC currently
+        present in the scene; raises ModelRetry if the id isn't
+        present."""
+        if npc_id is not None and npc_id not in ctx.deps.present_npc_ids:
+            raise ModelRetry(
+                f"request_free_text: npc_id {npc_id!r} is not present in "
+                f"this scene. Present NPCs: "
+                f"{list(ctx.deps.present_npc_ids)!r}. Omit npc_id or use "
+                f"one of these ids."
+            )
+        return await ctx.deps.await_free_text(prompt, npc_id)
+
+    @agent.tool
+    async def end_scene(
+        ctx: RunContext[ProseWriterDeps],
+        location_id: str | None = None,
+    ) -> str:
+        """Close the scene. Optional `location_id` is the adjacent
+        location the player walks to; raises ModelRetry if non-adjacent.
+        Omit location_id to close in place — the player picks next
+        location via the map."""
+        if location_id is not None and location_id not in ctx.deps.adjacent_ids:
+            raise ModelRetry(
+                f"end_scene: location_id {location_id!r} is not adjacent. "
+                f"Adjacent locations: {list(ctx.deps.adjacent_ids)!r}. "
+                f"Omit location_id to close in place, or use one of these."
+            )
+        ctx.deps.terminate_scene(location_id)
+        return ""
+
+    @agent.tool
+    async def end_game(
+        ctx: RunContext[ProseWriterDeps],
+        ending_id: str,
+    ) -> str:
+        """End the game with one of the currently satisfied endings.
+        Raises ModelRetry if the ending's requires_beats aren't met."""
+        if ending_id not in ctx.deps.satisfied_ending_ids:
+            raise ModelRetry(
+                f"end_game: ending_id {ending_id!r} is not currently "
+                f"satisfied. Satisfied endings right now: "
+                f"{list(ctx.deps.satisfied_ending_ids)!r}. The player must "
+                f"trigger a decision beat for an ending before you can "
+                f"emit it."
+            )
+        ctx.deps.terminate_game(ending_id)
+        return ""
 
 
 # ───────────────────────── per-call run wrappers ─────────────────────────
@@ -400,13 +520,7 @@ async def emit_placements(
     the case file, beats so far, and dramatic logic.
 
     Empty bundle is the common case — most scene entries don't need
-    movement. Caller (scene_loop.play_scene) applies non-empty
-    placements to `state.npc_locations` before the populator-aware
-    Phase 1 / Phase 2 prompts render `[PRESENT]`.
-
-    Stateless across scenes (no message_history); the case file
-    (`state.case_file_entries`) is the cross-scene context the populator
-    reads.
+    movement.
     """
     prompt = build_populator_user_prompt(state, bundle.world)
     DynamicBundle = _build_npc_placement_bundle_type(bundle.world)
@@ -417,6 +531,13 @@ async def emit_placements(
     return NpcPlacementBundle.model_validate(result.output.model_dump())
 
 
+def _satisfied_ending_ids(world: World, state: State) -> tuple[str, ...]:
+    return tuple(sorted(
+        eid for eid, e in world.endings.items()
+        if set(e.requires_beats).issubset(state.unlocked_beats)
+    ))
+
+
 async def emit_prose(
     bundle: AgentBundle,
     runtime: SceneRunnerRuntime,
@@ -424,44 +545,177 @@ async def emit_prose(
     applied: StateChangeBundle,
     *,
     leave_pick: Option | None = None,
+    emit_event: Callable[[dict], Awaitable[None]] | None = None,
+    await_continue: AwaitContinue | None = None,
+    await_free_text: AwaitFreeText | None = None,
 ) -> ProsePart:
-    """Phase 2 LLM call. Scene-bounded conversation: the model sees its
-    own prior turns' prose as assistant messages via
-    `runtime.phase2_message_history`. On success, history is updated with
-    `result.all_messages()` (atomic: pydantic-ai's internal ModelRetry
-    loop doesn't pollute — only the final accepted result is appended).
+    """Per-turn prose generation with tool loop + choice-author follow-up.
 
-    On UnexpectedModelBehavior (retries exhausted), this function raises;
-    caller (scene_loop.run_turn) catches and emits fallback prose, which
-    does NOT mutate runtime.phase2_message_history.
+    Pipeline:
+      1. Run prose writer (output_type=str) with the 4 tools. Tools fire
+         inline; pause / free_text suspend until the engine resolves them.
+         end_scene / end_game set deps.termination as a side effect.
+      2. Stream prose words via `paced_word_emitter` as the agent
+         produces them (run_stream + TextPartDeltaEvent → words →
+         emit_event). One continuous stream across all tool boundaries.
+      3. Assemble composite `ProsePart.next` in priority order:
+           a. deps.termination == ("game", eid) → EndGame
+           b. deps.termination == ("scene", loc?) → EndScene
+           c. leave_pick is not None → EndScene
+           d. otherwise → run choice author → ContinueScene
+
+    Streaming via emit_event was previously done by scene_loop; it moves
+    here because the agent.run emits prose across tool-call boundaries
+    and needs to pace each chunk as it arrives.
+
+    `SceneRunnerRuntime.phase2_message_history` is updated on success
+    (atomic — pydantic-ai's internal ModelRetry loop doesn't pollute,
+    only the final accepted result is appended). On
+    UnexpectedModelBehavior (retries exhausted), this function raises;
+    caller (scene_loop.run_turn) catches and emits fallback prose.
 
     `is_first_turn` is derived from runtime.phase2_message_history being
-    empty. On the first turn of the first scene, the opening seed from
-    `world.brief.opening_seed` is rendered into the user message; the
-    flag is `state.scene_id == 1 and not state.dialogue_history`. The
-    data lives in `world`; no kwarg threading needed.
+    empty. The opening seed from world.brief.opening_seed renders into
+    the user message on the first turn of scene 1.
+
+    `await_continue` / `await_free_text` MUST be supplied if the prose
+    writer might call those tools. Tests can pass no-op callbacks. The
+    SSE backend wires them through `SessionRuntime` futures.
     """
     is_first_turn = not runtime.phase2_message_history
     is_session_opening = is_first_turn and state.scene_id == 1
     opening_seed = (
         bundle.world.brief.opening_seed if is_session_opening else None
     )
-    user_msg = build_phase2_user_message(
+    user_msg = build_prose_writer_user_message(
         state, bundle.world, applied,
         leave_pick=leave_pick,
         opening_seed=opening_seed,
         is_first_turn=is_first_turn,
     )
-    DynamicProsePart = _build_prose_part_type(
-        bundle.world, state, leave_pick=leave_pick
+
+    location = bundle.world.locations[state.player_location]
+    deps = ProseWriterDeps(
+        await_continue=await_continue or _noop_await_continue,
+        await_free_text=await_free_text or _noop_await_free_text,
+        present_npc_ids=tuple(
+            n.id for n in bundle.world.npcs_at(state.player_location, state=state)
+        ),
+        adjacent_ids=tuple(location.adjacent_to),
+        satisfied_ending_ids=_satisfied_ending_ids(bundle.world, state),
     )
-    result = await bundle.phase2.run(
+
+    full_prose = await _run_prose_writer_streamed(
+        bundle.prose_writer,
         user_msg,
-        message_history=runtime.phase2_message_history,
-        output_type=NativeOutput(DynamicProsePart, strict=True),
+        runtime=runtime,
+        deps=deps,
+        emit_event=emit_event,
     )
-    runtime.phase2_message_history = result.all_messages()
-    return ProsePart.model_validate(result.output.model_dump())
+
+    # Assemble next in priority order.
+    if deps.termination is not None:
+        kind, payload = deps.termination
+        if kind == "game":
+            assert payload is not None  # tool body validates non-empty
+            return ProsePart(prose=full_prose, next=EndGame(ending_id=payload))
+        # kind == "scene"; payload may be None (close in place) or an
+        # adjacent location id (engine reads via state.player_location vs
+        # the loop's next-walk logic — handled in scene_loop).
+        return ProsePart(prose=full_prose, next=EndScene())
+    if leave_pick is not None:
+        return ProsePart(prose=full_prose, next=EndScene())
+
+    # Choice author runs only when prose writer terminated cleanly and
+    # the scene continues.
+    choices = await emit_choices(bundle, state, full_prose)
+    return ProsePart(
+        prose=full_prose,
+        next=ContinueScene(options=list(choices.options)),
+    )
+
+
+async def _run_prose_writer_streamed(
+    agent: Agent[ProseWriterDeps, str],
+    user_msg: str,
+    *,
+    runtime: SceneRunnerRuntime,
+    deps: ProseWriterDeps,
+    emit_event: Callable[[dict], Awaitable[None]] | None,
+) -> str:
+    """Run the prose writer with streaming, pace prose words via
+    emit_event as they arrive, return the accumulated prose. Updates
+    runtime.phase2_message_history on success."""
+    from .sse import paced_word_emitter, _words_from_stream
+
+    async def text_chunks():
+        async with agent.run_stream(
+            user_msg,
+            message_history=runtime.phase2_message_history,
+            deps=deps,
+        ) as result:
+            async for delta_text in result.stream_text(delta=True):
+                yield delta_text
+            # Capture the final messages for history persistence after
+            # the stream completes.
+            runtime.phase2_message_history = result.all_messages()
+
+    if emit_event is not None:
+        return await paced_word_emitter(
+            _words_from_stream(text_chunks()),
+            emit_event,
+            event_kind="prose_word",
+        )
+    # No event emitter — just drain the stream for the prose text.
+    parts: list[str] = []
+    async for chunk in text_chunks():
+        parts.append(chunk)
+    return "".join(parts)
+
+
+async def emit_choices(
+    bundle: AgentBundle,
+    state: State,
+    prose: str,
+) -> ChoiceBundle:
+    """Choice author LLM call. Stateless per cycle (no message_history).
+    Sees the just-written prose + current state; emits a list of 2-4
+    options with adjacency-narrowed leaves_for.
+
+    Stranded-location edge: when player has no adjacent locations,
+    `_build_choice_bundle_type` collapses leaves_for to None, so the
+    canonical `_has_at_least_one_leave_option` validator always fails
+    here. Caller (emit_prose) doesn't currently special-case this; the
+    fallback path in scene_loop.run_turn fires generic options.
+    """
+    user_msg = build_choice_author_user_message(state, bundle.world, prose)
+    DynamicChoiceBundle = _build_choice_bundle_type(bundle.world, state)
+    result = await bundle.choice_author.run(
+        user_msg,
+        output_type=NativeOutput(DynamicChoiceBundle, strict=True),
+    )
+    return ChoiceBundle.model_validate(result.output.model_dump())
+
+
+async def _noop_await_continue() -> None:
+    """Default await_continue when no callback is supplied (tests / CLI
+    that don't expect pause tool calls). If the prose writer DOES call
+    pause_for_continue under this, the tool returns immediately — the
+    scene proceeds without an actual UI pause. Tests that need to
+    verify pause semantics supply a real callback."""
+    return None
+
+
+async def _noop_await_free_text(prompt: str, npc_id: str | None) -> str:
+    """Default await_free_text when no callback is supplied. Returns a
+    sentinel so the model sees a non-empty tool result and doesn't loop.
+    Tests that exercise free_text supply a real callback."""
+    logfire.warn(
+        "request_free_text called without an await_free_text callback; "
+        "returning sentinel",
+        prompt=prompt, npc_id=npc_id,
+    )
+    return "(no response)"
 
 
 # ───────────────────────── chronicler agent ─────────────────────────
@@ -490,14 +744,7 @@ def build_chronicler_agent(
     (full bible + voice rules); each call appends one user message (scene
     summary) and gets one assistant message back. Output is structured
     `ChronicleEntry` = case_file_entry (UI prose) + npc_memory_updates
-    (per-NPC notes surfaced to Phase 2).
-
-    Output spec is passed at `agent.run()` time (in `emit_chronicle_entry`)
-    via `NativeOutput(ChronicleEntry, strict=True)` — same pattern as
-    Phase 1/2. Keeping the agent's construction free of `NativeOutput`
-    lets TestModel-based unit tests bypass the native-output profile
-    check by monkeypatching `emit_chronicle_entry` or supplying
-    `custom_output_args`.
+    (per-NPC notes surfaced to the prose writer).
 
     The OpenAIModelProfile(openai_chat_send_back_thinking_parts=False)
     flag is set on the model in lifespan / _build_model — load-bearing
@@ -508,7 +755,7 @@ def build_chronicler_agent(
     return Agent[None, ChronicleEntry](
         model=model,
         system_prompt=build_chronicler_system_prompt(world),
-        # Match phase1/phase2/populator. Needed so the canonical
+        # Match the other agents. Needed so the canonical
         # _no_duplicate_npc_ids validator triggers a retry rather than
         # bubbling on the first duplicate.
         output_retries=3,

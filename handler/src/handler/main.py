@@ -52,6 +52,7 @@ from .launcher import (
     wait_healthy,
 )
 from .scene_loop import play_session
+from .sse import free_text_request_event, pause_for_continue_event
 from .state import State, make_initial_state
 from .world import World, load_world
 
@@ -127,6 +128,11 @@ class SessionRuntime:
     event_queue: "asyncio.Queue[dict]" = field(default_factory=asyncio.Queue)
     pick_future: "asyncio.Future[int] | None" = None
     walk_future: "asyncio.Future[str] | None" = None
+    # Continue/free-text futures resolve the prose writer's tool-call
+    # suspensions (pause_for_continue / request_free_text). One-shot per
+    # tool call; reset to None after resolution. Mirrors pick/walk.
+    continue_future: "asyncio.Future[None] | None" = None
+    free_text_future: "asyncio.Future[str] | None" = None
     play_task: "asyncio.Task | None" = None
 
 
@@ -357,6 +363,10 @@ class WalkBody(BaseModel):
     to_location: str
 
 
+class FreeTextBody(BaseModel):
+    text: str
+
+
 # Sentinel placed on the event_queue when play_session terminates. The
 # /events generator stops yielding when it sees this.
 _DONE_SENTINEL: dict = {"event": "_session_done"}
@@ -406,6 +416,26 @@ async def start_session() -> dict[str, str]:
         finally:
             rt.walk_future = None
 
+    async def await_continue() -> None:
+        """pause_for_continue tool handler. Emits the SSE event, then
+        suspends on a fresh future until POST /continue resolves it."""
+        await emit(pause_for_continue_event())
+        rt.continue_future = asyncio.get_event_loop().create_future()
+        try:
+            await rt.continue_future
+        finally:
+            rt.continue_future = None
+
+    async def await_free_text(prompt: str, npc_id: str | None) -> str:
+        """request_free_text tool handler. Emits the SSE event, then
+        suspends on a fresh future until POST /free_text resolves it."""
+        await emit(free_text_request_event(prompt, npc_id))
+        rt.free_text_future = asyncio.get_event_loop().create_future()
+        try:
+            return await rt.free_text_future
+        finally:
+            rt.free_text_future = None
+
     async def run() -> None:
         try:
             await play_session(
@@ -413,6 +443,8 @@ async def start_session() -> dict[str, str]:
                 pick_option=pick,
                 pick_walk=walk,
                 emit_event=emit,
+                await_continue=await_continue,
+                await_free_text=await_free_text,
             )
         except asyncio.CancelledError:
             pass
@@ -452,6 +484,32 @@ async def walk(body: WalkBody) -> dict[str, str]:
             400, f"{body.to_location!r} is not adjacent to {loc.id!r}"
         )
     SESSION.walk_future.set_result(body.to_location)
+    return {"status": "ok"}
+
+
+@app.post("/continue")
+async def continue_(_body: dict | None = None) -> dict[str, str]:
+    """Resolve the in-flight pause_for_continue future. Triggered by the
+    Continue button the frontend renders after a `pause_for_continue`
+    SSE event."""
+    if SESSION is None:
+        raise HTTPException(409, "no active session — call POST /start first")
+    if SESSION.continue_future is None or SESSION.continue_future.done():
+        raise HTTPException(409, "no pause awaiting")
+    SESSION.continue_future.set_result(None)
+    return {"status": "ok"}
+
+
+@app.post("/free_text")
+async def free_text(body: FreeTextBody) -> dict[str, str]:
+    """Resolve the in-flight request_free_text future with the player's
+    typed response. Triggered by the input the frontend renders after a
+    `free_text_request` SSE event."""
+    if SESSION is None:
+        raise HTTPException(409, "no active session — call POST /start first")
+    if SESSION.free_text_future is None or SESSION.free_text_future.done():
+        raise HTTPException(409, "no free-text input awaiting")
+    SESSION.free_text_future.set_result(body.text)
     return {"status": "ok"}
 
 

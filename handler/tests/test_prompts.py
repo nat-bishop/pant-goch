@@ -13,8 +13,8 @@ from handler.prompts import (
     build_chronicler_system_prompt,
     build_phase1_system_prompt,
     build_phase1_user_prompt,
-    build_phase2_system_prompt,
-    build_phase2_user_message,
+    build_prose_writer_system_prompt,
+    build_prose_writer_user_message,
 )
 from handler.schemas import Option, StateChangeBundle, UnlockBeat
 from handler.state import make_initial_state
@@ -36,8 +36,8 @@ def test_phase1_system_prompt_is_byte_stable():
 
 def test_phase2_system_prompt_is_byte_stable():
     world = load_world(FIXTURE_VALID)
-    a = build_phase2_system_prompt(world)
-    b = build_phase2_system_prompt(world)
+    a = build_prose_writer_system_prompt(world)
+    b = build_prose_writer_system_prompt(world)
     assert a == b
 
 
@@ -66,38 +66,57 @@ def test_phase1_system_prompt_includes_full_world_bible():
 # ───────────────────────── phase 2 system prompt: slim, voice-focused ─────────────────────────
 
 
-def test_phase2_system_prompt_excludes_beats_and_notes_to_llm():
-    """Phase 2 must NOT see beat ids, notes_to_llm, or beat structure.
-    Phase 2's attention focuses on voice; beat-aware prose was the failure
-    mode this split fixes."""
+def test_prose_writer_system_prompt_excludes_beats_and_notes_to_llm():
+    """Prose writer must NOT see beat ids, notes_to_llm, or beat
+    structure. Beat-aware prose was the failure mode this split fixes.
+    The prose writer DOES see endings (because end_game is its tool),
+    but never beats."""
     world = load_world(FIXTURE_VALID)
-    sys_prompt = build_phase2_system_prompt(world)
+    sys_prompt = build_prose_writer_system_prompt(world)
     for beat in world.beats.values():
         assert beat.id not in sys_prompt, (
-            f"Phase 2 system prompt leaks beat id {beat.id!r}"
+            f"Prose writer system prompt leaks beat id {beat.id!r}"
         )
         assert beat.notes_to_llm.strip() not in sys_prompt, (
-            f"Phase 2 system prompt leaks notes_to_llm for {beat.id!r}"
+            f"Prose writer system prompt leaks notes_to_llm for {beat.id!r}"
         )
     assert "[THE TRUTH]" not in sys_prompt
-    assert "requires_beats" not in sys_prompt
+    # `requires_beats` appears in the [ENDINGS] block (endings reference
+    # their requires_beats by name) — that's intentional, prose writer
+    # needs to know when end_game is fireable. But the beat catalog
+    # itself (with `blocked_by_beats`) must NOT be present.
     assert "blocked_by_beats" not in sys_prompt
 
 
-def test_phase2_system_prompt_excludes_endings():
+def test_prose_writer_system_prompt_includes_endings():
+    """Prose writer sees endings — end_game(ending_id) is its tool. The
+    `[ENDINGS]` block carries ending ids + their requires_beats so the
+    model knows what's satisfied."""
     world = load_world(FIXTURE_VALID)
-    sys_prompt = build_phase2_system_prompt(world)
+    sys_prompt = build_prose_writer_system_prompt(world)
+    assert "[ENDINGS]" in sys_prompt
     for ending in world.endings.values():
-        assert ending.id not in sys_prompt, (
-            f"Phase 2 system prompt leaks ending id {ending.id!r}"
+        assert ending.id in sys_prompt, (
+            f"Prose writer system prompt missing ending id {ending.id!r}"
         )
+
+
+def test_prose_writer_system_prompt_includes_tools_block():
+    """Prose writer's [TOOLS] section documents all four tools."""
+    world = load_world(FIXTURE_VALID)
+    sys_prompt = build_prose_writer_system_prompt(world)
+    assert "[TOOLS]" in sys_prompt
+    assert "pause_for_continue" in sys_prompt
+    assert "request_free_text" in sys_prompt
+    assert "end_scene" in sys_prompt
+    assert "end_game" in sys_prompt
 
 
 def test_phase2_system_prompt_excludes_npc_knowledge():
     """Phase 2 sees voice/attitude/themes/voice_sample but NOT knowledge
     (which carries truth specifics)."""
     world = load_world(FIXTURE_VALID)
-    sys_prompt = build_phase2_system_prompt(world)
+    sys_prompt = build_prose_writer_system_prompt(world)
     # The fixture has Tom's knowledge: "Tom saw a Land Rover..."
     tom = world.npcs["tom"]
     assert tom.knowledge.strip() not in sys_prompt, (
@@ -109,7 +128,7 @@ def test_phase2_system_prompt_includes_crime_overview():
     """Phase 2 sees the high-level crime so the narrator doesn't write
     contradictions. The fixture's crime mentions Megan Pritchard."""
     world = load_world(FIXTURE_VALID)
-    sys_prompt = build_phase2_system_prompt(world)
+    sys_prompt = build_prose_writer_system_prompt(world)
     assert world.crime.strip() in sys_prompt
     assert "[WHAT HAPPENED]" in sys_prompt
 
@@ -119,7 +138,7 @@ def test_phase2_system_prompt_includes_voice_samples_when_authored():
     render them. The fixture has voice samples on at least one NPC (we
     enrich the fixture in this test if needed)."""
     world = load_world(FIXTURE_VALID)
-    sys_prompt = build_phase2_system_prompt(world)
+    sys_prompt = build_prose_writer_system_prompt(world)
     # The fixture NPCs may not have voice_samples yet — accept either:
     # if voice_sample is populated, the lines appear; if not, the marker
     # block at minimum shows up.
@@ -139,7 +158,7 @@ def test_phase2_system_prompt_includes_few_shots_when_authored():
     """When world.few_shots is non-empty, [STYLE EXAMPLES] must render
     them. With empty list (fixture), the empty marker appears."""
     world = load_world(FIXTURE_VALID)
-    sys_prompt = build_phase2_system_prompt(world)
+    sys_prompt = build_prose_writer_system_prompt(world)
     assert "[STYLE EXAMPLES]" in sys_prompt
     if world.few_shots:
         for fs in world.few_shots:
@@ -209,7 +228,7 @@ def test_phase2_user_message_first_turn_includes_scene_anchor():
     world = load_world(FIXTURE_VALID)
     state = make_initial_state(world)
     state.player_location = "the_slaughtered_lamb"
-    msg = build_phase2_user_message(
+    msg = build_prose_writer_user_message(
         state, world, StateChangeBundle(), is_first_turn=True
     )
     assert "[YOU ARE AT]" in msg
@@ -222,7 +241,7 @@ def test_phase2_user_message_subsequent_turn_drops_scene_anchor():
     history."""
     world = load_world(FIXTURE_VALID)
     state = make_initial_state(world)
-    msg = build_phase2_user_message(
+    msg = build_prose_writer_user_message(
         state, world, StateChangeBundle(), is_first_turn=False
     )
     assert "[YOU ARE AT]" not in msg
@@ -235,7 +254,7 @@ def test_phase2_user_message_excludes_reachable_beats_and_endings():
     world = load_world(FIXTURE_VALID)
     state = make_initial_state(world)
     for first in (True, False):
-        msg = build_phase2_user_message(
+        msg = build_prose_writer_user_message(
             state, world, StateChangeBundle(), is_first_turn=first
         )
         assert "[REACHABLE BEATS]" not in msg
@@ -250,7 +269,7 @@ def test_phase2_user_message_includes_applied_state_changes():
     applied = StateChangeBundle(
         state_changes=[UnlockBeat(beat_id="tom_named_a_vehicle")]
     )
-    msg = build_phase2_user_message(
+    msg = build_prose_writer_user_message(
         state, world, applied, is_first_turn=True
     )
     assert "[STATE CHANGES JUST APPLIED]" in msg
@@ -259,24 +278,29 @@ def test_phase2_user_message_includes_applied_state_changes():
 
 
 def test_phase2_user_message_leave_pick_directive():
+    """Leave-pick directive tells the narrator the engine will close the
+    scene — narrator writes departure prose, engine handles the rest."""
     world = load_world(FIXTURE_VALID)
     state = make_initial_state(world)
     leave = Option(text="leave for the post office", leaves_for="the_post_office")
-    msg = build_phase2_user_message(
+    msg = build_prose_writer_user_message(
         state, world, StateChangeBundle(),
         leave_pick=leave, is_first_turn=True,
     )
-    assert "MUST be EndScene" in msg
+    assert "[LEAVE DIRECTIVE]" in msg
     assert "the_post_office" in msg
+    # The engine handles termination; narrator does NOT call end_scene
+    # itself when leave_pick is set.
+    assert "engine will close" in msg or "engine has it covered" in msg
 
 
 def test_phase2_user_message_no_leave_pick_no_directive():
     world = load_world(FIXTURE_VALID)
     state = make_initial_state(world)
-    msg = build_phase2_user_message(
+    msg = build_prose_writer_user_message(
         state, world, StateChangeBundle(), is_first_turn=True
     )
-    assert "MUST be EndScene" not in msg
+    assert "[LEAVE DIRECTIVE]" not in msg
 
 
 def test_phase2_user_message_includes_player_pick_on_subsequent_turn():
@@ -292,7 +316,7 @@ def test_phase2_user_message_includes_player_pick_on_subsequent_turn():
         applied_state_changes=[],
         player_pick=Option(text="Ask Tom about the night"),
     ))
-    msg = build_phase2_user_message(
+    msg = build_prose_writer_user_message(
         state, world, StateChangeBundle(), is_first_turn=False
     )
     assert "[PLAYER]" in msg
@@ -313,7 +337,7 @@ def test_phase2_user_message_renders_npc_history_when_present():
         "Met Tom; guarded but warming. Did not name what he saw.",
         "Tom on visit two; he asked after my editor.",
     ]
-    msg = build_phase2_user_message(
+    msg = build_prose_writer_user_message(
         state, world, StateChangeBundle(), is_first_turn=True
     )
     assert "history with player" in msg
@@ -344,7 +368,7 @@ def test_phase2_applied_changes_includes_beat_description():
     applied = StateChangeBundle(
         state_changes=[UnlockBeat(beat_id="tom_named_a_vehicle")]
     )
-    msg = build_phase2_user_message(state, world, applied, is_first_turn=True)
+    msg = build_prose_writer_user_message(state, world, applied, is_first_turn=True)
     assert "[STATE CHANGES JUST APPLIED]" in msg
     beat = world.beats["tom_named_a_vehicle"]
     # Render uses the LLM-facing beat name.

@@ -164,6 +164,27 @@ def world_and_bundle():
     return world, bundle
 
 
+def _fake_emit_prose(prose_part_or_iter):
+    """Build a fake emit_prose. Accepts a single ProsePart or an iterator
+    yielding ProseParts (one per call). Streams each prose chunk via
+    the `emit_event` kwarg (mirrors the real emit_prose contract: prose-
+    word events fire from inside emit_prose now, not from play_scene)."""
+    it = iter([prose_part_or_iter]) if isinstance(prose_part_or_iter, ProsePart) else prose_part_or_iter
+
+    async def _fake(bundle, runtime, state, applied, *,
+                    leave_pick=None, emit_event=None,
+                    await_continue=None, await_free_text=None):
+        prose_part = next(it)
+        if emit_event is not None:
+            from handler.sse import _words_from_text, paced_word_emitter
+            await paced_word_emitter(
+                _words_from_text(prose_part.prose),
+                emit_event, event_kind="prose_word",
+            )
+        return prose_part
+    return _fake
+
+
 async def test_play_scene_emits_scene_start_then_terminal_events(monkeypatch, world_and_bundle):
     """One-turn scene ending in EndScene: scene_start -> state_change*
     -> prose_word* -> scene_exit."""
@@ -173,12 +194,12 @@ async def test_play_scene_emits_scene_start_then_terminal_events(monkeypatch, wo
     async def fake_phase1(*args, **kwargs):
         return StateChangeBundle(state_changes=[UnlockBeat(beat_id="tom_named_a_vehicle")])
 
-    async def fake_phase2(*args, **kwargs):
-        return ProsePart(prose="Tom spoke at last.", next=EndScene())
-
     _patch_populator(monkeypatch)
     monkeypatch.setattr("handler.scene_loop.emit_state_changes", fake_phase1)
-    monkeypatch.setattr("handler.scene_loop.emit_prose", fake_phase2)
+    monkeypatch.setattr(
+        "handler.scene_loop.emit_prose",
+        _fake_emit_prose(ProsePart(prose="Tom spoke at last.", next=EndScene())),
+    )
 
     events: list[dict] = []
 
@@ -240,12 +261,9 @@ async def test_play_scene_emits_options_event_for_continue(monkeypatch, world_an
     async def fake_phase1(*args, **kwargs):
         return StateChangeBundle()
 
-    async def fake_phase2(*args, **kwargs):
-        return next(proses)
-
     _patch_populator(monkeypatch)
     monkeypatch.setattr("handler.scene_loop.emit_state_changes", fake_phase1)
-    monkeypatch.setattr("handler.scene_loop.emit_prose", fake_phase2)
+    monkeypatch.setattr("handler.scene_loop.emit_prose", _fake_emit_prose(proses))
     monkeypatch.setattr("handler.scene_loop.paced_word_emitter",
                         _patched_paced_emitter(0.001))
 
@@ -271,12 +289,12 @@ async def test_play_scene_emits_game_over_for_end_game(monkeypatch, world_and_bu
     async def fake_phase1(*args, **kwargs):
         return StateChangeBundle()
 
-    async def fake_phase2(*args, **kwargs):
-        return ProsePart(prose="The story runs.", next=EndGame(ending_id="published_story"))
-
     _patch_populator(monkeypatch)
     monkeypatch.setattr("handler.scene_loop.emit_state_changes", fake_phase1)
-    monkeypatch.setattr("handler.scene_loop.emit_prose", fake_phase2)
+    monkeypatch.setattr(
+        "handler.scene_loop.emit_prose",
+        _fake_emit_prose(ProsePart(prose="The story runs.", next=EndGame(ending_id="published_story"))),
+    )
     monkeypatch.setattr("handler.scene_loop.paced_word_emitter",
                         _patched_paced_emitter(0.001))
 
@@ -314,13 +332,10 @@ async def test_play_session_emits_location_change_and_log_entry_words(
     async def fake_phase1(*args, **kwargs):
         return StateChangeBundle()
 
-    async def fake_phase2(*args, **kwargs):
-        return next(proses)
-
     _patch_populator(monkeypatch)
     _patch_chronicler(monkeypatch, text="The pub, the road. Tom was at the bar.")
     monkeypatch.setattr("handler.scene_loop.emit_state_changes", fake_phase1)
-    monkeypatch.setattr("handler.scene_loop.emit_prose", fake_phase2)
+    monkeypatch.setattr("handler.scene_loop.emit_prose", _fake_emit_prose(proses))
     monkeypatch.setattr("handler.scene_loop.paced_word_emitter",
                         _patched_paced_emitter(0.001))
 

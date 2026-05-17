@@ -248,15 +248,36 @@ fired. You do not write prose.
 """
 
 
-def build_phase2_system_prompt(world: World) -> str:
-    """Phase 2 system prompt — the narrator. Slim, voice-focused. NO
-    beats, NO notes_to_llm, NO endings, NO per-NPC knowledge. The
+def _render_endings_block(world: World) -> str:
+    """Compact ending-summaries for the prose writer. Includes the
+    requires_beats line — that's how the narrator knows when an ending
+    is gated by a decision the player has just made. notes_to_llm is
+    included so the writer knows the spirit of each ending. epilogue
+    omitted (player-facing; lives in the case file, not the narrator's
+    head)."""
+    if not world.endings:
+        return "(none authored)"
+    return "\n".join(
+        _render_ending(ending, world, include_epilogue=False)
+        for ending in world.endings.values()
+    )
+
+
+def build_prose_writer_system_prompt(world: World) -> str:
+    """Prose-writer system prompt — the narrator. Slim, voice-focused.
+    NO beats, NO notes_to_llm on beats, NO per-NPC knowledge. The
     narrator knows what happened (the crime overview), the cast's voice
-    and attitude, and the locations. It does NOT know who-knows-what or
-    which beats are gated on what.
+    and attitude, the locations, and the endings (because end_game is
+    its tool). It does NOT know which beats are gated on what.
+
+    Output is a `str` (default pydantic-ai output_type) — the prose. Four
+    tools (pause_for_continue, request_free_text, end_scene, end_game)
+    handle suspension and termination. PoL (2026-05-17) confirmed
+    NativeOutput + tools is incompatible on Gemma 4 + llama.cpp; str is
+    the only viable output type.
 
     Byte-stable across the session; KV cache hits across every turn AND
-    across scenes. Phase 2 also accumulates scene-bounded message
+    across scenes. Prose writer accumulates scene-bounded message
     history; this system prompt is the cache anchor for that history.
     """
     return f"""\
@@ -264,8 +285,9 @@ def build_phase2_system_prompt(world: World) -> str:
 You are the narrator of a single-player investigation game. The player
 is a freelance journalist looking into a death in the Welsh Marches
 village of Pant Goch. Each turn you write 80-200 words of prose for
-what just happened, followed by 2-4 options the player can pick from.
-Stay within the established cast and locations below.
+what just happened. A separate agent will offer the player options
+afterwards; you do not write options yourself. Stay within the
+established cast and locations below.
 
 [THE WORLD]
 {_render_locations_block(world)}
@@ -279,6 +301,15 @@ Stay within the established cast and locations below.
 You know this as the narrator. Your characters do not know all of it,
 and most of them are protecting some part of it. Write them as people
 in a village, not as keepers of plot beats.
+
+[ENDINGS]
+These are the ways the case can resolve. Call `end_game(ending_id)`
+when the player has committed in fiction to one of them — i.e., a
+decision beat that satisfies an ending's `requires_beats` has just
+landed. The grammar will only let you emit an ending whose
+requires_beats are met right now.
+
+{_render_endings_block(world)}
 
 [VOICE RULES]
 1. 80-200 words of prose per turn. Second person, present tense, terse.
@@ -310,29 +341,93 @@ The register and rhythm to match:
 
 {_render_few_shots(world)}
 
-[OPTIONS RULES]
-After the prose, emit a `next` directive:
-  - ContinueScene with 2-4 options. Each option is something the
-    player can say or do that has no major consequence — dialogue,
-    observation, small action. At least one option must be a "leave
-    for…" with `leaves_for` set to an adjacent location id; the player
-    must always have a walk-away choice.
-  - EndScene when the conversation has reached a natural pause. Scenes
-    of 4-8 turns are typical; longer is fine if the conversation
-    warrants. Don't drag.
-  - EndGame with an `ending_id` when the player has clearly committed
-    to the action that triggers that ending and the engine state
-    supports it. The engine will reject otherwise.
+[TOOLS]
+Use tools sparingly — most turns are just prose, no tool call. The
+agent loop ends when you stop calling tools; the choice author runs
+next and offers the player options. Tools are when narrative cadence
+calls for something other than "more prose then options."
 
-When the user prompt says the player chose to leave for a specific
-adjacent location, you MUST emit EndScene. Write a brief goodbye line
-in the prose; the `next` is fixed.
+  - `pause_for_continue()` — pause the scene mid-prose. The player
+    sees what you've written, taps Continue, and you resume. Use when
+    a beat needs to breathe: a held silence, a turned shoulder, an
+    image that should land before the next moment.
+
+  - `request_free_text(prompt, npc_id?)` — ask the player to type a
+    response. Returns the typed string. Use when an NPC is waiting on
+    the player to speak and a fixed menu would feel reductive (mid-
+    interrogation, when the moment is theirs to fill). After the tool
+    returns, weave the player's response into the next prose.
+
+  - `end_scene(location_id?)` — close the scene. Use when narrative
+    closure has arrived — an NPC walks out, silence stretches past
+    recovery, the moment has passed. If `location_id` is given, treat
+    as a walk to that adjacent location; otherwise the scene closes in
+    place and the player chooses next via the map. Do not call this if
+    the user prompt's [LEAVE DIRECTIVE] is already telling you the
+    player picked a leave option — the engine handles that.
+
+  - `end_game(ending_id)` — end the game. Only call when the player
+    has clearly committed in fiction to a decision that triggers one
+    of the endings above and the grammar offers it. The grammar
+    enforces — you literally cannot emit an unsatisfied ending.
 
 [YOUR JOB]
-Each turn, emit ONE structured output: ProsePart — prose (80-200 words)
-plus the `next` directive. State changes were already decided and
-applied by a separate agent before you ran; your job is to narrate.
+Each turn, write 80-200 words of prose. Call tools when (and only
+when) the narrative calls for one. Then stop emitting. The agent loop
+ends when you stop calling tools; the choice author takes over.
+
+State changes were already decided and applied by a separate agent
+before you ran; you can see what fired in [STATE CHANGES JUST APPLIED]
+and narrate accordingly.
 """
+
+
+def build_choice_author_system_prompt(world: World) -> str:
+    """Choice-author system prompt — the smallest in the system. Sees
+    the just-written prose and the current state; emits 2-4 options the
+    player can pick. No beat catalog, no notes_to_llm, no crime, no
+    voice samples, no endings — endings live on the prose writer
+    because end_game is its tool.
+
+    Byte-stable across the session; KV cache hits every cycle.
+    """
+    return f"""\
+[ROLE]
+You write the player's options. The narrator has just written this
+turn's prose; given that prose and the current state, you decide what
+the player can do next. Terse, mechanical phrasing — option text is
+distinct in register from the prose. You do NOT write prose yourself.
+
+[THE WORLD]
+{_render_locations_block(world)}
+
+[THE CAST]
+Refer to NPCs by name in option text where helpful. The narrator wrote
+the prose; you don't need voice samples to label a choice.
+
+[RULES]
+1. Emit 2-4 options. Each option is something the player can say or do
+   that has no major consequence — dialogue, observation, small action.
+
+2. At least one option MUST be a "leave for…" with `leaves_for` set to
+   an adjacent location id. The player always has a walk-away choice.
+
+3. Options are terse: 3-10 words is typical. Imperative or short
+   declarative. Match the moment the prose just established.
+
+4. Stay within the established cast and locations. Do not invent named
+   people or new places in option text.
+
+5. The grammar narrows `leaves_for` to adjacent locations only; you
+   cannot emit a non-adjacent walk target.
+
+[YOUR JOB]
+Emit one structured output: `ChoiceBundle` — a list of 2-4 options.
+The prose you're shown is the just-narrated turn; the player will see
+it streamed first, then your options below it.
+"""
+
+
 
 
 # ───────────────────────── phase 1 user prompt (rich context) ─────────────────────────
@@ -493,7 +588,7 @@ will be re-prompted with the error.
 # ───────────────────────── phase 2 user message (conversation turn) ─────────────────────────
 
 
-def build_phase2_user_message(
+def build_prose_writer_user_message(
     state: State,
     world: World,
     applied: StateChangeBundle,
@@ -502,7 +597,7 @@ def build_phase2_user_message(
     opening_seed: str | None = None,
     is_first_turn: bool,
 ) -> str:
-    """Per-turn user message for the conversation-based Phase 2 narrator.
+    """Per-turn user message for the conversation-based prose writer.
 
     Turn 1 of a scene (is_first_turn=True): [YOU ARE AT] + [PRESENT] +
     optional [OPENING SEED] + applied state changes + write-prose
@@ -513,9 +608,9 @@ def build_phase2_user_message(
     their "spoken turn"), optional leave directive. The system prompt
     + accumulated assistant messages already carry the rest.
 
-    Phase 2 does NOT see: reachable beats, endings, the case file, the
-    full state dump, structured turn-by-turn replay. The conversation
-    is the scene-so-far; the system prompt is the world.
+    Prose writer does NOT see: reachable beats, the beat catalog, the
+    case file, the full state dump, structured turn-by-turn replay. The
+    conversation is the scene-so-far; the system prompt is the world.
     """
     parts: list[str] = []
     if is_first_turn:
@@ -545,17 +640,62 @@ def build_phase2_user_message(
     if leave_pick is not None:
         parts.append(
             f"[LEAVE DIRECTIVE]\nThe player chose to leave for "
-            f"{leave_pick.leaves_for!r}. Your `next` MUST be EndScene. "
-            f"Your prose narrates a brief goodbye line."
+            f"{leave_pick.leaves_for!r}. Write a brief goodbye line; the "
+            f"engine will close the scene after your prose. Do NOT call "
+            f"end_scene yourself — the engine has it covered."
         )
 
     parts.append(
         "[WRITE]\nWrite the next beat of prose (80-200 words), consistent "
-        "with the state changes above, then emit ContinueScene / EndScene / "
-        "EndGame as `next`."
+        "with the state changes above. Call a tool ONLY if the narrative "
+        "calls for it (pause_for_continue, request_free_text, end_scene, "
+        "end_game). Otherwise just write prose and stop — the choice "
+        "author will take over."
     )
 
     return "\n\n".join(parts)
+
+
+
+
+def build_choice_author_user_message(
+    state: State,
+    world: World,
+    prose: str,
+) -> str:
+    """Per-cycle user message for the choice author. Just shows the
+    prose chunk(s) the narrator wrote this cycle, plus the location
+    and present NPCs for adjacency / option-text grounding.
+
+    Choice author is stateless per-cycle — no message_history. Each
+    call sees the prose fresh."""
+    loc = world.locations[state.player_location]
+    present = _present_npc_ids(state, world)
+    npcs_line = (
+        ", ".join(f"{nid} ({world.npcs[nid].name})" for nid in present)
+        if present else "no one — you are alone."
+    )
+    adjacent_line = (
+        ", ".join(loc.adjacent_to) if loc.adjacent_to else "(none — stranded)"
+    )
+    return f"""\
+[YOU ARE AT]
+{loc.id} ({loc.name})
+
+[PRESENT]
+{npcs_line}
+
+[ADJACENT LOCATIONS]
+{adjacent_line}
+
+[NARRATOR JUST WROTE]
+{prose.strip()}
+
+[GENERATE OPTIONS]
+Emit a ChoiceBundle with 2-4 options. At least one option must have
+`leaves_for` set to an adjacent location id. The grammar narrows
+`leaves_for` to adjacent locations only.
+"""
 
 
 # ───────────────────────── chronicler prompts ─────────────────────────

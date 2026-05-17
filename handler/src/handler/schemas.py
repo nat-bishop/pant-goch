@@ -1,16 +1,26 @@
 """Scene-runner LLM output schemas.
 
-Two-stage emission per turn (SPEC §0.4 / §3.3 + plan):
-  Phase 1 — `StateChangeBundle`: 0-N state changes (UnlockBeat only in v1;
-            see plan "MoveNPC cut from v1"). Cap: ≤2 UnlockBeat per bundle.
-  Phase 2 — `ProsePart`: prose + `next` (ContinueScene | EndScene | EndGame).
+Per turn, three LLM calls (Phase 1 classifier, prose-writer tool loop,
+choice author):
+  Phase 1 — `StateChangeBundle`: 0-N state changes (UnlockBeat only in v1).
+            Cap: ≤2 UnlockBeat per bundle.
+  Prose writer — `output_type=str`. Streams prose, may call tools
+            (pause_for_continue, request_free_text, end_scene, end_game).
+            Termination state set via tool side effects on `ProseWriterDeps`.
+  Choice author — `ChoiceBundle`: list[Option] only. Runs only when prose
+            writer terminated without an end_scene/end_game tool call.
+
+The engine assembles a composite `ProsePart` (prose + next:
+ContinueScene | EndScene | EndGame) from these pieces for downstream
+dispatch (scene_loop, CLI). The discriminated union still exists as a
+schema shape but is no longer an LLM output — the engine constructs the
+right variant from tool-call side effects + choice-author output.
 
 The schemas here use `str` for id fields. At call time, `agents.py` builds
-per-call dynamic types (`Literal[*beat_ids]`, `Literal[*adjacent_location_ids]`,
-`Literal[*ending_ids]`) and passes them via pydantic-ai's runtime `output_type=`
-override on `agent.run()` — that's what the llama.cpp grammar sampler uses
-to reject invalid ids at decode time. The str-typed schemas here serve as
-the structural spec + the M2 unit-test surface.
+per-call dynamic types (`Literal[*beat_names]`, `Literal[*adjacent_ids]`,
+`Literal[*ending_ids]`) and passes them via pydantic-ai's runtime
+`output_type=` override (for Phase 1, choice author) or `prepare` tool
+callbacks (for prose-writer tool args).
 """
 from __future__ import annotations
 
@@ -59,38 +69,59 @@ class StateChangeBundle(_Strict):
 
 
 class Option(_Strict):
-    """One player-facing choice within a ContinueScene.
-
-    `leaves_for` non-None marks this option as a leave option.
-    `ContinueScene._has_at_least_one_leave_option` enforces ≥1 leave
-    option per ContinueScene (player always has a walk-away choice). When
-    the player picks a leave option, the next turn's dynamic ProsePart
-    schema narrows `next` to `EndScene` — grammar-enforced.
+    """One player-facing choice. Emitted by the choice author when the
+    scene continues. `leaves_for` non-None marks this option as a leave
+    option. `ContinueScene._has_at_least_one_leave_option` enforces ≥1
+    leave option per ContinueScene (player always has a walk-away
+    choice). Per-call narrowing of `leaves_for` to
+    `Literal[*adjacent_ids] | None` lives in
+    `agents._build_choice_bundle_type`.
     """
 
     text: str
     leaves_for: str | None = None
 
 
-class ContinueScene(_Strict):
-    type: Literal["continue"] = "continue"
+class ChoiceBundle(_Strict):
+    """Output of the choice author agent. Just a list of options; the
+    choice author has no scene-termination logic (end_scene / end_game
+    are tools on the prose writer). The engine wraps this into a
+    `ContinueScene` for the composite ProsePart used by downstream
+    dispatch.
+    """
+
     options: list[Option]
 
     @model_validator(mode="after")
-    def _has_at_least_one_leave_option(self) -> ContinueScene:
+    def _has_at_least_one_leave_option(self) -> ChoiceBundle:
         if not any(o.leaves_for is not None for o in self.options):
             raise ValueError(
-                "ContinueScene must include at least one option with "
-                "leaves_for set (player must always have a walk-away choice)"
+                "ChoiceBundle must include at least one option with "
+                "leaves_for set (player always has a walk-away choice)"
             )
         return self
 
 
+class ContinueScene(_Strict):
+    """Composite-only — engine builds this from ChoiceBundle.options for
+    downstream dispatch. No longer an LLM output variant."""
+
+    type: Literal["continue"] = "continue"
+    options: list[Option]
+
+
 class EndScene(_Strict):
+    """Composite-only — engine emits this when the prose writer's
+    `end_scene` tool fires, when `leave_pick` is set on cycle entry, or
+    in the engine fallback. Not an LLM output variant."""
+
     type: Literal["end_scene"] = "end_scene"
 
 
 class EndGame(_Strict):
+    """Composite-only — engine emits this when the prose writer's
+    `end_game` tool fires. Not an LLM output variant."""
+
     type: Literal["end_game"] = "end_game"
     ending_id: str
 
@@ -102,7 +133,19 @@ SceneNext = Annotated[
 
 
 class ProsePart(_Strict):
-    prose: str  # 80-200 words; streamed
+    """Composite assembled by `emit_prose` from prose-writer output +
+    tool-call side effects + (optionally) choice-author output. Kept for
+    downstream dispatch (scene_loop, CLI). No single LLM emits this
+    shape — `prose` is the prose-writer's str output; `next` is built
+    by the engine in priority order:
+
+      1. prose-writer called end_game(ending_id) → EndGame
+      2. prose-writer called end_scene(location_id?) → EndScene
+      3. leave_pick was set on cycle entry → EndScene
+      4. otherwise → run choice author → ContinueScene
+    """
+
+    prose: str
     next: SceneNext
 
 
