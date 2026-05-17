@@ -738,11 +738,19 @@ consistent with the state changes above. Then emit one of:
 
 ## 5. Frontend
 
-Single-page web app. Main view is split: map on the left (~40%), scene panel on the right (~60%). The case file is a collapsible sidebar.
+**Visual reference: `design/mockup-stage/`** — a static HTML+React mockup of the final composition. Open `index.html` directly in a browser (via `python -m http.server` from `design/`). Click through it to see the intended UX; read its `styles.css` for design tokens and `app.jsx` for the React patterns. The mockup is the source of truth for layout, motion, and typography. Implementation lives in `handler/web/`.
 
-- **Map view (always visible).** Hand-drawn-style village map with all 10 locations and their connecting lines. Player marker at current location. Adjacent locations are highlighted as clickable. Non-adjacent locations are visible but inert. Clicking an adjacent location walks the marker along the line (~1–2 seconds) and triggers `location_change` flow.
-- **Scene panel.** The current scene's prose, streaming word-by-word. Below it: 2–4 option buttons when a turn is waiting on player input. When a scene is closing (EndScene), the prose streams and then the panel dims and the map highlights adjacent locations more brightly.
-- **Case file sidebar.** Read-only log of completed scenes' entries from the log writer. Scrollable. Collapsible.
+Single-page web app. Two-pane composition, **58fr / 42fr**:
+
+- **Left pane (the "stage").** Full-height, edge-to-edge. Three modes switched by a small tab strip at the top-left:
+  - `location` (default) — a sepia-pushed photograph of the current scene's location. Cross-fades when the scene changes. Film-slate caption at the bottom-left (location name + date).
+  - `map` — full Pant Goch survey. Every pin labelled in italic display serif. Current location red, visited locations dim-red, dashed roads, river, contours. Read-only in v1.
+  - `notes` — vertical list of case-file entries (one per visited scene). Click an entry → switches to `location` and scrolls the prose panel to that chapter.
+  - Walking auto-takes over with a map view + red pencil tracer drawing along the road from current → destination location. Tabs disable during walk; reverts to `location` mode when the walk completes.
+- **Right pane (the prose panel).** Vellum paper background. Top bar with case-file label, entry count, restart. Internal scroll — **the page does not scroll, the panel does**. Chapters accumulate inside it separated by a thin rule. Each chapter: italic display chapter heading, drop cap, justified prose streaming word-by-word, choices as numbered italic footnotes at the end.
+- **Page-turn scroll.** Within a chapter, no autoscroll on every paragraph. When a new paragraph is about to stream, if the previous paragraph extends past ~68% of the panel height, smooth-scroll so the previous paragraph sits at the top. Same fires for the choices block at ~55%. Predictable chunks; text doesn't move once placed.
+- **Walking interstitial.** Map fades into the left pane (~400ms), red tracer animates along the road (~1500ms), destination pin and label settle, then map fades back to the destination's photograph (~400ms). The right pane stays put throughout.
+- **Hover popups** (NPCs and locations). Marked phrases in the prose render with a red dotted underline. Hover → a dark floating popup over the left pane with the entity's heading + description. Requires either inline `[text|entity_id]` markup from Phase 2 or a separate annotations field on `ProsePart`; see frontend implementation notes for trade-offs. Gloss bodies derive from `cast.yaml` (NPCs) and `world/locations/*.yaml` (locations).
 - **End-of-game screen.** When `end_game` fires, the ending's epilogue streams in a centred panel. No further input.
 
 SSE event surface:

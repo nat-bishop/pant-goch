@@ -24,10 +24,10 @@ appends it to the per-NPC list. Phase 2's [PRESENT] card renders the
 recent entries inline with the NPC briefing.
 
 `case_file_entries` is the journalist's prose record, written by the
-log writer at scene close. Phase 1 reads it as cross-scene context; the
+chronicler at scene close. Phase 1 reads it as cross-scene context; the
 SSE frontend renders it as the case-file sidebar. Symmetric with
 `npc_memory` — both are session-persistent, both written by the same
-log-writer call, both live here.
+chronicler call, both live here.
 """
 from __future__ import annotations
 
@@ -71,7 +71,7 @@ def make_initial_state(world: World) -> State:
     """Build the State for a fresh game from the loaded world. NPCs start
     at their `default_location` (seeded into `npc_locations`); the
     populator can override on scene entry. `npc_memory` and
-    `case_file_entries` start empty; the log writer populates them at
+    `case_file_entries` start empty; the chronicler populates them at
     scene-end."""
     return State(
         player_location=world.brief.player_starts_at,

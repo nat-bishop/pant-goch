@@ -40,6 +40,16 @@ from handler.world import World, load_world
 FIXTURE_VALID = Path(__file__).parent / "fixtures" / "world_valid"
 
 
+def _beat(id: str, **kwargs) -> Beat:
+    """Engine-test Beat factory. Supplies `name` (derived from id) and the
+    boilerplate description/notes_to_llm so each call stays one-line.
+    Pass `name=` explicitly to override the derived name."""
+    kwargs.setdefault("name", id.replace("_", " ").capitalize())
+    kwargs.setdefault("description", "x")
+    kwargs.setdefault("notes_to_llm", "y")
+    return Beat(id=id, **kwargs)
+
+
 def _make_world(
     *,
     locations: list[Location] | None = None,
@@ -60,16 +70,18 @@ def _make_world(
     npcs_by_location: dict[str, list[NPC]] = {loc_id: [] for loc_id in locations_dict}
     for npc in npcs:
         npcs_by_location[npc.default_location].append(npc)
+    beat_dict = {b.id: b for b in (beats or [])}
     return World(
         locations=locations_dict,
         npcs={n.id: n for n in npcs},
         crime="test",
-        beats={b.id: b for b in (beats or [])},
+        beats=beat_dict,
         endings={e.id: e for e in (endings or [])},
         brief=Brief(player_starts_at=starts_at, opening_seed="x"),
         npcs_by_location=npcs_by_location,
         few_shots=[],
         map_coords={},
+        beat_name_to_id={b.name: b.id for b in beat_dict.values()},
     )
 
 
@@ -150,34 +162,34 @@ def test_continue_scene_empty_options_rejected():
 
 
 def test_dynamic_bundle_accepts_reachable_beat():
-    world = _make_world(beats=[Beat(id="b1", description="x", notes_to_llm="y")])
+    world = _make_world(beats=[_beat("b1")])
     state = State(player_location="loc_a")
     BundleType = _build_state_change_bundle_type(world, state)
     bundle = BundleType.model_validate({
-        "state_changes": [{"type": "unlock_beat", "beat_id": "b1"}]
+        "state_changes": [{"type": "unlock_beat", "beat_name": "B1"}]
     })
-    assert bundle.state_changes[0].beat_id == "b1"  # type: ignore[union-attr]
+    assert bundle.state_changes[0].beat_name == "B1"  # type: ignore[union-attr]
 
 
 def test_dynamic_bundle_rejects_unknown_beat():
-    world = _make_world(beats=[Beat(id="b1", description="x", notes_to_llm="y")])
+    world = _make_world(beats=[_beat("b1")])
     state = State(player_location="loc_a")
     BundleType = _build_state_change_bundle_type(world, state)
     with pytest.raises(ValidationError):
         BundleType.model_validate({
-            "state_changes": [{"type": "unlock_beat", "beat_id": "ghost"}]
+            "state_changes": [{"type": "unlock_beat", "beat_name": "Ghost"}]
         })
 
 
 def test_dynamic_bundle_rejects_already_fired_beat():
     """Reachability excludes already-fired beats → grammar Literal omits
     them → ValidationError at parse time."""
-    world = _make_world(beats=[Beat(id="b1", description="x", notes_to_llm="y")])
+    world = _make_world(beats=[_beat("b1")])
     state = State(player_location="loc_a", unlocked_beats={"b1"})
     BundleType = _build_state_change_bundle_type(world, state)
     with pytest.raises(ValidationError):
         BundleType.model_validate({
-            "state_changes": [{"type": "unlock_beat", "beat_id": "b1"}]
+            "state_changes": [{"type": "unlock_beat", "beat_name": "B1"}]
         })
 
 
@@ -186,16 +198,16 @@ def test_dynamic_bundle_rejects_unsatisfied_requires():
     If prereq is unfired and standalone-reachable, b1 is reachable too — so
     we author a permanently-blocked prereq to test the rejection path."""
     world = _make_world(beats=[
-        Beat(id="blocker", description="x", notes_to_llm="y"),
-        Beat(id="prereq", description="x", blocked_by_beats=["blocker"], notes_to_llm="y"),
-        Beat(id="b1", description="x", requires_beats=["prereq"], notes_to_llm="y"),
+        _beat("blocker"),
+        _beat("prereq", blocked_by_beats=["blocker"]),
+        _beat("b1", requires_beats=["prereq"]),
     ])
     state = State(player_location="loc_a", unlocked_beats={"blocker"})
     # blocker is fired → prereq is permanently blocked → b1 is unreachable.
     BundleType = _build_state_change_bundle_type(world, state)
     with pytest.raises(ValidationError):
         BundleType.model_validate({
-            "state_changes": [{"type": "unlock_beat", "beat_id": "b1"}]
+            "state_changes": [{"type": "unlock_beat", "beat_name": "B1"}]
         })
 
 
@@ -203,14 +215,14 @@ def test_dynamic_bundle_rejects_active_blocker():
     """blocked_by_beats with an active blocker → reachability excludes →
     grammar Literal omits → ValidationError."""
     world = _make_world(beats=[
-        Beat(id="blocker", description="x", notes_to_llm="y"),
-        Beat(id="b1", description="x", blocked_by_beats=["blocker"], notes_to_llm="y"),
+        _beat("blocker"),
+        _beat("b1", blocked_by_beats=["blocker"]),
     ])
     state = State(player_location="loc_a", unlocked_beats={"blocker"})
     BundleType = _build_state_change_bundle_type(world, state)
     with pytest.raises(ValidationError):
         BundleType.model_validate({
-            "state_changes": [{"type": "unlock_beat", "beat_id": "b1"}]
+            "state_changes": [{"type": "unlock_beat", "beat_name": "B1"}]
         })
 
 
@@ -225,18 +237,18 @@ def test_dynamic_bundle_empty_when_no_reachable_beats():
 
 def test_dynamic_bundle_max_length_three_rejected():
     world = _make_world(beats=[
-        Beat(id="b1", description="x", notes_to_llm="y"),
-        Beat(id="b2", description="x", notes_to_llm="y"),
-        Beat(id="b3", description="x", notes_to_llm="y"),
+        _beat("b1"),
+        _beat("b2"),
+        _beat("b3"),
     ])
     state = State(player_location="loc_a")
     BundleType = _build_state_change_bundle_type(world, state)
     with pytest.raises(ValidationError):
         BundleType.model_validate({
             "state_changes": [
-                {"type": "unlock_beat", "beat_id": "b1"},
-                {"type": "unlock_beat", "beat_id": "b2"},
-                {"type": "unlock_beat", "beat_id": "b3"},
+                {"type": "unlock_beat", "beat_name": "B1"},
+                {"type": "unlock_beat", "beat_name": "B2"},
+                {"type": "unlock_beat", "beat_name": "B3"},
             ]
         })
 
@@ -246,7 +258,7 @@ def test_dynamic_bundle_max_length_three_rejected():
 
 def test_dynamic_prose_endgame_with_satisfied_prereqs_passes():
     world = _make_world(
-        beats=[Beat(id="decided_to_file", description="x", notes_to_llm="y")],
+        beats=[_beat("decided_to_file")],
         endings=[Ending(
             id="published_story",
             requires_beats=["decided_to_file"],
@@ -267,7 +279,7 @@ def test_dynamic_prose_endgame_with_missing_prereqs_rejected():
     """Ending whose requires_beats aren't satisfied → not in the satisfied
     set → grammar Literal omits → ValidationError."""
     world = _make_world(
-        beats=[Beat(id="decided_to_file", description="x", notes_to_llm="y")],
+        beats=[_beat("decided_to_file")],
         endings=[Ending(
             id="published_story",
             requires_beats=["decided_to_file"],
@@ -398,7 +410,7 @@ def test_leave_pick_turn_grammar_only_accepts_end_scene():
 
 def test_reachable_includes_standalone_unfired_beats():
     world = _make_world(beats=[
-        Beat(id="standalone", description="x", notes_to_llm="y"),
+        _beat("standalone"),
     ])
     state = State(player_location="loc_a")
     assert reachable_beat_ids(world, state) == {"standalone"}
@@ -406,7 +418,7 @@ def test_reachable_includes_standalone_unfired_beats():
 
 def test_reachable_excludes_fired_beats():
     world = _make_world(beats=[
-        Beat(id="b1", description="x", notes_to_llm="y"),
+        _beat("b1"),
     ])
     state = State(player_location="loc_a", unlocked_beats={"b1"})
     assert reachable_beat_ids(world, state) == set()
@@ -414,8 +426,8 @@ def test_reachable_excludes_fired_beats():
 
 def test_reachable_excludes_directly_blocked_beats():
     world = _make_world(beats=[
-        Beat(id="blocker", description="x", notes_to_llm="y"),
-        Beat(id="b1", description="x", blocked_by_beats=["blocker"], notes_to_llm="y"),
+        _beat("blocker"),
+        _beat("b1", blocked_by_beats=["blocker"]),
     ])
     state = State(player_location="loc_a", unlocked_beats={"blocker"})
     # blocker is fired (excluded); b1 is blocked (excluded).
@@ -424,8 +436,8 @@ def test_reachable_excludes_directly_blocked_beats():
 
 def test_reachable_includes_chain_when_root_unfired():
     world = _make_world(beats=[
-        Beat(id="root", description="x", notes_to_llm="y"),
-        Beat(id="leaf", description="x", requires_beats=["root"], notes_to_llm="y"),
+        _beat("root"),
+        _beat("leaf", requires_beats=["root"]),
     ])
     state = State(player_location="loc_a")
     # Both reachable: root is firable now, leaf is firable after root.
@@ -437,9 +449,9 @@ def test_reachable_excludes_transitively_blocked_beats():
     permanently blocked by an already-fired C, then A is also unreachable
     even though A's own requires/blocks list doesn't mention C."""
     world = _make_world(beats=[
-        Beat(id="C", description="x", notes_to_llm="y"),                                  # the blocker
-        Beat(id="B", description="x", blocked_by_beats=["C"], notes_to_llm="y"),           # blocked by C
-        Beat(id="A", description="x", requires_beats=["B"], notes_to_llm="y"),             # requires B
+        _beat("C"),                                  # the blocker
+        _beat("B", blocked_by_beats=["C"]),           # blocked by C
+        _beat("A", requires_beats=["B"]),             # requires B
     ])
     # C has fired → B is permanently blocked → A is transitively unreachable.
     state = State(player_location="loc_a", unlocked_beats={"C"})
@@ -450,10 +462,10 @@ def test_reachable_excludes_chain_when_intermediate_blocked():
     """Longer chain: A requires B requires Z; Z blocked by fired Y → A and B
     both unreachable."""
     world = _make_world(beats=[
-        Beat(id="Y", description="x", notes_to_llm="y"),
-        Beat(id="Z", description="x", blocked_by_beats=["Y"], notes_to_llm="y"),
-        Beat(id="B", description="x", requires_beats=["Z"], notes_to_llm="y"),
-        Beat(id="A", description="x", requires_beats=["B"], notes_to_llm="y"),
+        _beat("Y"),
+        _beat("Z", blocked_by_beats=["Y"]),
+        _beat("B", requires_beats=["Z"]),
+        _beat("A", requires_beats=["B"]),
     ])
     state = State(player_location="loc_a", unlocked_beats={"Y"})
     assert reachable_beat_ids(world, state) == set()
@@ -465,10 +477,10 @@ def test_reachable_includes_alternative_when_one_branch_blocked():
     have a single requires_beats list with AND semantics — but verifies the
     closure handles AND correctly.)"""
     world = _make_world(beats=[
-        Beat(id="A", description="x", notes_to_llm="y"),
-        Beat(id="B", description="x", notes_to_llm="y"),
+        _beat("A"),
+        _beat("B"),
         # C requires both A and B; both are independent and both reachable.
-        Beat(id="C", description="x", requires_beats=["A", "B"], notes_to_llm="y"),
+        _beat("C", requires_beats=["A", "B"]),
     ])
     state = State(player_location="loc_a")
     assert reachable_beat_ids(world, state) == {"A", "B", "C"}
@@ -477,8 +489,8 @@ def test_reachable_includes_alternative_when_one_branch_blocked():
 def test_reachable_with_fired_prereq():
     """A requires B; B has fired → A is reachable now (no closure needed)."""
     world = _make_world(beats=[
-        Beat(id="B", description="x", notes_to_llm="y"),
-        Beat(id="A", description="x", requires_beats=["B"], notes_to_llm="y"),
+        _beat("B"),
+        _beat("A", requires_beats=["B"]),
     ])
     state = State(player_location="loc_a", unlocked_beats={"B"})
     assert reachable_beat_ids(world, state) == {"A"}
@@ -489,7 +501,9 @@ def test_reachable_with_fired_prereq():
 
 def test_dynamic_builder_against_loaded_fixture():
     """Sanity check: dynamic builder accepts valid changes against the
-    fixture world."""
+    fixture world. Dynamic items carry `beat_name`; the engine boundary
+    (`emit_state_changes`) translates name→id via `World.beat_id_for_name`
+    before constructing the canonical bundle."""
     world = load_world(FIXTURE_VALID)
     state = make_initial_state(world)
     BundleType = _build_state_change_bundle_type(world, state)
@@ -497,16 +511,19 @@ def test_dynamic_builder_against_loaded_fixture():
     # hasn't fired — so it's reachable.
     bundle = BundleType.model_validate({
         "state_changes": [
-            {"type": "unlock_beat", "beat_id": "tom_named_a_vehicle"}
+            {"type": "unlock_beat", "beat_name": "Tom named a vehicle"}
         ]
     })
-    canonical = StateChangeBundle.model_validate(bundle.model_dump())
+    canonical = StateChangeBundle(state_changes=[
+        UnlockBeat(beat_id=world.beat_id_for_name(c.beat_name))
+        for c in bundle.state_changes
+    ])
     apply_state_changes(canonical, state)
     assert "tom_named_a_vehicle" in state.unlocked_beats
     # Now tom_admits_more (requires tom_named_a_vehicle) is reachable.
     BundleType2 = _build_state_change_bundle_type(world, state)
     BundleType2.model_validate({
         "state_changes": [
-            {"type": "unlock_beat", "beat_id": "tom_admits_more"}
+            {"type": "unlock_beat", "beat_name": "Tom admits more"}
         ]
     })

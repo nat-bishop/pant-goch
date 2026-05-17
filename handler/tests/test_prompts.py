@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from handler.prompts import (
-    build_log_writer_system_prompt,
+    build_chronicler_system_prompt,
     build_phase1_system_prompt,
     build_phase1_user_prompt,
     build_phase2_system_prompt,
@@ -53,8 +53,10 @@ def test_phase1_system_prompt_includes_full_world_bible():
     for npc in world.npcs.values():
         assert npc.id in sys_prompt
         assert npc.name in sys_prompt
+    # Phase 1 sees beat NAMES (not ids) — the LLM emits the name and the
+    # prompt's [THE TRUTH] / [REACHABLE BEATS] sections render names too.
     for beat in world.beats.values():
-        assert beat.id in sys_prompt
+        assert beat.name in sys_prompt
         assert beat.notes_to_llm.strip() in sys_prompt
     for ending in world.endings.values():
         assert ending.id in sys_prompt
@@ -164,14 +166,15 @@ def test_phase1_user_prompt_includes_reachable_beats_and_endings():
 
 def test_phase1_reachable_beats_hides_fired_and_blocked():
     """[REACHABLE BEATS] must omit fired beats and beats whose blockers
-    have fired (or whose chain is transitively blocked)."""
+    have fired (or whose chain is transitively blocked). Renders use the
+    LLM-facing beat NAME."""
     world = load_world(FIXTURE_VALID)
     state = make_initial_state(world)
     prompt = build_phase1_user_prompt(state, world)
-    # All three fixture beats reachable initially.
-    assert "tom_named_a_vehicle" in prompt
-    assert "tom_admits_more" in prompt
-    assert "tom_closes_off" in prompt
+    # All three fixture beats reachable initially — assert by name.
+    assert world.beats["tom_named_a_vehicle"].name in prompt
+    assert world.beats["tom_admits_more"].name in prompt
+    assert world.beats["tom_closes_off"].name in prompt
 
     # Fire tom_closes_off → tom_named_a_vehicle is blocked, tom_admits_more
     # transitively unreachable.
@@ -251,7 +254,8 @@ def test_phase2_user_message_includes_applied_state_changes():
         state, world, applied, is_first_turn=True
     )
     assert "[STATE CHANGES JUST APPLIED]" in msg
-    assert "tom_named_a_vehicle" in msg
+    # Render uses the LLM-facing beat name (ids never appear in prompts).
+    assert world.beats["tom_named_a_vehicle"].name in msg
 
 
 def test_phase2_user_message_leave_pick_directive():
@@ -342,10 +346,11 @@ def test_phase2_applied_changes_includes_beat_description():
     )
     msg = build_phase2_user_message(state, world, applied, is_first_turn=True)
     assert "[STATE CHANGES JUST APPLIED]" in msg
-    assert "tom_named_a_vehicle" in msg
+    beat = world.beats["tom_named_a_vehicle"]
+    # Render uses the LLM-facing beat name.
+    assert beat.name in msg
     # Beat description should surface in some form — at minimum a phrase
     # from the fixture beat's description.
-    beat = world.beats["tom_named_a_vehicle"]
     description_words = beat.description.strip().split()
     # First few words of the description should appear in the prompt.
     assert " ".join(description_words[:4]) in msg
@@ -383,21 +388,21 @@ def test_populator_user_prompt_includes_current_placements_and_case_file():
     assert "A prior scene at the pub" in prompt
 
 
-# ───────────────────────── log writer (unchanged) ─────────────────────────
+# ───────────────────────── chronicler (unchanged) ─────────────────────────
 
 
-def test_log_writer_system_prompt_byte_stable():
+def test_chronicler_system_prompt_byte_stable():
     world = load_world(FIXTURE_VALID)
-    a = build_log_writer_system_prompt(world)
-    b = build_log_writer_system_prompt(world)
+    a = build_chronicler_system_prompt(world)
+    b = build_chronicler_system_prompt(world)
     assert a == b
 
 
-def test_log_writer_system_prompt_describes_dual_output():
+def test_chronicler_system_prompt_describes_dual_output():
     """The dual-output instruction (case_file_entry + npc_memory_updates)
-    must surface in the system prompt; the log writer needs to know about
+    must surface in the system prompt; the chronicler needs to know about
     both fields."""
     world = load_world(FIXTURE_VALID)
-    prompt = build_log_writer_system_prompt(world)
+    prompt = build_chronicler_system_prompt(world)
     assert "case_file_entry" in prompt
     assert "npc_memory_updates" in prompt

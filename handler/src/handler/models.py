@@ -11,7 +11,7 @@ are unlock units identified by id. Schema mirrors that simplicity.
 """
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class _Frozen(BaseModel):
@@ -58,11 +58,34 @@ class Beat(_Frozen):
     """
 
     id: str
+    # LLM-facing short name. Phase 1 emits this (not the id) in
+    # UnlockBeat.beat_name; the engine maps name→id at the boundary. Names
+    # also lead every LLM-facing render (reachable beats, applied changes,
+    # chronicler turn list). Hard caps below are dual: max_length caps the
+    # grammar-sample token count; the word check catches "barely-50-chars
+    # sentence" cases. Whitespace check guards the name→id lookup.
+    name: str = Field(max_length=50)
     description: str
     requires_beats: list[str] = Field(default_factory=list)
     blocked_by_beats: list[str] = Field(default_factory=list)
     prerequisites: str = ""  # soft prereqs the LLM judges, beyond requires/blocks
     notes_to_llm: str
+
+    @field_validator("name")
+    @classmethod
+    def _name_terse(cls, v: str) -> str:
+        if v != v.strip():
+            raise ValueError(
+                f"Beat.name cannot have leading/trailing whitespace: {v!r}"
+            )
+        if not v:
+            raise ValueError("Beat.name cannot be blank")
+        words = v.split()
+        if len(words) > 8:
+            raise ValueError(
+                f"Beat.name must be ≤8 words (got {len(words)}): {v!r}"
+            )
+        return v
 
 
 class Ending(_Frozen):

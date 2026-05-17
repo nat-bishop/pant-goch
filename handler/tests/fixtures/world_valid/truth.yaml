@@ -5,6 +5,7 @@ crime: |
 
 beats:
   - id: tom_named_a_vehicle
+    name: Tom named a vehicle
     description: |
       Tom tells the player he saw Eluned Vaughn's Land Rover speeding
       from the bend the night Megan died.
@@ -13,6 +14,7 @@ beats:
       Earn through patience. Tom won't volunteer.
 
   - id: tom_admits_more
+    name: Tom admits more
     description: |
       Tom expands on what he saw — speed, sound, time.
     requires_beats: [tom_named_a_vehicle]
@@ -20,6 +22,7 @@ beats:
       Only after he has named the vehicle. Don't fire prematurely.
 
   - id: tom_closes_off
+    name: Tom closes off
     description: |
       Tom decides he will not speak to the player again about anything
       that matters.

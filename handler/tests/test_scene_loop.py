@@ -15,15 +15,15 @@ from pydantic_ai.models.test import TestModel
 
 from handler.agents import (
     build_scene_runner_bundle,
-    make_log_writer_runtime,
+    make_chronicler_runtime,
     make_scene_runner_runtime,
 )
 from handler.engine import enter_scene
 from handler.schemas import (
+    ChronicleEntry,
     ContinueScene,
     EndGame,
     EndScene,
-    LogWriterOutput,
     NpcPlacementBundle,
     Option,
     ProsePart,
@@ -43,7 +43,7 @@ from handler.world import World, load_world
 FIXTURE_VALID = Path(__file__).parent / "fixtures" / "world_valid"
 
 
-# ───────────────────────── populator / log writer no-ops ─────────────────────────
+# ───────────────────────── populator / chronicler no-ops ─────────────────────────
 
 
 async def _empty_placements(*args, **kwargs):
@@ -59,16 +59,17 @@ def _patch_populator(monkeypatch):
     monkeypatch.setattr("handler.scene_loop.emit_placements", _empty_placements)
 
 
-def _patch_log_writer(monkeypatch, text: str = "entry"):
-    """Bypass the real log writer for play_session tests. `emit_log_entry`
-    is called once per scene close; we return a constant LogWriterOutput
-    with empty per-NPC notes (tests here don't exercise that channel)."""
+def _patch_chronicler(monkeypatch, text: str = "entry"):
+    """Bypass the real chronicler for play_session tests.
+    `emit_chronicle_entry` is called once per scene close; we return a
+    constant ChronicleEntry with empty per-NPC notes (tests here don't
+    exercise that channel)."""
     async def fake_emit(*args, **kwargs):
-        return LogWriterOutput(
+        return ChronicleEntry(
             case_file_entry=text,
             npc_memory_updates=[],
         )
-    monkeypatch.setattr("handler.scene_loop.emit_log_entry", fake_emit)
+    monkeypatch.setattr("handler.scene_loop.emit_chronicle_entry", fake_emit)
 
 
 @pytest.fixture
@@ -346,19 +347,19 @@ async def test_play_scene_resets_phase2_message_history_at_scene_start(monkeypat
 
 
 def _make_session_fixtures():
-    """Helper: load world + build bundle + scene runtime + log writer runtime + state."""
+    """Helper: load world + build bundle + scene runtime + chronicler runtime + state."""
     world = load_world(FIXTURE_VALID)
     bundle = build_scene_runner_bundle(TestModel(), world)
     runtime = make_scene_runner_runtime()
-    log_writer = make_log_writer_runtime(TestModel(custom_output_text="entry"), world)
+    chronicler = make_chronicler_runtime(TestModel(custom_output_text="entry"), world)
     state = make_initial_state(world)
-    return world, bundle, runtime, log_writer, state
+    return world, bundle, runtime, chronicler, state
 
 
 async def test_play_session_calls_both_callbacks_and_terminates_on_end_game(monkeypatch):
-    """A scripted policy ends the session on EndGame; the on_log_entry
+    """A scripted policy ends the session on EndGame; the on_chronicle_entry
     and on_scene_close callbacks both fire; state.game_over is set."""
-    world, bundle, runtime, log_writer, state = _make_session_fixtures()
+    world, bundle, runtime, chronicler, state = _make_session_fixtures()
 
     proses = iter([
         # Scene 1: one Continue, then EndScene
@@ -383,11 +384,11 @@ async def test_play_session_calls_both_callbacks_and_terminates_on_end_game(monk
         return next(proses)
 
     _patch_populator(monkeypatch)
-    _patch_log_writer(monkeypatch)
+    _patch_chronicler(monkeypatch)
     monkeypatch.setattr("handler.scene_loop.emit_state_changes", fake_phase1)
     monkeypatch.setattr("handler.scene_loop.emit_prose", fake_phase2)
 
-    log_entries: list[tuple[State, LogWriterOutput]] = []
+    log_entries: list[tuple[State, ChronicleEntry]] = []
     closes: list[ProsePart] = []
 
     def policy_pick(pp: ProsePart) -> int:
@@ -396,14 +397,14 @@ async def test_play_session_calls_both_callbacks_and_terminates_on_end_game(monk
     def policy_walk(state: State, world: World) -> str:
         return world.locations[state.player_location].adjacent_to[0]
 
-    def record_log(s: State, o: LogWriterOutput) -> None:
+    def record_log(s: State, o: ChronicleEntry) -> None:
         log_entries.append((s, o))
 
     terminal = await play_session(
-        bundle, runtime, log_writer, state, world,
+        bundle, runtime, chronicler, state, world,
         pick_option=policy_pick,
         pick_walk=policy_walk,
-        on_log_entry=record_log,
+        on_chronicle_entry=record_log,
         on_scene_close=closes.append,
     )
 
@@ -423,7 +424,7 @@ async def test_play_session_pick_walk_only_called_between_scenes(monkeypatch):
     """pick_walk fires once per EndScene-but-not-EndGame transition. If
     the session ends in EndGame on the first scene, pick_walk is never
     called."""
-    world, bundle, runtime, log_writer, state = _make_session_fixtures()
+    world, bundle, runtime, chronicler, state = _make_session_fixtures()
 
     proses = iter([
         ProsePart(prose="opening", next=EndGame(ending_id="published_story")),
@@ -436,7 +437,7 @@ async def test_play_session_pick_walk_only_called_between_scenes(monkeypatch):
         return next(proses)
 
     _patch_populator(monkeypatch)
-    _patch_log_writer(monkeypatch)
+    _patch_chronicler(monkeypatch)
     monkeypatch.setattr("handler.scene_loop.emit_state_changes", fake_phase1)
     monkeypatch.setattr("handler.scene_loop.emit_prose", fake_phase2)
 
@@ -450,7 +451,7 @@ async def test_play_session_pick_walk_only_called_between_scenes(monkeypatch):
         return world.locations[state.player_location].adjacent_to[0]
 
     terminal = await play_session(
-        bundle, runtime, log_writer, state, world,
+        bundle, runtime, chronicler, state, world,
         pick_option=policy_pick,
         pick_walk=policy_walk,
     )
@@ -464,7 +465,7 @@ async def test_play_session_case_file_entries_accumulate_on_state(monkeypatch):
     """case_file_entries lives on State now (symmetric with npc_memory).
     play_session appends to it as each scene closes; eval drivers can
     read it off the same state object."""
-    world, bundle, runtime, log_writer, state = _make_session_fixtures()
+    world, bundle, runtime, chronicler, state = _make_session_fixtures()
 
     proses = iter([
         ProsePart(prose="t1", next=EndGame(ending_id="published_story")),
@@ -477,12 +478,12 @@ async def test_play_session_case_file_entries_accumulate_on_state(monkeypatch):
         return next(proses)
 
     _patch_populator(monkeypatch)
-    _patch_log_writer(monkeypatch)
+    _patch_chronicler(monkeypatch)
     monkeypatch.setattr("handler.scene_loop.emit_state_changes", fake_phase1)
     monkeypatch.setattr("handler.scene_loop.emit_prose", fake_phase2)
 
     await play_session(
-        bundle, runtime, log_writer, state, world,
+        bundle, runtime, chronicler, state, world,
         pick_option=lambda pp: 0,
         pick_walk=lambda s, w: w.locations[s.player_location].adjacent_to[0],
     )

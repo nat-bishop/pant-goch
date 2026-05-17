@@ -55,7 +55,7 @@ def _render_npc_card(
 ) -> str:
     """Render one NPC.
 
-    Phase 1 / log writer: include_knowledge=True (full bible).
+    Phase 1 / chronicler: include_knowledge=True (full bible).
     Phase 2 (system [THE CAST]): include_knowledge=False, include_voice_sample=True.
     Phase 2 (user [PRESENT]): same as above, plus history — the recent
         per-NPC memory entries from `state.npc_memory[npc.id]`, framed
@@ -63,7 +63,7 @@ def _render_npc_card(
 
     `history_limit` clamps how many recent entries get rendered (default
     3) to keep attention bounded as the game progresses. Memory written
-    by the log writer is one short note per scene the NPC was present in;
+    by the chronicler is one short note per scene the NPC was present in;
     the most recent 3 cover roughly the last 3 encounters.
     """
     themes = "; ".join(npc.themes) if npc.themes else "(none)"
@@ -87,7 +87,7 @@ def _render_npc_card(
 
 
 def _render_cast_block(world: World, *, voice_only: bool) -> str:
-    """`voice_only=False`: Phase 1 / log writer bible (with knowledge).
+    """`voice_only=False`: Phase 1 / chronicler bible (with knowledge).
     `voice_only=True`: Phase 2 (drops knowledge, adds voice_sample)."""
     return "\n".join(
         _render_npc_card(
@@ -107,44 +107,70 @@ def _present_npc_ids(state: State, world: World) -> list[str]:
     return [n.id for n in world.npcs_at(state.player_location, state=state)]
 
 
-def _render_beat(beat) -> str:
-    requires = ", ".join(beat.requires_beats) if beat.requires_beats else "(none)"
-    blocks = ", ".join(beat.blocked_by_beats) if beat.blocked_by_beats else "(none)"
+def _beat_names(world: World, beat_ids: list[str], *, empty: str = "(none)") -> str:
+    """Render a list of beat ids as their LLM-facing names. The model only
+    ever sees names in prompts; ids are internal keys."""
+    if not beat_ids:
+        return empty
+    return ", ".join(world.beats[bid].name for bid in beat_ids)
+
+
+def _applied_beat_names(
+    world: World, applied_state_changes: list, *, empty: str = "(none)"
+) -> str:
+    """Render the beat names from a turn's applied_state_changes list."""
+    return _beat_names(
+        world, [c.beat_id for c in applied_state_changes], empty=empty
+    )
+
+
+def _unlocked_beat_names(state: State, world: World, *, empty: str) -> str:
+    """Names of unlocked beats, sorted, joined — for both Phase 1's [STATE]
+    line and the populator's per-call [STATE] line."""
+    return _beat_names(world, sorted(state.unlocked_beats), empty=empty)
+
+
+def _render_beat(beat, world: World) -> str:
+    """Beat rendering for every LLM-facing block (full bible in the system
+    prompt AND `[REACHABLE BEATS]` per turn). Heading is the name (the
+    string the model will emit); cross-refs to other beats render as names
+    too, so the model sees ONE vocabulary across the whole prompt."""
     prereq = (
         f"\n  prerequisites (soft, your judgment): {beat.prerequisites.strip()}"
         if beat.prerequisites.strip()
         else ""
     )
     return (
-        f"- {beat.id}:\n"
+        f"- {beat.name}:\n"
         f"  description: {beat.description.strip()}\n"
-        f"  requires_beats: {requires}\n"
-        f"  blocked_by_beats: {blocks}{prereq}\n"
+        f"  requires_beats: {_beat_names(world, beat.requires_beats)}\n"
+        f"  blocked_by_beats: {_beat_names(world, beat.blocked_by_beats)}{prereq}\n"
         f"  notes_to_llm: {beat.notes_to_llm.strip()}"
     )
 
 
-def _render_ending(ending) -> str:
-    requires = ", ".join(ending.requires_beats) if ending.requires_beats else "(none)"
-    return (
-        f"- {ending.id}:\n"
-        f"  requires_beats: {requires}\n"
-        f"  notes_to_llm: {ending.notes_to_llm.strip()}\n"
-        f"  epilogue: {ending.epilogue.strip()}"
-    )
+def _render_ending(ending, world: World, *, include_epilogue: bool) -> str:
+    parts = [
+        f"- {ending.id}:",
+        f"  requires_beats: {_beat_names(world, ending.requires_beats)}",
+        f"  notes_to_llm: {ending.notes_to_llm.strip()}",
+    ]
+    if include_epilogue:
+        parts.append(f"  epilogue: {ending.epilogue.strip()}")
+    return "\n".join(parts)
 
 
 def _render_truth_block_full(world: World) -> str:
-    """Phase 1 / log writer: crime + full beat catalog + endings."""
+    """Phase 1 / chronicler: crime + full beat catalog + endings."""
     parts: list[str] = [
         f"CRIME:\n{world.crime.strip()}\n",
         "BEATS (the moments that constitute uncovering the truth):",
     ]
     for beat in world.beats.values():
-        parts.append(_render_beat(beat))
+        parts.append(_render_beat(beat, world))
     parts.append("\nENDINGS (terminal states, gated by decision beats):")
     for ending in world.endings.values():
-        parts.append(_render_ending(ending))
+        parts.append(_render_ending(ending, world))
     return "\n".join(parts)
 
 
@@ -351,13 +377,8 @@ def _render_present(state: State, world: World, *, voice_only: bool) -> str:
     return "\n".join(parts)
 
 
-def _render_state(state: State) -> str:
-    unlocked = (
-        ", ".join(sorted(state.unlocked_beats))
-        if state.unlocked_beats
-        else "(none yet)"
-    )
-    return f"[STATE]\nunlocked_beats: {unlocked}"
+def _render_state(state: State, world: World) -> str:
+    return f"[STATE]\nunlocked_beats: {_unlocked_beat_names(state, world, empty='(none yet)')}"
 
 
 def _render_reachable_beats(state: State, world: World) -> str:
@@ -365,9 +386,10 @@ def _render_reachable_beats(state: State, world: World) -> str:
     if not reachable:
         return "[REACHABLE BEATS]\n(none — every beat has fired or is permanently blocked.)"
     parts = ["[REACHABLE BEATS]"]
-    for bid in sorted(reachable):
+    # Sort by name so the heading matches the model's emission token.
+    for bid in sorted(reachable, key=lambda b: world.beats[b].name):
         beat = world.beats[bid]
-        parts.append(_render_beat(beat))
+        parts.append(_render_beat(beat, world))
     return "\n".join(parts)
 
 
@@ -376,12 +398,9 @@ def _render_all_endings(world: World) -> str:
         return "[ALL ENDINGS]\n(none authored.)"
     parts = ["[ALL ENDINGS]"]
     for ending in world.endings.values():
-        requires = (
-            ", ".join(ending.requires_beats) if ending.requires_beats else "(none)"
-        )
         parts.append(
             f"- {ending.id}:\n"
-            f"  requires_beats: {requires}\n"
+            f"  requires_beats: {_beat_names(world, ending.requires_beats)}\n"
             f"  notes_to_llm: {ending.notes_to_llm.strip()}"
         )
     return "\n".join(parts)
@@ -417,7 +436,7 @@ def _render_this_scene(state: State, world: World) -> str:
     ]
     for i, turn in enumerate(state.dialogue_history, start=1):
         applied = (
-            ", ".join(c.beat_id for c in turn.applied_state_changes)
+            ", ".join(world.beats[c.beat_id].name for c in turn.applied_state_changes)
             if turn.applied_state_changes
             else "(none)"
         )
@@ -436,19 +455,20 @@ def _render_this_scene(state: State, world: World) -> str:
 
 
 def _render_applied_changes(applied: StateChangeBundle, world: World) -> str:
-    """Phase 2 sees the beat's description (not just the slug) when a beat
-    fires. Phase 2's system prompt deliberately omits the beat catalog —
-    surfacing the description here is the load-bearing channel that lets
-    the narrator write the moment with specifics ("a relief he did not
-    know he wanted") rather than inferring from the slug alone."""
+    """Phase 2 sees the beat's name + description (not the slug) when a
+    beat fires. Phase 2's system prompt deliberately omits the beat
+    catalog — surfacing the description here is the load-bearing channel
+    that lets the narrator write the moment with specifics ("a relief he
+    did not know he wanted") rather than inferring from the name alone."""
     if not applied.state_changes:
         return "(none — this turn fired no beats.)"
     parts = []
     for change in applied.state_changes:
         if isinstance(change, UnlockBeat):
             beat = world.beats.get(change.beat_id)
+            name = beat.name if beat else "(unknown beat)"
             description = beat.description.strip() if beat else "(unknown beat)"
-            parts.append(f"- UnlockBeat {change.beat_id}: {description}")
+            parts.append(f"- UnlockBeat {name}: {description}")
     return "\n".join(parts)
 
 
@@ -459,7 +479,7 @@ def build_phase1_user_prompt(state: State, world: World) -> str:
     sections = [
         _render_you_are_at(state, world),
         _render_present(state, world, voice_only=False),
-        _render_state(state),
+        _render_state(state, world),
         _render_reachable_beats(state, world),
         _render_all_endings(world),
         _render_case_file(state),
@@ -546,12 +566,12 @@ def build_phase2_user_message(
     return "\n\n".join(parts)
 
 
-# ───────────────────────── log writer prompts ─────────────────────────
+# ───────────────────────── chronicler prompts ─────────────────────────
 
 
-def build_log_writer_system_prompt(world: World) -> str:
-    """Stable system prompt for the log writer. Baked once at bundle
-    construction. Carries the full bible — the log writer needs cast and
+def build_chronicler_system_prompt(world: World) -> str:
+    """Stable system prompt for the chronicler. Baked once at bundle
+    construction. Carries the full bible — the chronicler needs cast and
     truth context to write coherently about people and events, and the
     KV cache amortises the cost.
 
@@ -638,19 +658,19 @@ Structured JSON matching the schema. `case_file_entry` is plain text
 """
 
 
-def build_log_writer_user_prompt(state: State, world: World) -> str:
+def build_chronicler_user_prompt(state: State, world: World) -> str:
     """The per-scene-end user message: a structured summary of the
-    just-completed scene that the log writer turns into prose. The user
+    just-completed scene that the chronicler turns into prose. The user
     message accumulates as the user side of a long conversation; each
     assistant reply is one case-file entry.
 
-    Callers (emit_log_entry) only fire this after a completed scene, so
-    dialogue_history is always non-empty by the time we get here. The
-    scene anchor (location, who was present) is read off the live state
-    — the populator only places NPCs at scene entry, so the live state
-    reflects the whole-scene composition.
+    Callers (emit_chronicle_entry) only fire this after a completed
+    scene, so dialogue_history is always non-empty by the time we get
+    here. The scene anchor (location, who was present) is read off the
+    live state — the populator only places NPCs at scene entry, so the
+    live state reflects the whole-scene composition.
     """
-    assert state.dialogue_history, "build_log_writer_user_prompt: empty dialogue"
+    assert state.dialogue_history, "build_chronicler_user_prompt: empty dialogue"
     loc = world.locations[state.player_location]
     present_ids = _present_npc_ids(state, world)
     if present_ids:
@@ -662,13 +682,13 @@ def build_log_writer_user_prompt(state: State, world: World) -> str:
     beats_unlocked: list[str] = []
     for turn in state.dialogue_history:
         for change in turn.applied_state_changes:
-            beats_unlocked.append(change.beat_id)
+            beats_unlocked.append(world.beats[change.beat_id].name)
     beats_line = ", ".join(beats_unlocked) if beats_unlocked else "(none)"
 
     turn_parts: list[str] = []
     for i, turn in enumerate(state.dialogue_history, start=1):
         applied = (
-            ", ".join(c.beat_id for c in turn.applied_state_changes)
+            ", ".join(world.beats[c.beat_id].name for c in turn.applied_state_changes)
             if turn.applied_state_changes
             else "(no beat)"
         )
@@ -823,7 +843,7 @@ def build_populator_user_prompt(state: State, world: World) -> str:
 {current_placements}
 
 [STATE]
-unlocked_beats: {", ".join(sorted(state.unlocked_beats)) if state.unlocked_beats else "(none)"}
+unlocked_beats: {", ".join(sorted(world.beats[bid].name for bid in state.unlocked_beats)) if state.unlocked_beats else "(none)"}
 scene_id: {state.scene_id}
 
 {case_file_block}

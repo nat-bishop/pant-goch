@@ -37,10 +37,10 @@ from pydantic_ai.providers.openai import OpenAIProvider
 
 from .agents import (
     AgentBundle,
-    LogWriterRuntime,
+    ChroniclerRuntime,
     SceneRunnerRuntime,
     build_scene_runner_bundle,
-    make_log_writer_runtime,
+    make_chronicler_runtime,
     make_scene_runner_runtime,
 )
 from .config import Settings
@@ -121,7 +121,7 @@ class SessionRuntime:
 
     bundle: AgentBundle
     scene_runner: SceneRunnerRuntime
-    log_writer: LogWriterRuntime
+    chronicler: ChroniclerRuntime
     state: State
     world: World
     event_queue: "asyncio.Queue[dict]" = field(default_factory=asyncio.Queue)
@@ -133,11 +133,11 @@ class SessionRuntime:
 def build_model(api_url: str, model_name: str = "gemma-4-e4b") -> OpenAIChatModel:
     """Construct the OpenAIChatModel for both lifespan (FastAPI) and CLI
     (`__main__.py`). The OpenAIModelProfile flag is load-bearing for the
-    conversation-based log writer — without
+    conversation-based chronicler — without
     `openai_chat_send_back_thinking_parts=False`, pydantic-ai's default
     'auto' round-trips ThinkingParts back into prior assistant content as
     <think>...</think> blocks, which Gemma 4 cannot tolerate in
-    multi-turn (cf. v1 CLAUDE.md). The log writer's accumulating
+    multi-turn (cf. v1 CLAUDE.md). The chronicler's accumulating
     message_history makes this load-bearing — without the profile, drift
     compounds every scene.
     """
@@ -227,9 +227,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.api_url = api_url
 
         # Load world, build model + agent bundle once. The bundle is
-        # world-scoped (one phase-2 agent per location) and reused
-        # across sessions. The log-writer runtime is built per-session
-        # in POST /start so message_history starts fresh.
+        # world-scoped and reused across sessions. The session-scoped
+        # runtimes (scene_runner, chronicler) are built per-session in
+        # POST /start so message_history starts fresh.
         world_path = settings.world_path or Path(__file__).resolve().parents[2] / "world"
         logfire.info("loading world", path=str(world_path))
         world = load_world(world_path)
@@ -351,13 +351,13 @@ async def start_session() -> dict[str, str]:
     model: OpenAIChatModel = app.state.model
     bundle: AgentBundle = app.state.bundle
     scene_runner = make_scene_runner_runtime()
-    log_writer = make_log_writer_runtime(model, world)
+    chronicler = make_chronicler_runtime(model, world)
     state = make_initial_state(world)
 
     rt = SessionRuntime(
         bundle=bundle,
         scene_runner=scene_runner,
-        log_writer=log_writer,
+        chronicler=chronicler,
         state=state,
         world=world,
     )
@@ -383,7 +383,7 @@ async def start_session() -> dict[str, str]:
     async def run() -> None:
         try:
             await play_session(
-                bundle, scene_runner, log_writer, state, world,
+                bundle, scene_runner, chronicler, state, world,
                 pick_option=pick,
                 pick_walk=walk,
                 emit_event=emit,

@@ -46,6 +46,20 @@ class World:
     # frontend. Optional file (`world/map.yaml`); when missing or empty,
     # the frontend falls back to the text walk panel.
     map_coords: dict[str, tuple[float, float]]
+    # Built at load time from `beats`; the inverse of `Beat.name → Beat.id`.
+    # Used by agents.emit_state_changes to translate the LLM-facing
+    # `beat_name` back to the canonical `beat_id` after grammar-sampled
+    # decode. Name uniqueness is a loader invariant, so this is total.
+    beat_name_to_id: dict[str, str]
+
+    def beat_id_for_name(self, name: str) -> str:
+        """Translate an LLM-emitted beat name back to the canonical id.
+
+        Grammar sampling guarantees the model only emits names present in
+        the per-call `Literal[*reachable_beat_names]`, so a miss here is
+        engine drift, not a model fault — let the KeyError surface.
+        """
+        return self.beat_name_to_id[name]
 
     def npcs_at(self, location_id: str, state: object | None = None) -> list[NPC]:
         """All NPCs at `location_id` right now.
@@ -139,6 +153,23 @@ def _check_beat_ending_namespace(
         raise WorldLoadError(
             f"beat/ending id collision: {sorted(overlap)} appear as both"
         )
+
+
+def _build_beat_name_to_id(beats: dict[str, Beat]) -> dict[str, str]:
+    """Build the name→id map AND enforce name uniqueness in one pass.
+    Beat names are the LLM-facing surface (Phase 1 emits the name, not
+    the id); the map is what the engine uses to translate names back to
+    canonical ids at the decode boundary. Uniqueness is the invariant
+    that makes that translation deterministic."""
+    by_name: dict[str, str] = {}
+    for beat in beats.values():
+        if beat.name in by_name:
+            raise WorldLoadError(
+                f"duplicate Beat.name {beat.name!r}: used by both "
+                f"{by_name[beat.name]!r} and {beat.id!r}"
+            )
+        by_name[beat.name] = beat.id
+    return by_name
 
 
 def _check_beat_refs(beats: dict[str, Beat]) -> None:
@@ -260,6 +291,7 @@ def load_world(path: Path) -> World:
     beats: dict[str, Beat] = {b.id: b for b in truth.beats}
     endings: dict[str, Ending] = {e.id: e for e in truth.endings}
     _check_beat_ending_namespace(beats, endings)
+    beat_name_to_id = _build_beat_name_to_id(beats)
     _check_beat_refs(beats)
     _check_no_requires_cycles(beats)
     _check_ending_refs(endings, beats)
@@ -332,4 +364,5 @@ def load_world(path: Path) -> World:
         npcs_by_location=npcs_by_location,
         few_shots=few_shots,
         map_coords=map_coords,
+        beat_name_to_id=beat_name_to_id,
     )

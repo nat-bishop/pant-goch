@@ -36,15 +36,15 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Annotated, Any, Literal, Union
 
-from pydantic import BaseModel, Field, create_model
+from pydantic import BaseModel, Field, create_model, model_validator
 from pydantic_ai import Agent, NativeOutput
 from pydantic_ai.messages import ModelMessage
 from pydantic_ai.models.openai import OpenAIChatModel
 
 from .engine import reachable_beat_ids
 from .prompts import (
-    build_log_writer_system_prompt,
-    build_log_writer_user_prompt,
+    build_chronicler_system_prompt,
+    build_chronicler_user_prompt,
     build_phase1_system_prompt,
     build_phase1_user_prompt,
     build_phase2_system_prompt,
@@ -53,14 +53,15 @@ from .prompts import (
     build_populator_user_prompt,
 )
 from .schemas import (
+    ChronicleEntry,
     ContinueScene,
     EndGame,
     EndScene,
-    LogWriterOutput,
     NpcPlacementBundle,
     Option,
     ProsePart,
     StateChangeBundle,
+    UnlockBeat,
 )
 from .state import State
 from .world import World
@@ -114,7 +115,7 @@ class SceneRunnerRuntime:
 
 def make_scene_runner_runtime() -> SceneRunnerRuntime:
     """Construct a fresh scene-runner runtime. Call once per session
-    (mirrors make_log_writer_runtime)."""
+    (mirrors make_chronicler_runtime)."""
     return SceneRunnerRuntime()
 
 
@@ -122,38 +123,66 @@ def make_scene_runner_runtime() -> SceneRunnerRuntime:
 
 
 def _build_state_change_bundle_type(world: World, state: State) -> type[BaseModel]:
-    """StateChangeBundle whose UnlockBeat.beat_id is
-    `Literal[*reachable_beat_ids(world, state)]`. The grammar sampler will
-    reject any beat_id not currently reachable at decode time — covers
-    requires_beats/blocked_by_beats/already-fired in one Literal. `__base__=`
-    inherits `_no_duplicate_beat_ids` from canonical so the rule fires
-    during the agent's retry loop (ValidationError → ModelRetry).
+    """StateChangeBundle whose UnlockBeat.beat_name is
+    `Literal[*reachable_beat_names(world, state)]`. The grammar sampler
+    rejects any beat_name not currently reachable at decode time — covers
+    requires_beats/blocked_by_beats/already-fired in one Literal.
+
+    Names (not ids) on the wire: small LLMs reason better with short
+    human-language phrases ("Tom speaks of Megan") than snake_case slugs.
+    `emit_state_changes` translates name → canonical `UnlockBeat.beat_id`
+    after decode so engine/SSE/frontend ride on stable id keys.
+
+    The dynamic bundle does NOT inherit from canonical `StateChangeBundle`:
+    canonical's `_no_duplicate_beat_ids` reads `change.beat_id`, which
+    dynamic items lack. The inline `_no_duplicate_beat_names` validator
+    below catches duplicates during the agent's retry loop; canonical
+    validators still fire at the round-trip in `emit_state_changes`
+    (defense in depth).
     """
-    reachable = tuple(sorted(reachable_beat_ids(world, state)))
-    if not reachable:
+    reachable_ids = tuple(sorted(reachable_beat_ids(world, state)))
+    reachable_names = tuple(world.beats[bid].name for bid in reachable_ids)
+    if not reachable_names:
         # Nothing fireable from this state → bundle must be empty.
         return create_model(
             "StateChangeBundle",
-            __base__=StateChangeBundle,
             state_changes=(
                 list[Any],
                 Field(default_factory=list, max_length=0),
             ),
         )
-    BeatLiteral = Literal[reachable]  # type: ignore[valid-type]
+    NameLiteral = Literal[reachable_names]  # type: ignore[valid-type]
     DynamicUnlockBeat = create_model(
         "UnlockBeat",
         type=(Literal["unlock_beat"], "unlock_beat"),
-        beat_id=(BeatLiteral, ...),
+        beat_name=(NameLiteral, ...),
     )
     StateChange = Annotated[DynamicUnlockBeat, Field(discriminator="type")]
+
+    def _no_duplicate_beat_names(self):  # type: ignore[no-untyped-def]
+        seen: set[str] = set()
+        for change in self.state_changes:
+            name = getattr(change, "beat_name", None)
+            if name is None:
+                continue
+            if name in seen:
+                raise ValueError(
+                    f"beat_name {name!r} appears twice in bundle"
+                )
+            seen.add(name)
+        return self
+
     return create_model(
         "StateChangeBundle",
-        __base__=StateChangeBundle,
         state_changes=(
             list[StateChange],
             Field(default_factory=list, max_length=2),
         ),
+        __validators__={
+            "_no_duplicate_beat_names": model_validator(mode="after")(
+                _no_duplicate_beat_names
+            ),
+        },
     )
 
 
@@ -243,20 +272,20 @@ def _build_npc_placement_bundle_type(world: World) -> type[BaseModel]:
     )
 
 
-# ───────────────────────── log writer dynamic schema ─────────────────────────
+# ───────────────────────── chronicler dynamic schema ─────────────────────────
 
 
-def _build_log_writer_output_type(
+def _build_chronicle_entry_type(
     present_npc_ids: tuple[str, ...],
 ) -> type[BaseModel]:
-    """LogWriterOutput whose `npc_memory_updates` is a length-N list of
+    """ChronicleEntry whose `npc_memory_updates` is a length-N list of
     NpcMemoryUpdate, where `npc_id` is `Literal[*present_npc_ids]` and
     the list is constrained to exactly N entries
     (`min_length=max_length=N`).
 
     The grammar sampler enforces both the per-item id constraint and the
     list length, so the model literally cannot emit an empty list when
-    NPCs were present nor an out-of-cast id. `__base__=LogWriterOutput`
+    NPCs were present nor an out-of-cast id. `__base__=ChronicleEntry`
     keeps the canonical `_no_duplicate_npc_ids` validator firing during
     the agent's retry loop (ValidationError → ModelRetry, with
     `output_retries=3` on the agent).
@@ -267,8 +296,8 @@ def _build_log_writer_output_type(
     """
     if not present_npc_ids:
         return create_model(
-            "LogWriterOutput",
-            __base__=LogWriterOutput,
+            "ChronicleEntry",
+            __base__=ChronicleEntry,
             npc_memory_updates=(
                 list[Any],
                 Field(default_factory=list, max_length=0),
@@ -282,8 +311,8 @@ def _build_log_writer_output_type(
     )
     n = len(present_npc_ids)
     return create_model(
-        "LogWriterOutput",
-        __base__=LogWriterOutput,
+        "ChronicleEntry",
+        __base__=ChronicleEntry,
         npc_memory_updates=(
             list[DynamicNpcMemoryUpdate],
             Field(min_length=n, max_length=n),
@@ -333,10 +362,12 @@ async def emit_state_changes(
     full rich user prompt with reachable beats, endings, scene-so-far, case
     file — everything the classifier needs to judge what just fired.
 
-    `output_type=NativeOutput(DynamicBundle, strict=True)` baked per call;
-    DynamicBundle subclasses canonical so @model_validators fire during
-    pydantic-ai's retry loop. The post-run round-trip canonicalizes the
-    instance for downstream isinstance() dispatch.
+    `output_type=NativeOutput(DynamicBundle, strict=True)` baked per call.
+    Dynamic items carry `beat_name` (grammar-narrowed to reachable beat
+    names); this function translates each name back to the canonical
+    `beat_id` via `World.beat_id_for_name` and constructs the canonical
+    `StateChangeBundle`, which fires `_no_duplicate_beat_ids` + the
+    `max_length=2` cap at the boundary.
     """
     prompt = build_phase1_user_prompt(state, bundle.world)
     DynamicBundle = _build_state_change_bundle_type(bundle.world, state)
@@ -344,7 +375,13 @@ async def emit_state_changes(
         prompt,
         output_type=NativeOutput(DynamicBundle, strict=True),
     )
-    return StateChangeBundle.model_validate(result.output.model_dump())
+    raw = result.output
+    canonical_changes = [
+        UnlockBeat(beat_id=bundle.world.beat_id_for_name(c.beat_name))
+        for c in getattr(raw, "state_changes", [])
+        if getattr(c, "beat_name", None) is not None
+    ]
+    return StateChangeBundle(state_changes=canonical_changes)
 
 
 async def emit_placements(
@@ -420,12 +457,12 @@ async def emit_prose(
     return ProsePart.model_validate(result.output.model_dump())
 
 
-# ───────────────────────── log writer agent ─────────────────────────
+# ───────────────────────── chronicler agent ─────────────────────────
 
 
 @dataclass
-class LogWriterRuntime:
-    """Session-scoped state for the conversation-based log writer.
+class ChroniclerRuntime:
+    """Session-scoped state for the conversation-based chronicler.
 
     The agent is stateless across instances of the runtime (system prompt
     baked once for the world). `message_history` accumulates one user +
@@ -437,24 +474,25 @@ class LogWriterRuntime:
     session) would each carry their own history.
     """
 
-    agent: Agent[None, LogWriterOutput]
+    agent: Agent[None, ChronicleEntry]
     message_history: list[ModelMessage] = field(default_factory=list)
 
 
-def build_log_writer_agent(
+def build_chronicler_agent(
     model: OpenAIChatModel, world: World
-) -> Agent[None, LogWriterOutput]:
-    """Conversation-based log writer agent. System prompt is baked once
+) -> Agent[None, ChronicleEntry]:
+    """Conversation-based chronicler agent. System prompt is baked once
     (full bible + voice rules); each call appends one user message (scene
     summary) and gets one assistant message back. Output is structured
-    `LogWriterOutput` = case_file_entry (UI prose) + npc_memory_updates
+    `ChronicleEntry` = case_file_entry (UI prose) + npc_memory_updates
     (per-NPC notes surfaced to Phase 2).
 
-    Output spec is passed at `agent.run()` time (in `emit_log_entry`) via
-    `NativeOutput(LogWriterOutput, strict=True)` — same pattern as Phase
-    1/2. Keeping the agent's construction free of `NativeOutput` lets
-    TestModel-based unit tests bypass the native-output profile check
-    by monkeypatching `emit_log_entry` or supplying `custom_output_args`.
+    Output spec is passed at `agent.run()` time (in `emit_chronicle_entry`)
+    via `NativeOutput(ChronicleEntry, strict=True)` — same pattern as
+    Phase 1/2. Keeping the agent's construction free of `NativeOutput`
+    lets TestModel-based unit tests bypass the native-output profile
+    check by monkeypatching `emit_chronicle_entry` or supplying
+    `custom_output_args`.
 
     The OpenAIModelProfile(openai_chat_send_back_thinking_parts=False)
     flag is set on the model in lifespan / _build_model — load-bearing
@@ -462,9 +500,9 @@ def build_log_writer_agent(
     `ThinkingPart`s into prior assistant content as <think>...</think>
     blocks, which Gemma 4 cannot tolerate in multi-turn.
     """
-    return Agent[None, LogWriterOutput](
+    return Agent[None, ChronicleEntry](
         model=model,
-        system_prompt=build_log_writer_system_prompt(world),
+        system_prompt=build_chronicler_system_prompt(world),
         # Match phase1/phase2/populator. Needed so the canonical
         # _no_duplicate_npc_ids validator triggers a retry rather than
         # bubbling on the first duplicate.
@@ -472,20 +510,20 @@ def build_log_writer_agent(
     )
 
 
-def make_log_writer_runtime(
+def make_chronicler_runtime(
     model: OpenAIChatModel, world: World
-) -> LogWriterRuntime:
-    """Construct a fresh LogWriterRuntime. Call once per session."""
-    return LogWriterRuntime(agent=build_log_writer_agent(model, world))
+) -> ChroniclerRuntime:
+    """Construct a fresh ChroniclerRuntime. Call once per session."""
+    return ChroniclerRuntime(agent=build_chronicler_agent(model, world))
 
 
-async def emit_log_entry(
-    runtime: LogWriterRuntime,
+async def emit_chronicle_entry(
+    runtime: ChroniclerRuntime,
     world: World,
     state: State,
-) -> LogWriterOutput:
+) -> ChronicleEntry:
     """Generate one case-file entry (+ structured per-NPC memory updates)
-    for the just-completed scene. Returns the canonical `LogWriterOutput`
+    for the just-completed scene. Returns the canonical `ChronicleEntry`
     directly; caller (scene_loop.play_session) decomposes it into
     `state.case_file_entries.append(...)` and per-NPC memory merges.
 
@@ -501,28 +539,28 @@ async def emit_log_entry(
         their conversation context.
       - Does NOT mutate `state` — caller merges fields explicitly.
     """
-    assert state.dialogue_history, "emit_log_entry: empty dialogue_history"
+    assert state.dialogue_history, "emit_chronicle_entry: empty dialogue_history"
     # The populator only runs at scene entry, so the live state matches
     # who was there for the whole scene.
     present_npc_ids = tuple(
         n.id for n in world.npcs_at(state.player_location, state=state)
     )
-    user_prompt = build_log_writer_user_prompt(state, world)
-    DynamicLogWriterOutput = _build_log_writer_output_type(present_npc_ids)
+    user_prompt = build_chronicler_user_prompt(state, world)
+    DynamicChronicleEntry = _build_chronicle_entry_type(present_npc_ids)
     result = await runtime.agent.run(
         user_prompt,
         message_history=runtime.message_history,
-        output_type=NativeOutput(DynamicLogWriterOutput, strict=True),
+        output_type=NativeOutput(DynamicChronicleEntry, strict=True),
     )
     runtime.message_history = result.all_messages()
     # Round-trip dynamic → canonical so the _no_duplicate_npc_ids
     # validator fires at this boundary too (defense in depth).
-    output: LogWriterOutput = LogWriterOutput.model_validate(
+    output: ChronicleEntry = ChronicleEntry.model_validate(
         result.output.model_dump()
     )
     # Drop whitespace-only notes (the one rule grammar sampling can't
     # enforce). Strip case_file_entry the same way.
-    return LogWriterOutput(
+    return ChronicleEntry(
         case_file_entry=output.case_file_entry.strip(),
         npc_memory_updates=[
             u for u in output.npc_memory_updates if u.note.strip()

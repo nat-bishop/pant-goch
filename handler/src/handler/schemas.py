@@ -106,14 +106,14 @@ class ProsePart(_Strict):
     next: SceneNext
 
 
-# ───────────────────────── Log writer dual output ─────────────────────────
+# ───────────────────────── Chronicler dual output ─────────────────────────
 
 
 class NpcMemoryUpdate(_Strict):
-    """One per-NPC memory note emitted by the log writer at scene close.
+    """One per-NPC memory note emitted by the chronicler at scene close.
 
     Per call, `npc_id` is narrowed to `Literal[*present_npc_ids]` by
-    `agents._build_log_writer_output_type`, so the grammar sampler
+    `agents._build_chronicle_entry_type`, so the grammar sampler
     physically cannot emit an out-of-cast or out-of-scene id. `note` is
     1-2 sentences in the journalist's voice — "what I now know / feel
     about this person", distinct from the case file's "what happened"
@@ -124,15 +124,15 @@ class NpcMemoryUpdate(_Strict):
     note: str
 
 
-class LogWriterOutput(_Strict):
-    """Scene-end log writer emission. One LLM call emits two artifacts
+class ChronicleEntry(_Strict):
+    """Scene-end chronicler emission. One LLM call emits two artifacts
     under one set of voice rules — `case_file_entry` (player-facing
     sidebar prose) and `npc_memory_updates` (structured per-NPC memory
     channel surfaced to Phase 2 on subsequent scenes). Single call so
     the journalist's interpretation is coherent across both.
 
     `npc_memory_updates` shape and constraints — see `NpcMemoryUpdate`
-    and `agents._build_log_writer_output_type`. The engine merges each
+    and `agents._build_chronicle_entry_type`. The engine merges each
     note into `state.npc_memory[npc_id]` (appending one entry per
     scene the NPC was present).
     """
@@ -141,7 +141,7 @@ class LogWriterOutput(_Strict):
     npc_memory_updates: list[NpcMemoryUpdate] = Field(default_factory=list)
 
     @model_validator(mode="after")
-    def _no_duplicate_npc_ids(self) -> LogWriterOutput:
+    def _no_duplicate_npc_ids(self) -> ChronicleEntry:
         seen: set[str] = set()
         for upd in self.npc_memory_updates:
             if upd.npc_id in seen:

@@ -28,9 +28,9 @@ from pydantic_ai.exceptions import UnexpectedModelBehavior
 
 from .agents import (
     AgentBundle,
-    LogWriterRuntime,
+    ChroniclerRuntime,
     SceneRunnerRuntime,
-    emit_log_entry,
+    emit_chronicle_entry,
     emit_placements,
     emit_prose,
     emit_state_changes,
@@ -41,10 +41,10 @@ from .engine import (
     enter_scene,
 )
 from .schemas import (
+    ChronicleEntry,
     ContinueScene,
     EndGame,
     EndScene,
-    LogWriterOutput,
     NpcPlacementBundle,
     Option,
     ProsePart,
@@ -72,8 +72,8 @@ EmitEvent = Callable[[dict], Awaitable[None]]
 # SSE backend uses async (await a Future resolved by POST /pick).
 PickOption = Callable[["ProsePart"], Union[int, Awaitable[int]]]
 PickWalk = Callable[[State, World], Union[str, Awaitable[str]]]
-OnLogEntry = Callable[
-    [State, LogWriterOutput], Union[None, Awaitable[None]]
+OnChronicleEntry = Callable[
+    [State, ChronicleEntry], Union[None, Awaitable[None]]
 ]
 OnSceneClose = Callable[["ProsePart"], Union[None, Awaitable[None]]]
 
@@ -309,13 +309,13 @@ async def play_scene(
 async def play_session(
     bundle: AgentBundle,
     runtime: SceneRunnerRuntime,
-    log_writer: LogWriterRuntime,
+    chronicler: ChroniclerRuntime,
     state: State,
     world: World,
     *,
     pick_option: PickOption,
     pick_walk: PickWalk,
-    on_log_entry: OnLogEntry | None = None,
+    on_chronicle_entry: OnChronicleEntry | None = None,
     on_scene_close: OnSceneClose | None = None,
     emit_event: EmitEvent | None = None,
 ) -> ProsePart:
@@ -337,14 +337,14 @@ async def play_session(
             which adjacent location to walk to. Receives the live state
             and world; returns the destination location id (MUST be in
             the current location's adjacent_to).
-        on_log_entry: optional callback fired after each scene-end log
-            writer call. Receives `(state, LogWriterOutput)`; useful for
-            eval traces, SSE streaming, or printing in the CLI. The
+        on_chronicle_entry: optional callback fired after each scene-end
+            chronicler call. Receives `(state, ChronicleEntry)`; useful
+            for eval traces, SSE streaming, or printing in the CLI. The
             engine has already merged case_file_entry into
             `state.case_file_entries` and per-NPC notes into
             `state.npc_memory` by the time the callback fires.
         on_scene_close: optional callback fired with the terminal
-            ProsePart (EndScene or EndGame) BEFORE the log writer runs.
+            ProsePart (EndScene or EndGame) BEFORE the chronicler runs.
             Lets the driver surface the closing prose to the player.
             ContinueScene prose is surfaced via pick_option, which sees
             every non-terminal ProsePart.
@@ -353,7 +353,7 @@ async def play_session(
         - Mutates `state` (location, scene_id, dialogue_history,
           unlocked_beats, npc_locations, npc_memory, case_file_entries,
           game_over).
-        - Mutates `log_writer.message_history`.
+        - Mutates `chronicler.message_history`.
     """
     while state.game_over is None:
         terminal = await play_scene(
@@ -362,22 +362,22 @@ async def play_session(
             emit_event=emit_event,
         )
 
-        # Surface the closing prose before the log writer runs — the
+        # Surface the closing prose before the chronicler runs — the
         # player should read the scene's last line before the case file
         # gets its commentary.
         if on_scene_close is not None:
             await _maybe_await(on_scene_close(terminal))
 
-        # Log writer fires after every scene close — both EndScene and
+        # Chronicler fires after every scene close — both EndScene and
         # EndGame. The just-completed scene is still in dialogue_history;
         # the next enter_scene will clear it. Decompose into the two
         # state channels right here so the callback sees a settled state.
-        output = await emit_log_entry(log_writer, world, state)
+        output = await emit_chronicle_entry(chronicler, world, state)
         state.case_file_entries.append(output.case_file_entry)
         for upd in output.npc_memory_updates:
             state.npc_memory[upd.npc_id].append(upd.note)
-        if on_log_entry is not None:
-            await _maybe_await(on_log_entry(state, output))
+        if on_chronicle_entry is not None:
+            await _maybe_await(on_chronicle_entry(state, output))
 
         # Pace the case-file entry's words out as SSE log_entry_word
         # events. Frontend renders into the sidebar in cadence with the

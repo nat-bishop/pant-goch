@@ -64,6 +64,7 @@ beats:
   # feels progress rather than a binary reveal.
 
   - id: tom_speaks_of_megan_as_a_person
+    name: Tom speaks of Megan
     description: |
       Tom shares a memory of Megan Pritchard that has nothing to do with
       the road — a small, particular thing (a school sports day, a song
@@ -86,6 +87,7 @@ beats:
       stay through a silence first.
 
   - id: tom_alludes_to_being_on_the_road
+    name: Tom alludes to being on the road
     description: |
       Tom mentions, obliquely, that he was driving the B4368 the night
       Megan died — coming back from a friend's farm. He does not yet
@@ -105,6 +107,7 @@ beats:
       saw is still ahead.
 
   - id: tom_named_a_vehicle
+    name: Tom named a vehicle
     description: |
       Tom Bevan tells the player he saw a Land Rover speeding away from
       the Black Dog Bend the night Megan died, and that he recognised
@@ -129,6 +132,7 @@ beats:
       this scene. Do not fire on inference — Tom must say it.
 
   - id: tom_admits_full_silence
+    name: Tom admits full silence
     description: |
       Tom tells the player, in his own words, that he never said whose
       vehicle it was, and why — that he convinced himself the Vaughns
@@ -143,6 +147,7 @@ beats:
       of his own conscience, of what he thinks should happen now.
 
   - id: maud_confirms_the_affair
+    name: Maud confirms the affair
     description: |
       Maud Pryce, in the post office or as an aside elsewhere in the
       village, confirms that Megan and Dylan were sleeping together
@@ -160,6 +165,7 @@ beats:
   # encounter, which is when these beats become reachable.
 
   - id: dylan_acknowledges_the_player
+    name: Dylan acknowledges the player
     description: |
       Dylan Vaughn, in a private setting away from Tan-y-coed, agrees
       to speak with the player at all. He does not admit anything yet —
@@ -180,6 +186,7 @@ beats:
       the further Dylan beats are unreachable.
 
   - id: dylan_admits_the_relationship
+    name: Dylan admits the relationship
     description: |
       Dylan Vaughn admits to the player that he and Megan were
       together. He does not (yet) admit knowing what his mother did.
@@ -199,6 +206,7 @@ beats:
       the scene reads as polite stonewalling.
 
   - id: dylan_speaks_of_megan
+    name: Dylan speaks of Megan
     description: |
       Dylan talks about Megan as a person — what she was like, what
       they did together, what he misses. Not as evidence. The
@@ -219,6 +227,7 @@ beats:
       hardest beat is reachable; the player has earned the standing.
 
   - id: dylan_admits_he_knows
+    name: Dylan admits he knows
     description: |
       Dylan tells the player he has known since April 2019 what his
       mother did on the road that night.
@@ -242,6 +251,7 @@ beats:
   # player who hasn't earned it; each rung gates a specific shift.
 
   - id: helen_will_meet_off_record
+    name: Helen will meet off-record
     description: |
       DC Helen Mortimer agrees to meet the player at the Costa in
       Knighton (not the station). She makes the off-record framing
@@ -259,6 +269,7 @@ beats:
       itself is the next beat.
 
   - id: helen_confirms_she_suspected
+    name: Helen confirms she suspected
     description: |
       Helen tells the player, in conversation at the Costa, that she
       always suspected Eluned Vaughn was on the road that night. She
@@ -278,6 +289,7 @@ beats:
       are still hers; she has not given them up.
 
   - id: helen_hands_over_notes
+    name: Helen hands over notes
     description: |
       Helen hands the player a manila envelope containing her
       unofficial notes from the 2019 investigation. The handover is
@@ -298,6 +310,7 @@ beats:
       handover, not after.
 
   - id: iwan_grants_you_intimacy
+    name: Iwan grants you intimacy
     description: |
       Iwan Pritchard takes the player into Megan's bedroom at Lower
       Hafod — preserved largely as she left it — and speaks of her as
@@ -313,6 +326,7 @@ beats:
       state.
 
   - id: eluned_breaks
+    name: Eluned breaks
     description: |
       Eluned Vaughn, confronted at Tan-y-coed by a player who has
       enough, confirms — not in words exactly, but in a moment of
@@ -335,6 +349,7 @@ beats:
       closes.
 
   - id: tom_decides_to_speak_to_police
+    name: Tom decides to speak to police
     description: |
       Tom Bevan, having unburdened himself to the player across two
       conversations and feeling steadier than he has in seven years,
@@ -354,6 +369,7 @@ beats:
   # ─────────────────────── Negative beats ───────────────────────
 
   - id: tom_closes_off
+    name: Tom closes off
     description: |
       Tom has decided he will not speak to the player again about
       anything that matters. He may be civil in passing but he will
@@ -370,6 +386,7 @@ beats:
       tom_decides_to_speak_to_police).
 
   - id: dylan_refuses_to_speak_again
+    name: Dylan refuses to speak again
     description: |
       Dylan has decided the player is dangerous to him and will not
       engage further on any topic that matters.
@@ -381,6 +398,7 @@ beats:
       will not open up to a return visit.
 
   - id: helen_wont_take_your_call
+    name: Helen won't take your call
     description: |
       DC Helen Mortimer has decided the player is a professional risk
       and will not meet again. She will not return calls.
@@ -393,6 +411,7 @@ beats:
       helen_hands_over_notes) is permanently blocked.
 
   - id: eluned_throws_you_out
+    name: Eluned throws you out
     description: |
       Eluned has decided the player will not be on Tan-y-coed land
       again. The next attempt to visit will be met at the gate.
@@ -404,6 +423,7 @@ beats:
       blocked.
 
   - id: village_runs_you_out
+    name: Village runs you out
     description: |
       The village has collectively decided the player is unwelcome.
       The pub falls silent on entry; Maud is "out" whenever the player
@@ -425,6 +445,7 @@ beats:
   # blocked.
 
   - id: decided_to_file
+    name: Decided to file
     description: |
       The player has explicitly chosen to write up the story and file
       it with the magazine. The point of no return.
@@ -447,6 +468,7 @@ beats:
       the player sits at the desk in the vicarage and writes.
 
   - id: decided_to_walk_away
+    name: Decided to walk away
     description: |
       The player has explicitly chosen to abandon the investigation
       and go home.
@@ -462,6 +484,7 @@ beats:
       has to say it.
 
   - id: decided_to_confront_eluned
+    name: Decided to confront Eluned
     description: |
       The player has explicitly chosen to drive up to Tan-y-coed and
       put what they know to Eluned Vaughn herself.
@@ -481,6 +504,7 @@ beats:
       is reachable.
 
   - id: decided_to_tell_iwan_privately
+    name: Decided to tell Iwan privately
     description: |
       The player has explicitly chosen to tell Iwan what they have
       learned, without filing the story.

@@ -20,14 +20,14 @@ from pydantic_ai.models.test import TestModel
 
 from handler.agents import (
     build_scene_runner_bundle,
-    make_log_writer_runtime,
+    make_chronicler_runtime,
     make_scene_runner_runtime,
 )
 from handler.schemas import (
     ContinueScene,
     EndGame,
     EndScene,
-    LogWriterOutput,
+    ChronicleEntry,
     NpcPlacementBundle,
     Option,
     ProsePart,
@@ -48,7 +48,7 @@ from handler.world import World, load_world
 FIXTURE_VALID = Path(__file__).parent / "fixtures" / "world_valid"
 
 
-# ───────────────────────── populator / log writer no-ops ─────────────────────────
+# ───────────────────────── populator / chronicler no-ops ─────────────────────────
 
 
 async def _empty_placements(*args, **kwargs):
@@ -59,13 +59,13 @@ def _patch_populator(monkeypatch):
     monkeypatch.setattr("handler.scene_loop.emit_placements", _empty_placements)
 
 
-def _patch_log_writer(monkeypatch, text: str = "case-file entry"):
+def _patch_chronicler(monkeypatch, text: str = "case-file entry"):
     async def fake_emit(*args, **kwargs):
-        return LogWriterOutput(
+        return ChronicleEntry(
             case_file_entry=text,
             npc_memory_updates=[],
         )
-    monkeypatch.setattr("handler.scene_loop.emit_log_entry", fake_emit)
+    monkeypatch.setattr("handler.scene_loop.emit_chronicle_entry", fake_emit)
 
 
 # ───────────────────────── paced_word_emitter ─────────────────────────
@@ -301,7 +301,7 @@ async def test_play_session_emits_location_change_and_log_entry_words(
     """Cross-scene events: location_change fires between scenes;
     log_entry_word events stream the case file entry."""
     world, bundle = world_and_bundle
-    log_writer = make_log_writer_runtime(
+    chronicler = make_chronicler_runtime(
         TestModel(custom_output_text="The pub, the road. Tom was at the bar."), world
     )
     state = make_initial_state(world)
@@ -320,7 +320,7 @@ async def test_play_session_emits_location_change_and_log_entry_words(
         return next(proses)
 
     _patch_populator(monkeypatch)
-    _patch_log_writer(monkeypatch, text="The pub, the road. Tom was at the bar.")
+    _patch_chronicler(monkeypatch, text="The pub, the road. Tom was at the bar.")
     monkeypatch.setattr("handler.scene_loop.emit_state_changes", fake_phase1)
     monkeypatch.setattr("handler.scene_loop.emit_prose", fake_phase2)
     monkeypatch.setattr("handler.scene_loop.paced_word_emitter",
@@ -341,7 +341,7 @@ async def test_play_session_emits_location_change_and_log_entry_words(
     state.player_location = "the_slaughtered_lamb"
 
     await play_session(
-        bundle, make_scene_runner_runtime(), log_writer, state, world,
+        bundle, make_scene_runner_runtime(), chronicler, state, world,
         pick_option=pick_option,
         pick_walk=pick_walk,
         emit_event=emit,

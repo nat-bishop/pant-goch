@@ -56,7 +56,7 @@ class Settings(BaseSettings):
     # parallel sessions (not v1's use case).
     llama_n_parallel: int = 4
     # Gemma 4 reasoning mode. `off` (default): no `<think>` blocks; v2's
-    # scene runner returns prose directly. The conversation-based log writer
+    # scene runner returns prose directly. The conversation-based chronicler
     # ALSO depends on no thinking parts in assistant messages — see
     # `OpenAIModelProfile(openai_chat_send_back_thinking_parts=False)` in
     # main.py's lifespan.

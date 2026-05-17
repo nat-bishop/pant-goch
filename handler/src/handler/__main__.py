@@ -24,15 +24,14 @@ from pydantic_ai.models.openai import OpenAIChatModel
 
 from .agents import (
     build_scene_runner_bundle,
-    make_log_writer_runtime,
+    make_chronicler_runtime,
     make_scene_runner_runtime,
 )
 from .config import Settings
 from .launcher import resolve_config, start_llama, stop_llama, wait_healthy
 from .main import _probe_inferno_health, build_model
-from .schemas import ContinueScene, EndGame, EndScene, ProsePart
+from .schemas import ChronicleEntry, ContinueScene, EndGame, EndScene, ProsePart
 from .scene_loop import play_session
-from .schemas import LogWriterOutput
 from .state import State, make_initial_state
 from .world import World, load_world
 
@@ -108,7 +107,7 @@ def _prompt_walk(state: State, world: World) -> str:
         print(f"Out of range. Pick 1-{len(location.adjacent_to)}.")
 
 
-def _print_log_entry(state: State, output: LogWriterOutput) -> None:
+def _print_chronicle_entry(state: State, output: ChronicleEntry) -> None:
     print(f"\n--- case-file entry (scene {state.scene_id}) ---")
     print(f"  {output.case_file_entry}")
 
@@ -126,16 +125,16 @@ async def _amain() -> int:
     try:
         bundle = build_scene_runner_bundle(model, world)
         scene_runner = make_scene_runner_runtime()
-        log_writer = make_log_writer_runtime(model, world)
+        chronicler = make_chronicler_runtime(model, world)
         state = make_initial_state(world)
 
         print(f"\n=== Scene at {state.player_location} ===")
         terminal = await play_session(
-            bundle, scene_runner, log_writer, state, world,
+            bundle, scene_runner, chronicler, state, world,
             pick_option=_prompt_pick,
             pick_walk=_prompt_walk,
             on_scene_close=_print_prose_part,
-            on_log_entry=_print_log_entry,
+            on_chronicle_entry=_print_chronicle_entry,
         )
         if isinstance(terminal.next, EndGame):
             ending = world.endings[terminal.next.ending_id]

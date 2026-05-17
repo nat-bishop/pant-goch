@@ -233,6 +233,7 @@ def test_invariant_5_beat_id_uniqueness(tmp_path):
     truth = yaml.safe_load(truth_path.read_text(encoding="utf-8"))
     truth["beats"].append({
         "id": "tom_named_a_vehicle",  # collision
+        "name": "Tom named a vehicle (dup)",
         "description": "x",
         "notes_to_llm": "y",
     })

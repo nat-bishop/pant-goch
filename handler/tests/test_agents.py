@@ -23,29 +23,33 @@ from handler.world import load_world
 FIXTURE_VALID = Path(__file__).parent / "fixtures" / "world_valid"
 
 
-def test_state_change_bundle_type_accepts_reachable_beat_ids():
+def test_state_change_bundle_type_accepts_reachable_beat_names():
+    """Phase 1 emits beat NAMES, not ids. Every initially-reachable beat's
+    name must round-trip through the dynamic schema."""
     world = load_world(FIXTURE_VALID)
     state = make_initial_state(world)
     BundleType = _build_state_change_bundle_type(world, state)
-    # Every initially-reachable beat id is accepted by the dynamic schema.
     from handler.engine import reachable_beat_ids
     for beat_id in reachable_beat_ids(world, state):
+        beat_name = world.beats[beat_id].name
         bundle = BundleType.model_validate({
             "state_changes": [
-                {"type": "unlock_beat", "beat_id": beat_id}
+                {"type": "unlock_beat", "beat_name": beat_name}
             ]
         })
-        assert bundle.state_changes[0].beat_id == beat_id  # type: ignore[union-attr]
+        assert bundle.state_changes[0].beat_name == beat_name  # type: ignore[union-attr]
+        # Boundary translation: name → id is the engine's job in emit_state_changes.
+        assert world.beat_id_for_name(beat_name) == beat_id
 
 
-def test_state_change_bundle_type_rejects_unknown_beat_id():
+def test_state_change_bundle_type_rejects_unknown_beat_name():
     world = load_world(FIXTURE_VALID)
     state = make_initial_state(world)
     BundleType = _build_state_change_bundle_type(world, state)
     with pytest.raises(ValidationError):
         BundleType.model_validate({
             "state_changes": [
-                {"type": "unlock_beat", "beat_id": "ghost_beat"}
+                {"type": "unlock_beat", "beat_name": "Ghost beat"}
             ]
         })
 
