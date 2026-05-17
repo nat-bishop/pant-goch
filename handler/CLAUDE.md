@@ -43,6 +43,7 @@ Per-call dynamic schema builders narrow:
 - `EndGame.ending_id` → `Literal[*satisfied_ending_ids]`. Only endings whose `requires_beats` are currently satisfied are emittable.
 - `ProsePart.next` → `EndScene` (no union) when `leave_pick` is set. Leave-pick-forces-EndScene is grammar-enforced.
 - `NpcPlacement.npc_id` → `Literal[*npc_ids]`, `.location_id` → `Literal[*location_ids]`. The populator cannot place an undefined NPC or send anyone to an undefined location.
+- `NpcMemoryUpdate.npc_id` → `Literal[*present_npc_ids]` per scene close, with `Field(min_length=N, max_length=N)` on the `npc_memory_updates` list — the log writer physically cannot emit zero updates when NPCs were present, nor an out-of-cast / out-of-scene id. Uniqueness across items is the one rule grammar sampling can't enforce; `LogWriterOutput._no_duplicate_npc_ids` on the canonical schema covers it (ValidationError → ModelRetry under `output_retries=3`).
 
 State-INDEPENDENT structural rules live on the canonical schemas in `schemas.py`:
 - `StateChangeBundle.state_changes: Field(max_length=2)` — the ≤2-cap, was `UNLOCK_BEAT_CAP_PER_BUNDLE`. Non-negotiable: prevents cascade-unlocking the truth in one beat.
@@ -115,6 +116,20 @@ world/
 - **`map.yaml` + `map.png`** — `world.py::load_world` reads them as optional; missing/empty → frontend falls back to text walk panel (`WalkPanel` in `App.tsx`). Coords are fractional so the map is responsive without re-authoring on resize.
 - **Anti-slop banned-phrase list** — NOT yet authored. Mine outputs from a playthrough before adding.
 
+## Prose voice canon
+
+Three distinct voices in the prose stack; do not blur them.
+
+- **Phase 2 scene narrator** (`prompts.py::build_phase2_system_prompt`) — second person, present tense, terse. The player is "you"; events unfold as they happen. The narrator stays *outside* the player's head: we know what the player does, hears, and sees, never what they think or feel. NPC dialogue is in quotation marks, registered to each NPC's `voice_sample`. Few-shots in `world/few_shots.yaml` are the load-bearing demonstration of register and rhythm — small models follow examples over rules, so the few-shots and the `[VOICE RULES]` block must agree byte-for-byte on person/tense.
+
+- **Log writer case file** (`build_log_writer_system_prompt`, `case_file_entry` field) — first person, past tense. The journalist at the desk in the Old Vicarage later that evening: "I sat down at the bar next to Tom Bevan." Terse, no flowering. This is where the player's interiority lives — what they noticed, what stayed with them, what they chose not to say. The scene narrator deliberately omits this; the case file is where it's recorded.
+
+- **Log writer NPC memory** (same prompt, `npc_memory_updates` field) — first person, past tense. The journalist's running impression of each NPC: "what I now know / feel about this person," not a scene recap. Surfaces back into Phase 2 on subsequent scenes via `state.npc_memory`, rendered in the [PRESENT] block as "history with player".
+
+The temporal layering is deliberate. The scene happens *now* in second person; the case file is the same journalist reflecting that evening in first person. The two coexist because they sit at different distances from the event — the immediacy of the body in the room vs. the diary kept after.
+
+If a future refactor wants to shift this (e.g. free-indirect crowd speech à la McGregor's *Reservoir 13*, or a different protagonist register), update this section AND move `world/few_shots.yaml` in the same change. The system-prompt rules and the few-shots fight if they don't move together, and the few-shots win.
+
 ## OpenAIModelProfile flag is load-bearing
 
 `build_model` in `main.py` sets `OpenAIModelProfile(openai_chat_send_back_thinking_parts=False)`. Without it, pydantic-ai's default `'auto'` round-trips `ThinkingPart`s back into prior assistant content as `<think>…</think>` blocks, which Gemma 4 cannot tolerate in multi-turn. Both Phase 2's accumulating scene history AND the log writer's accumulating session history depend on this; drift compounds every turn without it.
@@ -149,7 +164,7 @@ These each carry an inline `# Why:` at the call site — preserve them:
 - `prompts.py::build_populator_system_prompt` — populator's job is **restraint**: empty bundle is the default for most scene entries. Movements must be traceable to case-file evidence.
 - `agents.py::SceneRunnerRuntime` — scene-bounded history; reset in `play_scene` after `enter_scene`; fallback prose intentionally NOT persisted.
 - `agents.py::emit_prose` — `is_first_turn = not runtime.phase2_message_history` computes from runtime, not state. The runtime is the source of truth for scene-conversation lifecycle.
-- `agents.py::emit_log_entry` — filters `npc_memory_updates` to NPCs actually present this scene and defined in the world; drops empty/whitespace notes. Belt-and-braces against the LLM emitting noise.
+- `agents.py::emit_log_entry` — builds the per-call dynamic `LogWriterOutput` via `_build_log_writer_output_type(present_npc_ids)`; grammar sampling enforces exactly-one-record-per-present-NPC and `npc_id ∈ present`. Engine still drops whitespace-only notes (the one rule the grammar can't enforce) and collapses the list-of-records back to the `dict[str, str]` shape `LogEntry.npc_memory_updates` exposes.
 - `agents.py::_build_npc_placement_bundle_type` — narrows `NpcPlacement.npc_id` and `.location_id` to Literals; the populator literally cannot emit an undefined id.
 - `engine.py::enter_scene` / `record_scene_co_presence` — the split exists because the populator runs between them. Don't re-merge.
 - `scene_loop.py::play_session` — single composable driver shared by CLI, SSE backend, and tests. Async/sync callbacks both supported via `_maybe_await`. Threads `bundle, scene_runner, log_writer, state, world` in that order. Merges `entry.npc_memory_updates` into `state.npc_memory` after each scene close.

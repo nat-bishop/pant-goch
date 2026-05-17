@@ -13,11 +13,13 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart
 from pydantic_ai.models.test import TestModel
 
 from handler.agents import (
     LogWriterRuntime,
+    _build_log_writer_output_type,
     build_log_writer_agent,
     emit_log_entry,
     make_log_writer_runtime,
@@ -27,6 +29,7 @@ from handler.schemas import (
     ContinueScene,
     EndScene,
     LogWriterOutput,
+    NpcMemoryUpdate,
     Option,
     UnlockBeat,
 )
@@ -192,9 +195,12 @@ async def test_emit_log_entry_returns_log_entry_with_correct_anchors():
     )
     runtime = _runtime_with_canned_outputs(world, [LogWriterOutput(
         case_file_entry=custom_text,
-        npc_memory_updates={
-            "tom": "Tom unburdened. Named Eluned's Land Rover. Walked himself home.",
-        },
+        npc_memory_updates=[
+            NpcMemoryUpdate(
+                npc_id="tom",
+                note="Tom unburdened. Named Eluned's Land Rover. Walked himself home.",
+            ),
+        ],
     )])
     entry = await emit_log_entry(runtime, world, state)
 
@@ -207,33 +213,16 @@ async def test_emit_log_entry_returns_log_entry_with_correct_anchors():
 
 
 @pytest.mark.asyncio
-async def test_emit_log_entry_filters_memory_updates_to_present_npcs():
-    """The log writer must not emit memory for NPCs who weren't in the
-    scene. Anchor's `npcs_present` is the source of truth; emit_log_entry
-    drops keys outside it and keys not in the world."""
-    world = load_world(FIXTURE_VALID)
-    state = _state_with_one_scene()  # tom present, maud not
-    runtime = _runtime_with_canned_outputs(world, [LogWriterOutput(
-        case_file_entry="The scene.",
-        npc_memory_updates={
-            "tom": "Tom note.",
-            "maud": "Maud was NOT in this scene; should be filtered.",
-            "ghost_npc": "Not a real NPC; should be filtered.",
-        },
-    )])
-    entry = await emit_log_entry(runtime, world, state)
-    assert set(entry.npc_memory_updates.keys()) == {"tom"}
-
-
-@pytest.mark.asyncio
 async def test_emit_log_entry_drops_empty_string_memory_updates():
     """If the log writer emits an empty/whitespace note for a present
-    NPC, drop it rather than carrying noise forward into npc_memory."""
+    NPC, drop it rather than carrying noise forward into npc_memory.
+    String non-emptiness is the one rule the grammar sampler can't
+    enforce; the engine-side strip is belt-and-braces."""
     world = load_world(FIXTURE_VALID)
     state = _state_with_one_scene()
     runtime = _runtime_with_canned_outputs(world, [LogWriterOutput(
         case_file_entry="Scene.",
-        npc_memory_updates={"tom": "   "},
+        npc_memory_updates=[NpcMemoryUpdate(npc_id="tom", note="   ")],
     )])
     entry = await emit_log_entry(runtime, world, state)
     assert entry.npc_memory_updates == {}
@@ -249,8 +238,18 @@ async def test_emit_log_entry_grows_message_history():
     runtime = _runtime_with_canned_outputs(
         world,
         [
-            LogWriterOutput(case_file_entry="An entry.", npc_memory_updates={}),
-            LogWriterOutput(case_file_entry="Another entry.", npc_memory_updates={}),
+            LogWriterOutput(
+                case_file_entry="An entry.",
+                npc_memory_updates=[
+                    NpcMemoryUpdate(npc_id="tom", note="Tom note one."),
+                ],
+            ),
+            LogWriterOutput(
+                case_file_entry="Another entry.",
+                npc_memory_updates=[
+                    NpcMemoryUpdate(npc_id="tom", note="Tom note two."),
+                ],
+            ),
         ],
     )
 
@@ -263,5 +262,87 @@ async def test_emit_log_entry_grows_message_history():
     await emit_log_entry(runtime, world, state)
     after_two = len(runtime.message_history)
     assert after_two > after_one
+
+
+# ───────────────────────── dynamic schema ─────────────────────────
+
+
+def test_log_writer_output_rejects_duplicate_npc_ids():
+    """Canonical _no_duplicate_npc_ids validator — mirrors
+    StateChangeBundle._no_duplicate_beat_ids. Grammar sampling can't
+    enforce uniqueness across items, so this validator is the rule
+    that fires (and triggers retry under output_retries=3)."""
+    with pytest.raises(ValidationError, match="appears twice"):
+        LogWriterOutput(
+            case_file_entry="Scene.",
+            npc_memory_updates=[
+                NpcMemoryUpdate(npc_id="tom", note="first"),
+                NpcMemoryUpdate(npc_id="tom", note="second"),
+            ],
+        )
+
+
+def test_build_log_writer_output_type_constrains_to_present_npcs():
+    """Dynamic schema narrows `npc_id` to Literal[*present_npc_ids] and
+    constrains the list length to exactly N — grammar-enforced at decode
+    time, model-validated here."""
+    DynamicType = _build_log_writer_output_type(("tom", "maud"))
+
+    # Empty list is rejected (min_length=2).
+    with pytest.raises(ValidationError):
+        DynamicType.model_validate({
+            "case_file_entry": "Scene.",
+            "npc_memory_updates": [],
+        })
+
+    # Out-of-cast id is rejected (Literal narrowing).
+    with pytest.raises(ValidationError):
+        DynamicType.model_validate({
+            "case_file_entry": "Scene.",
+            "npc_memory_updates": [
+                {"npc_id": "tom", "note": "ok"},
+                {"npc_id": "ghost", "note": "not a present npc"},
+            ],
+        })
+
+    # Too many records is rejected (max_length=2).
+    with pytest.raises(ValidationError):
+        DynamicType.model_validate({
+            "case_file_entry": "Scene.",
+            "npc_memory_updates": [
+                {"npc_id": "tom", "note": "a"},
+                {"npc_id": "maud", "note": "b"},
+                {"npc_id": "tom", "note": "c"},  # also dup but caught by length
+            ],
+        })
+
+    # Correct shape passes.
+    ok = DynamicType.model_validate({
+        "case_file_entry": "Scene.",
+        "npc_memory_updates": [
+            {"npc_id": "tom", "note": "a"},
+            {"npc_id": "maud", "note": "b"},
+        ],
+    })
+    assert len(ok.npc_memory_updates) == 2
+
+
+def test_build_log_writer_output_type_empty_present_caps_length_zero():
+    """When no NPCs are present, the dynamic schema must accept an
+    empty list and reject any non-empty one — mirrors the empty-
+    reachable path in _build_state_change_bundle_type."""
+    DynamicType = _build_log_writer_output_type(())
+
+    ok = DynamicType.model_validate({
+        "case_file_entry": "Alone at the desk.",
+        "npc_memory_updates": [],
+    })
+    assert ok.npc_memory_updates == []
+
+    with pytest.raises(ValidationError):
+        DynamicType.model_validate({
+            "case_file_entry": "Alone at the desk.",
+            "npc_memory_updates": [{"npc_id": "tom", "note": "nope"}],
+        })
 
 

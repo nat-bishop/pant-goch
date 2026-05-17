@@ -243,6 +243,54 @@ def _build_npc_placement_bundle_type(world: World) -> type[BaseModel]:
     )
 
 
+# ───────────────────────── log writer dynamic schema ─────────────────────────
+
+
+def _build_log_writer_output_type(
+    present_npc_ids: tuple[str, ...],
+) -> type[BaseModel]:
+    """LogWriterOutput whose `npc_memory_updates` is a length-N list of
+    NpcMemoryUpdate, where `npc_id` is `Literal[*present_npc_ids]` and
+    the list is constrained to exactly N entries
+    (`min_length=max_length=N`).
+
+    The grammar sampler enforces both the per-item id constraint and the
+    list length, so the model literally cannot emit an empty list when
+    NPCs were present nor an out-of-cast id. `__base__=LogWriterOutput`
+    keeps the canonical `_no_duplicate_npc_ids` validator firing during
+    the agent's retry loop (ValidationError → ModelRetry, with
+    `output_retries=3` on the agent).
+
+    Empty present_npc_ids (rare: scene with no NPCs at all) → constrain
+    list to max_length=0, mirroring the empty-reachable path in
+    `_build_state_change_bundle_type`.
+    """
+    if not present_npc_ids:
+        return create_model(
+            "LogWriterOutput",
+            __base__=LogWriterOutput,
+            npc_memory_updates=(
+                list[Any],
+                Field(default_factory=list, max_length=0),
+            ),
+        )
+    NpcIdLiteral = Literal[present_npc_ids]  # type: ignore[valid-type]
+    DynamicNpcMemoryUpdate = create_model(
+        "NpcMemoryUpdate",
+        npc_id=(NpcIdLiteral, ...),
+        note=(str, ...),
+    )
+    n = len(present_npc_ids)
+    return create_model(
+        "LogWriterOutput",
+        __base__=LogWriterOutput,
+        npc_memory_updates=(
+            list[DynamicNpcMemoryUpdate],
+            Field(min_length=n, max_length=n),
+        ),
+    )
+
+
 # ───────────────────────── factory ─────────────────────────
 
 
@@ -422,6 +470,10 @@ def build_log_writer_agent(
     return Agent[None, LogWriterOutput](
         model=model,
         system_prompt=build_log_writer_system_prompt(world),
+        # Match phase1/phase2/populator. Needed so the canonical
+        # _no_duplicate_npc_ids validator triggers a retry rather than
+        # bubbling on the first duplicate.
+        output_retries=3,
     )
 
 
@@ -455,30 +507,41 @@ async def emit_log_entry(
         side-effect surface explicit.
     """
     assert state.dialogue_history, "emit_log_entry: empty dialogue_history"
+    anchor = state.dialogue_history[0]
+    # Source of truth for "who was present": the anchor's npcs_present
+    # (set by run_turn from world.npcs_at(...)). Defensively drop any
+    # id not in the cast — that same tuple drives both the Literal
+    # narrowing and the list length constraint, so an unknown id would
+    # crash create_model rather than producing a confusing run.
+    present_npc_ids = tuple(
+        n for n in anchor.npcs_present if n in world.npcs
+    )
     user_prompt = build_log_writer_user_prompt(state, world)
+    DynamicLogWriterOutput = _build_log_writer_output_type(present_npc_ids)
     result = await runtime.agent.run(
         user_prompt,
         message_history=runtime.message_history,
-        output_type=NativeOutput(LogWriterOutput, strict=True),
+        output_type=NativeOutput(DynamicLogWriterOutput, strict=True),
     )
     runtime.message_history = result.all_messages()
+    # Round-trip dynamic → canonical so the _no_duplicate_npc_ids
+    # validator fires at this boundary too (defense in depth).
     output: LogWriterOutput = LogWriterOutput.model_validate(
         result.output.model_dump()
     )
-    anchor = state.dialogue_history[0]
-    # Filter npc_memory_updates to NPCs actually present in the scene and
-    # defined in the world. Belt-and-braces against the model emitting
-    # updates for NPCs who weren't in the room or aren't part of the cast.
-    present = set(anchor.npcs_present)
-    filtered_updates = {
-        npc_id: note.strip()
-        for npc_id, note in output.npc_memory_updates.items()
-        if npc_id in present and npc_id in world.npcs and note.strip()
+    # Collapse list-of-records to the dict shape LogEntry / state.npc_memory
+    # consume. Grammar enforced membership + count; we keep the
+    # note.strip() filter as belt-and-braces against whitespace-only
+    # notes (the grammar can't enforce non-empty strings).
+    npc_memory_updates: dict[str, str] = {
+        u.npc_id: u.note.strip()
+        for u in output.npc_memory_updates
+        if u.note.strip()
     }
     return LogEntry(
         scene_id=anchor.scene_id,
         location_id=anchor.location_id,
         npcs_present=list(anchor.npcs_present),
         text=output.case_file_entry.strip(),
-        npc_memory_updates=filtered_updates,
+        npc_memory_updates=npc_memory_updates,
     )

@@ -248,21 +248,27 @@ and most of them are protecting some part of it. Write them as people
 in a village, not as keepers of plot beats.
 
 [VOICE RULES]
-1. 80-200 words of prose per turn. Close third, past tense, terse.
-   Short sentences are stronger than long ones. Dialogue carries the
-   scene where it can; interiority is a tool, not a default.
+1. 80-200 words of prose per turn. Second person, present tense, terse.
+   The player is "you"; events unfold as they happen. Short sentences
+   are stronger than long ones.
 
-2. Render dialogue in the cast members' established voice. The
-   voice_sample lines above show the register — match it, don't
-   imitate verbatim. NPCs speak like people in a Welsh Marches
-   village, not like characters announcing what they know.
+2. The narrator stays outside the player's head. Write what the player
+   does, hears, and sees — never what they think or feel. The player's
+   interiority lives in the case file (first person past, written
+   later in the journalist's notebook); the scene narrator does not
+   name it. NPC interiority surfaces through speech and gesture.
 
-3. Stay inside what the player has observed. Do not write what
-   characters secretly think or know unless they are visibly choosing
-   to reveal it. Atmosphere and small physical detail — a glass turned
-   on the bar, a wood pigeon going off — beat exposition.
+3. NPC dialogue is in quotation marks, registered to each NPC's
+   voice_sample above. Match the register, don't imitate verbatim.
+   NPCs speak like people in a Welsh Marches village, not like
+   characters announcing what they know.
 
-4. Stay within the established cast and locations. Minor incidental
+4. Stay inside what the player has observed. Do not write what NPCs
+   secretly think or know unless they are visibly choosing to reveal
+   it. Atmosphere and small physical detail — a glass turned on the
+   bar, a wood pigeon going off — beat exposition.
+
+5. Stay within the established cast and locations. Minor incidental
    details (weather, a dog, a mug on the table) are fine. New named
    people or places are not.
 
@@ -592,14 +598,15 @@ output with two fields:
      case file so far; you can refer back to earlier moments where it
      would feel natural.
 
-  2. `npc_memory_updates` — a dict keyed by NPC id, one short note
-     (1-2 sentences) per NPC who was actually present in this scene.
-     Distinct from the case file: this is "what I now know / feel about
-     this person" — the impression the journalist carries forward, not
-     a recap of the scene. Used by the narrator on subsequent scenes to
-     keep the relationship consistent. Only emit entries for NPCs who
-     were in the room; do not invent updates for NPCs you did not see
-     this scene.
+  2. `npc_memory_updates` — a LIST of `{{npc_id, note}}` records, one
+     per NPC who was actually present in this scene. The schema
+     enforces exactly this many entries — you cannot omit any present
+     NPC, and the npc_id is constrained to NPCs who were in the room.
+     Each `note` is 1-2 sentences, distinct in register from the case
+     file: "what I now know / feel about this person" — the impression
+     the journalist carries forward, not a recap of the scene. Used by
+     the narrator on subsequent scenes to keep the relationship
+     consistent.
 
 [VOICE RULES]
 1. First person, past tense, in BOTH fields. "I sat down at the bar
@@ -617,20 +624,27 @@ output with two fields:
 
 [NPC MEMORY OUTPUT — examples]
 For a first scene at the pub where Tom was guarded but warming:
-  npc_memory_updates: {{ "tom": "Old Tom Bevan. Drinks bitter alone in the
-  afternoon. Guarded but not hostile; I bought him nothing, did not press.
-  He didn't tell me to leave. There's something he's not saying about
-  Megan, but it isn't time yet." }}
+  npc_memory_updates: [
+    {{ "npc_id": "tom",
+       "note": "Old Tom Bevan. Drinks bitter alone in the afternoon.
+       Guarded but not hostile; I bought him nothing, did not press.
+       He didn't tell me to leave. There's something he's not saying
+       about Megan, but it isn't time yet." }}
+  ]
 
 For a scene at the post office on a second visit where Maud closed up:
-  npc_memory_updates: {{ "maud": "She's noticed I keep coming back. The
-  warmth stayed but the tongue tightened. I asked too directly about
-  the Vaughns and she went out the back to fetch something that didn't
-  need fetching." }}
+  npc_memory_updates: [
+    {{ "npc_id": "maud",
+       "note": "She's noticed I keep coming back. The warmth stayed but
+       the tongue tightened. I asked too directly about the Vaughns and
+       she went out the back to fetch something that didn't need
+       fetching." }}
+  ]
 
 [OUTPUT]
 Structured JSON matching the schema. `case_file_entry` is plain text
-(no headers, no quotes); `npc_memory_updates` is a dict.
+(no headers, no quotes); `npc_memory_updates` is a list of
+`{{npc_id, note}}` records.
 """
 
 
@@ -681,22 +695,24 @@ def build_log_writer_user_prompt(state: State, world: World) -> str:
 
     turns_block = "\n".join(turn_parts)
 
-    # Explicit per-NPC directive — Gemma 4 was returning empty
-    # npc_memory_updates dicts in early testing even when the system
-    # prompt described the requirement; naming each NPC by id in the
-    # user prompt makes the expected keys unambiguous.
+    # Explicit per-NPC directive. The dynamic schema constrains
+    # `npc_memory_updates` to a length-N list of records with
+    # `npc_id` ∈ Literal[*present_npc_ids]; naming each NPC by id here
+    # makes the expected records unambiguous to the narrator.
     if first.npcs_present:
         npc_directive_lines = [
-            f'    - key "{npc_id}" → 1-2 sentence note about {world.npcs[npc_id].name}'
+            f'    - one record with npc_id="{npc_id}" → 1-2 sentence note '
+            f"about {world.npcs[npc_id].name}"
             for npc_id in first.npcs_present
         ]
         npc_directive = (
-            "  REQUIRED keys in `npc_memory_updates` (one entry per NPC "
-            "you saw this scene):\n" + "\n".join(npc_directive_lines)
+            "  REQUIRED records in `npc_memory_updates` (the schema "
+            "enforces exactly one record per NPC below):\n"
+            + "\n".join(npc_directive_lines)
         )
     else:
         npc_directive = (
-            "  `npc_memory_updates` MUST be empty {{}} — no NPCs were present."
+            "  `npc_memory_updates` MUST be empty [] — no NPCs were present."
         )
 
     return f"""\
@@ -712,8 +728,9 @@ Emit BOTH fields of the structured output:
   1. `case_file_entry` — 80-120 words, first person, past tense, the
      player-facing record of what happened.
 
-  2. `npc_memory_updates` — a dict of per-NPC notes ("what I now know /
-     feel about this person"), distinct in register from the case file.
+  2. `npc_memory_updates` — a list of `{{npc_id, note}}` records, one
+     per NPC you saw this scene. Each note is "what I now know / feel
+     about this person", distinct in register from the case file.
 {npc_directive}
 
 Stay inside what you saw and heard."""

@@ -109,23 +109,47 @@ class ProsePart(_Strict):
 # ───────────────────────── Log writer dual output ─────────────────────────
 
 
-class LogWriterOutput(_Strict):
-    """Scene-end log writer emission. The case file entry is the
-    player-facing UI artifact (streams to the sidebar); npc_memory_updates
-    is the structured memory channel surfaced to Phase 2 on subsequent
-    scenes. One LLM call emits both under one set of voice rules so the
-    journalist's interpretation of the scene is coherent across artifacts.
+class NpcMemoryUpdate(_Strict):
+    """One per-NPC memory note emitted by the log writer at scene close.
 
-    `npc_memory_updates` keys are NPC ids; values are 1-2 sentence notes
-    framed as "what the journalist now knows / feels about this person",
-    distinct from the prose case file's "what happened" register. Only
-    NPCs the journalist actually saw this scene should appear; the engine
-    merges these into `state.npc_memory[npc_id]` as an appended entry per
-    scene.
+    Per call, `npc_id` is narrowed to `Literal[*present_npc_ids]` by
+    `agents._build_log_writer_output_type`, so the grammar sampler
+    physically cannot emit an out-of-cast or out-of-scene id. `note` is
+    1-2 sentences in the journalist's voice — "what I now know / feel
+    about this person", distinct from the case file's "what happened"
+    register.
+    """
+
+    npc_id: str
+    note: str
+
+
+class LogWriterOutput(_Strict):
+    """Scene-end log writer emission. One LLM call emits two artifacts
+    under one set of voice rules — `case_file_entry` (player-facing
+    sidebar prose) and `npc_memory_updates` (structured per-NPC memory
+    channel surfaced to Phase 2 on subsequent scenes). Single call so
+    the journalist's interpretation is coherent across both.
+
+    `npc_memory_updates` shape and constraints — see `NpcMemoryUpdate`
+    and `agents._build_log_writer_output_type`. The engine merges each
+    note into `state.npc_memory[npc_id]` (appending one entry per
+    scene the NPC was present).
     """
 
     case_file_entry: str
-    npc_memory_updates: dict[str, str] = Field(default_factory=dict)
+    npc_memory_updates: list[NpcMemoryUpdate] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _no_duplicate_npc_ids(self) -> LogWriterOutput:
+        seen: set[str] = set()
+        for upd in self.npc_memory_updates:
+            if upd.npc_id in seen:
+                raise ValueError(
+                    f"npc_id {upd.npc_id!r} appears twice in npc_memory_updates"
+                )
+            seen.add(upd.npc_id)
+        return self
 
 
 # ───────────────────────── Populator (scene-entry NPC placement) ─────────────────────────
