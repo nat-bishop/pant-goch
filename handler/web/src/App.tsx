@@ -50,21 +50,33 @@ export default function App() {
   const [streaming, setStreaming] = useState(false);
   useStream(streaming);
 
+  // `starting` gates the Begin / Restart buttons from the click until
+  // the first scene event arrives. Without it the user sees no feedback
+  // during the multi-second LLM warm-up, clicks Begin again, and each
+  // subsequent POST /start cancels the prior play_task — surfacing a
+  // session_done event on the SSE consumer and showing "stranded".
+  const [starting, setStarting] = useState(false);
+  useEffect(() => {
+    if (starting && phase !== "idle") setStarting(false);
+  }, [starting, phase]);
+
   const world = useWorld();
   const current = scenes[scenes.length - 1] ?? null;
   const currentLocation = current?.location_name ?? "—";
 
   const onStart = async () => {
+    if (starting) return;
+    setStarting(true);
+    // Always cycle streaming off first so the useStream effect tears
+    // down the old SSE and re-opens against the new session — without
+    // this, a stale SSE on the previous SESSION would receive the
+    // session_done from cancellation.
+    setStreaming(false);
     resetForRestart();
     await startSession();
     // Defer stream activation by one tick so the reset propagates
     // before the new events arrive.
     setTimeout(() => setStreaming(true), 0);
-  };
-
-  const onRestart = async () => {
-    setStreaming(false);
-    await onStart();
   };
 
   // ── render ─────────────────────────────────────────────────────────
@@ -90,7 +102,7 @@ export default function App() {
         )}
         <div className="scene-body">
           {phase === "idle" ? (
-            <IdleStage onStart={onStart} error={error} />
+            <IdleStage onStart={onStart} starting={starting} error={error} />
           ) : (
             <>
               <SceneHistory scenes={scenes} />
@@ -108,9 +120,15 @@ export default function App() {
                 </div>
               )}
               {phase === "game_over" && (
-                <GameOverPanel ending={game_over_ending ?? ""} onRestart={onRestart} />
+                <GameOverPanel
+                  ending={game_over_ending ?? ""}
+                  onRestart={onStart}
+                  starting={starting}
+                />
               )}
-              {phase === "stranded" && <StrandedPanel onRestart={onRestart} />}
+              {phase === "stranded" && (
+                <StrandedPanel onRestart={onStart} starting={starting} />
+              )}
             </>
           )}
         </div>
@@ -120,7 +138,15 @@ export default function App() {
   );
 }
 
-function IdleStage({ onStart, error }: { onStart: () => void; error: string | null }) {
+function IdleStage({
+  onStart,
+  starting,
+  error,
+}: {
+  onStart: () => void;
+  starting: boolean;
+  error: string | null;
+}) {
   return (
     <div className="center-stage">
       <h1>HANDLER</h1>
@@ -129,8 +155,8 @@ function IdleStage({ onStart, error }: { onStart: () => void; error: string | nu
         bend of the wrong road in 2019. You have six weeks to find out who
         was driving.
       </p>
-      <button className="start-btn" onClick={onStart}>
-        Begin investigation
+      <button className="start-btn" onClick={onStart} disabled={starting}>
+        {starting ? "Starting…" : "Begin investigation"}
       </button>
       {error && <p style={{ marginTop: "1rem", color: "var(--error)" }}>{error}</p>}
     </div>
@@ -283,22 +309,40 @@ function WalkPanel({
 
 // ─── game over / stranded ─────────────────────────────────────────────────
 
-function GameOverPanel({ ending, onRestart }: { ending: string; onRestart: () => void }) {
+function GameOverPanel({
+  ending,
+  onRestart,
+  starting,
+}: {
+  ending: string;
+  onRestart: () => void;
+  starting: boolean;
+}) {
   return (
     <div className="center-stage">
       <div className="ending-id">— {ending.replace(/_/g, " ").toUpperCase()} —</div>
-      <button onClick={onRestart}>Start a new investigation</button>
+      <button onClick={onRestart} disabled={starting}>
+        {starting ? "Starting…" : "Start a new investigation"}
+      </button>
     </div>
   );
 }
 
-function StrandedPanel({ onRestart }: { onRestart: () => void }) {
+function StrandedPanel({
+  onRestart,
+  starting,
+}: {
+  onRestart: () => void;
+  starting: boolean;
+}) {
   return (
     <div className="center-stage">
       <div className="subtitle">
         The conversation has ended with nowhere to go from here.
       </div>
-      <button onClick={onRestart}>Start a new investigation</button>
+      <button onClick={onRestart} disabled={starting}>
+        {starting ? "Starting…" : "Start a new investigation"}
+      </button>
     </div>
   );
 }
