@@ -12,11 +12,16 @@ The fallback policy:
     persisted to the runtime's message history (voice continuity).
   - Choice author retries exhausted → use a generic Continue with two
     safe options.
+  - Departure prose retries exhausted → use a generic threshold line.
 
-Scene exits flow through the choice author's Leave variant: the engine
-resolves which ending (if any) is satisfied via
-`resolved_ending_id_at_close`, and assembles EndGame or EndScene
-accordingly. The LLM never emits an ending_id.
+Scene exits flow through `close_scene`, called from `_close_via_departure`.
+Two triggers:
+  - the player raises `LeaveRequested` from `pick_option` / `pick_free_text`
+    (driven by POST /leave on the SSE backend);
+  - the engine's `MAX_TURNS_PER_SCENE` guardrail fires inside `play_scene`.
+Both write a short "moment of leaving" prose, then `close_scene` resolves
+which ending (if any) is satisfied via `resolved_ending_id_at_close` and
+assembles EndGame or EndScene. The LLM never emits an `ending_id`.
 
 Server-side warnings via logfire; never bubble engine metatext to the
 player.
@@ -36,6 +41,7 @@ from .agents import (
     SceneRunnerRuntime,
     emit_chronicle_entry,
     emit_choices,
+    emit_departure_prose,
     emit_placements,
     emit_prose_text,
     emit_state_changes,
@@ -53,7 +59,6 @@ from .schemas import (
     EndGame,
     EndScene,
     FreeText,
-    Leave,
     NpcPlacementBundle,
     Option,
     ProsePart,
@@ -80,6 +85,9 @@ EmitEvent = Callable[[dict], Awaitable[None]]
 
 # Callback shapes: sync OR async. The driver picks. CLI uses sync
 # `input()`; SSE backend uses async (await a Future resolved by POST).
+# `pick_option` and `pick_free_text` may raise `LeaveRequested` to signal
+# that the player chose to leave the scene rather than pick/type — the
+# scene loop catches and runs the departure flow.
 PickOption = Callable[["ProsePart"], Union[int, Awaitable[int]]]
 PickFreeText = Callable[["FreeText"], Union[str, Awaitable[str]]]
 PickWalk = Callable[[State, World], Union[str, Awaitable[str]]]
@@ -87,6 +95,21 @@ OnChronicleEntry = Callable[
     [State, ChronicleEntry], Union[None, Awaitable[None]]
 ]
 OnSceneClose = Callable[["ProsePart"], Union[None, Awaitable[None]]]
+
+
+# Soft cap. After this many turns without a player-driven close, the
+# engine synthesises EndScene via the departure-prose flow. Well past the
+# 4-8 turn target so it never trips on healthy play; exists purely as a
+# backstop against runaway Continue loops.
+MAX_TURNS_PER_SCENE = 10
+
+
+class LeaveRequested(Exception):
+    """Raised by `pick_option` / `pick_free_text` when the player chose
+    to leave the scene rather than pick or type. `play_scene` catches it
+    and runs the departure-prose + close_scene path. Uses the existing
+    callback await rather than threading a separate "leave channel"
+    through the engine."""
 
 
 async def _maybe_await(value):
@@ -98,27 +121,28 @@ async def _maybe_await(value):
     return value
 
 
-def _assemble_prose_part(
-    world: World, state: State, prose: str, choices: ChoiceBundle,
-) -> ProsePart:
-    """Compose the choice author's ChoiceBundle and the prose writer's
-    text into the engine-facing ProsePart. Continue and FreeText pass
-    through verbatim; Leave → EndGame (when an ending is satisfied) or
-    EndScene.
+def close_scene(world: World, state: State, prose: str) -> ProsePart:
+    """Synthesise the terminal ProsePart when a scene closes. EndGame if
+    an ending's prereqs are satisfied at this point; otherwise EndScene
+    (between-scenes walk follows).
+
+    Called from `_close_via_departure` — the single path that ends a
+    scene, used by both the player /leave action and the engine's
+    `MAX_TURNS_PER_SCENE` guardrail. The LLM never emits an `ending_id`;
+    the engine resolves it from `state.unlocked_beats`.
     """
-    nxt = choices.next
-    if isinstance(nxt, Leave):
-        ending_id = resolved_ending_id_at_close(world, state)
-        if ending_id is not None:
-            return ProsePart(prose=prose, next=EndGame(ending_id=ending_id))
-        return ProsePart(prose=prose, next=EndScene())
-    return ProsePart(prose=prose, next=nxt)
+    ending_id = resolved_ending_id_at_close(world, state)
+    if ending_id is not None:
+        return ProsePart(prose=prose, next=EndGame(ending_id=ending_id))
+    return ProsePart(prose=prose, next=EndScene())
 
 
-def _fallback_prose() -> str:
+def _fallback_prose(*, departure: bool = False) -> str:
     """Engine-authored prose when the prose writer's retries exhaust.
-    Never shown as engine metatext — looks like ordinary prose to the
-    player."""
+    Two flavours: a general in-scene pause, and a threshold-only line for
+    the closing turn. Both look like ordinary prose to the player."""
+    if departure:
+        return "You stand. The air shifts as you step toward the door."
     return "A pause. The moment passes without movement."
 
 
@@ -131,15 +155,58 @@ def _fallback_choices() -> ChoiceBundle:
     ]))
 
 
+async def _close_via_departure(
+    bundle: AgentBundle,
+    runtime: SceneRunnerRuntime,
+    state: State,
+    *,
+    emit_event: EmitEvent | None,
+) -> ProsePart:
+    """Close the current scene with a short 'moment of leaving' prose.
+    Single path used by both the player's /leave action (raised
+    `LeaveRequested` from a pick callback) and the engine's turn-count
+    guardrail. Emits the prose word-by-word over SSE (when supplied),
+    appends a `TurnRecord`, then assembles EndScene / EndGame via
+    `close_scene`. Fires the matching scene-end SSE event."""
+    try:
+        prose = await emit_departure_prose(bundle, runtime, state)
+    except UnexpectedModelBehavior as e:
+        logfire.warn(
+            "departure_prose fallback: retries exhausted; emitting generic prose",
+            error=str(e),
+        )
+        prose = _fallback_prose(departure=True)
+
+    append_turn_record(state, prose=prose, applied_state_changes=[])
+
+    if emit_event is not None:
+        await paced_word_emitter(
+            _words_from_text(prose),
+            emit_event,
+            event_kind="prose_word",
+        )
+
+    prose_part = close_scene(bundle.world, state, prose)
+
+    if emit_event is not None:
+        if isinstance(prose_part.next, EndGame):
+            await emit_event(game_over_event(prose_part.next.ending_id))
+        else:
+            await emit_event(scene_exit_event())
+
+    return prose_part
+
+
 async def run_turn(
     bundle: AgentBundle,
     runtime: SceneRunnerRuntime,
     state: State,
 ) -> ProsePart:
     """One full turn end-to-end. Returns the engine-assembled ProsePart
-    so the caller can dispatch on `prose_part.next` (Continue → wait
-    for player pick; FreeText → wait for typed input; EndScene → close
-    + maybe location_change; EndGame → terminal).
+    so the caller can dispatch on `prose_part.next` — always Continue or
+    FreeText, since the choice author cannot emit a close. Scene closure
+    is handled by `_close_via_departure`, called separately from
+    `play_scene` on player leave or turn-count cap.
 
     State is mutated: state_changes applied, dialogue_history appended.
     Prose writer's conversation history (`runtime.prose_writer_message_history`)
@@ -184,7 +251,7 @@ async def run_turn(
         )
         choices = _fallback_choices()
 
-    prose_part = _assemble_prose_part(bundle.world, state, prose, choices)
+    prose_part = ProsePart(prose=prose, next=choices.next)
 
     append_turn_record(
         state,
@@ -278,6 +345,18 @@ async def play_scene(
         await emit_event(scene_start_event(state.scene_id, loc.id, loc.name))
 
     while True:
+        # Soft cap fires before the LLM call so we never waste tokens
+        # on a Phase 2 we'd immediately discard.
+        if len(state.dialogue_history) >= MAX_TURNS_PER_SCENE:
+            logfire.info(
+                "scene turn cap hit; engine-driven close",
+                scene_id=state.scene_id,
+                turns=len(state.dialogue_history),
+            )
+            return await _close_via_departure(
+                bundle, runtime, state, emit_event=emit_event,
+            )
+
         prose_part = await run_turn(bundle, runtime, state)
 
         # ── emit state_change events ──
@@ -302,7 +381,12 @@ async def play_scene(
                 await emit_event(options_event([
                     {"text": o.text} for o in prose_part.next.options
                 ]))
-            idx = await _maybe_await(pick_option(prose_part))
+            try:
+                idx = await _maybe_await(pick_option(prose_part))
+            except LeaveRequested:
+                return await _close_via_departure(
+                    bundle, runtime, state, emit_event=emit_event,
+                )
             picked = prose_part.next.options[idx]
             state.dialogue_history[-1].player_pick = picked
             continue
@@ -314,16 +398,16 @@ async def play_scene(
                 "choice author emitted FreeText but no pick_free_text "
                 "callback was supplied"
             )
-            typed = await _maybe_await(pick_free_text(prose_part.next))
+            try:
+                typed = await _maybe_await(pick_free_text(prose_part.next))
+            except LeaveRequested:
+                return await _close_via_departure(
+                    bundle, runtime, state, emit_event=emit_event,
+                )
             state.dialogue_history[-1].player_pick = Option(text=typed)
             continue
 
-        # EndScene or EndGame — terminal for this scene.
-        if emit_event is not None:
-            if isinstance(prose_part.next, EndGame):
-                await emit_event(game_over_event(prose_part.next.ending_id))
-            else:
-                await emit_event(scene_exit_event())
+        # Future schema additions shouldn't loop. Close cleanly instead.
         return prose_part
 
 
@@ -344,10 +428,14 @@ async def play_session(
     on_scene_close: OnSceneClose | None = None,
     emit_event: EmitEvent | None = None,
 ) -> ProsePart:
-    """Play one full session (multiple scenes) from `state` until the
-    LLM fires Leave→EndGame or the player gets stranded at a location
+    """Play one full session (multiple scenes) from `state` until a
+    close resolves to EndGame or the player gets stranded at a location
     with no adjacents. Returns the terminal ProsePart (always EndGame in
     the normal path).
+
+    Scenes close via `_close_via_departure` — triggered by the player
+    raising `LeaveRequested` from a pick callback (POST /leave on the
+    SSE backend) or by the `MAX_TURNS_PER_SCENE` guardrail.
 
     Three policy callbacks make this driver-agnostic — supply CLI/stdin
     variants from `__main__.py`, SSE/HTTP variants from `main.py`'s

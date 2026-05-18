@@ -78,13 +78,15 @@ def test_choice_bundle_type_continue_passes():
     assert bundle.next.type == "continue"  # type: ignore[union-attr]
 
 
-def test_choice_bundle_type_leave_passes():
+def test_choice_bundle_type_rejects_leave():
+    """Leave was removed from the schema. The grammar must NOT accept it
+    — scene closure is engine + player only now."""
     world = load_world(FIXTURE_VALID)
     state = make_initial_state(world)
     state.player_location = "the_slaughtered_lamb"
     ChoiceType = _build_choice_bundle_type(world, state)
-    bundle = ChoiceType.model_validate({"next": {"type": "leave"}})
-    assert bundle.next.type == "leave"  # type: ignore[union-attr]
+    with pytest.raises(ValidationError):
+        ChoiceType.model_validate({"next": {"type": "leave"}})
 
 
 def test_choice_bundle_type_free_text_narrows_npc_id_to_present():

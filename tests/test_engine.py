@@ -299,12 +299,14 @@ def test_dynamic_choice_continue_with_one_option_rejected():
         })
 
 
-def test_dynamic_choice_leave_marker_passes():
+def test_dynamic_choice_rejects_leave_marker():
+    """`Leave` was removed from the schema — scene closure is engine +
+    player, never the LLM. The grammar must reject any `leave` emission."""
     world = _make_world()
     state = State(player_location="loc_a")
     ChoiceType = _build_choice_bundle_type(world, state)
-    bundle = ChoiceType.model_validate({"next": {"type": "leave"}})
-    assert bundle.next.type == "leave"  # type: ignore[union-attr]
+    with pytest.raises(ValidationError):
+        ChoiceType.model_validate({"next": {"type": "leave"}})
 
 
 def test_dynamic_choice_free_text_narrows_npc_id_to_present():

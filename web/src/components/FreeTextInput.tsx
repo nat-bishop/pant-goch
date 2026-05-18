@@ -4,14 +4,17 @@
 // awaiting_free_text phase only.
 
 import { useEffect, useRef, useState } from "react";
+import { LeaveButton } from "./LeaveButton";
 
 export function FreeTextInput({
   prompt,
   onSubmit,
+  onLeave,
   busy,
 }: {
   prompt: string;
   onSubmit: (text: string) => void;
+  onLeave: () => void;
   busy: boolean;
 }) {
   const [text, setText] = useState("");
@@ -46,6 +49,7 @@ export function FreeTextInput({
         rows={2}
         placeholder="(Enter to submit; Shift+Enter for newline.)"
       />
+      <LeaveButton onLeave={onLeave} busy={busy} />
     </form>
   );
 }

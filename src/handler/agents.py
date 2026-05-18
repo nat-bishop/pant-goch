@@ -8,12 +8,13 @@ into two sequential calls:
     Voice continuity accumulates within a scene, resets at scene boundary.
 
   - `emit_choices` (choice author) — structured `ChoiceBundle` output
-    (Continue | Leave | FreeText). Stateless per call; the just-written
-    prose is the load-bearing context. System prompt holds neither bible
-    nor voice rules.
+    (Continue | FreeText). Stateless per call; the just-written prose is
+    the load-bearing context. System prompt holds neither bible nor voice
+    rules.
 
 The engine composes the two outputs into a `ProsePart` for downstream
-dispatch — see `scene_loop._assemble_prose_part`.
+dispatch — see `scene_loop.run_turn`. Scene closure is engine + player
+only; the choice author cannot emit a close.
 
 Per-call dynamic types narrow `beat_name` to `Literal[*reachable_beat_names]`
 (Phase 1) and `FreeText.npc_id` to `Literal[*present_npc_ids]` (choice
@@ -51,6 +52,7 @@ from .prompts import (
     build_phase1_user_prompt,
     build_populator_system_prompt,
     build_populator_user_prompt,
+    build_prose_writer_departure_message,
     build_prose_writer_system_prompt,
     build_prose_writer_user_message,
 )
@@ -192,10 +194,10 @@ def _build_state_change_bundle_type(world: World, state: State) -> type[BaseMode
 def _build_choice_bundle_type(world: World, state: State) -> type[BaseModel]:
     """ChoiceBundle whose FreeText.npc_id is
     `Literal[*present_npc_ids] | None`. No narrowing on Continue.options
-    (no leaves_for anymore) or Leave (marker variant).
+    (no leaves_for anymore).
 
-    `__base__=ChoiceBundle` lets the canonical schema's structural rules
-    (Continue's 2-4 options constraint) fire during the agent's retry
+    The discriminated union reuses the canonical `Continue` so its
+    structural validators (2-4 options) fire during the agent's retry
     loop. The dynamic FreeText is a fresh model — its only mutation is
     the per-call npc_id Literal.
     """
@@ -206,10 +208,7 @@ def _build_choice_bundle_type(world: World, state: State) -> type[BaseModel]:
         # No NPCs present → npc_id must be None.
         NpcIdType = type(None)  # type: ignore[assignment]
 
-    # Local Continue / Leave that the discriminated union can carry. We
-    # import the canonical types here and reuse them so structural
-    # validators (Continue's 2-4 options) keep firing.
-    from .schemas import Continue, Leave
+    from .schemas import Continue
 
     DynamicFreeText = create_model(
         "FreeText",
@@ -217,7 +216,7 @@ def _build_choice_bundle_type(world: World, state: State) -> type[BaseModel]:
         prompt=(str, ...),
         npc_id=(NpcIdType, None),
     )
-    NextUnion = Union[Continue, Leave, DynamicFreeText]  # type: ignore[valid-type]
+    NextUnion = Union[Continue, DynamicFreeText]  # type: ignore[valid-type]
     NextField = Annotated[NextUnion, Field(discriminator="type")]
     return create_model("ChoiceBundle", next=(NextField, ...))
 
@@ -436,6 +435,30 @@ async def emit_prose_text(
         opening_seed=opening_seed,
         is_first_turn=is_first_turn,
     )
+    result = await bundle.prose_writer.run(
+        user_msg,
+        message_history=runtime.prose_writer_message_history,
+        output_type=str,
+    )
+    runtime.prose_writer_message_history = result.all_messages()
+    return result.output
+
+
+async def emit_departure_prose(
+    bundle: AgentBundle,
+    runtime: SceneRunnerRuntime,
+    state: State,
+) -> str:
+    """Closing-prose LLM call. Same agent as `emit_prose_text` (system
+    prompt is byte-stable → KV cache stays warm); user message instructs
+    "write the moment of leaving" — short, threshold-only, no destination.
+
+    Used by `scene_loop._close_via_departure` from two trigger paths: the
+    player hitting /leave (raised LeaveRequested) and the engine's
+    `MAX_TURNS_PER_SCENE` guardrail. Conversation history is updated on
+    success like a normal turn.
+    """
+    user_msg = build_prose_writer_departure_message(state, bundle.world)
     result = await bundle.prose_writer.run(
         user_msg,
         message_history=runtime.prose_writer_message_history,
