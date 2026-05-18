@@ -20,6 +20,7 @@ help:
 	@echo "  make typecheck           Run TS typecheck on handler/web/"
 	@echo "  make build               Production build of handler/web/"
 	@echo "  make kill                Force-kill stragglers on :8000/:8080/:5173-5176"
+	@echo "  make proof               Image proofing station (Gemini backdrop generation UI) on :8765"
 	@echo "  make clean               Remove __pycache__"
 	@echo ""
 	@echo "Browser dev flow: 'make dev' (one terminal, inferno-routed) — open http://localhost:5173"
@@ -79,6 +80,15 @@ build:
 .PHONY: clean
 clean:
 	find . -type d -name __pycache__ -prune -exec rm -rf {} +
+
+# Image proofing station — parses handler/world/backdrops/IMAGES.md, shows
+# every plate with its prompt + canonical preview, lets the author re-roll a
+# new variant per entry (Gemini flash or pro). Variants land in
+# handler/world/backdrops/_variants/<id>/ so the existing canonical is never
+# clobbered. Requires GEMINI_API_KEY in env.
+.PHONY: proof
+proof:
+	cd handler && uv run python scripts/proof_server.py
 
 # Two-pass kill — single-pass misses multiprocessing-fork orphans that inherit
 # listening sockets. Exits non-zero if any port is still bound after the kill.
