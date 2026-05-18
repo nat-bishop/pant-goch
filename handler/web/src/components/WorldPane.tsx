@@ -42,11 +42,14 @@ export function WorldPane() {
   const showNotes = effectiveMode === "notes";
   const showLocation = effectiveMode === "location";
 
-  // Backdrop URL: during walks, the destination location's backdrop.
-  // Otherwise, the currently-visible scene's backdrop.
-  const backdropUrl = currentLocId
-    ? `/api/world/backdrops/${currentLocId}.png`
-    : null;
+  // Backdrop URL: while idle (frontispiece), the authored cover.
+  // During walks, the destination location's backdrop. Otherwise, the
+  // currently-visible scene's backdrop.
+  const backdropUrl = phase === "idle"
+    ? "/api/world/cover.png"
+    : currentLocId
+      ? `/api/world/backdrops/${currentLocId}.png`
+      : null;
 
   const npcsHere = useMemo(() => {
     if (!world || !currentLocId) return [];
@@ -61,7 +64,7 @@ export function WorldPane() {
 
   return (
     <div className="world">
-      <ImageSlots currentUrl={phase === "idle" ? null : backdropUrl} />
+      <ImageSlots currentUrl={backdropUrl} />
       <div className="world-tint" />
       <div className="world-grain" />
 

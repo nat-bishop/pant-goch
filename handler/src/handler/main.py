@@ -329,6 +329,20 @@ def get_world_map_png() -> FileResponse:
     return FileResponse(map_path, media_type="image/png")
 
 
+@app.get("/world/cover.png")
+def get_world_cover() -> FileResponse:
+    """Frontispiece backdrop shown in the left pane while the title page
+    is up. Served from `backdrops/cover.png`. 404 when no asset is
+    authored — frontend falls back to the neutral dark vignette."""
+    backdrops_dir = app.state.backdrops_dir
+    if backdrops_dir is None:
+        raise HTTPException(404, "no backdrops directory for this world")
+    cover_path = backdrops_dir / "cover.png"
+    if not cover_path.is_file():
+        raise HTTPException(404, "no cover authored for this world")
+    return FileResponse(cover_path, media_type="image/png")
+
+
 @app.get("/world/backdrops/{location_id}.png")
 def get_world_backdrop(location_id: str) -> FileResponse:
     """Per-location backdrop image shown in the left pane. 404 when no

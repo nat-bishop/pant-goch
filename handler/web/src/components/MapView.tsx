@@ -16,7 +16,7 @@ import { postWalk } from "../api";
 import { useStore } from "../store";
 
 const VB_W = 100;
-const VB_H = 100 * (768 / 1408); // ≈ 54.55, matches map.png aspect
+const VB_H = 100 * (1536 / 2752); // ≈ 55.81, matches map.png aspect
 
 interface XY { x: number; y: number; }
 
