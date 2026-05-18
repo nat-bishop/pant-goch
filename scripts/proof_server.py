@@ -1,11 +1,11 @@
-"""Proofing server for handler/world image assets.
+"""Proofing server for world/ image assets.
 
 A small FastAPI app that serves a gallery of every entry in IMAGES.md alongside
 its current canonical preview and any rebuilt variants. The author can trigger
 a regeneration (gemini flash or pro) per entry; new images land in the
 `_variants/<id>/` subfolder so the existing canonical is never clobbered.
 
-Run with `make proof` (or `uv run python handler/scripts/proof_server.py`).
+Run with `make proof` (or `uv run python scripts/proof_server.py`).
 The server listens on http://127.0.0.1:8765 by default; set PROOF_PORT to
 override.
 """

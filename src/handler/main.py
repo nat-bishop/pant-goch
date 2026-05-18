@@ -1,14 +1,8 @@
 """FastAPI surface for HANDLER v2.
 
-M0 — Skeleton. Lifespan boots the llama subsystem (bundled `llama-server`
-OR inferno gateway probe) and exposes GET /health. World loading lands in
-M1; scene-runner agent lands in M3; the rest of the SSE / scene API lands
-in M4-M6.
-
-Lifted from handler/src/handler/main.py: logfire setup (lines 84-99),
-_probe_inferno_health (lines 116-133), lifespan span branching (lines
-219-274). The externally-managed-llama branch (LAUNCH_LLAMA=false) is NOT
-lifted — v2 has no `make sidecar` workflow.
+Lifespan boots the llama subsystem (bundled `llama-server` OR inferno
+gateway probe), loads the world, builds the agent bundle, and exposes the
+SSE scene API + static asset routes.
 """
 from __future__ import annotations
 
@@ -59,9 +53,9 @@ from .world import World, load_world
 _BOOT_SETTINGS = Settings()
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
-# Lift: handler/src/handler/main.py:75-99 — Logfire creds + setup. Same
-# pattern; just renamed service.
-_logfire_creds = Path(__file__).resolve().parents[3] / ".logfire" / "logfire_credentials.json"
+# Logfire creds live at <project-root>/.logfire/logfire_credentials.json.
+# src/handler/main.py → parents[2] = project root.
+_logfire_creds = Path(__file__).resolve().parents[2] / ".logfire" / "logfire_credentials.json"
 _logfire_token = os.getenv("LOGFIRE_TOKEN")
 if not _logfire_token and _logfire_creds.is_file():
     with contextlib.suppress(Exception):
@@ -153,7 +147,6 @@ async def _probe_inferno_health(url: str, timeout: float = INFERNO_PROBE_TIMEOUT
     set there is no silent fallback to the bundled llama-server (rollback is
     `unset SMALLVILLE_USE_INFERNO; restart`).
 
-    Lifted from handler/src/handler/main.py:116-133.
     """
     health_url = f"{url.rstrip('/')}/health"
     async with httpx.AsyncClient(timeout=timeout) as client:

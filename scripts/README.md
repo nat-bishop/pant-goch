@@ -1,6 +1,6 @@
 # Backdrop proofing — iteration with Claude
 
-A small Gemini-backed pipeline for the location backdrops + map in `handler/world/`.
+A small Gemini-backed pipeline for the location backdrops + map in `world/`.
 You author and review; **Claude edits the prompts** when you ask.
 
 ## The loop
@@ -9,7 +9,7 @@ You author and review; **Claude edits the prompts** when you ask.
 2. Review the plates. Click any image for fullscreen (opens in a new tab).
 3. **Don't like one?** Tell Claude in chat — e.g.
    *"Tan-y-coed is too sunny. Push the prompt seed toward late dusk and emphasise the Land Rover."*
-   Claude edits `handler/world/backdrops/IMAGES.md`.
+   Claude edits `world/backdrops/IMAGES.md`.
 4. Refresh the proof page (it re-reads the manifest), then click **pull a new proof** on that plate. The new image lands as a variant; the canonical isn't touched.
 5. When a variant is right, click **use as canonical →** on it. The old canonical is preserved in `_variants/`.
 
@@ -17,12 +17,12 @@ You author and review; **Claude edits the prompts** when you ask.
 
 | Path | What |
 |---|---|
-| `handler/world/backdrops/IMAGES.md` | **Source of truth.** Per-plate Subject / Composition / Required props / Avoid / Prompt seed. Plus a top-of-file `## Global aesthetic` block that prepends every prompt. |
-| `handler/world/backdrops/{id}.png` | Canonical plate the game serves. |
-| `handler/world/backdrops/_variants/{id}/*.png` | Every re-roll. Each has a `.txt` sidecar with the exact prompt + references used. |
-| `handler/world/map.png` and `_map_variants/` | Same shape, for the parish map. |
-| `handler/scripts/generate_image.py` | CLI generator. `--only id1,id2`, `--variant`, `--force`, `--dry-run`, `--model flash|pro`. |
-| `handler/scripts/proof_server.py` + `proof_index.html` | The proofing UI. |
+| `world/backdrops/IMAGES.md` | **Source of truth.** Per-plate Subject / Composition / Required props / Avoid / Prompt seed. Plus a top-of-file `## Global aesthetic` block that prepends every prompt. |
+| `world/backdrops/{id}.png` | Canonical plate the game serves. |
+| `world/backdrops/_variants/{id}/*.png` | Every re-roll. Each has a `.txt` sidecar with the exact prompt + references used. |
+| `world/map.png` and `_map_variants/` | Same shape, for the parish map. |
+| `scripts/generate_image.py` | CLI generator. `--only id1,id2`, `--variant`, `--force`, `--dry-run`, `--model flash|pro`. |
+| `scripts/proof_server.py` + `proof_index.html` | The proofing UI. |
 
 ## Editing the prompt — phrases that work with Claude
 
@@ -63,16 +63,16 @@ For batch work outside the UI:
 
 ```bash
 # fill in any missing canonicals
-uv run python handler/scripts/generate_image.py
+uv run python scripts/generate_image.py
 
 # re-roll one plate as a variant (preserves canonical)
-uv run python handler/scripts/generate_image.py --only tan_y_coed --variant
+uv run python scripts/generate_image.py --only tan_y_coed --variant
 
 # what would I send? (no API call)
-uv run python handler/scripts/generate_image.py --only tan_y_coed --dry-run
+uv run python scripts/generate_image.py --only tan_y_coed --dry-run
 
 # do everything fresh as variants, in pro
-uv run python handler/scripts/generate_image.py --variant --model pro
+uv run python scripts/generate_image.py --variant --model pro
 ```
 
 `GEMINI_API_KEY` is read from `.env` at the repo root (auto-loaded).

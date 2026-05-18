@@ -3,8 +3,7 @@
 Pydantic-settings reads env vars case-insensitively, so snake_case field names
 match uppercase env names (`use_inferno` ↔ `USE_INFERNO`, etc.).
 
-Anchored at handler/.env, NOT the smallville root — handler is a self-contained
-subproject.
+Anchored at the project root `.env`.
 """
 from __future__ import annotations
 
@@ -15,9 +14,9 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-# src layout: src/handler/config.py → handler/ is parents[2].
-# parents[0]=src/handler, [1]=src, [2]=handler.
-_HANDLER_ROOT = Path(__file__).resolve().parents[2]
+# src layout: src/handler/config.py → project root is parents[2].
+# parents[0]=src/handler, [1]=src, [2]=project root.
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 # Convenience exports for call sites that don't want to instantiate `Settings`.
@@ -28,7 +27,7 @@ LLAMA_BASE_URL = f"http://{LLAMA_HOST}:{LLAMA_PORT}/v1"
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=_HANDLER_ROOT / ".env",
+        env_file=_PROJECT_ROOT / ".env",
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,
@@ -91,6 +90,6 @@ class Settings(BaseSettings):
 
     # ───────── world directory ─────────
     # Path to the world bible (locations + cast + truth + brief). None →
-    # fall back to handler/world/ relative to this file. Tests point at
+    # fall back to world/ relative to the project root. Tests point at
     # fixture worlds.
     world_path: Path | None = None

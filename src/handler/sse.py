@@ -2,12 +2,10 @@
 
 Two responsibilities:
 
-1. **Paced word emitter.** Lifted verbatim (with the v1 inline comments
-   preserved) from `handler/src/handler/main.py:312-389`. The 80 ms pace
-   floor is non-negotiable — it's the source of truth for streaming
-   cadence, NOT the frontend's job to re-pace. Two call sites in v2:
-   the scene runner's phase-2 prose stream and the chronicler's entry
-   stream.
+1. **Paced word emitter.** The 80 ms pace floor is non-negotiable —
+   it's the source of truth for streaming cadence, NOT the frontend's
+   job to re-pace. Two call sites: the scene runner's phase-2 prose
+   stream and the chronicler's entry stream.
 
 2. **Event helpers.** Small builder functions for the v2 SSE event
    surface (SPEC §5 table). Plain dicts on the wire so the frontend's

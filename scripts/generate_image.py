@@ -1,14 +1,13 @@
-r"""Generate location backdrops and the map for handler/world from IMAGES.md.
+r"""Generate location backdrops and the map for world/ from IMAGES.md.
 
-The manifest at handler/world/backdrops/IMAGES.md is the source of truth. Each
+The manifest at world/backdrops/IMAGES.md is the source of truth. Each
 `### \`<name>.png\`` block declares Status / Subject / Composition / Required
 props / Avoid / Prompt seed. We assemble a per-image prompt as:
 
     global_aesthetic + prompt_seed + composition + required_props + avoid
 
 and feed it to Gemini's image-generation model. Outputs land at
-handler/world/backdrops/{id}.png, except `map.png` which goes to
-handler/world/map.png.
+world/backdrops/{id}.png, except `map.png` which goes to world/map.png.
 
 Existing files are never overwritten unless --force is passed. Use --only to
 regenerate a subset, and --dry-run to inspect the assembled prompts.
@@ -28,7 +27,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 # Surface GEMINI_API_KEY from .env if present (the project keeps it there;
 # requiring shell export every session would be friction).
@@ -38,11 +37,11 @@ try:
 except ImportError:
     pass
 
-MANIFEST = REPO_ROOT / "handler" / "world" / "backdrops" / "IMAGES.md"
-BACKDROPS_DIR = REPO_ROOT / "handler" / "world" / "backdrops"
+MANIFEST = REPO_ROOT / "world" / "backdrops" / "IMAGES.md"
+BACKDROPS_DIR = REPO_ROOT / "world" / "backdrops"
 VARIANTS_DIR = BACKDROPS_DIR / "_variants"
-MAP_PATH = REPO_ROOT / "handler" / "world" / "map.png"
-MAP_VARIANTS_DIR = REPO_ROOT / "handler" / "world" / "_map_variants"
+MAP_PATH = REPO_ROOT / "world" / "map.png"
+MAP_VARIANTS_DIR = REPO_ROOT / "world" / "_map_variants"
 
 MODELS = {
     "flash": "gemini-3.1-flash-image-preview",

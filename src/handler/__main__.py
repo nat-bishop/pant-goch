@@ -1,11 +1,10 @@
 """CLI runner for the text-only playthrough.
 
-Loads the world from `handler/world/` (or `WORLD_PATH`), spawns/probes
+Loads the world from `world/` (or `WORLD_PATH`), spawns/probes
 llama, builds the scene-runner bundle, and runs scenes interactively in
 the terminal until the player ends the game.
 
 Usage:
-    cd handler
     uv run python -m handler
 
 Prerequisites: a populated world/ AND either bundled llama-server binary

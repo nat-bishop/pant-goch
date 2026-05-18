@@ -1,6 +1,6 @@
 # Pant Goch — backdrop manifest
 
-Reference document for the location backdrops + map served by `handler/world/`. Each entry has a stable shape so an asset-generation script can parse it.
+Reference document for the location backdrops + map served by `world/`. Each entry has a stable shape so an asset-generation script can parse it.
 
 ---
 
@@ -10,7 +10,7 @@ Reference document for the location backdrops + map served by `handler/world/`. 
 |---|---|
 | **Source-of-truth resolution** | **2560 × 1440** (16:9 PNG, sRGB, 8-bit) |
 | **Map resolution** | **2816 × 1536** (1.833:1, matches `map.png` native aspect) |
-| **Shipping path** | `handler/world/backdrops/{location_id}.png` and `handler/world/map.png` |
+| **Shipping path** | `world/backdrops/{location_id}.png` and `world/map.png` |
 | **Shipping resolution** | downsample to **1408 × 768** for the live frontend (kept as a separate file or re-export) |
 | **Aspect of the displayed pane** | varies — `background-size: cover` crops dynamically; **compose subject in the centre 1:1** so it survives a near-square crop |
 | **CSS treatment applied at display time** | `brightness(0.78) saturate(0.78) contrast(1.04) sepia(0.06)` + grain overlay + vignette — author warm and slightly saturated; the runtime mutes it |
@@ -43,7 +43,7 @@ Folk-noir investigation set in the Welsh Marches (Welsh-English borderlands). La
 
 ## Location backdrops (10)
 
-Files are named `{location_id}.png` exactly as listed below. Names must match the `id` field in `handler/world/locations/*.yaml`.
+Files are named `{location_id}.png` exactly as listed below. Names must match the `id` field in `world/locations/*.yaml`.
 
 ### `the_old_vicarage.png`
 

@@ -82,7 +82,7 @@ export async function fetchWorld(): Promise<WorldMeta> {
   return r.json();
 }
 
-// ─── SSE event vocabulary (must match handler/sse.py) ─────────────────
+// ─── SSE event vocabulary (must match src/handler/sse.py) ─────────────
 
 export interface OptionPayload {
   text: string;

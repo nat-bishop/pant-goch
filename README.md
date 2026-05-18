@@ -4,7 +4,7 @@ LLM-driven investigation game set in the Welsh Marches village of Pant Goch. You
 
 The architectural bet, in one sentence: **the LLM writes prose, the engine writes state**. State changes flow through a discriminated-union type with grammar-sampled enums; the model literally cannot invent a beat or location it doesn't have permission for.
 
-Design doc: `handler/SPEC.md`. Remaining work plan: `handler/PLAN.md`.
+Design doc: `SPEC.md`.
 
 ## Architecture
 
@@ -59,16 +59,16 @@ make test-integration      # includes the live-llama integration test
 
 ## Authoring
 
-World content lives in `handler/world/`:
+World content lives in `world/`:
 
 - `locations/*.yaml` — one file per location. `connects_to` enumerates the adjacency graph.
 - `cast.yaml` — all NPCs in one file. Each has `themes`, `knowledge`, `attitude`.
 - `truth.yaml` — beats and endings. Beats are gated by `requires_beats` / `blocked_by_beats`. Endings gate on player-driven decision beats authored as mutually-exclusive.
 - `brief.yaml` — opening location + editor brief + framing letter.
 
-Schema lives in `handler/src/handler/models.py`. Loader invariants in `handler/src/handler/world.py`.
+Schema lives in `src/handler/models.py`. Loader invariants in `src/handler/world.py`.
 
-Point the sidecar at a non-default world with `WORLD_PATH=/path/to/world make sidecar` (once authoring stabilizes — currently world path is fixed to `handler/world`).
+Point the sidecar at a non-default world with `WORLD_PATH=/path/to/world make sidecar` (once authoring stabilizes — currently world path is fixed to `world/`).
 
 ## Inferno gateway (dev-mode)
 
@@ -77,25 +77,30 @@ Point the sidecar at a non-default world with `WORLD_PATH=/path/to/world make si
 ## Project layout
 
 ```
-handler/
-├── PLAN.md, SPEC.md, SPEC.html
-├── src/handler/
-│   ├── main.py, __main__.py
-│   ├── launcher.py            ← bundled llama-server launcher
-│   ├── models.py              ← Location, NPC, Beat, Ending, Brief
-│   ├── world.py               ← loader + invariants
-│   ├── state.py               ← State, TurnRecord, LogEntry, GameOver
-│   ├── schemas.py             ← StateChangeBundle, ProsePart, Option
-│   ├── engine.py              ← apply, validate, reachable beats
-│   ├── agents.py              ← scene runner + log writer
-│   ├── prompts.py             ← KV-cache-friendly prompt builders
-│   ├── scene_loop.py          ← play_scene, play_session, event emission
-│   └── sse.py                 ← paced word emitter + event builders
-├── tests/                     ← 109 unit tests + 1 live integration
-├── world/                     ← Pant Goch authored content
+SPEC.md                        ← authoritative design doc
+pyproject.toml, uv.lock
+Makefile
+
+src/handler/
+├── main.py, __main__.py
+├── launcher.py                ← bundled llama-server launcher
+├── models.py                  ← Location, NPC, Beat, Ending, Brief
+├── world.py                   ← loader + invariants
+├── state.py                   ← State, TurnRecord, LogEntry, GameOver
+├── schemas.py                 ← StateChangeBundle, ProsePart, Option
+├── engine.py                  ← apply, validate, reachable beats
+├── agents.py                  ← scene runner + log writer
+├── prompts.py                 ← KV-cache-friendly prompt builders
+├── scene_loop.py              ← play_scene, play_session, event emission
+└── sse.py                     ← paced word emitter + event builders
+
+tests/                         ← unit suite + live integration
+world/                         ← Pant Goch authored content
 │   ├── brief.yaml, cast.yaml, truth.yaml
 │   └── locations/             ← 10 location YAMLs
-└── web/                       ← React + Vite + TypeScript
+web/                           ← React + Vite + TypeScript
+scripts/                       ← Gemini backdrop generator + proofing UI
+design/                        ← planning docs, UI mockup, mood board
 
 vendor/llama.cpp/              ← bundled llama-server.exe
 models/                        ← Gemma 4 E4B Q8 GGUF

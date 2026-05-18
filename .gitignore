@@ -50,8 +50,8 @@ dist/
 .vite/
 
 # Backdrop / map variant histories — large, per-author, regenerable
-handler/world/backdrops/_variants/
-handler/world/_map_variants/
+world/backdrops/_variants/
+world/_map_variants/
 
 # Logfire project credentials (per-machine, contains write token)
 .logfire/

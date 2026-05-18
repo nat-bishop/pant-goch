@@ -8,13 +8,13 @@ This document is the v1 spec — what gets built and what gets authored.
 
 ## 0. Why v2 exists
 
-V1 (the spy-handler game in `handler/`) failed for three reasons: too many entities for the player to model from text, no time to develop attachment to any character, and the handler-from-the-desk framing kept the player emotionally cold. The deeper authoring problem was that V1 wrote *every option* by hand — a pre-LLM CYOA discipline that doesn't play to what LLMs are actually good at.
+V1 (the spy-handler game that previously occupied this repo) failed for three reasons: too many entities for the player to model from text, no time to develop attachment to any character, and the handler-from-the-desk framing kept the player emotionally cold. The deeper authoring problem was that V1 wrote *every option* by hand — a pre-LLM CYOA discipline that doesn't play to what LLMs are actually good at.
 
 V2 inverts the bargain. Instead of authoring every scene and every option, the author writes a **world bible** — a grounded description of the place, the people, the truth, and the major beats that constitute uncovering it. The LLM runs scenes inside that world, improvising prose and options. Tools let it advance state when major beats happen. The map keeps the player grounded geographically at all times.
 
 This is closer to "playing tabletop with a GM who's read the campaign book" than "navigating a CYOA tree." The risk is AI-Dungeon drift; the mitigation is heavy world grounding (the LLM cannot invent locations or characters; the truth is fixed; state changes only flow through authored beats).
 
-V1 is not preserved. V2 is a clean greenfield rebuild in `handler/`. No infrastructure is carried over unless it works perfectly for the new system.
+V1 is not preserved. V2 is a clean greenfield rebuild. No infrastructure is carried over unless it works perfectly for the new system.
 
 ---
 
@@ -76,8 +76,7 @@ The total authoring surface for v1 is about **15 YAML files**, mostly prose. The
 ### 2.1 File layout
 
 ```
-handler/
-└── world/
+world/
     ├── locations/
     │   ├── the_old_vicarage.yaml
     │   ├── the_slaughtered_lamb.yaml
@@ -738,7 +737,7 @@ consistent with the state changes above. Then emit one of:
 
 ## 5. Frontend
 
-**Visual reference: `design/mockup-stage/`** — a static HTML+React mockup of the final composition. Open `index.html` directly in a browser (via `python -m http.server` from `design/`). Click through it to see the intended UX; read its `styles.css` for design tokens and `app.jsx` for the React patterns. The mockup is the source of truth for layout, motion, and typography. Implementation lives in `handler/web/`.
+**Visual reference: `design/mockup-stage/`** — a static HTML+React mockup of the final composition. Open `index.html` directly in a browser (via `python -m http.server` from `design/`). Click through it to see the intended UX; read its `styles.css` for design tokens and `app.jsx` for the React patterns. The mockup is the source of truth for layout, motion, and typography. Implementation lives in `web/`.
 
 Single-page web app. Two-pane composition, **58fr / 42fr**:
 
@@ -963,9 +962,9 @@ After M8, v1 is proven. v1.1 work (LLM-assisted authoring? numeric pressure? pro
 
 Lift patterns from these (carefully — they're v1 spy-handler and many will need adjustment):
 
-- `handler/src/handler/launcher.py` — bundled llama-server spawn, jinja flag, kernel params.
-- `handler/src/handler/main.py` — lifespan with `OpenAIModelProfile` setup, `paced_word_emitter`, SSE event shape.
-- `handler/src/handler/agents.py` — stable-system / dynamic-user prompt split for KV reuse, NativeOutput with `strict=True` + dynamic Literal types for grammar sampling.
+- `src/handler/launcher.py` — bundled llama-server spawn, jinja flag, kernel params.
+- `src/handler/main.py` — lifespan with `OpenAIModelProfile` setup, `paced_word_emitter`, SSE event shape.
+- `src/handler/agents.py` — stable-system / dynamic-user prompt split for KV reuse, NativeOutput with `strict=True` + dynamic Literal types for grammar sampling.
 - `CLAUDE.md` — invariants and call-site comments explaining why things are the way they are.
 
 Read, understand, rebuild clean. Do not transplant.

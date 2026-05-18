@@ -1,5 +1,5 @@
 # Fractional (x, y) hotspot coordinates for each location, keyed to
-# `handler/world/map.png`. Origin (0,0) is the top-left of the image;
+# `world/map.png`. Origin (0,0) is the top-left of the image;
 # (1,1) is the bottom-right. The frontend overlays a clickable hotspot
 # at each (x, y) over the rendered map at whatever rendered size.
 # Fractional coords keep the map responsive.

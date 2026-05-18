@@ -4,23 +4,23 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 HANDLER v2 is an LLM-driven investigation game set in the Welsh Marches village of Pant Goch. The player is a freelance journalist looking into a death the local police closed too quickly. The world (locations, cast, the truth) is hand-authored YAML; the LLM improvises scenes inside it via two-stage structured emission.
 
-**`handler/SPEC.md` is the authoritative design doc.** Read it before changing the engine, schemas, prompts, or world loader.
+**`SPEC.md` is the authoritative design doc.** Read it before changing the engine, schemas, prompts, or world loader.
 
 ## Repo
 
 ```
-handler/
-  src/handler/    # Python engine + pydantic-ai agents
-  world/          # hand-authored bible (player content)
-  web/            # Vite + React frontend
-  tests/          # pytest
-  SPEC.md         # authoritative v2 design — source of truth
+SPEC.md           # authoritative v2 design — source of truth
+src/handler/      # Python engine + pydantic-ai agents
+world/            # hand-authored bible (player content)
+web/              # Vite + React frontend
+tests/            # pytest
+scripts/          # Gemini backdrop generator + proofing UI
 design/
   mockup-stage/   # static HTML/React reference for the final UX
 Makefile          # all dev commands
 ```
 
-### Engine modules (`handler/src/handler/`)
+### Engine modules (`src/handler/`)
 
 One-line orientation; read the module docstring for detail.
 
@@ -36,7 +36,7 @@ One-line orientation; read the module docstring for detail.
 - `__main__.py` — text-only CLI playthrough.
 - `launcher.py` / `config.py` — bundled llama-server spawn + env-driven config.
 
-## Authoring (`handler/world/`)
+## Authoring (`world/`)
 
 The whole player-facing content surface is ~15 YAML files. The author writes prose; the LLM improvises scenes inside it.
 
@@ -68,5 +68,5 @@ world/
 - `make test` — fast unit suite, no live llama.
 - `make test-integration` — includes the live-llama integration test (`tests/test_live_integration.py`).
 - `make kill` — force-kill orphans on :8000 / :8080 / :5173-5176.
-- Single test: `cd handler && uv run pytest tests/test_engine.py::test_name -q`
+- Single test: `uv run pytest tests/test_engine.py::test_name -q`
 - `make help` — full list.

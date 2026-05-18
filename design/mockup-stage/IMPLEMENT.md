@@ -1,6 +1,6 @@
-# Port the Stage frontend to handler/web
+# Port the Stage frontend to web/
 
-A finished UI prototype sits in this folder. Your job is to make `handler/web/` look and behave like it.
+A finished UI prototype sits in this folder. Your job is to make `web/` look and behave like it.
 
 ## Run the reference
 
@@ -19,7 +19,7 @@ Click through it. Hover the dotted-underline phrases. Switch the LOCATION / MAP 
 
 ## What to do
 
-Restructure `handler/web/src/` so the real frontend renders the same composition driven by the live SSE backend. Read `handler/CLAUDE.md` first for the engine constraints you must respect (two-stage emission, server-side word-pacing, etc.). The mockup's data layer (`scene-data.js`, `window.GLOSSES`) is stub — wire to the real `api.ts` and store instead.
+Restructure `web/src/` so the real frontend renders the same composition driven by the live SSE backend. Read `CLAUDE.md` first for the engine constraints you must respect (two-stage emission, server-side word-pacing, etc.). The mockup's data layer (`scene-data.js`, `window.GLOSSES`) is stub — wire to the real `api.ts` and store instead.
 
 ## On glosses
 

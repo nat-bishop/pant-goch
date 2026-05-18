@@ -151,10 +151,10 @@ class LlamaConfig:
     reasoning_format: str | None = None
 
 
-def _handler_root() -> Path:
-    """handler/ — resolved from this module's location, NEVER from CWD.
-    src layout: this file is handler/src/handler/launcher.py.
-    parents[0]=src/handler, [1]=src, [2]=handler.
+def _project_root() -> Path:
+    """Project root — resolved from this module's location, NEVER from CWD.
+    src layout: this file is src/handler/launcher.py.
+    parents[0]=src/handler, [1]=src, [2]=project root.
     """
     return Path(__file__).resolve().parents[2]
 
@@ -166,18 +166,15 @@ def _bin_name(name: str) -> str:
 def resolve_config(settings: Settings | None = None) -> LlamaConfig:
     """Pull llama-server invocation params from settings or sane defaults."""
     s = settings or Settings()
-    base = _handler_root()
+    base = _project_root()
 
-    # Default bin path resolves to the smallville root's vendor/llama.cpp/.
-    # v2 is a subproject so we walk up one more level to find the shared
-    # vendor directory.
-    bin_path = s.llama_server_bin or base.parent / "vendor" / "llama.cpp" / _bin_name("llama-server")
+    bin_path = s.llama_server_bin or base / "vendor" / "llama.cpp" / _bin_name("llama-server")
 
     if s.llama_model_path:
         model_path: Path | None = s.llama_model_path
         hf: str | None = None
     else:
-        candidate = base.parent / "models" / "ggml-org-gemma-4-E4B-it-Q8_0.gguf"
+        candidate = base / "models" / "ggml-org-gemma-4-E4B-it-Q8_0.gguf"
         if candidate.exists():
             model_path = candidate
             hf = None
