@@ -28,6 +28,7 @@ from pydantic import BaseModel
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.profiles.openai import openai_model_profile
 from pydantic_ai.providers.openai import OpenAIProvider
+from pydantic_ai.settings import ModelSettings
 
 from .agents import (
     AgentBundle,
@@ -127,19 +128,38 @@ class SessionRuntime:
 
 def build_model(api_url: str, model_name: str = "gemma-4-e4b") -> OpenAIChatModel:
     """Construct the OpenAIChatModel for both lifespan (FastAPI) and CLI
-    (`__main__.py`). The OpenAIModelProfile flag is load-bearing for the
-    conversation-based chronicler — without
-    `openai_chat_send_back_thinking_parts=False`, pydantic-ai's default
-    'auto' round-trips ThinkingParts back into prior assistant content as
-    <think>...</think> blocks, which Gemma 4 cannot tolerate in
-    multi-turn (cf. v1 CLAUDE.md). The chronicler's accumulating
-    message_history makes this load-bearing — without the profile, drift
-    compounds every scene.
+    (`__main__.py`).
+
+    Two thinking-suppression mechanisms are stacked here, because the
+    failure modes are different and we hit both:
+
+    1. `OpenAIModelProfile(openai_chat_send_back_thinking_parts=False)` —
+       stops pydantic-ai from echoing past ThinkingParts back into prior
+       assistant content as <think>...</think> blocks on subsequent
+       turns. Without it, the chronicler's accumulating message_history
+       drifts every scene (cf. v1 CLAUDE.md).
+
+    2. `extra_body={"chat_template_kwargs": {"enable_thinking": False}}` —
+       per-request body param forwarded by the OpenAI SDK to
+       llama-server's `/v1/chat/completions`. llama.cpp passes
+       `chat_template_kwargs` into the Jinja chat template; the Gemma 4
+       template (and Qwen3 / GLM and other recent reasoning-capable
+       models) gates its reasoning preamble on `enable_thinking`. This
+       is the only lever that works when the model is served by inferno
+       (or any external gateway) — the launcher's `--reasoning off`
+       flag is bypassed in that mode. Without this, ~100 of every Phase 2
+       call's output tokens are burned on a hidden "Plan / Constraint
+       Checklist" preamble that never reaches the player.
     """
     base_profile = openai_model_profile(model_name)
     profile = dc_replace(base_profile, openai_chat_send_back_thinking_parts=False)
     provider = OpenAIProvider(base_url=api_url, api_key="local")
-    return OpenAIChatModel(model_name, provider=provider, profile=profile)
+    settings = ModelSettings(
+        extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+    )
+    return OpenAIChatModel(
+        model_name, provider=provider, profile=profile, settings=settings,
+    )
 
 
 async def _probe_inferno_health(url: str, timeout: float = INFERNO_PROBE_TIMEOUT_SECONDS) -> None:

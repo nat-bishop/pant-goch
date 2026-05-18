@@ -18,38 +18,21 @@
   player: '"Mind if I sit?"'
   narrator: |
     Tom doesn't look up. He turns the glass on the bar, a quarter-turn,
-    another, as if measuring something only he can see. The peat fire
-    in the grate cracks once and settles. Eira's cloth pauses on the
-    rim of the pint glass, just long enough to register your existence,
-    then resumes.
+    another.
 
-    "Free country," Tom says, eventually. He doesn't say it kindly. He
+    "Free country," he says, eventually. He doesn't say it kindly. He
     doesn't say it the other way either.
 
     You take the stool. Up close, he smells of woodsmoke and wet wool.
-    He has the face of a man who has not had a full night's sleep in a
-    long time and has stopped being surprised by it. Behind the bar,
-    the dartboard photograph catches the afternoon light.
 
 - setup: "The lane between Lower Hafod and the village, late afternoon. Owain Pugh has fallen into step with you, in the unhurried way of someone who has nowhere in particular to be."
   player: '"You said something about a dog."'
   narrator: |
-    Owain glances at you sideways, then ahead at the hedge. The
-    blackthorn is just beginning to show. He takes his time.
+    Owain glances at you sideways, then ahead at the hedge.
 
     "I said it was seen. There's a difference."
 
-    A wood pigeon goes off heavily from somewhere behind them. He
-    waits until the sound has finished.
-
-    "Big black thing. At the bend. The night it happened. That's what
-    I heard, anyway. From who, I couldn't tell you now. Could've been
-    Tom. Could've been my brother. Could've been a dream I had after,
-    and I dressed it up."
-
-    He stops walking. You stop with him. He looks at you with the
-    half-amused, half-mournful face of a man who knows exactly how
-    unreliable he is and does not particularly mind.
+    A wood pigeon goes off behind you both. He waits it out.
 
     "I don't say I saw it. I say it was seen."
 
@@ -98,21 +81,13 @@
 - setup: "Lower Hafod, on your second visit. Iwan has opened the door before you've knocked. Wendy is somewhere out at the polytunnel; you have not seen her. There is a kettle already on."
   player: '"I came back."'
   narrator: |
-    "I noticed." He stands aside. The hallway smells of toast and
-    something older — old paper, maybe, or a dog blanket. He doesn't
-    take your coat this time; he points at the hook where you hung it
-    last time, as if reminding you of a small kindness.
+    "I noticed." He stands aside, points at the hook where you hung
+    your coat last time.
 
-    "Sit there if you would. Tea or coffee? Tea." He has answered for
-    you. He always does. He pours.
+    "Tea or coffee? Tea." He has answered for you. He always does.
+    He pours.
 
-    You take the same chair as before. The kitchen has not changed.
-    On the dresser, a framed photograph of Megan at, perhaps, fifteen
-    has been turned five degrees so it faces the table now. You don't
-    think it was like that last time.
-
-    He sets the mug down. He sits opposite. He waits, in the way of a
-    man who knows the asking is not his to do, only the answering.
+    He sets the mug down. He sits opposite. He waits.
 
 - setup: "Bryn Iago Wood, late afternoon. You found Dylan walking back from the clearing, hands in his pockets, in no apparent hurry. He has stopped when you stopped. The light is going through the larches."
   player: '"You and Megan."'

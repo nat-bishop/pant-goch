@@ -43,7 +43,11 @@ def test_build_command_includes_required_flags(clean_settings):
     # v2 default is per-slot allocation; explicit flag is mandatory because
     # recent llama.cpp builds default to unified when -np is auto.
     assert "--no-kv-unified" in cmd
-    # Reasoning off by default → neither --reasoning nor --reasoning-format
-    # appear (lets llama-server's own default take over, no <think> blocks).
-    assert "--reasoning" not in cmd
+    # Reasoning off by default → `--reasoning off` is passed EXPLICITLY.
+    # Omitting the flag would let llama-server's CLI default (`auto`) take
+    # over, which on Gemma 4 with `--jinja` activates the reasoning channel
+    # and leaks ~125 thinking tokens per call. `--reasoning-format` is only
+    # emitted when extraction is on/auto, so it stays absent here.
+    assert "--reasoning" in cmd
+    assert cmd[cmd.index("--reasoning") + 1] == "off"
     assert "--reasoning-format" not in cmd

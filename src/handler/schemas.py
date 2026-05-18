@@ -151,7 +151,7 @@ SceneNext = Annotated[
 
 
 class ProsePart(_Strict):
-    prose: str  # 80-200 words; streamed
+    prose: str  # ≤120 words; streamed
     next: SceneNext
 
 

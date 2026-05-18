@@ -144,9 +144,12 @@ class LlamaConfig:
     ngl: int
     n_parallel: int
     kv_unified: bool
-    # `--reasoning <mode>` toggles whether the chat template instructs the
-    # model to think. v2's scene runner sets None (off) so Gemma 4 returns
-    # prose directly without `<think>` blocks.
+    # `--reasoning <mode>` toggles whether llama-server extracts thinking
+    # from the chat template's reasoning channel. v2 passes "off" EXPLICITLY
+    # — omitting the flag is NOT equivalent; llama-server defaults to
+    # `auto`, which on Gemma 4 (with `--jinja`) auto-activates the
+    # `<|channel>thought` channel and leaks ~125 thinking tokens into every
+    # response. Always pass an explicit value.
     reasoning_mode: str | None = None
     reasoning_format: str | None = None
 
@@ -191,7 +194,7 @@ def resolve_config(settings: Settings | None = None) -> LlamaConfig:
         s.llama_total_ctx if s.llama_total_ctx > 0
         else s.llama_n_parallel * s.llama_ctx
     )
-    reasoning_mode = s.llama_reasoning_mode if s.llama_reasoning_mode != "off" else None
+    reasoning_mode = s.llama_reasoning_mode
     reasoning_format = "deepseek" if reasoning_mode in ("on", "auto") else None
     return LlamaConfig(
         bin=bin_path,

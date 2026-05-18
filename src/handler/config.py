@@ -54,9 +54,14 @@ class Settings(BaseSettings):
     # allocation (default), `-np 4` reserves 4× llama_ctx; bump if running
     # parallel sessions (not v1's use case).
     llama_n_parallel: int = 4
-    # Gemma 4 reasoning mode. `off` (default): no `<think>` blocks; v2's
-    # scene runner returns prose directly. The conversation-based chronicler
-    # ALSO depends on no thinking parts in assistant messages — see
+    # Gemma 4 reasoning mode, passed verbatim as `--reasoning <mode>` to
+    # llama-server. `off` (default): server does not extract thinking, and
+    # Gemma 4's Jinja template emits content tokens directly. DO NOT
+    # interpret `off` as "skip the flag" — llama-server's CLI default is
+    # `auto`, which on Gemma 4 with `--jinja` activates the reasoning
+    # channel and wastes ~125 output tokens per call on hidden planning.
+    # The conversation-based chronicler ALSO depends on no thinking parts
+    # in assistant messages — see
     # `OpenAIModelProfile(openai_chat_send_back_thinking_parts=False)` in
     # main.py's lifespan.
     llama_reasoning_mode: Literal["on", "off", "auto"] = "off"
