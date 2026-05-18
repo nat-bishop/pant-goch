@@ -813,11 +813,31 @@ a { color: inherit; text-decoration: none; }
 
 /* ── choices ────────────────────────────────────────── */
 
-.choices-wrap {
+.choices-wrap,
+.freetext-wrap {
   margin-top: 2.6em;
   padding-top: 1.2em;
   border-top: 1px solid var(--rule);
 }
+
+.freetext-input {
+  width: 100%;
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 15.5px;
+  line-height: 1.55;
+  color: var(--ink);
+  background: transparent;
+  border: 1px solid var(--rule);
+  padding: 0.6em 0.8em;
+  resize: vertical;
+  box-sizing: border-box;
+}
+.freetext-input:focus-visible {
+  outline: 1px solid var(--red-soft);
+  outline-offset: 2px;
+}
+.freetext-input:disabled { opacity: 0.5; cursor: not-allowed; }
 .choices-eyebrow {
   font-family: var(--mono);
   font-size: 10px;
@@ -863,18 +883,6 @@ a { color: inherit; text-decoration: none; }
   letter-spacing: 0.04em;
   font-variant-numeric: tabular-nums;
 }
-.choice-kind {
-  display: block;
-  font-family: var(--mono);
-  font-style: normal;
-  font-size: 9px;
-  letter-spacing: 0.26em;
-  text-transform: uppercase;
-  color: var(--ink-faint);
-  margin-top: 3px;
-}
-.choice[data-kind="leave"]  .choice-num { color: var(--red-soft); }
-
 .player-pick {
   margin: 1.2em 0 0;
   font-family: var(--mono);

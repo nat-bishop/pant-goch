@@ -24,13 +24,12 @@ from handler.agents import (
     make_scene_runner_runtime,
 )
 from handler.schemas import (
-    ContinueScene,
-    EndGame,
-    EndScene,
+    ChoiceBundle,
     ChronicleEntry,
+    Continue,
+    Leave,
     NpcPlacementBundle,
     Option,
-    ProsePart,
     StateChangeBundle,
     UnlockBeat,
 )
@@ -171,14 +170,21 @@ async def test_play_scene_emits_scene_start_then_terminal_events(monkeypatch, wo
     state = make_initial_state(world)
 
     async def fake_phase1(*args, **kwargs):
-        return StateChangeBundle(state_changes=[UnlockBeat(beat_id="tom_named_a_vehicle")])
+        # tom_closes_off is a negative beat — not in any ending's
+        # requires_beats — so the choice author's Leave below resolves
+        # to EndScene, not EndGame.
+        return StateChangeBundle(state_changes=[UnlockBeat(beat_id="tom_closes_off")])
 
-    async def fake_phase2(*args, **kwargs):
-        return ProsePart(prose="Tom spoke at last.", next=EndScene())
+    async def fake_prose(*args, **kwargs):
+        return "Tom shuts down."
+
+    async def fake_choices(*args, **kwargs):
+        return ChoiceBundle(next=Leave())
 
     _patch_populator(monkeypatch)
     monkeypatch.setattr("handler.scene_loop.emit_state_changes", fake_phase1)
-    monkeypatch.setattr("handler.scene_loop.emit_prose", fake_phase2)
+    monkeypatch.setattr("handler.scene_loop.emit_prose_text", fake_prose)
+    monkeypatch.setattr("handler.scene_loop.emit_choices", fake_choices)
 
     events: list[dict] = []
 
@@ -204,7 +210,7 @@ async def test_play_scene_emits_scene_start_then_terminal_events(monkeypatch, wo
     # state_change carries the beat_id
     sc = next(e for e in events if e["event"] == "state_change")
     assert sc["kind"] == "unlock_beat"
-    assert sc["payload"]["beat_id"] == "tom_named_a_vehicle"
+    assert sc["payload"]["beat_id"] == "tom_closes_off"
 
 
 def _patched_paced_emitter(interval: float):
@@ -222,30 +228,35 @@ def _patched_paced_emitter(interval: float):
 
 
 async def test_play_scene_emits_options_event_for_continue(monkeypatch, world_and_bundle):
-    """ContinueScene turn fires an options event with text+leaves_for per
-    option."""
+    """A Continue turn fires an options event with one `{text}` entry per
+    option (no leaves_for field; the map is the navigation surface)."""
     world, bundle = world_and_bundle
     state = make_initial_state(world)
     state.player_location = "the_slaughtered_lamb"
 
-    # Phase 2: one Continue then EndScene.
-    proses = iter([
-        ProsePart(prose="A pause.", next=ContinueScene(options=[
+    # Two prose+choices pairs: Continue then Leave.
+    proses = iter(["A pause.", "The hour ends."])
+    choices = iter([
+        ChoiceBundle(next=Continue(options=[
             Option(text="Stay quiet"),
-            Option(text="Walk to post", leaves_for="the_post_office"),
+            Option(text="Walk to post"),
         ])),
-        ProsePart(prose="The hour ends.", next=EndScene()),
+        ChoiceBundle(next=Leave()),
     ])
 
     async def fake_phase1(*args, **kwargs):
         return StateChangeBundle()
 
-    async def fake_phase2(*args, **kwargs):
+    async def fake_prose(*args, **kwargs):
         return next(proses)
+
+    async def fake_choices(*args, **kwargs):
+        return next(choices)
 
     _patch_populator(monkeypatch)
     monkeypatch.setattr("handler.scene_loop.emit_state_changes", fake_phase1)
-    monkeypatch.setattr("handler.scene_loop.emit_prose", fake_phase2)
+    monkeypatch.setattr("handler.scene_loop.emit_prose_text", fake_prose)
+    monkeypatch.setattr("handler.scene_loop.emit_choices", fake_choices)
     monkeypatch.setattr("handler.scene_loop.paced_word_emitter",
                         _patched_paced_emitter(0.001))
 
@@ -259,24 +270,33 @@ async def test_play_scene_emits_options_event_for_continue(monkeypatch, world_an
     options_events = [e for e in events if e["event"] == "options"]
     assert len(options_events) == 1
     opts = options_events[0]["options"]
-    assert opts[0] == {"text": "Stay quiet", "leaves_for": None}
-    assert opts[1] == {"text": "Walk to post", "leaves_for": "the_post_office"}
+    assert opts[0] == {"text": "Stay quiet"}
+    assert opts[1] == {"text": "Walk to post"}
 
 
 async def test_play_scene_emits_game_over_for_end_game(monkeypatch, world_and_bundle):
+    """Choice author Leave with a satisfied ending in state → engine
+    resolves EndGame → game_over event with the resolved id."""
     world, bundle = world_and_bundle
     state = make_initial_state(world)
     state.player_location = "the_slaughtered_lamb"
+    # Satisfy the published_story ending's decision beat so Leave resolves
+    # to EndGame.
+    state.unlocked_beats = set(world.endings["published_story"].requires_beats)
 
     async def fake_phase1(*args, **kwargs):
         return StateChangeBundle()
 
-    async def fake_phase2(*args, **kwargs):
-        return ProsePart(prose="The story runs.", next=EndGame(ending_id="published_story"))
+    async def fake_prose(*args, **kwargs):
+        return "The story runs."
+
+    async def fake_choices(*args, **kwargs):
+        return ChoiceBundle(next=Leave())
 
     _patch_populator(monkeypatch)
     monkeypatch.setattr("handler.scene_loop.emit_state_changes", fake_phase1)
-    monkeypatch.setattr("handler.scene_loop.emit_prose", fake_phase2)
+    monkeypatch.setattr("handler.scene_loop.emit_prose_text", fake_prose)
+    monkeypatch.setattr("handler.scene_loop.emit_choices", fake_choices)
     monkeypatch.setattr("handler.scene_loop.paced_word_emitter",
                         _patched_paced_emitter(0.001))
 
@@ -304,23 +324,37 @@ async def test_play_session_emits_location_change_and_log_entry_words(
     chronicler = make_chronicler_runtime()
     state = make_initial_state(world)
 
-    # First scene at pub: ends in EndScene. Second scene at post office:
-    # ends in EndGame.
-    proses = iter([
-        ProsePart(prose="Pub scene.", next=EndScene()),
-        ProsePart(prose="Post scene.", next=EndGame(ending_id="published_story")),
+    # First scene at pub: Leave with no satisfied ending → EndScene.
+    # Second scene at post office: Phase 1 fires the published_story
+    # decision beat just before the choice author's Leave →
+    # engine resolves EndGame.
+    proses = iter(["Pub scene.", "Post scene."])
+    choices = iter([
+        ChoiceBundle(next=Leave()),
+        ChoiceBundle(next=Leave()),
+    ])
+    decision_beats = world.endings["published_story"].requires_beats
+    phase1_outputs = iter([
+        StateChangeBundle(),  # scene 1 turn 1: nothing
+        StateChangeBundle(   # scene 2 turn 1: fire the decision beat
+            state_changes=[UnlockBeat(beat_id=b) for b in decision_beats],
+        ),
     ])
 
     async def fake_phase1(*args, **kwargs):
-        return StateChangeBundle()
+        return next(phase1_outputs)
 
-    async def fake_phase2(*args, **kwargs):
+    async def fake_prose(*args, **kwargs):
         return next(proses)
+
+    async def fake_choices(*args, **kwargs):
+        return next(choices)
 
     _patch_populator(monkeypatch)
     _patch_chronicler(monkeypatch, text="The pub, the road. Tom was at the bar.")
     monkeypatch.setattr("handler.scene_loop.emit_state_changes", fake_phase1)
-    monkeypatch.setattr("handler.scene_loop.emit_prose", fake_phase2)
+    monkeypatch.setattr("handler.scene_loop.emit_prose_text", fake_prose)
+    monkeypatch.setattr("handler.scene_loop.emit_choices", fake_choices)
     monkeypatch.setattr("handler.scene_loop.paced_word_emitter",
                         _patched_paced_emitter(0.001))
 

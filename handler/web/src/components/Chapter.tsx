@@ -7,10 +7,11 @@
 // at top with ~56px padding. Lifted from design/mockup-stage/app.jsx.
 
 import { useEffect, useRef, useState } from "react";
-import { postPick } from "../api";
+import { postFreeText, postPick } from "../api";
 import { useStore, type SceneSnapshot } from "../store";
 import { StreamingProse } from "./StreamingProse";
 import { ChoicesBlock } from "./ChoicesBlock";
+import { FreeTextInput } from "./FreeTextInput";
 import type { GlossIndex } from "./glosses";
 
 function romanize(n: number): string {
@@ -34,8 +35,10 @@ export function Chapter({
   const sectionRef = useRef<HTMLElement | null>(null);
   const fastForward = useStore((s) => s.fastForward);
   const attachPick = useStore((s) => s.attachPick);
-  const world = useStore((s) => s.world);
+  const phase = useStore((s) => s.phase);
+  const freeTextRequest = useStore((s) => s.freeTextRequest);
   const [pickBusy, setPickBusy] = useState(false);
+  const [freeTextBusy, setFreeTextBusy] = useState(false);
 
   const lastTurn = scene.turns[scene.turns.length - 1];
   const streamingThisChapter = isCurrent && lastTurn?.streaming;
@@ -50,6 +53,13 @@ export function Chapter({
     lastTurn.options.length > 0 &&
     !lastTurn.player_pick;
 
+  const freeTextReady =
+    isCurrent &&
+    phase === "awaiting_free_text" &&
+    freeTextRequest !== null &&
+    lastTurn &&
+    !lastTurn.player_pick;
+
   const onPick = async (idx: number) => {
     if (pickBusy || !lastTurn) return;
     setPickBusy(true);
@@ -58,6 +68,17 @@ export function Chapter({
       await postPick(idx);
     } finally {
       setPickBusy(false);
+    }
+  };
+
+  const onFreeTextSubmit = async (text: string) => {
+    if (freeTextBusy) return;
+    setFreeTextBusy(true);
+    attachPick({ text });
+    try {
+      await postFreeText(text);
+    } finally {
+      setFreeTextBusy(false);
     }
   };
 
@@ -94,9 +115,13 @@ export function Chapter({
             options={lastTurn.options}
             onPick={onPick}
             busy={pickBusy}
-            locationNameById={(id) =>
-              world?.locations.find((l) => l.id === id)?.name ?? id
-            }
+          />
+        )}
+        {freeTextReady && freeTextRequest && (
+          <FreeTextInput
+            prompt={freeTextRequest.prompt}
+            onSubmit={onFreeTextSubmit}
+            busy={freeTextBusy}
           />
         )}
       </div>

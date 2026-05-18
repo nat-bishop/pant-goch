@@ -127,6 +127,7 @@ class SessionRuntime:
     event_queue: "asyncio.Queue[dict]" = field(default_factory=asyncio.Queue)
     pick_future: "asyncio.Future[int] | None" = None
     walk_future: "asyncio.Future[str] | None" = None
+    free_text_future: "asyncio.Future[str] | None" = None
     play_task: "asyncio.Task | None" = None
 
 
@@ -357,6 +358,10 @@ class WalkBody(BaseModel):
     to_location: str
 
 
+class FreeTextBody(BaseModel):
+    text: str
+
+
 # Sentinel placed on the event_queue when play_session terminates. The
 # /events generator stops yielding when it sees this.
 _DONE_SENTINEL: dict = {"event": "_session_done"}
@@ -406,12 +411,20 @@ async def start_session() -> dict[str, str]:
         finally:
             rt.walk_future = None
 
+    async def free_text(_req) -> str:
+        rt.free_text_future = asyncio.get_event_loop().create_future()
+        try:
+            return await rt.free_text_future
+        finally:
+            rt.free_text_future = None
+
     async def run() -> None:
         try:
             await play_session(
                 bundle, scene_runner, chronicler, state, world,
                 pick_option=pick,
                 pick_walk=walk,
+                pick_free_text=free_text,
                 emit_event=emit,
             )
         except asyncio.CancelledError:
@@ -452,6 +465,21 @@ async def walk(body: WalkBody) -> dict[str, str]:
             400, f"{body.to_location!r} is not adjacent to {loc.id!r}"
         )
     SESSION.walk_future.set_result(body.to_location)
+    return {"status": "ok"}
+
+
+@app.post("/free_text")
+async def free_text(body: FreeTextBody) -> dict[str, str]:
+    """Resolve the in-flight pick_free_text future with the player's
+    typed line. The next turn's prose writer sees the typed string as
+    the player's pick."""
+    if SESSION is None:
+        raise HTTPException(409, "no active session — call POST /start first")
+    if SESSION.free_text_future is None or SESSION.free_text_future.done():
+        raise HTTPException(409, "no free-text awaiting")
+    if not body.text.strip():
+        raise HTTPException(400, "typed text must not be empty")
+    SESSION.free_text_future.set_result(body.text.strip())
     return {"status": "ok"}
 
 

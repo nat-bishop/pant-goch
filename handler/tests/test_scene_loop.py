@@ -1,9 +1,10 @@
-"""M3 — Scene-loop orchestration tests.
+"""Scene-loop orchestration tests.
 
-Mocks emit_state_changes / emit_prose to avoid LLM dependency. Verifies
-that run_turn sequences phase 1 → apply → phase 2 → append, that
-fallbacks fire on UnexpectedModelBehavior, and that play_scene drives
-ContinueScene picks until termination.
+Mocks emit_state_changes / emit_prose_text / emit_choices to avoid LLM
+dependency. Verifies that run_turn sequences phase 1 → apply → prose
+writer → choice author → assemble ProsePart → append, that fallbacks
+fire on UnexpectedModelBehavior, and that play_scene drives Continue
+picks and FreeText typed input until termination.
 """
 from __future__ import annotations
 
@@ -20,10 +21,13 @@ from handler.agents import (
 )
 from handler.engine import enter_scene
 from handler.schemas import (
+    ChoiceBundle,
     ChronicleEntry,
-    ContinueScene,
+    Continue,
     EndGame,
     EndScene,
+    FreeText,
+    Leave,
     NpcPlacementBundle,
     Option,
     ProsePart,
@@ -31,7 +35,7 @@ from handler.schemas import (
     UnlockBeat,
 )
 from handler.scene_loop import (
-    _fallback_prose_part,
+    _assemble_prose_part,
     play_scene,
     play_session,
     run_turn,
@@ -53,23 +57,49 @@ async def _empty_placements(*args, **kwargs):
 
 
 def _patch_populator(monkeypatch):
-    """Most scene_loop tests don't drive the populator; the default is
-    no-op (no NPCs moved). Tests that DO want to exercise the populator
-    can override this attribute after calling _patch_populator."""
     monkeypatch.setattr("handler.scene_loop.emit_placements", _empty_placements)
 
 
 def _patch_chronicler(monkeypatch, text: str = "entry"):
-    """Bypass the real chronicler for play_session tests.
-    `emit_chronicle_entry` is called once per scene close; we return a
-    constant ChronicleEntry with empty per-NPC notes (tests here don't
-    exercise that channel)."""
     async def fake_emit(*args, **kwargs):
         return ChronicleEntry(
             case_file_entry=text,
             npc_memory_updates=[],
         )
     monkeypatch.setattr("handler.scene_loop.emit_chronicle_entry", fake_emit)
+
+
+def _patch_phase1(monkeypatch, bundle: StateChangeBundle | None = None):
+    """Default Phase 1 stub: returns the supplied bundle (or empty)."""
+    payload = bundle or StateChangeBundle()
+
+    async def fake(*args, **kwargs):
+        return payload
+
+    monkeypatch.setattr("handler.scene_loop.emit_state_changes", fake)
+
+
+def _patch_prose_writer(monkeypatch, proses):
+    """`proses` is an iterable of strings — one per expected call. The
+    test should provide enough to cover all turns; if it runs out, the
+    iterator raises StopIteration → the test fails loudly."""
+    it = iter(proses)
+
+    async def fake(*args, **kwargs):
+        return next(it)
+
+    monkeypatch.setattr("handler.scene_loop.emit_prose_text", fake)
+
+
+def _patch_choice_author(monkeypatch, choices):
+    """`choices` is an iterable of `ChoiceBundle` — one per expected call.
+    Mirrors `_patch_prose_writer`."""
+    it = iter(choices)
+
+    async def fake(*args, **kwargs):
+        return next(it)
+
+    monkeypatch.setattr("handler.scene_loop.emit_choices", fake)
 
 
 @pytest.fixture
@@ -82,264 +112,286 @@ def bundle_and_state():
     return bundle, runtime, state
 
 
+# ───────────────────────── _assemble_prose_part ─────────────────────────
+
+
+def test_assemble_continue_maps_to_continue_scene():
+    world = load_world(FIXTURE_VALID)
+    state = make_initial_state(world)
+    choices = ChoiceBundle(next=Continue(options=[
+        Option(text="a"), Option(text="b"),
+    ]))
+    pp = _assemble_prose_part(world, state, "prose", choices)
+    assert isinstance(pp.next, Continue)
+    assert len(pp.next.options) == 2
+
+
+def test_assemble_leave_with_no_satisfied_ending_maps_to_end_scene():
+    world = load_world(FIXTURE_VALID)
+    state = make_initial_state(world)
+    pp = _assemble_prose_part(
+        world, state, "prose", ChoiceBundle(next=Leave()),
+    )
+    assert isinstance(pp.next, EndScene)
+
+
+def test_assemble_leave_with_satisfied_ending_maps_to_end_game():
+    """If the decision beat for an authored ending has fired, Leave
+    resolves to EndGame with that ending id."""
+    world = load_world(FIXTURE_VALID)
+    state = make_initial_state(world)
+    ending = world.endings["published_story"]
+    state.unlocked_beats = set(ending.requires_beats)
+    pp = _assemble_prose_part(
+        world, state, "prose", ChoiceBundle(next=Leave()),
+    )
+    assert isinstance(pp.next, EndGame)
+    assert pp.next.ending_id == "published_story"
+
+
+def test_assemble_free_text_passes_through():
+    world = load_world(FIXTURE_VALID)
+    state = make_initial_state(world)
+    choices = ChoiceBundle(next=FreeText(prompt="go on", npc_id=None))
+    pp = _assemble_prose_part(world, state, "prose", choices)
+    assert isinstance(pp.next, FreeText)
+    assert pp.next.prompt == "go on"
+    assert pp.next.npc_id is None
+
+
 # ───────────────────────── run_turn happy path ─────────────────────────
 
 
 async def test_run_turn_applies_state_changes_and_appends_record(monkeypatch, bundle_and_state):
     bundle, runtime, state = bundle_and_state
-    canned_bundle = StateChangeBundle(
-        state_changes=[UnlockBeat(beat_id="tom_named_a_vehicle")]
-    )
-    canned_prose = ProsePart(
-        prose="Tom looks down at his pint, and then up at you.",
-        next=ContinueScene(options=[
+    _patch_phase1(monkeypatch, StateChangeBundle(
+        state_changes=[UnlockBeat(beat_id="tom_named_a_vehicle")],
+    ))
+    _patch_prose_writer(monkeypatch, [
+        "Tom looks down at his pint, and then up at you.",
+    ])
+    _patch_choice_author(monkeypatch, [
+        ChoiceBundle(next=Continue(options=[
             Option(text="say nothing"),
-            Option(text="leave for the post office", leaves_for="the_post_office"),
-        ]),
-    )
-
-    async def fake_phase1(*args, **kwargs):
-        return canned_bundle
-
-    async def fake_phase2(*args, **kwargs):
-        return canned_prose
-
-    monkeypatch.setattr("handler.scene_loop.emit_state_changes", fake_phase1)
-    monkeypatch.setattr("handler.scene_loop.emit_prose", fake_phase2)
+            Option(text="ask gently"),
+        ])),
+    ])
 
     result = await run_turn(bundle, runtime, state)
 
-    assert result is canned_prose
+    assert isinstance(result.next, Continue)
     # State change applied.
     assert "tom_named_a_vehicle" in state.unlocked_beats
     # TurnRecord appended with prose + applied changes.
     assert len(state.dialogue_history) == 1
     record = state.dialogue_history[0]
-    assert record.prose == canned_prose.prose
+    assert record.prose.startswith("Tom looks down")
     assert record.applied_state_changes[0].beat_id == "tom_named_a_vehicle"
 
 
 async def test_run_turn_phase1_fallback_on_unexpected_behavior(monkeypatch, bundle_and_state):
     """Phase 1 retries exhausted → empty bundle, no state change applied."""
     bundle, runtime, state = bundle_and_state
-    canned_prose = ProsePart(
-        prose="Tom drinks.",
-        next=ContinueScene(options=[
-            Option(text="watch"), Option(text="go", leaves_for="the_post_office"),
-        ]),
-    )
 
     async def fake_phase1_fails(*args, **kwargs):
         raise UnexpectedModelBehavior("simulated retry exhaustion")
 
-    async def fake_phase2(*args, **kwargs):
-        return canned_prose
-
     monkeypatch.setattr("handler.scene_loop.emit_state_changes", fake_phase1_fails)
-    monkeypatch.setattr("handler.scene_loop.emit_prose", fake_phase2)
+    _patch_prose_writer(monkeypatch, ["Tom drinks."])
+    _patch_choice_author(monkeypatch, [
+        ChoiceBundle(next=Continue(options=[
+            Option(text="watch"), Option(text="go"),
+        ])),
+    ])
 
     result = await run_turn(bundle, runtime, state)
-    assert state.unlocked_beats == set()  # no fallout from the failure
-    assert result is canned_prose
+    assert state.unlocked_beats == set()
+    assert isinstance(result.next, Continue)
     # TurnRecord still appended (no state changes).
     assert state.dialogue_history[-1].applied_state_changes == []
 
 
-async def test_run_turn_phase2_fallback_on_unexpected_behavior(monkeypatch, bundle_and_state):
-    """Phase 2 retries exhausted → engine-authored generic prose +
-    ContinueScene with 'Wait', 'Look around', and an arbitrary leave."""
+async def test_run_turn_prose_writer_fallback(monkeypatch, bundle_and_state):
+    """Prose writer retries exhausted → engine-authored generic prose +
+    choice author still runs to author options."""
     bundle, runtime, state = bundle_and_state
+    _patch_phase1(monkeypatch)
 
-    async def fake_phase1(*args, **kwargs):
-        return StateChangeBundle()
+    async def fake_prose_fails(*args, **kwargs):
+        raise UnexpectedModelBehavior("simulated")
 
-    async def fake_phase2_fails(*args, **kwargs):
-        raise UnexpectedModelBehavior("simulated retry exhaustion")
-
-    monkeypatch.setattr("handler.scene_loop.emit_state_changes", fake_phase1)
-    monkeypatch.setattr("handler.scene_loop.emit_prose", fake_phase2_fails)
+    monkeypatch.setattr("handler.scene_loop.emit_prose_text", fake_prose_fails)
+    _patch_choice_author(monkeypatch, [
+        ChoiceBundle(next=Continue(options=[
+            Option(text="wait"), Option(text="look"),
+        ])),
+    ])
 
     result = await run_turn(bundle, runtime, state)
-    # Generic prose (from _fallback_prose_part).
-    assert isinstance(result.next, ContinueScene)
-    assert any(o.leaves_for is not None for o in result.next.options)
-    # No engine metatext leaks into prose (per plan §"Drift mitigation").
+    # No engine metatext leaks into prose.
     assert "[engine" not in result.prose.lower()
+    assert isinstance(result.next, Continue)
 
 
-async def test_run_turn_phase2_fallback_does_not_pollute_message_history(
+async def test_run_turn_prose_writer_fallback_does_not_pollute_message_history(
     monkeypatch, bundle_and_state
 ):
-    """Failed Phase 2 retries → fallback prose to player, but NOT
-    appended to runtime.phase2_message_history. Voice continuity stays
-    clean — next turn's conversation behaves as if the failed turn
-    didn't happen."""
+    """Failed prose-writer retries → fallback prose to player, but NOT
+    appended to runtime.prose_writer_message_history."""
     bundle, runtime, state = bundle_and_state
-    runtime.phase2_message_history = ["existing-anchor-marker"]  # type: ignore[list-item]
+    runtime.prose_writer_message_history = ["existing-anchor-marker"]  # type: ignore[list-item]
 
-    async def fake_phase1(*args, **kwargs):
-        return StateChangeBundle()
+    _patch_phase1(monkeypatch)
 
-    async def fake_phase2_fails(*args, **kwargs):
-        raise UnexpectedModelBehavior("simulated retry exhaustion")
+    async def fake_prose_fails(*args, **kwargs):
+        raise UnexpectedModelBehavior("simulated")
 
-    monkeypatch.setattr("handler.scene_loop.emit_state_changes", fake_phase1)
-    monkeypatch.setattr("handler.scene_loop.emit_prose", fake_phase2_fails)
+    monkeypatch.setattr("handler.scene_loop.emit_prose_text", fake_prose_fails)
+    _patch_choice_author(monkeypatch, [
+        ChoiceBundle(next=Continue(options=[
+            Option(text="a"), Option(text="b"),
+        ])),
+    ])
 
     await run_turn(bundle, runtime, state)
-    assert runtime.phase2_message_history == ["existing-anchor-marker"], (
-        "phase2 fallback must not mutate phase2_message_history"
+    assert runtime.prose_writer_message_history == ["existing-anchor-marker"], (
+        "prose-writer fallback must not mutate prose_writer_message_history"
     )
 
 
-async def test_run_turn_phase2_fallback_on_leave_pick_emits_endscene(monkeypatch, bundle_and_state):
-    """Plan §"Drift mitigation": leave-pick + phase 2 failure forces EndScene."""
+async def test_run_turn_choice_author_fallback(monkeypatch, bundle_and_state):
+    """Choice author retries exhausted → generic 2-option Continue."""
     bundle, runtime, state = bundle_and_state
+    _patch_phase1(monkeypatch)
+    _patch_prose_writer(monkeypatch, ["The peat fire crackles."])
 
-    async def fake_phase1(*args, **kwargs):
-        return StateChangeBundle()
-
-    async def fake_phase2_fails(*args, **kwargs):
+    async def fake_choices_fails(*args, **kwargs):
         raise UnexpectedModelBehavior("simulated")
 
-    monkeypatch.setattr("handler.scene_loop.emit_state_changes", fake_phase1)
-    monkeypatch.setattr("handler.scene_loop.emit_prose", fake_phase2_fails)
+    monkeypatch.setattr("handler.scene_loop.emit_choices", fake_choices_fails)
 
-    leave = Option(text="leave", leaves_for="the_post_office")
-    result = await run_turn(bundle, runtime, state, leave_pick=leave)
+    result = await run_turn(bundle, runtime, state)
+    assert isinstance(result.next, Continue)
+    assert len(result.next.options) == 2
+
+
+async def test_run_turn_leave_resolves_to_endgame_when_satisfied(monkeypatch, bundle_and_state):
+    """Choice author Leave + satisfied ending in state → engine assembles
+    EndGame with the resolved ending id."""
+    bundle, runtime, state = bundle_and_state
+    # Satisfy the published_story ending's prereqs.
+    state.unlocked_beats = set(bundle.world.endings["published_story"].requires_beats)
+
+    _patch_phase1(monkeypatch)
+    _patch_prose_writer(monkeypatch, ["A pause."])
+    _patch_choice_author(monkeypatch, [ChoiceBundle(next=Leave())])
+
+    result = await run_turn(bundle, runtime, state)
+    assert isinstance(result.next, EndGame)
+    assert result.next.ending_id == "published_story"
+
+
+async def test_run_turn_leave_resolves_to_endscene_when_no_ending_satisfied(monkeypatch, bundle_and_state):
+    bundle, runtime, state = bundle_and_state
+    _patch_phase1(monkeypatch)
+    _patch_prose_writer(monkeypatch, ["A pause."])
+    _patch_choice_author(monkeypatch, [ChoiceBundle(next=Leave())])
+
+    result = await run_turn(bundle, runtime, state)
     assert isinstance(result.next, EndScene)
-
-
-# ───────────────────────── _fallback_prose_part ─────────────────────────
-
-
-def test_fallback_endscene_when_leave_pick(bundle_and_state):
-    bundle, _runtime, state = bundle_and_state
-    leave = Option(text="leave", leaves_for="the_post_office")
-    result = _fallback_prose_part(state, bundle, leave_pick=leave)
-    assert isinstance(result.next, EndScene)
-
-
-def test_fallback_continue_includes_leave_option(bundle_and_state):
-    bundle, _runtime, state = bundle_and_state
-    result = _fallback_prose_part(state, bundle, leave_pick=None)
-    assert isinstance(result.next, ContinueScene)
-    leave_opts = [o for o in result.next.options if o.leaves_for is not None]
-    assert len(leave_opts) >= 1
 
 
 # ───────────────────────── play_scene ─────────────────────────
 
 
 async def test_play_scene_drives_until_endscene(monkeypatch):
-    """Scene with three turns: turn 1 + 2 ContinueScene, turn 3 EndScene.
-    play_scene picks an option each turn; returns the EndScene ProsePart."""
+    """Three turns: turn 1+2 Continue, turn 3 Leave → EndScene."""
     world = load_world(FIXTURE_VALID)
     bundle = build_scene_runner_bundle(TestModel(), world)
     runtime = make_scene_runner_runtime()
     state = make_initial_state(world)
     state.player_location = "the_slaughtered_lamb"
 
-    # Three canned ProsePart responses for three turns.
-    proses = iter([
-        ProsePart(prose="t1", next=ContinueScene(options=[
-            Option(text="stay"), Option(text="go", leaves_for="the_post_office"),
-        ])),
-        ProsePart(prose="t2", next=ContinueScene(options=[
-            Option(text="ask"), Option(text="go", leaves_for="the_post_office"),
-        ])),
-        ProsePart(prose="t3", next=EndScene()),
+    _patch_populator(monkeypatch)
+    _patch_phase1(monkeypatch)
+    _patch_prose_writer(monkeypatch, ["t1", "t2", "t3"])
+    _patch_choice_author(monkeypatch, [
+        ChoiceBundle(next=Continue(options=[Option(text="stay"), Option(text="ask")])),
+        ChoiceBundle(next=Continue(options=[Option(text="watch"), Option(text="speak")])),
+        ChoiceBundle(next=Leave()),
     ])
 
-    async def fake_phase1(*args, **kwargs):
-        return StateChangeBundle()
-
-    async def fake_phase2(*args, **kwargs):
-        return next(proses)
-
-    _patch_populator(monkeypatch)
-    monkeypatch.setattr("handler.scene_loop.emit_state_changes", fake_phase1)
-    monkeypatch.setattr("handler.scene_loop.emit_prose", fake_phase2)
-
-    # Pick the first option each turn (the non-leave one).
     result = await play_scene(bundle, runtime, state, pick_option=lambda pp: 0)
     assert isinstance(result.next, EndScene)
     # Three TurnRecords.
     assert len(state.dialogue_history) == 3
-    # Each non-terminal record has player_pick set.
+    # Two Continue turns had a pick; the EndScene turn had none.
     assert state.dialogue_history[0].player_pick is not None
     assert state.dialogue_history[1].player_pick is not None
-    assert state.dialogue_history[2].player_pick is None  # EndScene; no pick
+    assert state.dialogue_history[2].player_pick is None
 
 
-async def test_play_scene_picks_leave_option_records_leave_pick(monkeypatch):
-    """When the player picks a leave option, the next turn must be invoked
-    with leave_pick set (validated by phase 2 forcing EndScene)."""
+async def test_play_scene_dispatches_free_text(monkeypatch):
+    """Choice author emits FreeText → play_scene calls pick_free_text →
+    typed string becomes next turn's player_pick. Final turn emits
+    Leave."""
     world = load_world(FIXTURE_VALID)
     bundle = build_scene_runner_bundle(TestModel(), world)
     runtime = make_scene_runner_runtime()
     state = make_initial_state(world)
     state.player_location = "the_slaughtered_lamb"
-
-    captured_leave_picks: list[Option | None] = []
-
-    async def fake_phase1(*args, **kwargs):
-        return StateChangeBundle()
-
-    async def fake_phase2(*args, **kwargs):
-        # Capture the leave_pick kwarg for inspection.
-        captured_leave_picks.append(kwargs.get("leave_pick"))
-        # Turn 1: ContinueScene with leave option. Turn 2: EndScene.
-        if len(captured_leave_picks) == 1:
-            return ProsePart(prose="t1", next=ContinueScene(options=[
-                Option(text="stay"),
-                Option(text="leave for post office", leaves_for="the_post_office"),
-            ]))
-        return ProsePart(prose="t2", next=EndScene())
 
     _patch_populator(monkeypatch)
-    monkeypatch.setattr("handler.scene_loop.emit_state_changes", fake_phase1)
-    monkeypatch.setattr("handler.scene_loop.emit_prose", fake_phase2)
+    _patch_phase1(monkeypatch)
+    _patch_prose_writer(monkeypatch, ["t1", "t2"])
+    _patch_choice_author(monkeypatch, [
+        ChoiceBundle(next=FreeText(prompt="What do you say?", npc_id="tom")),
+        ChoiceBundle(next=Leave()),
+    ])
 
-    # Pick the leave option (index 1).
-    result = await play_scene(bundle, runtime, state, pick_option=lambda pp: 1)
+    typed_replies = iter(["I came because of Megan."])
+
+    def pick_free_text(req: FreeText) -> str:
+        assert req.npc_id == "tom"
+        return next(typed_replies)
+
+    result = await play_scene(
+        bundle, runtime, state,
+        pick_option=lambda pp: 0,
+        pick_free_text=pick_free_text,
+    )
     assert isinstance(result.next, EndScene)
-    # First turn: no leave_pick. Second turn (after picking leave): leave_pick set.
-    assert captured_leave_picks[0] is None
-    assert captured_leave_picks[1] is not None
-    assert captured_leave_picks[1].leaves_for == "the_post_office"
+    # First TurnRecord got the typed string as the player's pick.
+    assert state.dialogue_history[0].player_pick is not None
+    assert state.dialogue_history[0].player_pick.text == "I came because of Megan."
 
 
-async def test_play_scene_resets_phase2_message_history_at_scene_start(monkeypatch):
-    """enter_scene → runtime.phase2_message_history must reset to []
-    even if the previous scene left it populated. Voice continuity is
-    intra-scene; cross-scene continuity lives in the case file, not in
-    the Phase 2 conversation."""
+async def test_play_scene_resets_prose_writer_message_history_at_scene_start(monkeypatch):
+    """enter_scene → runtime.prose_writer_message_history must reset to
+    [] even if the previous scene left it populated."""
     world = load_world(FIXTURE_VALID)
     bundle = build_scene_runner_bundle(TestModel(), world)
     runtime = make_scene_runner_runtime()
-    runtime.phase2_message_history = ["leftover-from-prior-scene"]  # type: ignore[list-item]
+    runtime.prose_writer_message_history = ["leftover-from-prior-scene"]  # type: ignore[list-item]
     state = make_initial_state(world)
     state.player_location = "the_slaughtered_lamb"
 
-    async def fake_phase1(*args, **kwargs):
-        return StateChangeBundle()
+    _patch_populator(monkeypatch)
+    _patch_phase1(monkeypatch)
 
     captured: list[list] = []
 
-    async def fake_phase2(bundle, rt, *args, **kwargs):
-        # Observe message_history at the time of the first Phase 2 call.
-        captured.append(list(rt.phase2_message_history))
-        return ProsePart(prose="end", next=EndScene())
+    async def fake_prose(bundle, rt, *args, **kwargs):
+        # Observe message_history at the time of the first prose-writer
+        # call.
+        captured.append(list(rt.prose_writer_message_history))
+        return "end"
 
-    _patch_populator(monkeypatch)
-    monkeypatch.setattr("handler.scene_loop.emit_state_changes", fake_phase1)
-    monkeypatch.setattr("handler.scene_loop.emit_prose", fake_phase2)
+    monkeypatch.setattr("handler.scene_loop.emit_prose_text", fake_prose)
+    _patch_choice_author(monkeypatch, [ChoiceBundle(next=Leave())])
 
     await play_scene(bundle, runtime, state, pick_option=lambda pp: 0)
-    # The first observed Phase 2 call MUST see an empty history — the
-    # leftover from the prior scene was cleared by play_scene's
-    # enter_scene path.
+    # The first observed prose-writer call MUST see an empty history.
     assert captured == [[]]
 
 
@@ -347,7 +399,6 @@ async def test_play_scene_resets_phase2_message_history_at_scene_start(monkeypat
 
 
 def _make_session_fixtures():
-    """Helper: load world + build bundle + scene runtime + chronicler runtime + state."""
     world = load_world(FIXTURE_VALID)
     bundle = build_scene_runner_bundle(TestModel(), world)
     runtime = make_scene_runner_runtime()
@@ -357,42 +408,41 @@ def _make_session_fixtures():
 
 
 async def test_play_session_calls_both_callbacks_and_terminates_on_end_game(monkeypatch):
-    """A scripted policy ends the session on EndGame; the on_chronicle_entry
-    and on_scene_close callbacks both fire; state.game_over is set."""
+    """Two scenes. Scene 2's third turn fires the decision beat via
+    Phase 1, then the choice author emits Leave → engine resolves
+    EndGame."""
     world, bundle, runtime, chronicler, state = _make_session_fixtures()
-
-    proses = iter([
-        # Scene 1: one Continue, then EndScene
-        ProsePart(prose="t1", next=ContinueScene(options=[
-            Option(text="ask"),
-            Option(text="go", leaves_for="the_post_office"),
-        ])),
-        ProsePart(prose="t1-end", next=EndScene()),
-        # Scene 2 at the post office: ends in EndGame after the validator
-        # accepts because evidence prereqs are stubbed (we patch validator).
-        ProsePart(prose="t2", next=ContinueScene(options=[
-            Option(text="ask"),
-            Option(text="leave", leaves_for="the_slaughtered_lamb"),
-        ])),
-        ProsePart(prose="t2-end", next=EndGame(ending_id="published_story")),
-    ])
-
-    async def fake_phase1(*args, **kwargs):
-        return StateChangeBundle()
-
-    async def fake_phase2(*args, **kwargs):
-        return next(proses)
+    decision_beats = world.endings["published_story"].requires_beats
 
     _patch_populator(monkeypatch)
     _patch_chronicler(monkeypatch)
+    # Phase 1 fires nothing until scene 2 turn 2 (the fourth call).
+    phase1_outputs = iter([
+        StateChangeBundle(),  # scene 1 turn 1
+        StateChangeBundle(),  # scene 1 turn 2 (Leave)
+        StateChangeBundle(),  # scene 2 turn 1
+        StateChangeBundle(   # scene 2 turn 2: fire the decision beat
+            state_changes=[UnlockBeat(beat_id=b) for b in decision_beats],
+        ),
+    ])
+
+    async def fake_phase1(*args, **kwargs):
+        return next(phase1_outputs)
+
     monkeypatch.setattr("handler.scene_loop.emit_state_changes", fake_phase1)
-    monkeypatch.setattr("handler.scene_loop.emit_prose", fake_phase2)
+    _patch_prose_writer(monkeypatch, ["t1", "t1-end", "t2", "t2-end"])
+    _patch_choice_author(monkeypatch, [
+        ChoiceBundle(next=Continue(options=[Option(text="ask"), Option(text="go")])),
+        ChoiceBundle(next=Leave()),  # scene 1 EndScene (no ending satisfied)
+        ChoiceBundle(next=Continue(options=[Option(text="ask"), Option(text="go")])),
+        ChoiceBundle(next=Leave()),  # scene 2 EndGame (decision beat now in state)
+    ])
 
     log_entries: list[tuple[State, ChronicleEntry]] = []
     closes: list[ProsePart] = []
 
     def policy_pick(pp: ProsePart) -> int:
-        return 0  # always the first option (non-leave)
+        return 0
 
     def policy_walk(state: State, world: World) -> str:
         return world.locations[state.player_location].adjacent_to[0]
@@ -412,39 +462,28 @@ async def test_play_session_calls_both_callbacks_and_terminates_on_end_game(monk
     assert isinstance(terminal.next, EndGame)
     assert state.game_over is not None
     assert state.game_over.ending_id == "published_story"
-
-    # Both callbacks fired once per scene end (two scenes = two events each).
+    # Both callbacks fired once per scene end.
     assert len(closes) == 2
     assert len(log_entries) == 2
-    # Case file accumulated on state.
     assert len(state.case_file_entries) == 2
 
 
 async def test_play_session_pick_walk_only_called_between_scenes(monkeypatch):
-    """pick_walk fires once per EndScene-but-not-EndGame transition. If
-    the session ends in EndGame on the first scene, pick_walk is never
-    called."""
+    """If the session ends in EndGame on the first scene, pick_walk is
+    never called. Phase 1 fires the decision beat on the only turn so
+    Leave resolves to EndGame."""
     world, bundle, runtime, chronicler, state = _make_session_fixtures()
-
-    proses = iter([
-        ProsePart(prose="opening", next=EndGame(ending_id="published_story")),
-    ])
-
-    async def fake_phase1(*args, **kwargs):
-        return StateChangeBundle()
-
-    async def fake_phase2(*args, **kwargs):
-        return next(proses)
+    decision_beats = world.endings["published_story"].requires_beats
 
     _patch_populator(monkeypatch)
     _patch_chronicler(monkeypatch)
-    monkeypatch.setattr("handler.scene_loop.emit_state_changes", fake_phase1)
-    monkeypatch.setattr("handler.scene_loop.emit_prose", fake_phase2)
+    _patch_phase1(monkeypatch, StateChangeBundle(
+        state_changes=[UnlockBeat(beat_id=b) for b in decision_beats],
+    ))
+    _patch_prose_writer(monkeypatch, ["opening"])
+    _patch_choice_author(monkeypatch, [ChoiceBundle(next=Leave())])
 
     walk_calls: list[str] = []
-
-    def policy_pick(pp: ProsePart) -> int:
-        return 0
 
     def policy_walk(state: State, world: World) -> str:
         walk_calls.append(state.player_location)
@@ -452,42 +491,29 @@ async def test_play_session_pick_walk_only_called_between_scenes(monkeypatch):
 
     terminal = await play_session(
         bundle, runtime, chronicler, state, world,
-        pick_option=policy_pick,
+        pick_option=lambda pp: 0,
         pick_walk=policy_walk,
     )
-
     assert isinstance(terminal.next, EndGame)
-    # Session ended immediately on EndGame; pick_walk never fired.
     assert walk_calls == []
 
 
 async def test_play_session_case_file_entries_accumulate_on_state(monkeypatch):
-    """case_file_entries lives on State now (symmetric with npc_memory).
-    play_session appends to it as each scene closes; eval drivers can
-    read it off the same state object."""
     world, bundle, runtime, chronicler, state = _make_session_fixtures()
-
-    proses = iter([
-        ProsePart(prose="t1", next=EndGame(ending_id="published_story")),
-    ])
-
-    async def fake_phase1(*args, **kwargs):
-        return StateChangeBundle()
-
-    async def fake_phase2(*args, **kwargs):
-        return next(proses)
+    decision_beats = world.endings["published_story"].requires_beats
 
     _patch_populator(monkeypatch)
     _patch_chronicler(monkeypatch)
-    monkeypatch.setattr("handler.scene_loop.emit_state_changes", fake_phase1)
-    monkeypatch.setattr("handler.scene_loop.emit_prose", fake_phase2)
+    _patch_phase1(monkeypatch, StateChangeBundle(
+        state_changes=[UnlockBeat(beat_id=b) for b in decision_beats],
+    ))
+    _patch_prose_writer(monkeypatch, ["t1"])
+    _patch_choice_author(monkeypatch, [ChoiceBundle(next=Leave())])
 
     await play_session(
         bundle, runtime, chronicler, state, world,
         pick_option=lambda pp: 0,
         pick_walk=lambda s, w: w.locations[s.player_location].adjacent_to[0],
     )
-
-    # One entry written (one scene ended).
     assert len(state.case_file_entries) == 1
     assert state.case_file_entries[0] == "entry"

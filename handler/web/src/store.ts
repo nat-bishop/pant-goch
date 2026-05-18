@@ -9,9 +9,15 @@ export type Phase =
   | "idle" // pre-start
   | "in_scene" // streaming prose, waiting for options
   | "awaiting_pick" // options shown, waiting on user click
+  | "awaiting_free_text" // free-text request shown, waiting on user input
   | "between_scenes" // EndScene happened; case file finishing; pick a walk
   | "game_over"
   | "stranded"; // EndScene at a location with no adjacents (shouldn't happen with Pant Goch)
+
+export interface FreeTextRequest {
+  prompt: string;
+  npc_id: string | null;
+}
 
 export type WorldMode = "location" | "map" | "notes";
 
@@ -69,6 +75,10 @@ interface Store {
    * log_entry_word events arrive; `streaming` freezes false on
    * sentinel. */
   case_file: CaseFileEntry[];
+  /** Set when the choice author asks for typed input; cleared when the
+   * player submits or the turn moves on. Drives the FreeTextInput
+   * component. */
+  freeTextRequest: FreeTextRequest | null;
   game_over_ending: string | null;
   error: string | null;
 
@@ -112,6 +122,7 @@ export const useStore = create<Store>((set) => ({
   phase: "idle",
   scenes: [],
   case_file: [],
+  freeTextRequest: null,
   game_over_ending: null,
   error: null,
 
@@ -145,6 +156,7 @@ export const useStore = create<Store>((set) => ({
         phase: "idle",
         scenes: [],
         case_file: [],
+        freeTextRequest: null,
         game_over_ending: null,
         error: null,
         npcLocations,
@@ -166,7 +178,7 @@ export const useStore = create<Store>((set) => ({
       if (!last) return s;
       turns[turns.length - 1] = { ...last, player_pick: option };
       scenes[scenes.length - 1] = { ...cur, turns };
-      return { scenes, phase: "in_scene" };
+      return { scenes, phase: "in_scene", freeTextRequest: null };
     }),
 
   handleEvent: (event) =>
@@ -247,6 +259,30 @@ export const useStore = create<Store>((set) => ({
           };
           scenes[scenes.length - 1] = { ...cur, turns };
           return { scenes, phase: "awaiting_pick" };
+        }
+
+        case "free_text_request": {
+          // Close out the current turn's streaming, then surface the
+          // typed-input UI. The phase change drives a swap from the
+          // ChoicesBlock to a free-text input form.
+          const scenes = [...s.scenes];
+          const cur = scenes[scenes.length - 1];
+          if (cur) {
+            const turns = [...cur.turns];
+            turns[turns.length - 1] = {
+              ...turns[turns.length - 1],
+              streaming: false,
+            };
+            scenes[scenes.length - 1] = { ...cur, turns };
+          }
+          return {
+            scenes,
+            phase: "awaiting_free_text",
+            freeTextRequest: {
+              prompt: event.prompt,
+              npc_id: event.npc_id,
+            },
+          };
         }
 
         case "scene_exit": {

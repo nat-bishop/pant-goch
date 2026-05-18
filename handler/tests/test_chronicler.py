@@ -29,8 +29,6 @@ from handler.agents import (
 from handler.prompts import build_chronicler_user_prompt
 from handler.schemas import (
     ChronicleEntry,
-    ContinueScene,
-    EndScene,
     NpcMemoryUpdate,
     Option,
     UnlockBeat,
@@ -126,19 +124,6 @@ def test_chronicler_user_prompt_includes_scene_anchors():
     assert "Take the stool next to him" in prompt
     # Closing instruction is there
     assert "First person" in prompt or "first person" in prompt
-
-
-def test_chronicler_user_prompt_includes_leave_pick_marker():
-    """When a turn's pick has leaves_for, the prompt makes the exit visible
-    so the chronicler can mention "I walked back to..." naturally."""
-    world = load_world(FIXTURE_VALID)
-    state = _state_with_one_scene()
-    state.dialogue_history[-1].player_pick = Option(
-        text="Walk to the post office", leaves_for="the_post_office"
-    )
-    prompt = build_chronicler_user_prompt(state, world)
-    assert "the_post_office" in prompt
-    assert "left for" in prompt or "leaves_for" in prompt
 
 
 # ───────────────────────── runtime construction ─────────────────────────

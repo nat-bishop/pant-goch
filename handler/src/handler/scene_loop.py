@@ -1,21 +1,25 @@
 """Scene-loop orchestration.
 
-Wires the two phases together with silent fallbacks (per plan §"Drift
-mitigation"). engine.py is pure functions; agents.py is the LLM. This
-module crosses the boundary — sequencing phase 1 → apply → phase 2,
-appending TurnRecord, and recovering from final-failure pydantic-ai
-exceptions.
+Wires Phase 1 + the two Phase 2 calls (prose writer, choice author)
+together with silent fallbacks. engine.py is pure functions; agents.py is
+the LLM. This module crosses the boundary — sequencing phase 1 → apply →
+prose writer → choice author → assemble ProsePart → append TurnRecord,
+and recovering from final-failure pydantic-ai exceptions.
 
 The fallback policy:
   - Phase 1 retries exhausted → drop the bundle (empty state_changes).
-  - Phase 2 retries exhausted → emit a generic prose + next:
-      - leave_pick set → EndScene (force scene to end at the player's
-        chosen adjacent).
-      - otherwise → ContinueScene with two generic options ("Wait",
-        "Look around") + a leave option for an arbitrary adjacent.
+  - Prose writer retries exhausted → use a generic prose string. Not
+    persisted to the runtime's message history (voice continuity).
+  - Choice author retries exhausted → use a generic Continue with two
+    safe options.
+
+Scene exits flow through the choice author's Leave variant: the engine
+resolves which ending (if any) is satisfied via
+`resolved_ending_id_at_close`, and assembles EndGame or EndScene
+accordingly. The LLM never emits an ending_id.
 
 Server-side warnings via logfire; never bubble engine metatext to the
-player (per plan §"Drift mitigation").
+player.
 """
 from __future__ import annotations
 
@@ -31,20 +35,25 @@ from .agents import (
     ChroniclerRuntime,
     SceneRunnerRuntime,
     emit_chronicle_entry,
+    emit_choices,
     emit_placements,
-    emit_prose,
+    emit_prose_text,
     emit_state_changes,
 )
 from .engine import (
     apply_state_changes,
     append_turn_record,
     enter_scene,
+    resolved_ending_id_at_close,
 )
 from .schemas import (
+    ChoiceBundle,
     ChronicleEntry,
-    ContinueScene,
+    Continue,
     EndGame,
     EndScene,
+    FreeText,
+    Leave,
     NpcPlacementBundle,
     Option,
     ProsePart,
@@ -52,6 +61,7 @@ from .schemas import (
 )
 from .sse import (
     _words_from_text,
+    free_text_request_event,
     game_over_event,
     location_change_event,
     npc_moved_event,
@@ -68,9 +78,10 @@ from .world import World
 EmitEvent = Callable[[dict], Awaitable[None]]
 
 
-# Callback shape: sync OR async. The driver picks. CLI uses sync `input()`;
-# SSE backend uses async (await a Future resolved by POST /pick).
+# Callback shapes: sync OR async. The driver picks. CLI uses sync
+# `input()`; SSE backend uses async (await a Future resolved by POST).
 PickOption = Callable[["ProsePart"], Union[int, Awaitable[int]]]
+PickFreeText = Callable[["FreeText"], Union[str, Awaitable[str]]]
 PickWalk = Callable[[State, World], Union[str, Awaitable[str]]]
 OnChronicleEntry = Callable[
     [State, ChronicleEntry], Union[None, Awaitable[None]]
@@ -87,20 +98,53 @@ async def _maybe_await(value):
     return value
 
 
+def _assemble_prose_part(
+    world: World, state: State, prose: str, choices: ChoiceBundle,
+) -> ProsePart:
+    """Compose the choice author's ChoiceBundle and the prose writer's
+    text into the engine-facing ProsePart. Continue and FreeText pass
+    through verbatim; Leave → EndGame (when an ending is satisfied) or
+    EndScene.
+    """
+    nxt = choices.next
+    if isinstance(nxt, Leave):
+        ending_id = resolved_ending_id_at_close(world, state)
+        if ending_id is not None:
+            return ProsePart(prose=prose, next=EndGame(ending_id=ending_id))
+        return ProsePart(prose=prose, next=EndScene())
+    return ProsePart(prose=prose, next=nxt)
+
+
+def _fallback_prose() -> str:
+    """Engine-authored prose when the prose writer's retries exhaust.
+    Never shown as engine metatext — looks like ordinary prose to the
+    player."""
+    return "A pause. The moment passes without movement."
+
+
+def _fallback_choices() -> ChoiceBundle:
+    """Engine-authored ChoiceBundle when the choice author's retries
+    exhaust. Generic Continue with two safe options."""
+    return ChoiceBundle(next=Continue(options=[
+        Option(text="Wait."),
+        Option(text="Look around."),
+    ]))
+
+
 async def run_turn(
     bundle: AgentBundle,
     runtime: SceneRunnerRuntime,
     state: State,
-    *,
-    leave_pick: Option | None = None,
 ) -> ProsePart:
-    """One full turn end-to-end. Returns the ProsePart so the caller can
-    dispatch on `prose_part.next` (ContinueScene → wait for player pick;
-    EndScene → close + maybe location_change; EndGame → terminal).
+    """One full turn end-to-end. Returns the engine-assembled ProsePart
+    so the caller can dispatch on `prose_part.next` (Continue → wait
+    for player pick; FreeText → wait for typed input; EndScene → close
+    + maybe location_change; EndGame → terminal).
 
     State is mutated: state_changes applied, dialogue_history appended.
-    Phase 2 conversation history (`runtime.phase2_message_history`) is
-    mutated on successful Phase 2; left UNCHANGED on Phase 2 fallback.
+    Prose writer's conversation history (`runtime.prose_writer_message_history`)
+    is mutated on successful prose-writer call; left UNCHANGED on
+    fallback.
     """
     # ── Phase 1 ────────────────────────────────────────────────────────────
     try:
@@ -113,23 +157,34 @@ async def run_turn(
         applied = StateChangeBundle()
     apply_state_changes(applied, state)
 
-    # ── Phase 2 ────────────────────────────────────────────────────────────
+    # ── Phase 2a: prose writer ─────────────────────────────────────────────
     try:
-        prose_part = await emit_prose(
-            bundle, runtime, state, applied, leave_pick=leave_pick,
-        )
+        prose = await emit_prose_text(bundle, runtime, state, applied)
     except UnexpectedModelBehavior as e:
         # Why: fallback prose is engine-authored, generic, and intentionally
-        # NOT appended to runtime.phase2_message_history. Persisting it would
-        # taint the next turn's conversation context with a stand-in line that
-        # the narrator didn't actually write — breaking voice continuity.
-        # Player still sees the fallback prose; the conversation just behaves
-        # as if the failed turn didn't exist on the next call.
+        # NOT appended to runtime.prose_writer_message_history. Persisting
+        # it would taint the next turn's conversation context with a
+        # stand-in line that the narrator didn't actually write — breaking
+        # voice continuity. Player still sees the fallback prose; the
+        # conversation just behaves as if the failed turn didn't exist on
+        # the next call.
         logfire.warn(
-            "phase2 fallback: retries exhausted; emitting generic prose",
+            "prose_writer fallback: retries exhausted; emitting generic prose",
             error=str(e),
         )
-        prose_part = _fallback_prose_part(state, bundle, leave_pick=leave_pick)
+        prose = _fallback_prose()
+
+    # ── Phase 2b: choice author ────────────────────────────────────────────
+    try:
+        choices = await emit_choices(bundle, state, prose)
+    except UnexpectedModelBehavior as e:
+        logfire.warn(
+            "choice_author fallback: retries exhausted; emitting generic Continue",
+            error=str(e),
+        )
+        choices = _fallback_choices()
+
+    prose_part = _assemble_prose_part(bundle.world, state, prose, choices)
 
     append_turn_record(
         state,
@@ -172,68 +227,32 @@ async def _apply_placements(
             ))
 
 
-def _fallback_prose_part(
-    state: State,
-    bundle: AgentBundle,
-    *,
-    leave_pick: Option | None = None,
-) -> ProsePart:
-    """Engine-authored fallback when phase 2 retries exhaust. Never shown
-    as engine metatext — looks like ordinary prose to the player.
-    Plan §"Failed-ending fallback": silent generic options."""
-    if leave_pick is not None:
-        # Force scene to end at the chosen adjacent.
-        return ProsePart(
-            prose="A pause. The conversation has run its course for now.",
-            next=EndScene(),
-        )
-    location = bundle.world.locations[state.player_location]
-    leave_options = [
-        Option(text=f"Walk to {bundle.world.locations[adj].name}", leaves_for=adj)
-        for adj in location.adjacent_to
-    ]
-    if not leave_options:
-        # Stranded location — only EndScene is valid.
-        return ProsePart(
-            prose="A pause. There's nothing more to do here right now.",
-            next=EndScene(),
-        )
-    options: list[Option] = [
-        Option(text="Wait."),
-        Option(text="Look around."),
-        leave_options[0],
-    ]
-    return ProsePart(
-        prose="A pause. The moment passes without movement.",
-        next=ContinueScene(options=options),
-    )
-
-
 async def play_scene(
     bundle: AgentBundle,
     runtime: SceneRunnerRuntime,
     state: State,
     *,
     pick_option: PickOption,
+    pick_free_text: PickFreeText | None = None,
     emit_event: EmitEvent | None = None,
 ) -> ProsePart:
     """Run a scene from the current player_location until EndScene or
-    EndGame. `pick_option(prose_part) -> int` is the caller-supplied
-    interaction (CLI, frontend, test harness, eval policy) that returns
-    the index of the player's pick when a ContinueScene is emitted.
+    EndGame. `pick_option(prose_part) -> int` returns the index of the
+    player's pick when a Continue is emitted. `pick_free_text(req)
+    -> str` returns the typed string when a FreeText is emitted;
+    required only if the choice author may emit FreeText (eval / test
+    drivers that don't expect it can leave it None).
 
     If `emit_event` is supplied, the scene also emits SSE events at each
-    boundary (scene_start, state_change, prose_word, options/scene_exit/
-    game_over). Prose words are paced at 80 ms by `paced_word_emitter`
-    so the SSE client gets steady cadence regardless of LLM speed.
-
-    When `emit_event` is None (tests, CLI), no events fire and no
-    pacing happens — caller is responsible for surfacing the prose.
+    boundary (scene_start, state_change, prose_word, options /
+    free_text_request / scene_exit / game_over). Prose words are paced at
+    80 ms by `paced_word_emitter` so the SSE client gets steady cadence
+    regardless of LLM speed.
 
     Scene-entry sequence: (1) enter_scene → init scene_id, clear
     dialogue_history, set player_location. (2) populator (emit_placements)
     decides NPC overrides; we apply them and emit npc_moved events.
-    (3) reset Phase 2 message history. (4) first run_turn.
+    (3) reset prose writer message history. (4) first run_turn.
 
     On populator failure (retries exhausted), defaults stand — scene
     continues without crashing.
@@ -253,16 +272,13 @@ async def play_scene(
         placements = NpcPlacementBundle()
     await _apply_placements(state, bundle, placements, emit_event=emit_event)
 
-    runtime.phase2_message_history = []
+    runtime.prose_writer_message_history = []
     if emit_event is not None:
         loc = bundle.world.locations[state.player_location]
         await emit_event(scene_start_event(state.scene_id, loc.id, loc.name))
 
-    leave_pick: Option | None = None
     while True:
-        prose_part = await run_turn(
-            bundle, runtime, state, leave_pick=leave_pick,
-        )
+        prose_part = await run_turn(bundle, runtime, state)
 
         # ── emit state_change events ──
         if emit_event is not None:
@@ -281,17 +297,25 @@ async def play_scene(
             )
 
         # ── dispatch on next ──
-        if isinstance(prose_part.next, ContinueScene):
+        if isinstance(prose_part.next, Continue):
             if emit_event is not None:
                 await emit_event(options_event([
-                    {"text": o.text, "leaves_for": o.leaves_for}
-                    for o in prose_part.next.options
+                    {"text": o.text} for o in prose_part.next.options
                 ]))
             idx = await _maybe_await(pick_option(prose_part))
             picked = prose_part.next.options[idx]
-            # Stamp the pick onto the just-appended turn record.
             state.dialogue_history[-1].player_pick = picked
-            leave_pick = picked if picked.leaves_for else None
+            continue
+
+        if isinstance(prose_part.next, FreeText):
+            if emit_event is not None:
+                await emit_event(free_text_request_event(prose_part.next))
+            assert pick_free_text is not None, (
+                "choice author emitted FreeText but no pick_free_text "
+                "callback was supplied"
+            )
+            typed = await _maybe_await(pick_free_text(prose_part.next))
+            state.dialogue_history[-1].player_pick = Option(text=typed)
             continue
 
         # EndScene or EndGame — terminal for this scene.
@@ -315,39 +339,37 @@ async def play_session(
     *,
     pick_option: PickOption,
     pick_walk: PickWalk,
+    pick_free_text: PickFreeText | None = None,
     on_chronicle_entry: OnChronicleEntry | None = None,
     on_scene_close: OnSceneClose | None = None,
     emit_event: EmitEvent | None = None,
 ) -> ProsePart:
     """Play one full session (multiple scenes) from `state` until the
-    LLM fires EndGame or the player gets stranded at a location with no
-    adjacents. Returns the terminal ProsePart (always EndGame in the
-    normal path).
+    LLM fires Leave→EndGame or the player gets stranded at a location
+    with no adjacents. Returns the terminal ProsePart (always EndGame in
+    the normal path).
 
-    Two policy callbacks make this driver-agnostic — supply CLI/stdin
+    Three policy callbacks make this driver-agnostic — supply CLI/stdin
     variants from `__main__.py`, SSE/HTTP variants from `main.py`'s
     FastAPI routes, or scripted/random/LLM-as-player variants from an
     eval harness. The shape is the same.
 
     Args:
-        pick_option: called when a ContinueScene needs a player pick.
+        pick_option: called when a Continue needs a player pick.
             Receives the just-streamed ProsePart; returns the index of
             the chosen option.
         pick_walk: called between scenes (after EndScene) to choose
             which adjacent location to walk to. Receives the live state
             and world; returns the destination location id (MUST be in
             the current location's adjacent_to).
+        pick_free_text: called when the choice author emits a FreeText
+            variant. Receives the FreeText; returns the typed string.
+            Required only if the choice author may emit FreeText;
+            pass-through to play_scene.
         on_chronicle_entry: optional callback fired after each scene-end
-            chronicler call. Receives `(state, ChronicleEntry)`; useful
-            for eval traces, SSE streaming, or printing in the CLI. The
-            engine has already merged case_file_entry into
-            `state.case_file_entries` and per-NPC notes into
-            `state.npc_memory` by the time the callback fires.
+            chronicler call.
         on_scene_close: optional callback fired with the terminal
             ProsePart (EndScene or EndGame) BEFORE the chronicler runs.
-            Lets the driver surface the closing prose to the player.
-            ContinueScene prose is surfaced via pick_option, which sees
-            every non-terminal ProsePart.
 
     Side effects:
         - Mutates `state` (location, scene_id, dialogue_history,
@@ -359,6 +381,7 @@ async def play_session(
         terminal = await play_scene(
             bundle, runtime, state,
             pick_option=pick_option,
+            pick_free_text=pick_free_text,
             emit_event=emit_event,
         )
 

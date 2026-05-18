@@ -35,6 +35,15 @@ export async function postWalk(to_location: string): Promise<void> {
   await ensureOk(r, "walk");
 }
 
+export async function postFreeText(text: string): Promise<void> {
+  const r = await fetch(`${API}/free_text`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+  });
+  await ensureOk(r, "free_text");
+}
+
 // ─── /world payload ──────────────────────────────────────────────────
 
 export interface WorldLocation {
@@ -77,7 +86,6 @@ export async function fetchWorld(): Promise<WorldMeta> {
 
 export interface OptionPayload {
   text: string;
-  leaves_for: string | null;
 }
 
 export type SseEvent =
@@ -95,6 +103,11 @@ export type SseEvent =
       is_last?: boolean;
     }
   | { event: "options"; options: OptionPayload[] }
+  | {
+      event: "free_text_request";
+      prompt: string;
+      npc_id: string | null;
+    }
   | { event: "scene_exit" }
   | { event: "location_change"; from: string; to: string }
   | { event: "npc_moved"; npc_id: string; from: string; to: string }

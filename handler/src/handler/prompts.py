@@ -1,28 +1,31 @@
 """Scene-runner prompt builders.
 
-Phase 1 (state-change classifier) and Phase 2 (prose narrator) each carry
-their own stable system prompt. The split is deliberate: Phase 2 attention
-is finite on a 4B model, and beat structure (notes_to_llm, requires_beats)
-in Phase 2's context produced beat-aware prose (telegraphed reveals, NPCs
-serving structure). Phase 2 now sees voice samples + few-shot examples +
-crime overview only; the beat catalog is Phase 1's job.
+Phase 1 (state-change classifier), the prose writer, and the choice author
+each carry their own stable system prompt. The split is deliberate: Phase 2
+attention is finite on a 4B model, and beat structure (notes_to_llm,
+requires_beats) in Phase 2's context produced beat-aware prose (telegraphed
+reveals, NPCs serving structure). The prose writer sees voice samples +
+few-shot examples + crime overview only; the choice author sees neither —
+the just-written prose is its context.
 
-KV cache (post-split):
+KV cache:
   Phase 1 system prompt: byte-stable across the session — cache hits across
     every turn. Bible-shaped (large), classifier-shaped.
-  Phase 2 system prompt: byte-stable across the session — cache hits across
-    every turn AND across scenes. Voice-shaped (slim), narrator-shaped.
-  Per-turn user prompts: rebuilt fresh per call. No more inter-phase prefix
-    sharing — that was the cost of the split.
+  Prose writer system prompt: byte-stable across the session — cache hits
+    across every turn AND across scenes. Voice-shaped (slim).
+  Choice author system prompt: byte-stable across the session — cache hits
+    across every turn. Mechanics-shaped (tiny), no bible.
+  Per-turn user prompts: rebuilt fresh per call.
 
-Phase 2 is also scene-bounded conversation: the model sees its own prior
-prose as assistant messages within a scene. message_history resets at
-scene boundary (enter_scene). See SceneRunnerRuntime in agents.py.
+The prose writer is scene-bounded conversation: the model sees its own
+prior prose as assistant messages within a scene. message_history resets
+at scene boundary (enter_scene). The choice author is stateless per call.
+See SceneRunnerRuntime in agents.py.
 """
 from __future__ import annotations
 
-from .engine import reachable_beat_ids
-from .schemas import StateChangeBundle, Option, UnlockBeat
+from .engine import present_npc_ids, reachable_beat_ids
+from .schemas import StateChangeBundle, UnlockBeat
 from .state import State
 from .world import World
 
@@ -98,13 +101,6 @@ def _render_cast_block(world: World, *, voice_only: bool) -> str:
         )
         for npc in world.npcs.values()
     )
-
-
-def _present_npc_ids(state: State, world: World) -> list[str]:
-    """Ids of NPCs at the player's current location. Stable across a
-    scene (populator only runs at scene entry), so prompt renderers can
-    call this freely."""
-    return [n.id for n in world.npcs_at(state.player_location, state=state)]
 
 
 def _beat_names(world: World, beat_ids: list[str], *, empty: str = "(none)") -> str:
@@ -248,24 +244,26 @@ fired. You do not write prose.
 """
 
 
-def build_phase2_system_prompt(world: World) -> str:
-    """Phase 2 system prompt — the narrator. Slim, voice-focused. NO
-    beats, NO notes_to_llm, NO endings, NO per-NPC knowledge. The
-    narrator knows what happened (the crime overview), the cast's voice
-    and attitude, and the locations. It does NOT know who-knows-what or
-    which beats are gated on what.
+def build_prose_writer_system_prompt(world: World) -> str:
+    """Prose-writer system prompt — the narrator. Slim, voice-focused. NO
+    beats, NO notes_to_llm, NO endings, NO per-NPC knowledge, NO option
+    or scene-control mechanics. The narrator knows what happened (the
+    crime overview), the cast's voice and attitude, and the locations.
 
     Byte-stable across the session; KV cache hits across every turn AND
-    across scenes. Phase 2 also accumulates scene-bounded message
+    across scenes. The prose writer accumulates scene-bounded message
     history; this system prompt is the cache anchor for that history.
+
+    Output is plain text: just the prose. A separate choice-author agent
+    decides what happens next (continue / leave / free-text input) after
+    reading the prose.
     """
     return f"""\
 [ROLE]
 You are the narrator of a single-player investigation game. The player
 is a freelance journalist looking into a death in the Welsh Marches
 village of Pant Goch. Each turn you write 80-200 words of prose for
-what just happened, followed by 2-4 options the player can pick from.
-Stay within the established cast and locations below.
+what just happened. Stay within the established cast and locations below.
 
 [THE WORLD]
 {_render_locations_block(world)}
@@ -310,28 +308,57 @@ The register and rhythm to match:
 
 {_render_few_shots(world)}
 
-[OPTIONS RULES]
-After the prose, emit a `next` directive:
-  - ContinueScene with 2-4 options. Each option is something the
-    player can say or do that has no major consequence — dialogue,
-    observation, small action. At least one option must be a "leave
-    for…" with `leaves_for` set to an adjacent location id; the player
-    must always have a walk-away choice.
-  - EndScene when the conversation has reached a natural pause. Scenes
-    of 4-8 turns are typical; longer is fine if the conversation
-    warrants. Don't drag.
-  - EndGame with an `ending_id` when the player has clearly committed
-    to the action that triggers that ending and the engine state
-    supports it. The engine will reject otherwise.
+[YOUR JOB]
+Each turn, write 80-200 words of prose — and only the prose. State
+changes were already decided and applied by a separate agent before you
+ran; a separate choice-author agent decides what the player does next
+after reading what you wrote. Do not output options, scene-control
+directives, or JSON — just the prose.
+"""
 
-When the user prompt says the player chose to leave for a specific
-adjacent location, you MUST emit EndScene. Write a brief goodbye line
-in the prose; the `next` is fixed.
+
+def build_choice_author_system_prompt(world: World) -> str:
+    """Choice-author system prompt — slim, mechanics-only. NO bible, NO
+    voice samples, NO beats, NO endings. The just-written prose is the
+    context; this agent decides what the player does next.
+
+    Byte-stable across the session; KV cache hits across every turn.
+    Stateless per call (no message history) — fits the role of "judge
+    the prose, pick a structure."
+    """
+    return """\
+[ROLE]
+You are the choice author for a single-player investigation game. After
+the narrator writes each turn's prose, you decide what the player does
+next.
 
 [YOUR JOB]
-Each turn, emit ONE structured output: ProsePart — prose (80-200 words)
-plus the `next` directive. State changes were already decided and
-applied by a separate agent before you ran; your job is to narrate.
+Read the prose, then emit ONE structured output: a ChoiceBundle whose
+`next` is one of:
+
+  - Continue with 2-4 options. Each option is a short line of what the
+    player can say or do that has no major consequence — dialogue,
+    observation, small action.
+
+  - Leave. Use this when the conversation has reached a natural close:
+    a goodbye, a door, a silence the player would step out of. The
+    engine treats the just-written prose as the closing beat. Use
+    sparingly; scenes of 4-8 turns are typical.
+
+  - FreeText with a `prompt` and an optional `npc_id`. Use this when
+    the natural next move is the player typing their own line — an
+    interrogation, a delicate moment where canned options would
+    cheapen it. Set `npc_id` to the NPC the typed line is addressed
+    to, if any.
+
+[RULES]
+1. Options are pure dialogue / observation / small action. They must
+   NOT promise outcomes the engine doesn't know about ("Punch him,"
+   "Steal the keys," "Drive to London").
+2. The prose alone is your context. You do not see beats, endings,
+   character knowledge, or backstory. Trust what the narrator wrote.
+3. Prefer Continue. Leave only when the scene clearly closes. FreeText
+   only when canned options would be worse than the player's own words.
 """
 
 
@@ -424,7 +451,7 @@ def _render_this_scene(state: State, world: World) -> str:
     if not state.dialogue_history:
         return "[THIS SCENE SO FAR]\n(this is the first turn of the scene.)"
     loc = world.locations[state.player_location]
-    present_ids = _present_npc_ids(state, world)
+    present_ids = present_npc_ids(world, state)
     npcs = ", ".join(present_ids) if present_ids else "no one"
     parts = [
         f"[THIS SCENE SO FAR]",
@@ -437,12 +464,7 @@ def _render_this_scene(state: State, world: World) -> str:
             f"Turn {i} state_changes_applied: {applied}"
         )
         if turn.player_pick is not None:
-            leave = (
-                f" (leaves for {turn.player_pick.leaves_for})"
-                if turn.player_pick.leaves_for
-                else ""
-            )
-            parts.append(f'Turn {i} player picked: "{turn.player_pick.text}"{leave}')
+            parts.append(f'Turn {i} player picked: "{turn.player_pick.text}"')
     return "\n".join(parts)
 
 
@@ -490,32 +512,30 @@ will be re-prompted with the error.
 """
 
 
-# ───────────────────────── phase 2 user message (conversation turn) ─────────────────────────
+# ───────────────────────── prose writer user message (conversation turn) ─────────────────────────
 
 
-def build_phase2_user_message(
+def build_prose_writer_user_message(
     state: State,
     world: World,
     applied: StateChangeBundle,
     *,
-    leave_pick: Option | None = None,
     opening_seed: str | None = None,
     is_first_turn: bool,
 ) -> str:
-    """Per-turn user message for the conversation-based Phase 2 narrator.
+    """Per-turn user message for the conversation-based prose writer.
 
     Turn 1 of a scene (is_first_turn=True): [YOU ARE AT] + [PRESENT] +
     optional [OPENING SEED] + applied state changes + write-prose
     directive. Establishes the scene anchor.
 
     Turn 2+ (is_first_turn=False): just the new context — applied state
-    changes, the player's pick (which surfaces in the conversation as
-    their "spoken turn"), optional leave directive. The system prompt
-    + accumulated assistant messages already carry the rest.
+    changes and the player's last line. The system prompt + accumulated
+    assistant messages already carry the rest.
 
-    Phase 2 does NOT see: reachable beats, endings, the case file, the
-    full state dump, structured turn-by-turn replay. The conversation
-    is the scene-so-far; the system prompt is the world.
+    The prose writer does NOT see: reachable beats, endings, the case
+    file, the full state dump, structured turn-by-turn replay. The
+    conversation is the scene-so-far; the system prompt is the world.
     """
     parts: list[str] = []
     if is_first_turn:
@@ -531,31 +551,46 @@ def build_phase2_user_message(
         last_turn = state.dialogue_history[-1]
         if last_turn.player_pick is not None:
             pick = last_turn.player_pick
-            leave_suffix = (
-                f" (leaving for {pick.leaves_for})" if pick.leaves_for else ""
-            )
-            parts.append(
-                f'[PLAYER]\nThe player picked: "{pick.text}"{leave_suffix}'
-            )
+            parts.append(f'[PLAYER]\nThe player picked: "{pick.text}"')
 
     parts.append(
         f"[STATE CHANGES JUST APPLIED]\n{_render_applied_changes(applied, world)}"
     )
 
-    if leave_pick is not None:
-        parts.append(
-            f"[LEAVE DIRECTIVE]\nThe player chose to leave for "
-            f"{leave_pick.leaves_for!r}. Your `next` MUST be EndScene. "
-            f"Your prose narrates a brief goodbye line."
-        )
-
     parts.append(
         "[WRITE]\nWrite the next beat of prose (80-200 words), consistent "
-        "with the state changes above, then emit ContinueScene / EndScene / "
-        "EndGame as `next`."
+        "with the state changes above. Plain text only — no JSON, no options."
     )
 
     return "\n\n".join(parts)
+
+
+# ───────────────────────── choice author user message (stateless per call) ─────────────────────────
+
+
+def build_choice_author_user_message(state: State, world: World, prose: str) -> str:
+    """Per-turn user message for the stateless choice author. The
+    just-written prose is the load-bearing context; everything else is a
+    thin scene anchor (where, who's present) so the FreeText `npc_id`
+    field has a referent and Continue options can ground in location.
+    """
+    loc = world.locations[state.player_location]
+    present_ids = present_npc_ids(world, state)
+    if present_ids:
+        npcs_line = ", ".join(world.npcs[i].name for i in present_ids)
+    else:
+        npcs_line = "no one (you are alone here)"
+    return f"""\
+[PROSE]
+{prose.strip()}
+
+[STATE]
+You are at: {loc.name}
+NPCs present: {npcs_line}
+
+[CHOOSE]
+Emit a ChoiceBundle. Continue (with 2-4 options), Leave (close the scene),
+or FreeText (open typed input)."""
 
 
 # ───────────────────────── chronicler prompts ─────────────────────────
@@ -664,7 +699,7 @@ def build_chronicler_user_prompt(state: State, world: World) -> str:
     """
     assert state.dialogue_history, "build_chronicler_user_prompt: empty dialogue"
     loc = world.locations[state.player_location]
-    present_ids = _present_npc_ids(state, world)
+    present_ids = present_npc_ids(world, state)
     if present_ids:
         npc_names = [world.npcs[n].name for n in present_ids]
         npcs_line = ", ".join(npc_names)
@@ -684,13 +719,8 @@ def build_chronicler_user_prompt(state: State, world: World) -> str:
             f"  Narrator: {turn.prose.strip()}"
         )
         if turn.player_pick is not None:
-            leave = (
-                f" [→ left for {turn.player_pick.leaves_for}]"
-                if turn.player_pick.leaves_for
-                else ""
-            )
             turn_parts.append(
-                f'  You picked: "{turn.player_pick.text}"{leave}'
+                f'  You picked: "{turn.player_pick.text}"'
             )
 
     turns_block = "\n".join(turn_parts)

@@ -30,7 +30,14 @@ from .agents import (
 from .config import Settings
 from .launcher import resolve_config, start_llama, stop_llama, wait_healthy
 from .main import _probe_inferno_health, build_model
-from .schemas import ChronicleEntry, ContinueScene, EndGame, EndScene, ProsePart
+from .schemas import (
+    ChronicleEntry,
+    Continue,
+    EndGame,
+    EndScene,
+    FreeText,
+    ProsePart,
+)
 from .scene_loop import play_session
 from .state import State, make_initial_state
 from .world import World, load_world
@@ -57,12 +64,11 @@ def _print_prose_part(prose_part: ProsePart) -> None:
     print()
     print(prose_part.prose.strip())
     print()
-    if isinstance(prose_part.next, ContinueScene):
+    if isinstance(prose_part.next, Continue):
         for i, opt in enumerate(prose_part.next.options, start=1):
-            tag = (
-                f" [→ {opt.leaves_for}]" if opt.leaves_for else ""
-            )
-            print(f"  {i}) {opt.text}{tag}")
+            print(f"  {i}) {opt.text}")
+    elif isinstance(prose_part.next, FreeText):
+        print(f"[type your reply: {prose_part.next.prompt}]")
     elif isinstance(prose_part.next, EndScene):
         print("[scene ends]")
     elif isinstance(prose_part.next, EndGame):
@@ -70,7 +76,7 @@ def _print_prose_part(prose_part: ProsePart) -> None:
 
 
 def _prompt_pick(prose_part: ProsePart) -> int:
-    assert isinstance(prose_part.next, ContinueScene)
+    assert isinstance(prose_part.next, Continue)
     _print_prose_part(prose_part)
     n = len(prose_part.next.options)
     while True:
@@ -83,6 +89,18 @@ def _prompt_pick(prose_part: ProsePart) -> int:
         if 0 <= idx < n:
             return idx
         print(f"Out of range. Pick 1-{n}.")
+
+
+def _prompt_free_text(req: FreeText) -> str:
+    """Read a typed line from stdin for the FreeText flow. The req's
+    `prompt` is rendered by `_print_prose_part` already; this just
+    re-shows it as the input prompt label."""
+    label = req.prompt.strip() or "Type your reply"
+    while True:
+        raw = input(f"{label}: ").strip()
+        if raw:
+            return raw
+        print("(non-empty)")
 
 
 def _prompt_walk(state: State, world: World) -> str:
@@ -133,6 +151,7 @@ async def _amain() -> int:
             bundle, scene_runner, chronicler, state, world,
             pick_option=_prompt_pick,
             pick_walk=_prompt_walk,
+            pick_free_text=_prompt_free_text,
             on_scene_close=_print_prose_part,
             on_chronicle_entry=_print_chronicle_entry,
         )

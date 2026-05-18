@@ -130,8 +130,26 @@ def state_change_event(kind: str, payload: dict) -> dict:
 
 
 def options_event(options: list[dict]) -> dict:
-    """`options` is a list of {text, leaves_for|None} dicts."""
+    """`options` is a list of `{text}` dicts. The map is the navigation
+    surface; options no longer carry destinations."""
     return {"event": "options", "options": options}
+
+
+def free_text_request_event(req) -> dict:
+    """Emitted when the choice author asks for typed input from the
+    player (e.g. interrogation). Frontend / CLI opens an input box with
+    `prompt` as the placeholder; `npc_id` (when set) names the NPC the
+    typed line is addressed to. Resolved via POST /free_text on the SSE
+    backend or stdin on the CLI.
+
+    `req` is a `schemas.FreeText`; typed loosely to avoid a circular
+    import.
+    """
+    return {
+        "event": "free_text_request",
+        "prompt": req.prompt,
+        "npc_id": req.npc_id,
+    }
 
 
 def scene_exit_event() -> dict:

@@ -5,16 +5,16 @@ that used to live in `validate_state_change_bundle` and
 `validate_prose_part` have moved:
 
   - State-INDEPENDENT rules (≤2 unlock_beat cap, no duplicate beats,
-    ≥1 leave option in ContinueScene) → `@model_validator` /
-    `Field(...)` on the canonical schemas in `schemas.py`.
+    Continue option count 2-4) → `@model_validator` / `Field(...)` on
+    the canonical schemas in `schemas.py`.
   - State-DEPENDENT enum constraints (`beat_id` ∈ reachable beats,
-    `ending_id` ∈ satisfied endings, `leaves_for` ∈ adjacent locations,
-    `next == EndScene` when leave_pick is set) → per-call `Literal[...]`
-    narrowing in `agents._build_state_change_bundle_type` /
-    `_build_prose_part_type`.
+    `FreeText.npc_id` ∈ present NPCs) → per-call `Literal[...]` narrowing
+    in `agents._build_state_change_bundle_type` /
+    `_build_choice_bundle_type`.
 
-`reachable_beat_ids` stays here — used by both grammar narrowing
-(`agents.py`) and prompt rendering (`prompts.py`).
+`reachable_beat_ids` and `resolved_ending_id_at_close` stay here — used
+by both grammar narrowing (`agents.py`) and prompt rendering
+(`prompts.py`), plus the scene_loop dispatch on choice-author Leave.
 """
 from __future__ import annotations
 
@@ -76,6 +76,32 @@ def reachable_beat_ids(world: World, state: State) -> set[str]:
         return True
 
     return {bid for bid in world.beats if is_reachable(bid)}
+
+
+def present_npc_ids(world: World, state: State) -> tuple[str, ...]:
+    """NPC ids at the player's current location. Stable across a scene
+    (the populator runs only at scene entry), so callers can compute
+    on demand without caching."""
+    return tuple(n.id for n in world.npcs_at(state.player_location, state=state))
+
+
+def resolved_ending_id_at_close(world: World, state: State) -> str | None:
+    """Pick the ending that fires when a scene closes. Iterates endings in
+    author (YAML) order; returns the first whose `requires_beats` are all
+    in `state.unlocked_beats`, or None if no ending is satisfied.
+
+    By design, decision beats are mutually exclusive (pairwise
+    `blocked_by_beats`), so at most one ending should ever be satisfied
+    simultaneously. The author-order tie-break is defensive.
+
+    Used by `scene_loop._assemble_prose_part` when the choice author emits
+    a Leave variant: if an ending is satisfied, the engine constructs
+    EndGame with that id; otherwise EndScene.
+    """
+    for eid, ending in world.endings.items():
+        if set(ending.requires_beats).issubset(state.unlocked_beats):
+            return eid
+    return None
 
 
 # ───────────────────────── scene lifecycle ─────────────────────────

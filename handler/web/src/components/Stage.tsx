@@ -2,7 +2,7 @@
 // SSE stream activation, gloss popup root.
 
 import { useEffect, useState } from "react";
-import { fetchWorld, postWalk, startSession } from "../api";
+import { fetchWorld, startSession } from "../api";
 import { useStream } from "../hooks/useStream";
 import { useStore } from "../store";
 import { GlossPopup } from "./GlossPopup";
@@ -17,32 +17,6 @@ export function Stage() {
 
   const [streaming, setStreaming] = useState(false);
   useStream(streaming);
-
-  // Auto-walk on leaves_for: when the player picks an option with a
-  // `leaves_for` destination, the engine awaits POST /walk (after the
-  // chronicler runs). The map-click between_scenes flow is reserved for
-  // when the player did NOT pre-commit to a destination in fiction.
-  //
-  // Timing: scene_exit transitions phase → between_scenes, but the
-  // walk_future is only created AFTER the chronicler completes its log
-  // entry stream. So we gate on (phase = between_scenes) AND (the
-  // latest case_file entry has finished streaming).
-  const entryClosedKey = useStore((s) => {
-    const last = s.case_file[s.case_file.length - 1];
-    return last && !last.streaming ? last.scene_id : null;
-  });
-  useEffect(() => {
-    if (phase !== "between_scenes" || entryClosedKey === null) return;
-    const { scenes } = useStore.getState();
-    const lastScene = scenes[scenes.length - 1];
-    if (!lastScene || lastScene.scene_id !== entryClosedKey) return;
-    const finalPick =
-      [...lastScene.turns].reverse().find((t) => t.player_pick)?.player_pick ?? null;
-    if (!finalPick?.leaves_for) return;
-    postWalk(finalPick.leaves_for).catch((e) =>
-      console.warn("auto-walk failed", e),
-    );
-  }, [phase, entryClosedKey]);
 
   // Load world metadata once on mount. The frontispiece is shown
   // regardless; we just need glosses/locations/npcs ready before the

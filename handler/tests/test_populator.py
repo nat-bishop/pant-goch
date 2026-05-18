@@ -121,10 +121,8 @@ async def test_play_scene_applies_populator_placements(monkeypatch):
         make_scene_runner_runtime,
     )
     from handler.schemas import (
-        ContinueScene,
-        EndScene,
-        Option,
-        ProsePart,
+        ChoiceBundle,
+        Leave,
         StateChangeBundle,
     )
     from handler.scene_loop import play_scene
@@ -146,12 +144,16 @@ async def test_play_scene_applies_populator_placements(monkeypatch):
     async def fake_phase1(*args, **kwargs):
         return StateChangeBundle()
 
-    async def fake_phase2(*args, **kwargs):
-        return ProsePart(prose="A quiet pub.", next=EndScene())
+    async def fake_prose(*args, **kwargs):
+        return "A quiet pub."
+
+    async def fake_choices(*args, **kwargs):
+        return ChoiceBundle(next=Leave())
 
     monkeypatch.setattr("handler.scene_loop.emit_placements", fake_placements)
     monkeypatch.setattr("handler.scene_loop.emit_state_changes", fake_phase1)
-    monkeypatch.setattr("handler.scene_loop.emit_prose", fake_phase2)
+    monkeypatch.setattr("handler.scene_loop.emit_prose_text", fake_prose)
+    monkeypatch.setattr("handler.scene_loop.emit_choices", fake_choices)
 
     events: list[dict] = []
 

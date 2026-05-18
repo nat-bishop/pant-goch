@@ -24,7 +24,7 @@ from pydantic_ai.providers.openai import OpenAIProvider
 from handler.agents import build_scene_runner_bundle, make_scene_runner_runtime
 from handler.config import Settings
 from handler.engine import enter_scene
-from handler.schemas import ContinueScene, EndGame, EndScene
+from handler.schemas import Continue, EndGame, EndScene
 from handler.scene_loop import run_turn
 from handler.state import make_initial_state
 from handler.world import load_world
@@ -63,13 +63,13 @@ async def test_live_one_turn_at_pub():
 
     print(f"\n=== PROSE ===\n{prose_part.prose}\n")
     print(f"=== NEXT === {type(prose_part.next).__name__}")
-    if isinstance(prose_part.next, ContinueScene):
+    if isinstance(prose_part.next, Continue):
         for i, opt in enumerate(prose_part.next.options, start=1):
-            tag = f" [-> {opt.leaves_for}]" if opt.leaves_for else ""
-            print(f"  {i}. {opt.text}{tag}")
+            print(f"  {i}. {opt.text}")
 
     assert prose_part.prose.strip(), "prose should be non-empty"
     assert len(state.dialogue_history) == 1
-    if isinstance(prose_part.next, ContinueScene):
-        leave_opts = [o for o in prose_part.next.options if o.leaves_for]
-        assert leave_opts, "ContinueScene must include ≥1 leave option (schema-enforced)"
+    if isinstance(prose_part.next, Continue):
+        assert 2 <= len(prose_part.next.options) <= 4, (
+            "Continue must have 2-4 options (schema-enforced)"
+        )

@@ -11,11 +11,10 @@ from pydantic import ValidationError
 from pydantic_ai.models.test import TestModel
 
 from handler.agents import (
-    _build_prose_part_type,
+    _build_choice_bundle_type,
     _build_state_change_bundle_type,
     build_scene_runner_bundle,
 )
-from handler.schemas import Option
 from handler.state import State, make_initial_state
 from handler.world import load_world
 
@@ -64,135 +63,72 @@ def test_state_change_bundle_type_accepts_empty():
     assert bundle.state_changes == []
 
 
-def test_prose_part_type_accepts_authored_adjacent_for_leaves_for():
-    """At the post office (adjacent to pub + vicarage), leaves_for must
-    accept those two and reject anything else."""
+def test_choice_bundle_type_continue_passes():
+    """A 2-option Continue must validate against the dynamic ChoiceBundle."""
     world = load_world(FIXTURE_VALID)
     state = make_initial_state(world)
-    state.player_location = "the_post_office"
-    ProseType = _build_prose_part_type(world, state)
-    pp = ProseType.model_validate({
-        "prose": "...",
+    state.player_location = "the_slaughtered_lamb"
+    ChoiceType = _build_choice_bundle_type(world, state)
+    bundle = ChoiceType.model_validate({
         "next": {
             "type": "continue",
-            "options": [
-                {"text": "stay"},
-                {"text": "leave for pub", "leaves_for": "the_slaughtered_lamb"},
-            ],
-        },
+            "options": [{"text": "stay"}, {"text": "ask"}],
+        }
     })
-    assert pp.next.options[1].leaves_for == "the_slaughtered_lamb"  # type: ignore[union-attr]
+    assert bundle.next.type == "continue"  # type: ignore[union-attr]
 
 
-def test_prose_part_type_rejects_non_adjacent_leaves_for():
-    """At the post office, knighton is NOT adjacent (and not even in the
-    fixture) — must be rejected by the Literal."""
+def test_choice_bundle_type_leave_passes():
     world = load_world(FIXTURE_VALID)
     state = make_initial_state(world)
-    state.player_location = "the_post_office"
-    ProseType = _build_prose_part_type(world, state)
+    state.player_location = "the_slaughtered_lamb"
+    ChoiceType = _build_choice_bundle_type(world, state)
+    bundle = ChoiceType.model_validate({"next": {"type": "leave"}})
+    assert bundle.next.type == "leave"  # type: ignore[union-attr]
+
+
+def test_choice_bundle_type_free_text_narrows_npc_id_to_present():
+    """Tom is at the pub by default. FreeText addressed to tom passes;
+    addressed to maud (at the post office) is rejected."""
+    world = load_world(FIXTURE_VALID)
+    state = make_initial_state(world)
+    state.player_location = "the_slaughtered_lamb"
+    ChoiceType = _build_choice_bundle_type(world, state)
+
+    bundle = ChoiceType.model_validate({
+        "next": {"type": "free_text", "prompt": "go on", "npc_id": "tom"},
+    })
+    assert bundle.next.npc_id == "tom"  # type: ignore[union-attr]
+
     with pytest.raises(ValidationError):
-        ProseType.model_validate({
-            "prose": "...",
-            "next": {
-                "type": "continue",
-                "options": [
-                    {"text": "leave for knighton", "leaves_for": "knighton"},
-                ],
-            },
+        ChoiceType.model_validate({
+            "next": {"type": "free_text", "prompt": "go on", "npc_id": "maud"},
         })
 
 
-def test_prose_part_type_accepts_satisfied_ending_id():
-    """End-game ending_id is narrowed to currently-satisfied endings only.
-    Satisfy the prereqs in state, then assert the ending is acceptable."""
+def test_choice_bundle_type_continue_min_2_options_enforced():
     world = load_world(FIXTURE_VALID)
     state = make_initial_state(world)
-    state.player_location = "the_post_office"
-    # Satisfy the prereqs of published_story.
-    ending = world.endings["published_story"]
-    state.unlocked_beats = set(ending.requires_beats)
-    ProseType = _build_prose_part_type(world, state)
-    pp = ProseType.model_validate({
-        "prose": "...",
-        "next": {"type": "end_game", "ending_id": "published_story"},
-    })
-    assert pp.next.ending_id == "published_story"  # type: ignore[union-attr]
-
-
-def test_prose_part_type_rejects_unknown_ending_id():
-    world = load_world(FIXTURE_VALID)
-    state = make_initial_state(world)
-    state.player_location = "the_post_office"
-    ProseType = _build_prose_part_type(world, state)
+    state.player_location = "the_slaughtered_lamb"
+    ChoiceType = _build_choice_bundle_type(world, state)
     with pytest.raises(ValidationError):
-        ProseType.model_validate({
-            "prose": "...",
-            "next": {"type": "end_game", "ending_id": "imaginary_ending"},
+        ChoiceType.model_validate({
+            "next": {"type": "continue", "options": [{"text": "only"}]},
         })
-
-
-def test_prose_part_type_end_scene_passes():
-    world = load_world(FIXTURE_VALID)
-    state = make_initial_state(world)
-    state.player_location = "the_post_office"
-    ProseType = _build_prose_part_type(world, state)
-    pp = ProseType.model_validate({
-        "prose": "...",
-        "next": {"type": "end_scene"},
-    })
-    assert pp.next.type == "end_scene"  # type: ignore[union-attr]
-
-
-def test_prose_part_type_leave_pick_forces_end_scene():
-    """The regression that originally motivated `__base__=`. When leave_pick
-    is set, the dynamic ProsePart's `next` is `EndScene` (no union) — so
-    Continue/EndGame are rejected at parse time, before any application
-    validation can run. This test would have been the canary the original
-    bug needed."""
-    world = load_world(FIXTURE_VALID)
-    state = make_initial_state(world)
-    state.player_location = "the_post_office"
-    leave_pick = Option(text="leave", leaves_for="the_slaughtered_lamb")
-    ProseType = _build_prose_part_type(world, state, leave_pick=leave_pick)
-
-    # ContinueScene rejected.
-    with pytest.raises(ValidationError):
-        ProseType.model_validate({
-            "prose": "...",
-            "next": {
-                "type": "continue",
-                "options": [
-                    {"text": "stay"},
-                    {"text": "leave", "leaves_for": "the_slaughtered_lamb"},
-                ],
-            },
-        })
-
-    # EndGame rejected.
-    with pytest.raises(ValidationError):
-        ProseType.model_validate({
-            "prose": "...",
-            "next": {"type": "end_game", "ending_id": "published_story"},
-        })
-
-    # EndScene accepted.
-    pp = ProseType.model_validate({
-        "prose": "...",
-        "next": {"type": "end_scene"},
-    })
-    assert pp.next.type == "end_scene"
 
 
 def test_build_scene_runner_bundle_constructs_cleanly():
     """End-to-end bundle construction with TestModel as the LLM
-    placeholder. Verifies the bundle holds one phase-1 and one phase-2
-    agent (no N+1 per-location dict)."""
+    placeholder. Verifies the bundle holds one phase-1, one prose-writer,
+    and one choice-author agent (plus populator + chronicler)."""
     world = load_world(FIXTURE_VALID)
     bundle = build_scene_runner_bundle(TestModel(), world)
     assert bundle.world is world
     assert bundle.phase1 is not None
-    assert bundle.phase2 is not None
+    assert bundle.prose_writer is not None
+    assert bundle.choice_author is not None
+    assert bundle.populator is not None
+    assert bundle.chronicler is not None
 
 
 def _agent_system_prompt(agent) -> str:
@@ -202,17 +138,26 @@ def _agent_system_prompt(agent) -> str:
     return "\n".join(agent._system_prompts)
 
 
-def test_phase1_and_phase2_system_prompts_diverge():
-    """Phase 1 and Phase 2 carry DIFFERENT system prompts post-split. The
-    classifier has the full bible; the narrator has voice samples and
-    crime overview only. Asserting divergence locks in the split."""
+def test_phase1_prose_writer_choice_author_system_prompts_diverge():
+    """All three Phase-2-relevant system prompts must differ from each
+    other. The classifier has the full bible; the prose writer has voice
+    samples + crime overview only; the choice author has neither bible
+    nor voice."""
     world = load_world(FIXTURE_VALID)
     bundle = build_scene_runner_bundle(TestModel(), world)
-    p1_sys = _agent_system_prompt(bundle.phase1)
-    p2_sys = _agent_system_prompt(bundle.phase2)
-    assert p1_sys != p2_sys, "phase 1 and phase 2 must have different system prompts"
-    # Phase 1 carries beat structure; Phase 2 does not.
-    assert "[THE TRUTH]" in p1_sys
-    assert "[THE TRUTH]" not in p2_sys
-    assert "[WHAT HAPPENED]" in p2_sys
-    assert "[STYLE EXAMPLES]" in p2_sys
+    p1 = _agent_system_prompt(bundle.phase1)
+    pw = _agent_system_prompt(bundle.prose_writer)
+    ca = _agent_system_prompt(bundle.choice_author)
+    assert p1 != pw, "phase 1 and prose writer must diverge"
+    assert p1 != ca, "phase 1 and choice author must diverge"
+    assert pw != ca, "prose writer and choice author must diverge"
+    # Phase 1 carries beat structure; the others do not.
+    assert "[THE TRUTH]" in p1
+    assert "[THE TRUTH]" not in pw
+    assert "[THE TRUTH]" not in ca
+    # Prose writer carries voice + crime overview.
+    assert "[WHAT HAPPENED]" in pw
+    assert "[STYLE EXAMPLES]" in pw
+    # Choice author has neither.
+    assert "[WHAT HAPPENED]" not in ca
+    assert "[STYLE EXAMPLES]" not in ca
