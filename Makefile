@@ -35,14 +35,14 @@ download-model: $(MODEL)
 
 .PHONY: sidecar
 sidecar:
-	uv run uvicorn handler.main:app --reload --port 8000
+	uv run uvicorn handler.main:app --reload --reload-dir src --port 8000
 
 # Inferno mode: skip bundled llama, route pydantic-ai at inferno's /v1.
 # Requires inferno running on :7770. See CLAUDE.md "Inferno gateway"
 # section for env var details.
 .PHONY: sidecar-inferno
 sidecar-inferno:
-	SMALLVILLE_USE_INFERNO=1 uv run uvicorn handler.main:app --reload --port 8000
+	SMALLVILLE_USE_INFERNO=1 uv run uvicorn handler.main:app --reload --reload-dir src --port 8000
 
 .PHONY: web
 web:
