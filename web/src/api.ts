@@ -102,9 +102,9 @@ export type SseEvent =
     }
   | { event: "state_change"; kind: string; payload: Record<string, unknown> }
   | {
-      event: "prose_chunk";
+      event: "prose_word";
       idx: number;
-      text: string;
+      word: string;
       is_last?: boolean;
     }
   | { event: "options"; options: OptionPayload[] }
@@ -117,10 +117,10 @@ export type SseEvent =
   | { event: "location_change"; from: string; to: string }
   | { event: "npc_moved"; npc_id: string; from: string; to: string }
   | {
-      event: "log_entry_chunk";
+      event: "log_entry_word";
       scene_id: number;
       idx: number;
-      text: string;
+      word: string;
       is_last?: boolean;
     }
   | { event: "game_over"; ending_id: string }

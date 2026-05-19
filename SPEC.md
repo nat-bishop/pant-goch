@@ -497,7 +497,7 @@ RUN TURN (opening_seed=None, player_pick=None):
     - if next is EndGame: ending.requires_beats all in unlocked_beats?
     - on validation failure: ModelRetry with error, up to N=2
     - on final failure: rewrite next as ContinueScene with a synthetic option ("[engine: ending prereqs not met; continue scene]"); log error
-  - stream prose clause-by-clause (paced ~300 wpm via paced_clause_emitter)
+  - stream prose word-by-word (paced ~80ms/word via paced_word_emitter)
   - append (prose, applied_state_changes, options_or_next) to state.dialogue_history
   - dispatch next:
     - ContinueScene: emit options; wait for player pick; recurse to RUN TURN with player_pick
@@ -757,12 +757,12 @@ SSE event surface:
 | event | payload | when |
 |-------|---------|------|
 | `scene_start` | `{ location_id, location_name }` | entering a scene |
-| `prose_chunk` | `{ text, idx, is_last }` | each clause of streamed prose |
+| `prose_word` | `{ word, idx, is_last }` | each word of streamed prose |
 | `options` | `{ options: [{text}, ...] }` | turn waits on player input |
 | `state_change` | `{ kind, payload }` | each applied state change (for animations / debug) |
 | `scene_exit` | `{}` | EndScene fired |
 | `location_change` | `{ from, to }` | between scenes when location changed |
-| `log_entry_chunk` | `{ text, idx, is_last }` | case-file entry streaming |
+| `log_entry_word` | `{ word, idx, is_last }` | case-file entry streaming |
 | `game_over` | `{ ending_id }` | EndGame fired |
 
 Player input over HTTP POST:
@@ -963,7 +963,7 @@ After M8, v1 is proven. v1.1 work (LLM-assisted authoring? numeric pressure? pro
 Lift patterns from these (carefully — they're v1 spy-handler and many will need adjustment):
 
 - `src/handler/launcher.py` — bundled llama-server spawn, jinja flag, kernel params.
-- `src/handler/main.py` — lifespan with `OpenAIModelProfile` setup, `paced_clause_emitter`, SSE event shape.
+- `src/handler/main.py` — lifespan with `OpenAIModelProfile` setup, `paced_word_emitter`, SSE event shape.
 - `src/handler/agents.py` — stable-system / dynamic-user prompt split for KV reuse, NativeOutput with `strict=True` + dynamic Literal types for grammar sampling.
 - `CLAUDE.md` — invariants and call-site comments explaining why things are the way they are.
 

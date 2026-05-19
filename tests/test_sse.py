@@ -1,13 +1,12 @@
-"""M4 — SSE event emission + paced clause emitter.
+"""M4 — SSE event emission + paced word emitter.
 
 Tests the event surface from two angles:
-1. `paced_clause_emitter` directly (unit) — words group into clauses on
-   punctuation / word-cap boundaries, emissions throttle to the per-clause
-   hold, indices increment, sentinel fires with is_last=True.
+1. `paced_word_emitter` directly (unit) — words emerge at >=80ms cadence,
+   indices increment, sentinel fires with is_last=True.
 2. `play_scene` / `play_session` with stubbed agents + an event-recording
    `emit_event` callback — verifies which events fire at which boundaries
-   (scene_start, state_change, prose_chunk, options/scene_exit/game_over,
-   location_change, log_entry_chunk).
+   (scene_start, state_change, prose_word, options/scene_exit/game_over,
+   location_change, log_entry_word).
 """
 from __future__ import annotations
 
@@ -34,10 +33,9 @@ from handler.schemas import (
 )
 from handler.scene_loop import LeaveRequested, play_scene, play_session
 from handler.sse import (
-    _clauses_from_words,
     _words_from_stream,
     _words_from_text,
-    paced_clause_emitter,
+    paced_word_emitter,
 )
 from handler.state import make_initial_state
 from handler.world import load_world
@@ -85,7 +83,7 @@ def _leave_after(n: int):
     return cb
 
 
-# ───────────────────────── paced_clause_emitter ─────────────────────────
+# ───────────────────────── paced_word_emitter ─────────────────────────
 
 
 async def test_words_from_text_yields_complete_words():
@@ -120,95 +118,55 @@ async def test_words_from_stream_yields_final_word_without_trailing_space():
     assert words == ["one ", "two ", "three"]
 
 
-async def test_clauses_split_on_terminal_punctuation():
-    """Comma / period / semicolon end a clause."""
-    pairs = [
-        p async for p in _clauses_from_words(
-            _words_from_text("She paused, then spoke. The room held still.")
-        )
-    ]
-    texts = [t for t, _ in pairs]
-    assert texts == ["She paused, ", "then spoke. ", "The room held still."]
-    # word_count tracks the words emitted into each clause.
-    assert [n for _, n in pairs] == [2, 2, 4]
-
-
-async def test_clauses_respect_paragraph_break():
-    """A paragraph break (\\n\\n in trailing whitespace) closes a clause
-    even without punctuation."""
-    pairs = [
-        p async for p in _clauses_from_words(
-            _words_from_text("first paragraph\n\nsecond")
-        )
-    ]
-    texts = [t for t, _ in pairs]
-    assert "".join(texts) == "first paragraph\n\nsecond"
-    assert len(pairs) == 2
-
-
-async def test_clauses_cap_on_word_count():
-    """No internal punctuation → soft cap (MAX_CLAUSE_WORDS = 8) kicks in."""
-    text = "one two three four five six seven eight nine ten"
-    pairs = [p async for p in _clauses_from_words(_words_from_text(text))]
-    # 10 words, cap 8 → first clause is 8 words, then 2 leftover.
-    assert [n for _, n in pairs] == [8, 2]
-    assert "".join(t for t, _ in pairs) == text
-
-
-async def test_paced_clause_emitter_throttles_at_clause_hold(monkeypatch):
-    """Emissions must hold for the per-clause cadence."""
-    pace = 0.02
-    monkeypatch.setattr("handler.sse.CLAUSE_WORD_PACE_S", pace)
-    monkeypatch.setattr("handler.sse.MIN_CLAUSE_PACE_S", pace)
-
+async def test_paced_word_emitter_throttles_at_min_interval():
+    """Emissions must be at least min_interval apart wall-clock."""
     events: list[dict] = []
 
     async def emit(e: dict) -> None:
         events.append(e)
 
+    interval = 0.05  # short interval for fast tests
     start = time.monotonic()
-    # Four single-word clauses (each comma-terminated).
-    await paced_clause_emitter(
-        _words_from_text("one, two, three, four."),
+    await paced_word_emitter(
+        _words_from_text("one two three four"),
         emit,
-        event_kind="prose_chunk",
+        event_kind="prose_word",
+        min_interval=interval,
     )
     elapsed = time.monotonic() - start
 
-    # 4 clause events + 1 sentinel = 5 events.
+    # 4 word events + 1 sentinel = 5 events.
     assert len(events) == 5
-    # First emit is immediate; the three subsequent clauses each hold
-    # ≥ pace before they emit.
-    assert elapsed >= 3 * pace * 0.9
-    # idx increments monotonically.
+    # First word + sentinel are immediate; words 2-4 each wait one
+    # interval. Total ~= 3 * interval.
+    assert elapsed >= 3 * interval * 0.9  # loose tolerance for scheduler
+    # idx increments monotonically
     for i, e in enumerate(events):
         assert e["idx"] == i
     # Last event is the sentinel.
     assert events[-1]["is_last"] is True
-    assert events[-1]["text"] == ""
-    # Earlier events carry the clauses.
-    assert events[0]["text"] == "one, "
-    assert events[3]["text"] == "four."
+    assert events[-1]["word"] == ""
+    # Earlier events have the actual words.
+    assert events[0]["word"] == "one "
+    assert events[3]["word"] == "four"
 
 
-async def test_paced_clause_emitter_passes_extra_payload(monkeypatch):
-    monkeypatch.setattr("handler.sse.CLAUSE_WORD_PACE_S", 0.001)
-    monkeypatch.setattr("handler.sse.MIN_CLAUSE_PACE_S", 0.001)
-
+async def test_paced_word_emitter_passes_extra_payload():
     events: list[dict] = []
 
     async def emit(e: dict) -> None:
         events.append(e)
 
-    await paced_clause_emitter(
+    await paced_word_emitter(
         _words_from_text("hi"),
         emit,
-        event_kind="log_entry_chunk",
+        event_kind="log_entry_word",
+        min_interval=0.001,
         extra={"scene_id": 7},
     )
     for e in events:
         assert e["scene_id"] == 7
-        assert e["event"] == "log_entry_chunk"
+        assert e["event"] == "log_entry_word"
 
 
 # ───────────────────────── play_scene event emission ─────────────────────────
@@ -221,17 +179,24 @@ def world_and_bundle():
     return world, bundle
 
 
-def _fast_pacing(monkeypatch, pace: float = 0.001) -> None:
-    """Monkeypatch the clause pacer's hold to near-zero so scene-level
-    tests aren't wall-clock-bound."""
-    monkeypatch.setattr("handler.sse.CLAUSE_WORD_PACE_S", pace)
-    monkeypatch.setattr("handler.sse.MIN_CLAUSE_PACE_S", pace)
+def _patched_paced_emitter(interval: float):
+    """Helper that returns a paced_word_emitter wrapper using a custom
+    interval. Used by tests to skip the 80 ms wait per word."""
+    from handler import sse
+
+    async def _wrapped(word_source, emit, *, event_kind, min_interval=None, extra=None):
+        return await sse.paced_word_emitter(
+            word_source, emit,
+            event_kind=event_kind, min_interval=interval, extra=extra,
+        )
+
+    return _wrapped
 
 
 async def test_play_scene_emits_scene_start_then_terminal_events(monkeypatch, world_and_bundle):
     """One-turn scene ending in EndScene (via player leave):
-    scene_start -> state_change* -> prose_chunk* (normal turn) ->
-    prose_chunk* (departure) -> scene_exit."""
+    scene_start -> state_change* -> prose_word* (normal turn) ->
+    prose_word* (departure) -> scene_exit."""
     world, bundle = world_and_bundle
     state = make_initial_state(world)
 
@@ -259,7 +224,10 @@ async def test_play_scene_emits_scene_start_then_terminal_events(monkeypatch, wo
     async def emit(e: dict) -> None:
         events.append(e)
 
-    _fast_pacing(monkeypatch)
+    # Use a very short pacing so the test runs fast.
+    monkeypatch.setattr("handler.sse.WORD_PACE_S", 0.001)
+    monkeypatch.setattr("handler.scene_loop.paced_word_emitter",
+                        _patched_paced_emitter(0.001))
 
     state.player_location = "the_slaughtered_lamb"
     await play_scene(
@@ -271,8 +239,8 @@ async def test_play_scene_emits_scene_start_then_terminal_events(monkeypatch, wo
     kinds = [e["event"] for e in events]
     assert kinds[0] == "scene_start"
     assert "state_change" in kinds
-    # Prose chunk events (normal turn AND departure turn).
-    assert any(e["event"] == "prose_chunk" for e in events)
+    # Prose word events (normal turn AND departure turn).
+    assert any(e["event"] == "prose_word" for e in events)
     # Final event for an EndScene is scene_exit.
     assert kinds[-1] == "scene_exit"
     # state_change carries the beat_id.
@@ -313,7 +281,8 @@ async def test_play_scene_emits_options_event_for_continue(monkeypatch, world_an
     monkeypatch.setattr("handler.scene_loop.emit_state_changes", fake_phase1)
     monkeypatch.setattr("handler.scene_loop.emit_prose_text", fake_prose)
     monkeypatch.setattr("handler.scene_loop.emit_choices", fake_choices)
-    _fast_pacing(monkeypatch)
+    monkeypatch.setattr("handler.scene_loop.paced_word_emitter",
+                        _patched_paced_emitter(0.001))
 
     events: list[dict] = []
 
@@ -358,7 +327,8 @@ async def test_play_scene_emits_game_over_for_end_game(monkeypatch, world_and_bu
     monkeypatch.setattr("handler.scene_loop.emit_state_changes", fake_phase1)
     monkeypatch.setattr("handler.scene_loop.emit_prose_text", fake_prose)
     monkeypatch.setattr("handler.scene_loop.emit_choices", fake_choices)
-    _fast_pacing(monkeypatch)
+    monkeypatch.setattr("handler.scene_loop.paced_word_emitter",
+                        _patched_paced_emitter(0.001))
 
     events: list[dict] = []
 
@@ -379,11 +349,11 @@ async def test_play_scene_emits_game_over_for_end_game(monkeypatch, world_and_bu
 # ───────────────────────── play_session event emission ─────────────────────────
 
 
-async def test_play_session_emits_location_change_and_log_entry_chunks(
+async def test_play_session_emits_location_change_and_log_entry_words(
     monkeypatch, world_and_bundle
 ):
     """Cross-scene events: location_change fires between scenes;
-    log_entry_chunk events stream the case file entry."""
+    log_entry_word events stream the case file entry."""
     world, bundle = world_and_bundle
     chronicler = make_chronicler_runtime()
     state = make_initial_state(world)
@@ -419,7 +389,8 @@ async def test_play_session_emits_location_change_and_log_entry_chunks(
     monkeypatch.setattr("handler.scene_loop.emit_state_changes", fake_phase1)
     monkeypatch.setattr("handler.scene_loop.emit_prose_text", fake_prose)
     monkeypatch.setattr("handler.scene_loop.emit_choices", fake_choices)
-    _fast_pacing(monkeypatch)
+    monkeypatch.setattr("handler.scene_loop.paced_word_emitter",
+                        _patched_paced_emitter(0.001))
 
     events: list[dict] = []
 
@@ -451,13 +422,13 @@ async def test_play_session_emits_location_change_and_log_entry_chunks(
     assert len(lc) == 1
     assert lc[0]["from"] == "the_slaughtered_lamb"
     assert lc[0]["to"] == "the_post_office"
-    # Log entry chunks streamed (at least one per scene).
-    log_chunks = [e for e in events if e["event"] == "log_entry_chunk"]
+    # Log entry words streamed (at least one per scene).
+    log_words = [e for e in events if e["event"] == "log_entry_word"]
     # Two scenes -> two log entries -> at least 2 sentinels.
-    sentinels = [e for e in log_chunks if e.get("is_last")]
+    sentinels = [e for e in log_words if e.get("is_last")]
     assert len(sentinels) == 2
-    # game_over fires BEFORE the final log entry's chunks finish streaming.
+    # game_over fires BEFORE the final log entry's words finish streaming.
     assert "game_over" in kinds
     game_over_idx = kinds.index("game_over")
-    # After game_over, only log_entry_chunk events follow.
-    assert all(k == "log_entry_chunk" for k in kinds[game_over_idx + 1:])
+    # After game_over, only log_entry_word events follow.
+    assert all(k == "log_entry_word" for k in kinds[game_over_idx + 1:])

@@ -168,8 +168,7 @@ async def test_play_scene_applies_populator_placements(monkeypatch):
         events.append(e)
 
     # Speed up pacing.
-    monkeypatch.setattr("handler.sse.CLAUSE_WORD_PACE_S", 0.001)
-    monkeypatch.setattr("handler.sse.MIN_CLAUSE_PACE_S", 0.001)
+    monkeypatch.setattr("handler.sse.WORD_PACE_S", 0.001)
 
     def leave_immediately(_pp):
         raise LeaveRequested()

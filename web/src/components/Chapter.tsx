@@ -48,9 +48,9 @@ export function Chapter({
 
   const lastTurn = scene.turns[scene.turns.length - 1];
   const streamingThisChapter = isCurrent && lastTurn?.streaming;
-  const chunkCount = scene.turns.reduce((n, t) => n + t.chunks.length, 0);
+  const wordCount = scene.turns.reduce((n, t) => n + t.words.length, 0);
 
-  usePageTurn(sectionRef, chunkCount, streamingThisChapter, followingRef);
+  usePageTurn(sectionRef, wordCount, streamingThisChapter, followingRef);
 
   const liveClosed = isCurrent && !!lastTurn && !lastTurn.streaming;
   const showChoicesBlock = liveClosed && lastTurn.options.length > 0;
@@ -114,7 +114,7 @@ export function Chapter({
           return (
             <div key={i}>
               <StreamingProse
-                chunks={turn.chunks}
+                words={turn.words}
                 streaming={turn.streaming && isCurrent && isLastTurn}
                 fastForward={fastForward && isCurrent}
                 glossIndex={glossIndex}
@@ -149,7 +149,7 @@ export function Chapter({
 
 function usePageTurn(
   sectionRef: React.RefObject<HTMLElement>,
-  chunkCount: number,
+  wordCount: number,
   active: boolean | undefined,
   followingRef: React.MutableRefObject<boolean>,
 ) {
@@ -180,5 +180,5 @@ function usePageTurn(
       // than stacking a second smooth-scroll on top of it.
       panel.scrollTo({ top: newTop, behavior: "auto" });
     }
-  }, [chunkCount, active, sectionRef, followingRef]);
+  }, [wordCount, active, sectionRef, followingRef]);
 }

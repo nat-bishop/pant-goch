@@ -78,7 +78,7 @@ export function PanelScroll({
   // Effect re-binds only when a scene is added — scene_id lookup inside
   // the handler stays current via the store ref each scroll tick, so
   // depending on `scenes.length` (not `scenes`) avoids rebinding the
-  // listener on every prose_chunk.
+  // listener on every prose_word.
   useEffect(() => {
     const el = scrollRef.current;
     if (!el || scenes.length === 0) return;
