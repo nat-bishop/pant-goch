@@ -14,8 +14,7 @@ that used to live in `validate_state_change_bundle` and
 
 `reachable_beat_ids` and `resolved_ending_id_at_close` stay here — used
 by both grammar narrowing (`agents.py`) and prompt rendering
-(`prompts.py`), plus `scene_loop.close_scene` (player /leave + engine
-turn-cap close paths).
+(`prompts.py`), plus the scene_loop dispatch on choice-author Leave.
 """
 from __future__ import annotations
 
@@ -95,8 +94,8 @@ def resolved_ending_id_at_close(world: World, state: State) -> str | None:
     `blocked_by_beats`), so at most one ending should ever be satisfied
     simultaneously. The author-order tie-break is defensive.
 
-    Used by `scene_loop.close_scene` on every scene exit (player /leave
-    or engine turn-cap): if an ending is satisfied, the engine constructs
+    Used by `scene_loop._assemble_prose_part` when the choice author emits
+    a Leave variant: if an ending is satisfied, the engine constructs
     EndGame with that id; otherwise EndScene.
     """
     for eid, ending in world.endings.items():

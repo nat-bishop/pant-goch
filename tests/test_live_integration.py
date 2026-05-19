@@ -8,7 +8,7 @@ Verifies the M3 scene-runner round-trips against an actual LLM:
   - output functions don't reject obviously-valid output (canonical
     @model_validators pass; grammar-narrowed Literals don't reject
     valid ids)
-  - prose is non-empty + options include a leave option
+  - prose is non-empty and Continue (if emitted) carries 2-4 options
 """
 from __future__ import annotations
 
@@ -52,7 +52,7 @@ def _make_model() -> OpenAIChatModel:
 @pytest.mark.integration
 async def test_live_one_turn_at_pub():
     """Single turn at the pub with Tom present. Asserts prose is non-empty
-    and options include at least one leave option (schema-enforced)."""
+    and a Continue, if emitted, carries 2-4 options (schema-enforced)."""
     world = load_world(FIXTURE)
     bundle = build_scene_runner_bundle(_make_model(), world)
     runtime = make_scene_runner_runtime()

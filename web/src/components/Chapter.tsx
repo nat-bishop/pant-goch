@@ -9,7 +9,7 @@
 // suppressed; PanelScroll shows a "↓ catch up" link instead.
 
 import { useEffect, useRef, useState } from "react";
-import { postFreeText, postLeave, postPick } from "../api";
+import { postFreeText, postPick } from "../api";
 import { useStore, type SceneSnapshot } from "../store";
 import { StreamingProse } from "./StreamingProse";
 import { ChoicesBlock } from "./ChoicesBlock";
@@ -82,11 +82,6 @@ export function Chapter({
     }
   };
 
-  const onLeave = async () => {
-    if (pickBusy || freeTextBusy) return;
-    await postLeave();
-  };
-
   return (
     <section
       className="chapter"
@@ -130,7 +125,6 @@ export function Chapter({
             options={lastTurn.options}
             picked={lastTurn.player_pick}
             onPick={onPick}
-            onLeave={onLeave}
             busy={pickBusy}
           />
         )}
@@ -138,7 +132,6 @@ export function Chapter({
           <FreeTextInput
             prompt={freeTextRequest.prompt}
             onSubmit={onFreeTextSubmit}
-            onLeave={onLeave}
             busy={freeTextBusy}
           />
         )}

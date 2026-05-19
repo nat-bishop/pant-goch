@@ -7,14 +7,15 @@ and choice-author calls (SPEC §0.4 / §3.3 + the Phase-2-split refactor):
             Cap: ≤2 UnlockBeat per bundle.
   Phase 2a — prose writer: plain `str` output (no schema below — the agent
             uses `output_type=str`).
-  Phase 2b — choice author: `ChoiceBundle` with a Continue | FreeText
+  Phase 2b — choice author: `ChoiceBundle` with a Continue | Leave | FreeText
             tagged union. Stateless per call.
 
-Scene closure is engine + player only — the LLM cannot emit Leave or
-EndScene. The player triggers close via POST /leave; the engine also
-synthesises close at the per-scene turn cap. Both paths run a short
-departure prose and then assemble `ProsePart.next = EndScene | EndGame`
-via `scene_loop.close_scene`.
+The engine assembles a composite `ProsePart` from the two Phase 2 calls so
+downstream consumers (scene_loop, CLI, SSE) keep dispatching on the same
+shape. `ProsePart.next` is `Continue | EndScene | EndGame | FreeText` —
+`Continue` and `FreeText` pass through from the choice author verbatim;
+`EndScene` and `EndGame` are engine-only (the LLM never emits an
+`ending_id`).
 
 The schemas here use `str` for id fields. At call time, `agents.py` builds
 per-call dynamic types (`Literal[*beat_names]`, `Literal[*present_npc_ids]`)
@@ -83,6 +84,14 @@ class Continue(_Strict):
     options: list[Option] = Field(min_length=2, max_length=4)
 
 
+class Leave(_Strict):
+    """Choice-author variant: the scene has reached a natural close. The
+    engine treats the just-written prose as the closing beat and resolves
+    which ending (if any) fires from `state.unlocked_beats`."""
+
+    type: Literal["leave"] = "leave"
+
+
 class FreeText(_Strict):
     """Choice-author variant: the natural next move is the player typing
     their own line — interrogation, a delicate moment where canned options
@@ -100,7 +109,7 @@ class FreeText(_Strict):
 
 
 ChoiceNext = Annotated[
-    Union[Continue, FreeText],
+    Union[Continue, Leave, FreeText],
     Field(discriminator="type"),
 ]
 
@@ -114,23 +123,22 @@ class ChoiceBundle(_Strict):
 
 # ───────────────────────── engine-composite: ProsePart for downstream dispatch ─────────────────────────
 #
-# `Continue` and `FreeText` pass through from the choice author verbatim.
-# `EndScene` / `EndGame` are synthesised by `scene_loop.close_scene` when
-# the player hits /leave or the engine's turn cap fires.
+# `Continue` and `FreeText` are reused verbatim in the ProsePart union;
+# only Leave is rewritten as EndScene / EndGame, since the engine resolves
+# which one fires from satisfied prereqs.
 
 
 class EndScene(_Strict):
-    """Engine-only variant: synthesised by `close_scene` when the scene
-    closes with no ending satisfied. The LLM never emits this."""
+    """Engine-only variant: from a choice-author Leave when no ending is
+    satisfied. The LLM never emits this."""
 
     type: Literal["end_scene"] = "end_scene"
 
 
 class EndGame(_Strict):
-    """Engine-only variant: synthesised by `close_scene` when the scene
-    closes AND an ending's prereqs are satisfied. `ending_id` is
-    engine-resolved via `engine.resolved_ending_id_at_close`; the LLM
-    never emits it."""
+    """Engine-only variant: from a choice-author Leave when an ending IS
+    satisfied. `ending_id` is engine-resolved via
+    `engine.resolved_ending_id_at_close`; the LLM never emits it."""
 
     type: Literal["end_game"] = "end_game"
     ending_id: str

@@ -37,7 +37,7 @@ from .schemas import (
     FreeText,
     ProsePart,
 )
-from .scene_loop import LeaveRequested, play_session
+from .scene_loop import play_session
 from .state import State, make_initial_state
 from .world import World, load_world
 
@@ -79,13 +79,11 @@ def _prompt_pick(prose_part: ProsePart) -> int:
     _print_prose_part(prose_part)
     n = len(prose_part.next.options)
     while True:
-        raw = input(f"Pick 1-{n} (or 'leave'): ").strip().lower()
-        if raw in ("leave", "l"):
-            raise LeaveRequested()
+        raw = input(f"Pick 1-{n}: ").strip()
         try:
             idx = int(raw) - 1
         except ValueError:
-            print("Enter a number or 'leave'.")
+            print("Enter a number.")
             continue
         if 0 <= idx < n:
             return idx
@@ -95,13 +93,10 @@ def _prompt_pick(prose_part: ProsePart) -> int:
 def _prompt_free_text(req: FreeText) -> str:
     """Read a typed line from stdin for the FreeText flow. The req's
     `prompt` is rendered by `_print_prose_part` already; this just
-    re-shows it as the input prompt label. Typing 'leave' closes the
-    scene (mirrors POST /leave on the web surface)."""
+    re-shows it as the input prompt label."""
     label = req.prompt.strip() or "Type your reply"
     while True:
-        raw = input(f"{label} (or 'leave'): ").strip()
-        if raw.lower() in ("leave", "l"):
-            raise LeaveRequested()
+        raw = input(f"{label}: ").strip()
         if raw:
             return raw
         print("(non-empty)")

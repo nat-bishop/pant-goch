@@ -4,19 +4,16 @@
 // large height collapse that would otherwise yank the panel on click.
 
 import type { OptionPayload } from "../api";
-import { LeaveButton } from "./LeaveButton";
 
 export function ChoicesBlock({
   options,
   picked,
   onPick,
-  onLeave,
   busy,
 }: {
   options: OptionPayload[];
   picked: OptionPayload | null;
   onPick: (idx: number) => void;
-  onLeave: () => void;
   busy: boolean;
 }) {
   const pickedIdx = picked
@@ -49,7 +46,6 @@ export function ChoicesBlock({
           );
         })}
       </ol>
-      {!hasPick && <LeaveButton onLeave={onLeave} busy={busy} />}
     </div>
   );
 }

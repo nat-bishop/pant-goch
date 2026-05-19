@@ -44,11 +44,6 @@ export async function postFreeText(text: string): Promise<void> {
   await ensureOk(r, "free_text");
 }
 
-export async function postLeave(): Promise<void> {
-  const r = await fetch(`${API}/leave`, { method: "POST" });
-  await ensureOk(r, "leave");
-}
-
 // ─── /world payload ──────────────────────────────────────────────────
 
 export interface WorldLocation {

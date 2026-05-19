@@ -122,11 +122,10 @@ async def test_play_scene_applies_populator_placements(monkeypatch):
     )
     from handler.schemas import (
         ChoiceBundle,
-        Continue,
-        Option,
+        Leave,
         StateChangeBundle,
     )
-    from handler.scene_loop import LeaveRequested, play_scene
+    from handler.scene_loop import play_scene
 
     world = load_world(FIXTURE_VALID)
     bundle = build_scene_runner_bundle(TestModel(), world)
@@ -149,18 +148,12 @@ async def test_play_scene_applies_populator_placements(monkeypatch):
         return "A quiet pub."
 
     async def fake_choices(*args, **kwargs):
-        return ChoiceBundle(next=Continue(options=[
-            Option(text="a"), Option(text="b"),
-        ]))
-
-    async def fake_departure(*args, **kwargs):
-        return "You step out into the lane."
+        return ChoiceBundle(next=Leave())
 
     monkeypatch.setattr("handler.scene_loop.emit_placements", fake_placements)
     monkeypatch.setattr("handler.scene_loop.emit_state_changes", fake_phase1)
     monkeypatch.setattr("handler.scene_loop.emit_prose_text", fake_prose)
     monkeypatch.setattr("handler.scene_loop.emit_choices", fake_choices)
-    monkeypatch.setattr("handler.scene_loop.emit_departure_prose", fake_departure)
 
     events: list[dict] = []
 
@@ -170,12 +163,9 @@ async def test_play_scene_applies_populator_placements(monkeypatch):
     # Speed up pacing.
     monkeypatch.setattr("handler.sse.WORD_PACE_S", 0.001)
 
-    def leave_immediately(_pp):
-        raise LeaveRequested()
-
     await play_scene(
         bundle, runtime, state,
-        pick_option=leave_immediately,
+        pick_option=lambda _pp: 0,
         emit_event=emit,
     )
 

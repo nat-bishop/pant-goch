@@ -984,35 +984,6 @@ a { color: inherit; text-decoration: none; }
   .catch-up-link { animation: none; }
 }
 
-/* Persistent "leave the scene" link below the choice list / free-text
-   input. Understated by design — text-link weight, not a button. */
-.leave-link {
-  display: block;
-  margin: 1.8em 0 0;
-  padding: 0;
-  background: none;
-  border: none;
-  font-family: var(--mono);
-  font-size: 10.5px;
-  letter-spacing: 0.32em;
-  text-transform: uppercase;
-  color: var(--ink-faint);
-  cursor: pointer;
-  text-decoration: underline;
-  text-decoration-color: color-mix(in srgb, var(--ink-faint) 40%, transparent);
-  text-underline-offset: 3px;
-  transition: color 0.18s ease;
-}
-.leave-link:hover:not(:disabled) {
-  color: var(--red);
-  text-decoration-color: var(--red-soft);
-}
-.leave-link:disabled { cursor: not-allowed; opacity: 0.4; }
-.leave-link:focus-visible {
-  outline: 1px solid var(--red-soft);
-  outline-offset: 3px;
-}
-
 .colophon {
   margin: 6vh 0 8vh;
   text-align: center;

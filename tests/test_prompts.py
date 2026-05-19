@@ -16,7 +16,6 @@ from handler.prompts import (
     build_chronicler_system_prompt,
     build_phase1_system_prompt,
     build_phase1_user_prompt,
-    build_prose_writer_departure_message,
     build_prose_writer_system_prompt,
     build_prose_writer_user_message,
 )
@@ -161,14 +160,13 @@ def test_choice_author_system_prompt_excludes_bible():
 
 
 def test_choice_author_system_prompt_describes_variants():
-    """Both ChoiceBundle variants must be documented; scene closure is
-    not the choice author's job and must be explicitly excluded."""
+    """All three ChoiceBundle variants must be documented for the
+    choice author to know its full vocabulary."""
     world = load_world(FIXTURE_VALID)
     sys_prompt = build_choice_author_system_prompt(world)
     assert "Continue" in sys_prompt
+    assert "Leave" in sys_prompt
     assert "FreeText" in sys_prompt
-    # Scene closure must NOT be in the choice author's vocabulary anymore.
-    assert "Leave" not in sys_prompt
 
 
 def test_prose_writer_system_prompt_forbids_travel():
@@ -181,18 +179,6 @@ def test_prose_writer_system_prompt_forbids_travel():
     # Some phrasing that pins "stay here" should be present.
     assert "stays in the current location" in sys_prompt
     assert "destination" in sys_prompt
-
-
-def test_prose_writer_departure_message_names_current_location_and_forbids_destination():
-    """Departure message is bounded to threshold prose only."""
-    world = load_world(FIXTURE_VALID)
-    state = make_initial_state(world)
-    state.player_location = "the_slaughtered_lamb"
-    msg = build_prose_writer_departure_message(state, world)
-    # Names the location being left.
-    assert world.locations["the_slaughtered_lamb"].name in msg
-    # Explicitly forbids naming a destination.
-    assert "Do NOT name a destination" in msg
 
 
 # ───────────────────────── phase 1 user prompt ─────────────────────────

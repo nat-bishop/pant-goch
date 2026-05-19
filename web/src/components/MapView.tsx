@@ -3,7 +3,7 @@
 //
 // Hotspot interaction: between scenes, adjacent locations are clickable
 // → POST /walk. During an active scene the map is dim and clicks are
-// suppressed (the player must use a Leave option).
+// suppressed; the scene closes when the choice author emits Leave.
 //
 // Tracer: a quadratic bezier from from.map_xy → to.map_xy with a control
 // point offset perpendicular to the line by 8% of distance — gives all

@@ -46,7 +46,7 @@ from .launcher import (
     stop_llama,
     wait_healthy,
 )
-from .scene_loop import LeaveRequested, play_session
+from .scene_loop import play_session
 from .state import State, make_initial_state
 from .world import World, load_world
 
@@ -126,10 +126,6 @@ class SessionRuntime:
     pick_future: "asyncio.Future[int] | None" = None
     walk_future: "asyncio.Future[str] | None" = None
     free_text_future: "asyncio.Future[str] | None" = None
-    # Set by POST /leave; the pick / free_text callbacks race this against
-    # their primary future and raise LeaveRequested if it wins. Reset to
-    # None when the wait exits (whether via leave, pick, or cancellation).
-    leave_event: "asyncio.Event | None" = None
     play_task: "asyncio.Task | None" = None
 
 
@@ -431,32 +427,10 @@ async def start_session() -> dict[str, str]:
     async def emit(event: dict) -> None:
         await rt.event_queue.put(event)
 
-    async def _await_or_leave(primary: "asyncio.Future"):
-        """Race `primary` against the session's leave_event. Raises
-        LeaveRequested if leave wins; returns primary.result() otherwise.
-        """
-        loop = asyncio.get_event_loop()
-        rt.leave_event = asyncio.Event()
-        leave_task = loop.create_task(rt.leave_event.wait())
-        try:
-            done, pending = await asyncio.wait(
-                {primary, leave_task},
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-            for p in pending:
-                p.cancel()
-            if leave_task in done:
-                raise LeaveRequested()
-            return primary.result()
-        finally:
-            rt.leave_event = None
-            if not leave_task.done():
-                leave_task.cancel()
-
     async def pick(_prose_part) -> int:
         rt.pick_future = asyncio.get_event_loop().create_future()
         try:
-            return await _await_or_leave(rt.pick_future)
+            return await rt.pick_future
         finally:
             rt.pick_future = None
 
@@ -470,7 +444,7 @@ async def start_session() -> dict[str, str]:
     async def free_text(_req) -> str:
         rt.free_text_future = asyncio.get_event_loop().create_future()
         try:
-            return await _await_or_leave(rt.free_text_future)
+            return await rt.free_text_future
         finally:
             rt.free_text_future = None
 
@@ -536,21 +510,6 @@ async def free_text(body: FreeTextBody) -> dict[str, str]:
     if not body.text.strip():
         raise HTTPException(400, "typed text must not be empty")
     SESSION.free_text_future.set_result(body.text.strip())
-    return {"status": "ok"}
-
-
-@app.post("/leave")
-async def leave() -> dict[str, str]:
-    """Player-initiated scene close. Signals the in-flight pick / free_text
-    wait to abandon and instead route through the engine's departure
-    flow (`_close_via_departure` → `close_scene`). 409 unless the scene is
-    currently waiting on a player choice; leave is meaningless
-    mid-stream or between scenes."""
-    if SESSION is None:
-        raise HTTPException(409, "no active session — call POST /start first")
-    if SESSION.leave_event is None:
-        raise HTTPException(409, "no scene awaiting a player choice")
-    SESSION.leave_event.set()
     return {"status": "ok"}
 
 

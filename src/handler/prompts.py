@@ -251,9 +251,9 @@ def build_prose_writer_system_prompt(world: World) -> str:
     history; this system prompt is the cache anchor for that history.
 
     Output is plain text: just the prose. A separate choice-author agent
-    decides what happens next (continue / free-text input) after reading
-    the prose. Scene closure is engine + player, never the LLM — the
-    narrator never writes the player walking to a new location.
+    decides what happens next (continue / leave / free-text input) after
+    reading the prose. The narrator never writes the player walking to a
+    new location — destination travel is the map's job, not the prose's.
     """
     return f"""\
 ## Role
@@ -340,7 +340,7 @@ def build_choice_author_system_prompt(world: World) -> str:
 ## Role
 You are the choice author for a single-player investigation game. After
 the narrator writes each turn's prose, you decide what the player does
-next within the current scene.
+next.
 
 ## Your Job
 Read the prose, then emit ONE structured output: a ChoiceBundle whose
@@ -348,18 +348,18 @@ Read the prose, then emit ONE structured output: a ChoiceBundle whose
 
   - Continue with 2-4 options. Each option is a short line of what the
     player can say or do that has no major consequence — dialogue,
-    observation, small action. This is the default.
+    observation, small action.
+
+  - Leave. The conversation has reached a natural close — a goodbye, a
+    door, a silence the player would step out of. The engine treats the
+    just-written prose as the closing beat and resolves which ending
+    (if any) fires from the state.
 
   - FreeText with a `prompt` and an optional `npc_id`. Use when the
     natural next move is the player typing their own line — an
     interrogation, a delicate moment where canned options would
     cheapen it. Set `npc_id` to the NPC the typed line is addressed
     to, if any.
-
-You do NOT close scenes. Scene closure is the player's call (via a
-persistent leave action) or the engine's call (turn-count guardrail).
-Your job is to keep the moment alive with options or hand the floor to
-the player for a typed line.
 
 ## Rules
 1. Options are pure dialogue / observation / small action inside the
@@ -368,8 +368,10 @@ the player for a typed line.
    must NOT propose travel to another location.
 2. The prose alone is your context. You do not see beats, endings,
    character knowledge, or backstory. Trust what the narrator wrote.
-3. Prefer Continue. FreeText only when canned options would be worse
-   than the player's own words.
+3. Match the structure to the moment. Continue when the scene still
+   has air. Leave when the beat has resolved and a next exchange would
+   be filler. FreeText when canned options would cheapen the player's
+   own voice.
 """
 
 
@@ -566,28 +568,6 @@ def build_prose_writer_user_message(
     parts.append("## Write\nWrite the prose for what just happened.")
 
     return "\n\n".join(parts)
-
-
-# ───────────────────────── departure prose (player /leave or turn-cap) ─────────────────────────
-
-
-def build_prose_writer_departure_message(state: State, world: World) -> str:
-    """Per-call user message for the prose writer when the scene is
-    closing — either the player hit the leave action or the engine's
-    turn cap fired.
-
-    Reuses the same prose-writer agent (byte-stable system prompt → KV
-    cache hit). The departure prose is short (1-2 sentences) and stays
-    inside the threshold of the current location; the destination is the
-    map's job, not the narrator's.
-    """
-    loc = world.locations[state.player_location]
-    return f"""\
-## Departure
-The scene closes here. Write the moment of leaving {loc.name} — the
-player standing up, reaching for the door, the threshold, the air
-outside. 1-2 sentences. Do NOT name a destination or narrate them
-arriving anywhere new; travel happens between scenes, not in this prose."""
 
 
 # ───────────────────────── choice author user message (stateless per call) ─────────────────────────
