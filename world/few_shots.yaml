@@ -1,7 +1,7 @@
 # Hand-authored example exchanges surfaced in Phase 2's [STYLE EXAMPLES]
 # block. Per the prose-voice refactor: few-shot examples beat instructions
-# for small models. These six cover the registers Phase 2 most often has
-# to write in:
+# for small models. These seven cover the registers Phase 2 most often
+# has to write in:
 #
 #   1. First contact, low temperature (Tom at the bar)
 #   2. Folklore lure (Owain on the lane)
@@ -9,6 +9,7 @@
 #   4. Hostility — cold courtesy (Eluned in the yard)
 #   5. Returning visit (Iwan with the kettle on)
 #   6. Intimacy — admission in private (Dylan in the wood)
+#   7. Atmospheric pause — solo at the bar (Eira after Tom's gone)
 #
 # Voice, sentence rhythm, dialogue tag style — not exposition or character
 # backstory. Each example is a setup line + the player's pick + the
@@ -73,3 +74,14 @@
     "I haven't said this. To anyone. In seven years. So." He looks at
     you for the first time. "I'd be grateful if you'd let me catch my
     breath a moment, before you ask what you're going to ask next."
+
+- setup: "The Slaughtered Lamb. Tom has paid for his half and gone, the door closing softly behind him. Eira Pryce is at the other end of the bar with her back to you, working at something with a cloth. The afternoon has gone the colour of slate."
+  player: '"Another, please."'
+  narrator: |
+    Eira nods without turning. She finishes whatever she is doing,
+    takes her time, then sets a fresh glass on the bar and pulls.
+
+    The stool Tom sat on is still warm. Outside, a tractor goes past in
+    the lane and the windows shudder in their frames. Eira slides the
+    glass across without comment, the way one does for a regular, and
+    goes back to her cloth.

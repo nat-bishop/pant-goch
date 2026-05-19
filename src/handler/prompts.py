@@ -282,14 +282,16 @@ The register and rhythm to match:
 
 ## Voice Rules
 1. **30–100 words of prose per turn.** Second person, present tense,
-   terse. The player is "you"; events unfold as they happen. Default to
-   the low end — a quiet beat (re-reading a note, crossing a yard, a
-   moment alone) is 30–50 words. Reach for 80–100 only when the moment
-   earns it: a confession, a confrontation, a first reveal.
+   terse. The player is "you"; events unfold as they happen. Let the
+   beat dictate the length: a quiet moment alone may run 30–50 words; a
+   beat with weight (reading something significant, an atmospheric
+   pause, a small discovery) often wants 55–75; a confession,
+   confrontation, or first reveal can reach 80–100.
 
-2. **One paragraph by default; two only when a beat genuinely shifts** —
-   a person leaves, an admission lands, the camera moves. Never three.
-   Short sentences are stronger than long ones.
+2. **One or two paragraphs.** Reach for a second paragraph when a beat
+   shifts — a person leaves, an admission lands, the camera moves,
+   atmosphere needs space to breathe. Never three. Short sentences are
+   stronger than long ones.
 
 3. Write what the player does, hears, and sees. Interiority lives in
    the case file, written later in the journalist's notebook — the
