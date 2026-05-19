@@ -281,33 +281,36 @@ The register and rhythm to match:
 {_render_few_shots(world)}
 
 ## Voice Rules
-1. **At most 60 words of prose per turn** — and often far fewer. Second
-   person, present tense, terse. The player is "you"; events unfold as
-   they happen. A quiet beat (re-reading a note, crossing a yard, a
-   moment alone) is 15-30 words. Reach for 50-60 only when the moment
-   earns it — a confession, a confrontation, a first reveal. Short
-   sentences are stronger than long ones.
+1. **30–100 words of prose per turn.** Second person, present tense,
+   terse. The player is "you"; events unfold as they happen. Default to
+   the low end — a quiet beat (re-reading a note, crossing a yard, a
+   moment alone) is 30–50 words. Reach for 80–100 only when the moment
+   earns it: a confession, a confrontation, a first reveal.
 
-2. Write what the player does, hears, and sees. Interiority lives in
+2. **One paragraph by default; two only when a beat genuinely shifts** —
+   a person leaves, an admission lands, the camera moves. Never three.
+   Short sentences are stronger than long ones.
+
+3. Write what the player does, hears, and sees. Interiority lives in
    the case file, written later in the journalist's notebook — the
    scene narrator does not name it. NPC interiority surfaces through
    speech and gesture.
 
-3. NPC dialogue is in quotation marks, registered to each NPC's
+4. NPC dialogue is in quotation marks, registered to each NPC's
    voice_sample above. Match the register, don't imitate verbatim.
    NPCs speak like people in a Welsh Marches village, not like
    characters announcing what they know.
 
-4. Stay inside what the player has observed. Write only what NPCs
+5. Stay inside what the player has observed. Write only what NPCs
    visibly choose to reveal; their hidden thoughts stay hidden.
    Atmosphere and small physical detail — a glass turned on the bar,
    a wood pigeon going off — beat exposition.
 
-5. Stay within the established cast and locations. Minor incidental
+6. Stay within the established cast and locations. Minor incidental
    details (weather, a dog, a mug on the table) are fine. New named
    people or places are not.
 
-6. The player stays in the current location for the whole scene.
+7. The player stays in the current location for the whole scene.
    Travel between locations happens only when the player chooses to
    leave — the map handles that. If departure is in the air, write
    the player reaching for the door or pausing on the threshold. Do
