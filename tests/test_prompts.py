@@ -20,7 +20,7 @@ from handler.prompts import (
     build_prose_writer_user_message,
 )
 from handler.schemas import Option, StateChangeBundle, UnlockBeat
-from handler.state import make_initial_state
+from handler.state import TurnRecord, make_initial_state
 from handler.world import load_world
 
 
@@ -176,9 +176,9 @@ def test_prose_writer_system_prompt_forbids_travel():
     walked the player to Lower Hafod without an engine close)."""
     world = load_world(FIXTURE_VALID)
     sys_prompt = build_prose_writer_system_prompt(world)
-    # Some phrasing that pins "stay here" should be present.
-    assert "stays in the current location" in sys_prompt
-    assert "destination" in sys_prompt
+    # Some phrasing that pins "body stays inside" should be present.
+    assert "does NOT cross the threshold" in sys_prompt
+    assert "Do NOT name a destination" in sys_prompt
 
 
 # ───────────────────────── phase 1 user prompt ─────────────────────────
@@ -346,6 +346,65 @@ def test_choice_author_user_message_when_alone():
     state = make_initial_state(world)  # vicarage; no NPCs
     msg = build_choice_author_user_message(state, world, "the door clicks shut")
     assert "alone" in msg.lower()
+
+
+def test_choice_author_user_message_omits_pacing_block_early_turns():
+    """Turns 1-3 should not render the Scene Pacing nudge (scene needs
+    room to breathe)."""
+    world = load_world(FIXTURE_VALID)
+    state = make_initial_state(world)
+    # Turn 1: empty history. No nudge.
+    msg = build_choice_author_user_message(state, world, "Anything.")
+    assert "## Scene Pacing" not in msg
+    # Turn 3: two prior turns. Still no nudge.
+    state.dialogue_history = [
+        TurnRecord(prose="a", applied_state_changes=[]),
+        TurnRecord(prose="b", applied_state_changes=[]),
+    ]
+    msg = build_choice_author_user_message(state, world, "Anything.")
+    assert "## Scene Pacing" not in msg
+
+
+def test_choice_author_user_message_nudges_solo_after_turn_three():
+    """Turn 4+ with no NPCs present → render the Scene Pacing nudge."""
+    world = load_world(FIXTURE_VALID)
+    state = make_initial_state(world)  # vicarage; alone
+    state.dialogue_history = [
+        TurnRecord(prose="a", applied_state_changes=[]),
+        TurnRecord(prose="b", applied_state_changes=[]),
+        TurnRecord(prose="c", applied_state_changes=[]),
+    ]
+    msg = build_choice_author_user_message(state, world, "Anything.")
+    assert "## Scene Pacing" in msg
+    assert "turn 4" in msg
+    assert "Solo exploration" in msg
+
+
+def test_choice_author_user_message_hard_nudge_at_turn_six():
+    """Turn 6+ → render the hard Leave nudge regardless of NPC presence."""
+    world = load_world(FIXTURE_VALID)
+    state = make_initial_state(world)
+    state.player_location = "the_slaughtered_lamb"  # NPCs present
+    state.dialogue_history = [
+        TurnRecord(prose="t", applied_state_changes=[]) for _ in range(5)
+    ]
+    msg = build_choice_author_user_message(state, world, "Anything.")
+    assert "## Scene Pacing" in msg
+    assert "turn 6" in msg
+    assert "filler" in msg
+
+
+def test_choice_author_user_message_no_nudge_for_npc_scene_midrange():
+    """Turns 4-5 with NPCs present → no nudge (NPC scenes legitimately
+    run longer)."""
+    world = load_world(FIXTURE_VALID)
+    state = make_initial_state(world)
+    state.player_location = "the_slaughtered_lamb"  # Tom is here
+    state.dialogue_history = [
+        TurnRecord(prose="t", applied_state_changes=[]) for _ in range(4)
+    ]
+    msg = build_choice_author_user_message(state, world, "Anything.")
+    assert "## Scene Pacing" not in msg
 
 
 # ───────────────────────── npc_memory + beat description ─────────────────────────

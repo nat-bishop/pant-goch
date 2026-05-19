@@ -176,46 +176,38 @@ def _build_beat_name_to_id(beats: dict[str, Beat]) -> dict[str, str]:
 
 
 def _check_beat_refs(beats: dict[str, Beat]) -> None:
-    """Invariant 8 — every requires_beats / blocked_by_beats reference resolves
-    to a defined beat id; no self-reference."""
+    """Invariant 8 — every requires_beats / requires_any_beats / blocked_by_beats
+    reference resolves to a defined beat id; no self-reference."""
     for beat in beats.values():
-        for ref in beat.requires_beats:
-            if ref == beat.id:
-                raise WorldLoadError(
-                    f"beat {beat.id!r}: requires_beats contains itself"
-                )
-            if ref not in beats:
-                raise WorldLoadError(
-                    f"beat {beat.id!r}: requires_beats references undefined "
-                    f"beat {ref!r}"
-                )
-        for ref in beat.blocked_by_beats:
-            if ref == beat.id:
-                raise WorldLoadError(
-                    f"beat {beat.id!r}: blocked_by_beats contains itself"
-                )
-            if ref not in beats:
-                raise WorldLoadError(
-                    f"beat {beat.id!r}: blocked_by_beats references undefined "
-                    f"beat {ref!r}"
-                )
+        for field_name in ("requires_beats", "requires_any_beats", "blocked_by_beats"):
+            for ref in getattr(beat, field_name):
+                if ref == beat.id:
+                    raise WorldLoadError(
+                        f"beat {beat.id!r}: {field_name} contains itself"
+                    )
+                if ref not in beats:
+                    raise WorldLoadError(
+                        f"beat {beat.id!r}: {field_name} references undefined "
+                        f"beat {ref!r}"
+                    )
 
 
 def _check_no_requires_cycles(beats: dict[str, Beat]) -> None:
-    """Invariant 9 — the requires_beats graph has no cycles. A cycle would
-    make a beat unfireable. DFS with grey/black colouring; report the cycle
-    path on detection."""
+    """Invariant 9 — the dependency graph (union of requires_beats AND
+    requires_any_beats) has no cycles. A cycle anywhere would make a beat
+    unfireable. DFS with grey/black colouring; report the cycle path on
+    detection."""
     WHITE, GREY, BLACK = 0, 1, 2
     colour: dict[str, int] = {bid: WHITE for bid in beats}
 
     def visit(bid: str, path: list[str]) -> None:
         colour[bid] = GREY
-        for dep in beats[bid].requires_beats:
+        deps = list(beats[bid].requires_beats) + list(beats[bid].requires_any_beats)
+        for dep in deps:
             if colour[dep] == GREY:
-                # Found cycle — slice path from the first occurrence of dep.
                 cycle = path[path.index(dep):] + [dep]
                 raise WorldLoadError(
-                    f"requires_beats cycle: {' -> '.join(cycle)}"
+                    f"requires cycle: {' -> '.join(cycle)}"
                 )
             if colour[dep] == WHITE:
                 visit(dep, path + [dep])
@@ -236,15 +228,16 @@ def _check_brief_starts_at(brief: Brief, locations: dict[str, Location]) -> None
 
 
 def _check_ending_refs(endings: dict[str, Ending], beats: dict[str, Beat]) -> None:
-    """Invariant 10 — every ending's requires_beats references a defined
-    beat id."""
+    """Invariant 10 — every ending's requires_beats / requires_any_beats
+    references a defined beat id."""
     for ending in endings.values():
-        for ref in ending.requires_beats:
-            if ref not in beats:
-                raise WorldLoadError(
-                    f"ending {ending.id!r}: requires_beats references "
-                    f"undefined beat {ref!r}"
-                )
+        for field_name in ("requires_beats", "requires_any_beats"):
+            for ref in getattr(ending, field_name):
+                if ref not in beats:
+                    raise WorldLoadError(
+                        f"ending {ending.id!r}: {field_name} references "
+                        f"undefined beat {ref!r}"
+                    )
 
 
 # ───────────────────────── loader ─────────────────────────

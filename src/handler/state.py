@@ -66,6 +66,14 @@ class State:
     scene_id: int = 0
     game_over: GameOver | None = None
 
+    @property
+    def turn_n(self) -> int:
+        """1-indexed turn number within the current scene — the prose
+        about to be written is turn N. `dialogue_history` holds the N-1
+        completed turns; the player's pending pick is on the last
+        entry. Cleared with the rest of dialogue_history at scene entry."""
+        return len(self.dialogue_history) + 1
+
 
 def make_initial_state(world: World) -> State:
     """Build the State for a fresh game from the loaded world. NPCs start

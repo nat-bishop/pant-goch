@@ -498,6 +498,113 @@ def test_reachable_with_fired_prereq():
     assert reachable_beat_ids(world, state) == {"A"}
 
 
+# ───────────────────────── requires_any_beats (OR-clause) ─────────────────────────
+
+
+def test_reachable_with_requires_any_all_unfired_but_reachable():
+    """A requires_any_beats [X, Y]; both X and Y are unfired but both
+    standalone-reachable → A is reachable."""
+    world = _make_world(beats=[
+        _beat("X"),
+        _beat("Y"),
+        _beat("A", requires_any_beats=["X", "Y"]),
+    ])
+    state = State(player_location="loc_a")
+    assert reachable_beat_ids(world, state) == {"X", "Y", "A"}
+
+
+def test_reachable_with_requires_any_one_branch_blocked():
+    """A requires_any_beats [X, Y]; X is permanently blocked but Y is
+    reachable → A is still reachable through Y."""
+    world = _make_world(beats=[
+        _beat("blocker"),
+        _beat("X", blocked_by_beats=["blocker"]),
+        _beat("Y"),
+        _beat("A", requires_any_beats=["X", "Y"]),
+    ])
+    state = State(player_location="loc_a", unlocked_beats={"blocker"})
+    assert reachable_beat_ids(world, state) == {"Y", "A"}
+
+
+def test_reachable_with_requires_any_all_branches_blocked():
+    """A requires_any_beats [X, Y]; both X and Y permanently blocked →
+    A is unreachable."""
+    world = _make_world(beats=[
+        _beat("blocker"),
+        _beat("X", blocked_by_beats=["blocker"]),
+        _beat("Y", blocked_by_beats=["blocker"]),
+        _beat("A", requires_any_beats=["X", "Y"]),
+    ])
+    state = State(player_location="loc_a", unlocked_beats={"blocker"})
+    assert reachable_beat_ids(world, state) == set()
+
+
+def test_reachable_with_requires_any_one_fired():
+    """A requires_any_beats [X, Y]; X has fired → A is reachable even
+    if Y is permanently blocked."""
+    world = _make_world(beats=[
+        _beat("blocker"),
+        _beat("X"),
+        _beat("Y", blocked_by_beats=["blocker"]),
+        _beat("A", requires_any_beats=["X", "Y"]),
+    ])
+    state = State(player_location="loc_a", unlocked_beats={"blocker", "X"})
+    assert reachable_beat_ids(world, state) == {"A"}
+
+
+def test_reachable_combines_requires_and_requires_any():
+    """A requires_beats=[hard] AND requires_any_beats=[X, Y]; hard fires
+    and Y fires → A reachable. hard fires but neither X nor Y → A
+    unreachable."""
+    world_ok = _make_world(beats=[
+        _beat("hard"),
+        _beat("X"),
+        _beat("Y"),
+        _beat("A", requires_beats=["hard"], requires_any_beats=["X", "Y"]),
+    ])
+    state_ok = State(player_location="loc_a", unlocked_beats={"hard", "Y"})
+    assert "A" in reachable_beat_ids(world_ok, state_ok)
+
+    # hard fires, X and Y both blocked → A unreachable
+    world_blocked = _make_world(beats=[
+        _beat("blocker"),
+        _beat("hard"),
+        _beat("X", blocked_by_beats=["blocker"]),
+        _beat("Y", blocked_by_beats=["blocker"]),
+        _beat("A", requires_beats=["hard"], requires_any_beats=["X", "Y"]),
+    ])
+    state_blocked = State(
+        player_location="loc_a", unlocked_beats={"hard", "blocker"},
+    )
+    assert "A" not in reachable_beat_ids(world_blocked, state_blocked)
+
+
+def test_resolved_ending_id_with_requires_any_one_satisfied():
+    """Ending requires_any_beats=[X, Y, Z]; only Y fired → ending fires."""
+    world = _make_world(
+        beats=[_beat("X"), _beat("Y"), _beat("Z")],
+        endings=[Ending(
+            id="published", requires_any_beats=["X", "Y", "Z"],
+            notes_to_llm="x", epilogue="y",
+        )],
+    )
+    state = State(player_location="loc_a", unlocked_beats={"Y"})
+    assert resolved_ending_id_at_close(world, state) == "published"
+
+
+def test_resolved_ending_id_with_requires_any_none_satisfied():
+    """Ending requires_any_beats=[X, Y]; neither fired → None."""
+    world = _make_world(
+        beats=[_beat("X"), _beat("Y")],
+        endings=[Ending(
+            id="published", requires_any_beats=["X", "Y"],
+            notes_to_llm="x", epilogue="y",
+        )],
+    )
+    state = State(player_location="loc_a")
+    assert resolved_ending_id_at_close(world, state) is None
+
+
 # ───────────────────────── integration: valid fixture ─────────────────────────
 
 

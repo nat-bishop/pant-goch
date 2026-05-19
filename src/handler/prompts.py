@@ -136,10 +136,15 @@ def _render_beat(beat, world: World) -> str:
         if beat.prerequisites.strip()
         else ""
     )
+    any_line = (
+        f"\n  requires_any_beats (any one of): {_beat_names(world, beat.requires_any_beats)}"
+        if beat.requires_any_beats
+        else ""
+    )
     return (
         f"- {beat.name}:\n"
         f"  description: {beat.description.strip()}\n"
-        f"  requires_beats: {_beat_names(world, beat.requires_beats)}\n"
+        f"  requires_beats: {_beat_names(world, beat.requires_beats)}{any_line}\n"
         f"  blocked_by_beats: {_beat_names(world, beat.blocked_by_beats)}{prereq}\n"
         f"  notes_to_llm: {beat.notes_to_llm.strip()}"
     )
@@ -149,8 +154,13 @@ def _render_ending(ending, world: World, *, include_epilogue: bool) -> str:
     parts = [
         f"- {ending.id}:",
         f"  requires_beats: {_beat_names(world, ending.requires_beats)}",
-        f"  notes_to_llm: {ending.notes_to_llm.strip()}",
     ]
+    if ending.requires_any_beats:
+        parts.append(
+            f"  requires_any_beats (any one of): "
+            f"{_beat_names(world, ending.requires_any_beats)}"
+        )
+    parts.append(f"  notes_to_llm: {ending.notes_to_llm.strip()}")
     if include_epilogue:
         parts.append(f"  epilogue: {ending.epilogue.strip()}")
     return "\n".join(parts)
@@ -312,11 +322,17 @@ The register and rhythm to match:
    details (weather, a dog, a mug on the table) are fine. New named
    people or places are not.
 
-7. The player stays in the current location for the whole scene.
-   Travel between locations happens only when the player chooses to
-   leave — the map handles that. If departure is in the air, write
-   the player reaching for the door or pausing on the threshold. Do
-   NOT name a destination.
+7. The player stays inside the building / yard / room the scene began
+   in for the entire scene. You may reference what is visible from a
+   window, beyond a hedge, or further down a track as atmosphere —
+   but the player's body does NOT cross the threshold of the scene's
+   location. No walking up the track, no stepping into the lane, no
+   entering the wood, no heading down the path. If a Continue option
+   suggests crossing that threshold, interpret it as the player
+   approaching the threshold and pausing — not as them taking the
+   step. Do NOT name a destination. Departure is handled by the
+   choice author via Leave; the engine moves the player on the map,
+   not the prose.
 
 ## Your Job
 Output ONLY the prose. The first character of your reply is the first
@@ -372,6 +388,17 @@ Read the prose, then emit ONE structured output: a ChoiceBundle whose
    has air. Leave when the beat has resolved and a next exchange would
    be filler. FreeText when canned options would cheapen the player's
    own voice.
+4. A scene with no NPC present is exploration. It has shallower
+   natural depth than a conversation. After a handful of observation
+   turns it has run its course — Leave is the right call even without
+   a "goodbye" moment. The map is where the player goes next.
+5. Continue options must be in-location actions — speech, observation,
+   small physical action inside the current building / room / yard.
+   Do NOT propose options that would have the player physically
+   crossing the threshold of the scene's location ("Walk up the
+   track", "Step into the lane", "Head to the wood", "Move toward
+   the kitchen and out the back door"). Departure is what Leave is
+   for; the engine and map handle travel, not the prose.
 """
 
 
@@ -565,12 +592,59 @@ def build_prose_writer_user_message(
         f"## State Changes Just Applied\n{_render_applied_changes(applied, world)}"
     )
 
+    # Per-turn anchor for system rule 7 — Gemma 4 needs the reminder.
+    parts.append(_render_stay_here(state, world))
+
     parts.append("## Write\nWrite the prose for what just happened.")
 
     return "\n\n".join(parts)
 
 
+def _render_stay_here(state: State, world: World) -> str:
+    loc_name = world.locations[state.player_location].name
+    return (
+        f"## Stay Here\n"
+        f"This scene is at {loc_name}. Whatever the player picked, "
+        f"the camera stays inside {loc_name} for this turn. Do not "
+        f"narrate the player travelling to another location, even if "
+        f"the option text suggests motion."
+    )
+
+
 # ───────────────────────── choice author user message (stateless per call) ─────────────────────────
+
+
+# Below this many turns: scene needs room to breathe — no Leave nudge.
+PACING_QUIET_TURNS = 3
+# Above this many turns: hard Leave nudge regardless of NPC presence.
+PACING_HARD_NUDGE_TURNS = 5
+
+
+def _render_scene_pacing(state: State, *, solo: bool) -> str:
+    """Turn-aware Leave nudge block. Empty string when no nudge needed
+    (caller renders nothing between the ## State block and ## Choose)."""
+    turn_n = state.turn_n
+    if turn_n <= PACING_QUIET_TURNS:
+        return ""
+    if turn_n <= PACING_HARD_NUDGE_TURNS and not solo:
+        return ""
+    if turn_n <= PACING_HARD_NUDGE_TURNS:
+        nudge = (
+            "Solo exploration has shallow natural depth. If the room has "
+            "given up its observations, Leave is the right call now."
+        )
+    else:
+        nudge = (
+            "This scene has run long. Unless the prose just landed a "
+            "genuine new beat or set up an obvious next exchange, emit "
+            "Leave — further Continues will feel like filler. The map is "
+            "one click away."
+        )
+    return f"""\
+
+## Scene Pacing
+This is turn {turn_n}. No Leave has been emitted yet. {nudge}
+"""
 
 
 def build_choice_author_user_message(state: State, world: World, prose: str) -> str:
@@ -585,6 +659,9 @@ def build_choice_author_user_message(state: State, world: World, prose: str) -> 
         npcs_line = ", ".join(world.npcs[i].name for i in present_ids)
     else:
         npcs_line = "no one (you are alone here)"
+
+    pacing_block = _render_scene_pacing(state, solo=not present_ids)
+
     return f"""\
 ## Prose
 {prose.strip()}
@@ -592,7 +669,7 @@ def build_choice_author_user_message(state: State, world: World, prose: str) -> 
 ## State
 You are at: {loc.name}
 NPCs present: {npcs_line}
-
+{pacing_block}
 ## Choose
 Emit a ChoiceBundle."""
 

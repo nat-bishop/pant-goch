@@ -306,7 +306,7 @@ async def play_scene(
         with _root_span(
             "turn",
             scene_id=state.scene_id,
-            turn_n=len(state.dialogue_history) + 1,
+            turn_n=state.turn_n,
             location=state.player_location,
         ):
             prose_part = await run_turn(bundle, runtime, state)

@@ -46,10 +46,12 @@ def reachable_beat_ids(world: World, state: State) -> set[str]:
       A beat B is reachable iff:
         - B is not in unlocked_beats, AND
         - no id in B.blocked_by_beats is in unlocked_beats, AND
-        - every id in B.requires_beats is either in unlocked_beats OR reachable.
+        - every id in B.requires_beats is either in unlocked_beats OR reachable, AND
+        - if B.requires_any_beats is non-empty, at least one id in it is
+          either in unlocked_beats OR reachable.
 
-    Cycles in requires_beats are forbidden by the world loader (invariant 9),
-    so the recursion terminates.
+    Cycles in requires_beats / requires_any_beats are forbidden by the world
+    loader (invariant 9), so the recursion terminates.
     """
     cache: dict[str, bool] = {}
 
@@ -70,6 +72,14 @@ def reachable_beat_ids(world: World, state: State) -> set[str]:
             if r in state.unlocked_beats:
                 continue
             if not is_reachable(r):
+                cache[beat_id] = False
+                return False
+        if beat.requires_any_beats:
+            any_ok = any(
+                r in state.unlocked_beats or is_reachable(r)
+                for r in beat.requires_any_beats
+            )
+            if not any_ok:
                 cache[beat_id] = False
                 return False
         cache[beat_id] = True
@@ -99,8 +109,13 @@ def resolved_ending_id_at_close(world: World, state: State) -> str | None:
     EndGame with that id; otherwise EndScene.
     """
     for eid, ending in world.endings.items():
-        if set(ending.requires_beats).issubset(state.unlocked_beats):
-            return eid
+        if not set(ending.requires_beats).issubset(state.unlocked_beats):
+            continue
+        if ending.requires_any_beats and not any(
+            b in state.unlocked_beats for b in ending.requires_any_beats
+        ):
+            continue
+        return eid
     return None
 
 

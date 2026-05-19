@@ -329,6 +329,32 @@ def test_invariant_8_self_reference_in_requires(tmp_path):
         load_world(target)
 
 
+def test_invariant_8_requires_any_undefined_beat(tmp_path):
+    target = _copy_valid(tmp_path)
+    truth_path = target / "truth.yaml"
+    truth = yaml.safe_load(truth_path.read_text(encoding="utf-8"))
+    for beat in truth["beats"]:
+        if beat["id"] == "tom_named_a_vehicle":
+            beat["requires_any_beats"] = ["ghost_beat"]
+    _write_yaml(truth_path, truth)
+    with pytest.raises(
+        WorldLoadError, match="requires_any_beats references undefined"
+    ):
+        load_world(target)
+
+
+def test_invariant_8_self_reference_in_requires_any(tmp_path):
+    target = _copy_valid(tmp_path)
+    truth_path = target / "truth.yaml"
+    truth = yaml.safe_load(truth_path.read_text(encoding="utf-8"))
+    for beat in truth["beats"]:
+        if beat["id"] == "tom_named_a_vehicle":
+            beat["requires_any_beats"] = ["tom_named_a_vehicle"]
+    _write_yaml(truth_path, truth)
+    with pytest.raises(WorldLoadError, match="contains itself"):
+        load_world(target)
+
+
 def test_invariant_8_self_reference_in_blocked_by(tmp_path):
     target = _copy_valid(tmp_path)
     truth_path = target / "truth.yaml"

@@ -69,6 +69,9 @@ class Beat(_Frozen):
     name: str = Field(max_length=50)
     description: str
     requires_beats: list[str] = Field(default_factory=list)
+    # OR-clause: when non-empty, at least one id here must be unlocked (or
+    # reachable) — in addition to all of `requires_beats`. Empty = no OR.
+    requires_any_beats: list[str] = Field(default_factory=list)
     blocked_by_beats: list[str] = Field(default_factory=list)
     prerequisites: str = ""  # soft prereqs the LLM judges, beyond requires/blocks
     notes_to_llm: str
@@ -93,6 +96,10 @@ class Beat(_Frozen):
 class Ending(_Frozen):
     id: str
     requires_beats: list[str] = Field(default_factory=list)
+    # OR-clause mirror of Beat.requires_any_beats — see that docstring.
+    # An ending fires iff ALL of `requires_beats` are unlocked AND (if
+    # `requires_any_beats` is non-empty) AT LEAST ONE of those is unlocked.
+    requires_any_beats: list[str] = Field(default_factory=list)
     notes_to_llm: str
     epilogue: str
 

@@ -56,12 +56,65 @@ crime: |
   not matter to what actually happened.
 
 beats:
-  # ─────────────────────── Positive investigative beats ───────────────────────
+  # ─────────────────────── Opening beats (the Old Vicarage) ───────────────────────
+  # The opening location was a beat-empty room before these. The player
+  # arrives, has nothing to do, and bounces. These three beats give the
+  # vicarage solo investigative weight: the letter sets the moral compass,
+  # the marked map plants a question, the phone call commits the player
+  # to acting on Iwan's request. None gate any ending — they exist to make
+  # the first scene feel like the start of a story.
 
-  # Tom Bevan's ladder — five rungs from "stranger at the bar" to "going
-  # into Knighton on Monday". Each rung is one quiet shift in conversation;
-  # together they pace Tom's unburdening across multiple scenes so the player
-  # feels progress rather than a binary reveal.
+  - id: letter_from_iwan_read
+    name: Read Iwan's letter
+    description: |
+      The player opens the sealed letter from Iwan Pritchard on the hall
+      table and reads it through. Iwan's "Whatever you find, I would like
+      to know" lands; the assignment becomes personal.
+    notes_to_llm: |
+      Fire when the player has actually opened and read the letter — not
+      merely noticed it. Narrate the letter's content in the player's
+      reading: factual paragraphs about Megan's death, the police closing
+      it too quickly, and the final line about living with not knowing
+      for seven years. After this beat, subsequent prose may reference
+      the journalist's sense of obligation to Iwan as a quiet
+      throughline; do NOT have characters reference the letter unless the
+      player has shown it.
+
+  - id: ordnance_map_noticed
+    name: Noticed the marked map
+    description: |
+      The player finds the 2017 OS map in the desk drawer with the
+      previous occupant's pencil markings — small circles near the Black
+      Dog Bend, a question mark by Tan-y-coed, a pencilled "T?" by the
+      pub. The previous occupant was looking too.
+    notes_to_llm: |
+      Fire when the player examines the desk drawer or the map with
+      attention. Narrate the markings concretely — they suggest the
+      previous resident reached similar suspicions. This is an
+      atmospheric beat: the question "who was the previous occupant"
+      need not resolve. Use sparingly in later prose as a quiet sense
+      that the player is not the first.
+
+  - id: phoned_iwan_from_the_vicarage
+    name: Phoned Iwan from the vicarage
+    description: |
+      The player uses the corded landline in the hall to phone Iwan
+      Pritchard on the number from his letter. They agree the player
+      will come up to Lower Hafod when convenient. Brief, formal, both
+      sides careful.
+    requires_beats: [letter_from_iwan_read]
+    notes_to_llm: |
+      Fire when the player picks up the receiver and dials Iwan, not on
+      a general "I should phone him" intent. The conversation is short
+      — Iwan is reserved on the phone and prefers to talk in person.
+      After this beat, a first visit to Lower Hafod reads as expected
+      rather than cold; Iwan will be at home, having put the kettle on.
+
+  # ─────────────────────── Tom Bevan's ladder ───────────────────────
+  # Five rungs from "stranger at the bar" to "going into Knighton on
+  # Monday". Each rung is one quiet shift in conversation; together they
+  # pace Tom's unburdening across multiple scenes so the player feels
+  # progress rather than a binary reveal.
 
   - id: tom_speaks_of_megan_as_a_person
     name: Tom speaks of Megan
@@ -366,6 +419,120 @@ beats:
       time in the story. Do not fire this if the player has been
       lobbying for it; it has to be his.
 
+  # ─────────────────────── Auxiliary character beats ───────────────────────
+  # None of these gate endings directly. They add parallel investigative
+  # texture (Gareth pointing, Maud's hint about Helen), atmospheric weight
+  # (Owain's folklore, Iwan's grief at the bend), and moral pressure
+  # (Wendy's request) so locations beyond the three main ladders carry
+  # narrative interest and the player has reasons to visit them.
+
+  - id: gareth_points_to_tom
+    name: Gareth points to Tom
+    description: |
+      Father Gareth Hughes, speaking around the seal of confession,
+      tells the player they should speak to Tom Bevan — "properly".
+      He names Tom as someone worth listening to without naming what
+      Tom might say.
+    notes_to_llm: |
+      Fire when Father Gareth, in conversation with the player, steers
+      them toward Tom Bevan. Narrate the priest's careful indirection —
+      he is bound by the seal of confession (Eluned confessed to him in
+      2020) and cannot say more. After this beat, the player has a
+      pastoral hint that Tom is the witness who matters; subsequent Tom
+      scenes can register the player as someone who arrived knowing
+      where to look.
+
+  - id: gareth_acknowledges_the_seal
+    name: Gareth acknowledges the seal
+    description: |
+      Father Gareth confirms, without saying what, that there is
+      something he heard in confession that he cannot speak of. The
+      player understands there is a confessional weight on this case.
+    notes_to_llm: |
+      Fire when Gareth, in a quiet moment, acknowledges the seal as a
+      thing he is upholding rather than denying knowledge. He does not
+      hint at the content; he confirms the existence. Use sparingly —
+      it adds moral weight without being load-bearing. Players who
+      never visit St Caradoc's or Knighton can finish the game without
+      this beat.
+
+  - id: owain_tells_of_the_dog
+    name: Owain tells of the dog
+    description: |
+      Owain Pugh, in his folklore voice, tells the player the
+      black-dog story of the Bend — sightings before deaths, the
+      grass that grows differently below the flowers, the older
+      names. The player cannot tell which parts Owain saw and which
+      he half-remembers.
+    notes_to_llm: |
+      Fire when Owain holds forth on the Black Dog Bend folklore.
+      Narrate his theatricality — leaning in, the storyteller's gear,
+      the small disclaimer about which parts are rubbish. This is
+      atmosphere and red herring; nothing about the dog is true. The
+      beat exists so the Bend feels storied when the player visits.
+
+  - id: owain_lets_slip_about_iwan
+    name: Owain lets slip about Iwan
+    description: |
+      Owain, loyal but unguarded, mentions Iwan's monthly flowers at
+      the Black Dog Bend — that he goes at dawn on the 14th and
+      "doesn't speak of it, mind." The player learns of Iwan's
+      private grief from someone other than Iwan.
+    notes_to_llm: |
+      Fire when Owain shares this detail in passing, usually after
+      the player has shown they care about Iwan as a person. Narrate
+      Owain's brief loss of his usual filter — he hears himself say
+      it, then changes the subject. After this beat, a visit to the
+      Bend reads differently for the player; Iwan's reserve at Lower
+      Hafod also reads differently.
+
+  - id: maud_lets_a_name_slip
+    name: Maud lets a name slip
+    description: |
+      Maud Pryce, gossiping about the case in her postmistress way,
+      mentions that DC Helen Mortimer "wasn't happy" about how the
+      Pritchard case closed. She frames it as something she should
+      not have said.
+    notes_to_llm: |
+      Fire when Maud, in conversation, drops Helen's name as a source
+      worth approaching. Maud will not name Helen unprompted on a
+      first visit; the player needs to have shown they already know
+      a little, or to have stayed through one of Maud's silences.
+      Narrate the moment as a Maud-special: "Now you didn't hear that
+      from me." After this beat, Helen's notes_to_llm may register
+      the player as having arrived via a village hint.
+
+  - id: wendy_asks_you_to_stop
+    name: Wendy asks you to stop
+    description: |
+      Wendy Pritchard tells the player, plainly and without anger,
+      that she wants the investigation dropped. She is not throwing
+      them out; she is asking. The player understands there is a real
+      human cost to continuing.
+    notes_to_llm: |
+      Fire when Wendy speaks the request directly. Narrate her composure
+      — civil because of how she was raised, not because she does not
+      mind. She uses the word "please". Distinct from the village
+      running the player out: this is moral pressure, not hostility.
+      After this beat, the option to walk away reads as a real choice
+      with real weight; do not fire `village_runs_you_out` from this
+      alone.
+
+  - id: examined_the_crash_site
+    name: Examined the crash site
+    description: |
+      The player walks the lay-by and verge at the Black Dog Bend.
+      They see the flowers, the place where the grass grows differently
+      below the embankment, and the faint trace where the Mini went
+      over. They stand where Megan died.
+    notes_to_llm: |
+      Fire ONLY when the player is physically at the Black Dog Bend —
+      standing on the lay-by, walking the verge, near enough to touch
+      the flowers. Do NOT fire when the player merely looks at a map
+      showing the Bend, hears about it, or thinks about it; their
+      body must be there. Narrate the place soberly; this is a quiet
+      beat, not a revelation.
+
   # ─────────────────────── Negative beats ───────────────────────
 
   - id: tom_closes_off
@@ -443,29 +610,39 @@ beats:
   # Each is mutually exclusive with the others. The LLM may fire AT MOST ONE
   # decision beat per playthrough; once one is in state, the others are
   # blocked.
+  #
+  # Evidence is encoded via `requires_any_beats` rather than `requires_beats`
+  # so the player can reach a climax via Tom's account OR Dylan's admission
+  # OR (for filing / confronting) Helen's notes. This is what keeps the
+  # story branching: no single character is mandatory infrastructure.
 
   - id: decided_to_file
     name: Decided to file
     description: |
       The player has explicitly chosen to write up the story and file
       it with the magazine. The point of no return.
-    requires_beats: [tom_named_a_vehicle, dylan_admits_he_knows]
+    requires_any_beats:
+      - tom_named_a_vehicle
+      - dylan_admits_he_knows
+      - helen_hands_over_notes
     blocked_by_beats:
       - decided_to_walk_away
       - decided_to_confront_eluned
       - decided_to_tell_iwan_privately
       - village_runs_you_out
     prerequisites: |
-      The player must have the minimum evidence (engine-enforced via
-      requires_beats) AND must say it explicitly: "I'm writing this up",
-      "I'm filing the story", "the editor wants the draft by Friday",
-      or pick an option that means the same.
+      The player must have at least one credible piece of evidence
+      (engine-enforced via requires_any_beats — any one of Tom's vehicle
+      naming, Dylan's admission, or Helen's notes) AND must say it
+      explicitly: "I'm writing this up", "I'm filing the story", "the
+      editor wants the draft by Friday", or pick an option that means
+      the same.
     notes_to_llm: |
-      Do not pre-empt the player. If they have the evidence but have
-      not said they are filing, do not fire this. The ending downstream
-      of this beat is irrevocable. Once this fires the next turn
-      should flow toward EndGame with ending_id "published_story" —
-      the player sits at the desk in the vicarage and writes.
+      Do not pre-empt the player. If they have evidence but have not
+      said they are filing, do not fire this. The ending downstream of
+      this beat is irrevocable. Once this fires the next turn should
+      flow toward EndGame with ending_id "published_story" — the
+      player sits at the desk in the vicarage and writes.
 
   - id: decided_to_walk_away
     name: Decided to walk away
@@ -488,7 +665,10 @@ beats:
     description: |
       The player has explicitly chosen to drive up to Tan-y-coed and
       put what they know to Eluned Vaughn herself.
-    requires_beats: [tom_named_a_vehicle, dylan_admits_he_knows]
+    requires_any_beats:
+      - tom_named_a_vehicle
+      - dylan_admits_he_knows
+      - helen_hands_over_notes
     blocked_by_beats:
       - decided_to_file
       - decided_to_walk_away
@@ -508,7 +688,9 @@ beats:
     description: |
       The player has explicitly chosen to tell Iwan what they have
       learned, without filing the story.
-    requires_beats: [tom_named_a_vehicle]
+    requires_any_beats:
+      - tom_named_a_vehicle
+      - dylan_admits_he_knows
     blocked_by_beats:
       - decided_to_file
       - decided_to_walk_away
