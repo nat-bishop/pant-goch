@@ -497,7 +497,7 @@ RUN TURN (opening_seed=None, player_pick=None):
     - if next is EndGame: ending.requires_beats all in unlocked_beats?
     - on validation failure: ModelRetry with error, up to N=2
     - on final failure: rewrite next as ContinueScene with a synthetic option ("[engine: ending prereqs not met; continue scene]"); log error
-  - stream prose word-by-word (paced ~80ms/word via paced_word_emitter)
+  - stream prose word-by-word (paced ~104ms/word via paced_word_emitter)
   - append (prose, applied_state_changes, options_or_next) to state.dialogue_history
   - dispatch next:
     - ContinueScene: emit options; wait for player pick; recurse to RUN TURN with player_pick

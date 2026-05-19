@@ -2,7 +2,7 @@
 
 Two responsibilities:
 
-1. **Paced word emitter.** The 80 ms pace floor is non-negotiable —
+1. **Paced word emitter.** The 104 ms pace floor is non-negotiable —
    it's the source of truth for streaming cadence, NOT the frontend's
    job to re-pace. Two call sites: the scene runner's phase-2 prose
    stream and the chronicler's entry stream.
@@ -28,7 +28,7 @@ from typing import Any
 
 # ───────────────────────── paced word-stream emitter ─────────────────────────
 
-WORD_PACE_S = 0.08  # min seconds between paced word emissions
+WORD_PACE_S = 0.104  # min seconds between paced word emissions
 
 _WORD_RE = re.compile(r"\S+\s*")
 
