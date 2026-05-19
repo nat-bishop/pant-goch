@@ -314,23 +314,31 @@ def build_scene_runner_bundle(
     output_type is passed at agent.run() time via NativeOutput, except
     the prose writer which uses `output_type=str`.
     """
+    # `name=` is the suffix in the per-agent span name
+    # (`invoke_agent {name}` under instrumentation version 3 — set in
+    # main.py's `instrument_pydantic_ai` call). Without it, all five
+    # agents would share one indistinguishable span name.
     phase1 = Agent[None, StateChangeBundle](
         model=model,
+        name="phase1",
         system_prompt=build_phase1_system_prompt(world),
         output_retries=3,
     )
     prose_writer = Agent[None, str](
         model=model,
+        name="prose_writer",
         system_prompt=build_prose_writer_system_prompt(world),
         output_retries=3,
     )
     choice_author = Agent[None, ChoiceBundle](
         model=model,
+        name="choice_author",
         system_prompt=build_choice_author_system_prompt(world),
         output_retries=3,
     )
     populator = Agent[None, NpcPlacementBundle](
         model=model,
+        name="populator",
         system_prompt=build_populator_system_prompt(world),
         output_retries=3,
     )
@@ -533,6 +541,7 @@ def build_chronicler_agent(
     """
     return Agent[None, ChronicleEntry](
         model=model,
+        name="chronicler",
         system_prompt=build_chronicler_system_prompt(world),
         # Match phase1/prose_writer/choice_author/populator. Needed so the
         # canonical _no_duplicate_npc_ids validator triggers a retry rather

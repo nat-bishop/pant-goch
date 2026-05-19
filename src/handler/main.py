@@ -73,7 +73,10 @@ logfire.configure(
     console=ConsoleOptions() if _BOOT_SETTINGS.handler_logfire_console else False,
     scrubbing=False,
 )
-logfire.instrument_pydantic_ai()
+# version=3 names the per-agent span `invoke_agent {agent.name}` (e.g.
+# `invoke_agent phase1`) instead of the v2 default `agent run` — the
+# `name=` kwarg on each Agent in agents.py supplies the suffix.
+logfire.instrument_pydantic_ai(version=3)
 # `record="failure"` is critical — `record="all"` floods stdout during
 # streaming chat completions and was the observed cause of a logfire-buffer
 # blow-up that killed v1's sidecar mid-day. Don't change.

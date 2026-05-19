@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Awaitable, Callable
+from contextlib import contextmanager
 from typing import Union
 
 import logfire
@@ -112,6 +113,22 @@ class LeaveRequested(Exception):
     through the engine."""
 
 
+@contextmanager
+def _root_span(name: str, **attrs):
+    """Open a logfire span that starts a NEW root trace, severing the
+    OTEL context this is invoked under.
+
+    Why: scenes/turns/chronicler all execute inside an asyncio.Task
+    spawned from POST /start. Without detaching, OTEL nests every span
+    they create under the long-dead POST /start request span — turns
+    minutes apart all collapse into one bloated request trace. The
+    `attach_context({})` call clears the captured context so the span
+    inside becomes a root.
+    """
+    with logfire.attach_context({}), logfire.span(name, **attrs):
+        yield
+
+
 async def _maybe_await(value):
     """If the callable returned an awaitable, await it. Otherwise return
     as-is. Keeps the same call sites usable by sync (test stub, CLI) and
@@ -167,34 +184,36 @@ async def _close_via_departure(
     `LeaveRequested` from a pick callback) and the engine's turn-count
     guardrail. Emits the prose word-by-word over SSE (when supplied),
     appends a `TurnRecord`, then assembles EndScene / EndGame via
-    `close_scene`. Fires the matching scene-end SSE event."""
-    try:
-        prose = await emit_departure_prose(bundle, runtime, state)
-    except UnexpectedModelBehavior as e:
-        logfire.warn(
-            "departure_prose fallback: retries exhausted; emitting generic prose",
-            error=str(e),
-        )
-        prose = _fallback_prose(departure=True)
+    `close_scene`. Fires the matching scene-end SSE event.
+    """
+    with _root_span("scene_close", scene_id=state.scene_id, location=state.player_location):
+        try:
+            prose = await emit_departure_prose(bundle, runtime, state)
+        except UnexpectedModelBehavior as e:
+            logfire.warn(
+                "departure_prose fallback: retries exhausted; emitting generic prose",
+                error=str(e),
+            )
+            prose = _fallback_prose(departure=True)
 
-    append_turn_record(state, prose=prose, applied_state_changes=[])
+        append_turn_record(state, prose=prose, applied_state_changes=[])
 
-    if emit_event is not None:
-        await paced_word_emitter(
-            _words_from_text(prose),
-            emit_event,
-            event_kind="prose_word",
-        )
+        if emit_event is not None:
+            await paced_word_emitter(
+                _words_from_text(prose),
+                emit_event,
+                event_kind="prose_word",
+            )
 
-    prose_part = close_scene(bundle.world, state, prose)
+        prose_part = close_scene(bundle.world, state, prose)
 
-    if emit_event is not None:
-        if isinstance(prose_part.next, EndGame):
-            await emit_event(game_over_event(prose_part.next.ending_id))
-        else:
-            await emit_event(scene_exit_event())
+        if emit_event is not None:
+            if isinstance(prose_part.next, EndGame):
+                await emit_event(game_over_event(prose_part.next.ending_id))
+            else:
+                await emit_event(scene_exit_event())
 
-    return prose_part
+        return prose_part
 
 
 async def run_turn(
@@ -329,20 +348,21 @@ async def play_scene(
     enter_scene(state, bundle.world, state.player_location)
 
     # ── populator: resolve scene-entry NPC placements ──
-    try:
-        placements = await emit_placements(bundle, state)
-    except UnexpectedModelBehavior as e:
-        logfire.warn(
-            "populator fallback: retries exhausted; using default placements",
-            error=str(e),
-        )
-        placements = NpcPlacementBundle()
-    await _apply_placements(state, bundle, placements, emit_event=emit_event)
+    with _root_span("scene_enter", scene_id=state.scene_id, location=state.player_location):
+        try:
+            placements = await emit_placements(bundle, state)
+        except UnexpectedModelBehavior as e:
+            logfire.warn(
+                "populator fallback: retries exhausted; using default placements",
+                error=str(e),
+            )
+            placements = NpcPlacementBundle()
+        await _apply_placements(state, bundle, placements, emit_event=emit_event)
 
-    runtime.prose_writer_message_history = []
-    if emit_event is not None:
-        loc = bundle.world.locations[state.player_location]
-        await emit_event(scene_start_event(state.scene_id, loc.id, loc.name))
+        runtime.prose_writer_message_history = []
+        if emit_event is not None:
+            loc = bundle.world.locations[state.player_location]
+            await emit_event(scene_start_event(state.scene_id, loc.id, loc.name))
 
     while True:
         # Soft cap fires before the LLM call so we never waste tokens
@@ -357,15 +377,24 @@ async def play_scene(
                 bundle, runtime, state, emit_event=emit_event,
             )
 
-        prose_part = await run_turn(bundle, runtime, state)
+        # The pick_option / pick_free_text wait below stays OUT of the
+        # turn span — span duration should measure LLM work, not the idle
+        # wait for the player to click.
+        with _root_span(
+            "turn",
+            scene_id=state.scene_id,
+            turn_n=len(state.dialogue_history) + 1,
+            location=state.player_location,
+        ):
+            prose_part = await run_turn(bundle, runtime, state)
 
-        # ── emit state_change events ──
-        if emit_event is not None:
-            last_turn = state.dialogue_history[-1]
-            for change in last_turn.applied_state_changes:
-                await emit_event(state_change_event(
-                    kind="unlock_beat", payload={"beat_id": change.beat_id}
-                ))
+            # ── emit state_change events ──
+            if emit_event is not None:
+                last_turn = state.dialogue_history[-1]
+                for change in last_turn.applied_state_changes:
+                    await emit_event(state_change_event(
+                        kind="unlock_beat", payload={"beat_id": change.beat_id}
+                    ))
 
         # ── pace prose words ──
         if emit_event is not None:
@@ -483,7 +512,8 @@ async def play_session(
         # EndGame. The just-completed scene is still in dialogue_history;
         # the next enter_scene will clear it. Decompose into the two
         # state channels right here so the callback sees a settled state.
-        output = await emit_chronicle_entry(bundle, chronicler, world, state)
+        with _root_span("chronicler_call", scene_id=state.scene_id):
+            output = await emit_chronicle_entry(bundle, chronicler, world, state)
         state.case_file_entries.append(output.case_file_entry)
         for upd in output.npc_memory_updates:
             state.npc_memory[upd.npc_id].append(upd.note)
