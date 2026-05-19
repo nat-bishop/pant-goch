@@ -75,18 +75,18 @@ export function segmentText(text: string, index: GlossIndex): Segment[] {
   return out;
 }
 
-/** Split a flat word stream (each word may carry trailing whitespace
+/** Split a flat chunk stream (each chunk may carry trailing whitespace
  * including `\n\n`) into paragraph buckets. A paragraph ends after a
- * word whose trailing whitespace contains a blank line (`\n\n` or more).
- * Returns the words grouped per paragraph in order. */
-export function paragraphsFromWords(words: string[]): string[][] {
-  if (words.length === 0) return [];
+ * chunk whose trailing whitespace contains a blank line (`\n\n` or more).
+ * Returns the chunks grouped per paragraph in order. */
+export function paragraphsFromChunks(chunks: string[]): string[][] {
+  if (chunks.length === 0) return [];
   const out: string[][] = [[]];
-  for (const w of words) {
-    out[out.length - 1].push(w);
-    if (/\n\s*\n/.test(w)) out.push([]);
+  for (const c of chunks) {
+    out[out.length - 1].push(c);
+    if (/\n\s*\n/.test(c)) out.push([]);
   }
-  // Drop trailing empty bucket if the last word ended on a blank line.
+  // Drop trailing empty bucket if the last chunk ended on a blank line.
   if (out[out.length - 1].length === 0) out.pop();
   return out;
 }

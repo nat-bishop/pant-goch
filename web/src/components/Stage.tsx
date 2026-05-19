@@ -55,7 +55,7 @@ export function Stage() {
   };
 
   // Click-to-reveal: when the user clicks the panel during a streaming
-  // turn, snap visible words to full opacity. The space key does the
+  // turn, snap visible chunks to full opacity. The space key does the
   // same when the panel has focus. Server pacing is unaffected — this
   // collapses the *animation*, not the event stream.
   const onPanelClick = () => {

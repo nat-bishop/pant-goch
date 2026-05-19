@@ -72,7 +72,7 @@ from .sse import (
     location_change_event,
     npc_moved_event,
     options_event,
-    paced_word_emitter,
+    paced_clause_emitter,
     scene_exit_event,
     scene_start_event,
     state_change_event,
@@ -82,6 +82,25 @@ from .world import World
 
 
 EmitEvent = Callable[[dict], Awaitable[None]]
+
+
+async def _emit_paced(
+    emit_event: EmitEvent | None,
+    text: str,
+    *,
+    event_kind: str,
+    extra: dict | None = None,
+) -> None:
+    """No-op if `emit_event` is None (CLI / test drivers don't take an
+    emitter); otherwise stream `text` as paced clause events."""
+    if emit_event is None:
+        return
+    await paced_clause_emitter(
+        _words_from_text(text),
+        emit_event,
+        event_kind=event_kind,
+        extra=extra,
+    )
 
 
 # Callback shapes: sync OR async. The driver picks. CLI uses sync
@@ -198,12 +217,7 @@ async def _close_via_departure(
 
         append_turn_record(state, prose=prose, applied_state_changes=[])
 
-        if emit_event is not None:
-            await paced_word_emitter(
-                _words_from_text(prose),
-                emit_event,
-                event_kind="prose_word",
-            )
+        await _emit_paced(emit_event, prose, event_kind="prose_chunk")
 
         prose_part = close_scene(bundle.world, state, prose)
 
@@ -330,10 +344,10 @@ async def play_scene(
     drivers that don't expect it can leave it None).
 
     If `emit_event` is supplied, the scene also emits SSE events at each
-    boundary (scene_start, state_change, prose_word, options /
-    free_text_request / scene_exit / game_over). Prose words are paced at
-    80 ms by `paced_word_emitter` so the SSE client gets steady cadence
-    regardless of LLM speed.
+    boundary (scene_start, state_change, prose_chunk, options /
+    free_text_request / scene_exit / game_over). Prose is paced clause
+    by clause by `paced_clause_emitter` so the SSE client gets steady
+    cadence regardless of LLM speed.
 
     Scene-entry sequence: (1) enter_scene → init scene_id, clear
     dialogue_history, set player_location. (2) populator (emit_placements)
@@ -396,13 +410,8 @@ async def play_scene(
                         kind="unlock_beat", payload={"beat_id": change.beat_id}
                     ))
 
-        # ── pace prose words ──
-        if emit_event is not None:
-            await paced_word_emitter(
-                _words_from_text(prose_part.prose),
-                emit_event,
-                event_kind="prose_word",
-            )
+        # ── pace prose clauses ──
+        await _emit_paced(emit_event, prose_part.prose, event_kind="prose_chunk")
 
         # ── dispatch on next ──
         if isinstance(prose_part.next, Continue):
@@ -520,16 +529,14 @@ async def play_session(
         if on_chronicle_entry is not None:
             await _maybe_await(on_chronicle_entry(state, output))
 
-        # Pace the case-file entry's words out as SSE log_entry_word
-        # events. Frontend renders into the sidebar in cadence with the
-        # prose stream.
-        if emit_event is not None:
-            await paced_word_emitter(
-                _words_from_text(output.case_file_entry),
-                emit_event,
-                event_kind="log_entry_word",
-                extra={"scene_id": state.scene_id},
-            )
+        # Pace the case-file entry's clauses out so the sidebar fills in
+        # cadence with the prose stream.
+        await _emit_paced(
+            emit_event,
+            output.case_file_entry,
+            event_kind="log_entry_chunk",
+            extra={"scene_id": state.scene_id},
+        )
 
         if isinstance(terminal.next, EndGame):
             state.game_over = GameOver(ending_id=terminal.next.ending_id)

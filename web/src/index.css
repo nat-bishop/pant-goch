@@ -699,17 +699,17 @@ a { color: inherit; text-decoration: none; }
 .para p { margin: 0 0 0.95em; color: var(--ink); }
 .para.prior p { color: var(--ink-soft); }
 
-.word {
+.chunk {
   opacity: 0;
-  animation: word-in 460ms ease-out forwards;
+  animation: chunk-in 520ms ease-out forwards;
   display: inline;
   white-space: pre-wrap;
 }
-.fast-forward .word {
+.fast-forward .chunk {
   animation: none;
   opacity: 1;
 }
-@keyframes word-in {
+@keyframes chunk-in {
   from { opacity: 0; filter: blur(1.5px); transform: translateY(1px); }
   to   { opacity: 1; filter: blur(0);     transform: translateY(0); }
 }
@@ -969,6 +969,6 @@ a { color: inherit; text-decoration: none; }
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
-  .word { opacity: 1; }
+  .chunk { opacity: 1; }
   .panel-scroll { scroll-behavior: auto; }
 }

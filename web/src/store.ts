@@ -22,8 +22,8 @@ export interface FreeTextRequest {
 export type WorldMode = "location" | "map" | "notes";
 
 export interface TurnPayload {
-  /** Prose words appended as `prose_word` events arrive. */
-  words: string[];
+  /** Prose chunks (clauses) appended as `prose_chunk` events arrive. */
+  chunks: string[];
   options: OptionPayload[];
   player_pick: OptionPayload | null;
   /** True until the prose stream's sentinel arrives. */
@@ -45,7 +45,7 @@ export interface SceneSnapshot {
 
 export interface CaseFileEntry {
   scene_id: number;
-  words: string[];
+  chunks: string[];
   streaming: boolean;
 }
 
@@ -71,8 +71,8 @@ interface Store {
   /** All scenes the session has seen, in order. Renderer iterates this
    * to draw the running history (prior scenes dim, current bright). */
   scenes: SceneSnapshot[];
-  /** Case-file entries, one per closed scene. Words append as
-   * log_entry_word events arrive; `streaming` freezes false on
+  /** Case-file entries, one per closed scene. Chunks append as
+   * log_entry_chunk events arrive; `streaming` freezes false on
    * sentinel. */
   case_file: CaseFileEntry[];
   /** Set when the choice author asks for typed input; cleared when the
@@ -99,7 +99,7 @@ interface Store {
   /** Currently-open gloss popup (or null). */
   activeGloss: ActiveGloss | null;
   /** Click-to-reveal: when true, the StreamingProse renders all
-   * words at full opacity, skipping per-word fade-in for the current
+   * chunks at full opacity, skipping per-chunk fade-in for the current
    * turn. Reset on each scene_start. */
   fastForward: boolean;
 
@@ -115,7 +115,7 @@ interface Store {
 }
 
 function makeTurn(): TurnPayload {
-  return { words: [], options: [], player_pick: null, streaming: true };
+  return { chunks: [], options: [], player_pick: null, streaming: true };
 }
 
 export const useStore = create<Store>((set) => ({
@@ -222,16 +222,16 @@ export const useStore = create<Store>((set) => ({
           return { scenes };
         }
 
-        case "prose_word": {
+        case "prose_chunk": {
           const scenes = [...s.scenes];
           const cur = scenes[scenes.length - 1];
           if (!cur) return s;
           let turns = [...cur.turns];
           let turn = turns[turns.length - 1];
           // idx===0 marks the start of a turn. If the current turn
-          // already has words, the previous turn is closed and we need
+          // already has chunks, the previous turn is closed and we need
           // to push a new turn-in-progress.
-          if (event.idx === 0 && !event.is_last && turn && turn.words.length > 0) {
+          if (event.idx === 0 && !event.is_last && turn && turn.chunks.length > 0) {
             turns = [...turns, makeTurn()];
             turn = turns[turns.length - 1];
           }
@@ -240,7 +240,7 @@ export const useStore = create<Store>((set) => ({
           } else {
             turns[turns.length - 1] = {
               ...turn,
-              words: [...turn.words, event.word],
+              chunks: [...turn.chunks, event.text],
             };
           }
           scenes[scenes.length - 1] = { ...cur, turns };
@@ -309,19 +309,19 @@ export const useStore = create<Store>((set) => ({
           };
         }
 
-        case "log_entry_word": {
+        case "log_entry_chunk": {
           const case_file = [...s.case_file];
           // Find or create the entry for this scene_id.
           let entry = case_file.find((e) => e.scene_id === event.scene_id);
           if (!entry) {
-            entry = { scene_id: event.scene_id, words: [], streaming: true };
+            entry = { scene_id: event.scene_id, chunks: [], streaming: true };
             case_file.push(entry);
           }
           const idx = case_file.indexOf(entry);
           if (event.is_last) {
             case_file[idx] = { ...entry, streaming: false };
           } else {
-            case_file[idx] = { ...entry, words: [...entry.words, event.word] };
+            case_file[idx] = { ...entry, chunks: [...entry.chunks, event.text] };
           }
           return { case_file };
         }

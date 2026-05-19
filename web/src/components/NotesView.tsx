@@ -6,8 +6,8 @@
 
 import { useStore } from "../store";
 
-function firstSentence(words: string[]): string {
-  const text = words.join("").trim();
+function firstSentence(chunks: string[]): string {
+  const text = chunks.join("").trim();
   if (!text) return "";
   const m = text.match(/^.+?[.!?](?:\s|$)/);
   return (m ? m[0] : text.slice(0, 180)).trim();
@@ -50,7 +50,7 @@ export function NotesView() {
               <span>Scene {entry.scene_id}</span>
             </div>
             <h3 className="note-title">{scene?.location_name ?? "—"}</h3>
-            <p className="note-excerpt">{firstSentence(entry.words)}</p>
+            <p className="note-excerpt">{firstSentence(entry.chunks)}</p>
             <div className="note-link">↳ scroll to entry</div>
           </button>
         );

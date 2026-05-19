@@ -1,11 +1,17 @@
-"""Server-Sent Events: paced word emitter + v2 event surface.
+"""Server-Sent Events: paced clause emitter + v2 event surface.
 
 Two responsibilities:
 
-1. **Paced word emitter.** The 80 ms pace floor is non-negotiable —
-   it's the source of truth for streaming cadence, NOT the frontend's
-   job to re-pace. Two call sites: the scene runner's phase-2 prose
-   stream and the chronicler's entry stream.
+1. **Paced clause emitter.** Prose is emitted in clause-sized chunks:
+   a clause is a run of words terminated by ``,;:.!?—–`` (with optional
+   trailing closing quotes/brackets), a paragraph break, or the soft
+   word cap. The pacer holds
+   ``max(words × CLAUSE_WORD_PACE_S, MIN_CLAUSE_PACE_S)`` between
+   emissions — sized so the reader has time to read the clause that
+   just appeared (~300 wpm). The pacer is the source of truth for
+   cadence, NOT the frontend's job to re-pace. Two call sites: the
+   scene runner's phase-2 prose stream and the chronicler's entry
+   stream.
 
 2. **Event helpers.** Small builder functions for the v2 SSE event
    surface (SPEC §5 table). Plain dicts on the wire so the frontend's
@@ -26,11 +32,31 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
 
-# ───────────────────────── paced word-stream emitter ─────────────────────────
+# ───────────────────────── paced clause-stream emitter ─────────────────────────
 
-WORD_PACE_S = 0.08  # min seconds between paced word emissions
+# Per-word hold inside a clause. 0.20s × words ≈ 300 wpm, sitting between
+# the average ~250 wpm comfortable reading speed and the comprehension
+# ceiling. The fade-in animation runs concurrently.
+CLAUSE_WORD_PACE_S = 0.20
+# Floor so a one-word clause (e.g. "Yes.") still holds long enough to read.
+MIN_CLAUSE_PACE_S = 0.32
+# Hard cap on words per clause when the prose has no internal punctuation.
+# Keeps runaway clauses from arriving as one big block.
+MAX_CLAUSE_WORDS = 8
 
 _WORD_RE = re.compile(r"\S+\s*")
+# Clause-terminating punctuation, optionally followed by closing
+# quotes/brackets. Comma and semicolon are included so the pacer breaks
+# at natural breath points, not only sentence endings — readers reading
+# at ~300 wpm rely on those pauses.
+_CLAUSE_END_RE = re.compile(r"[,;:.!?—–][\"'\)\]\}»]*$")
+_PARA_BREAK_RE = re.compile(r"\n\s*\n")
+
+
+def _is_clause_end(word: str) -> bool:
+    if _PARA_BREAK_RE.search(word):
+        return True
+    return bool(_CLAUSE_END_RE.search(word.rstrip()))
 
 
 async def _words_from_text(text: str) -> AsyncIterator[str]:
@@ -51,8 +77,6 @@ async def _words_from_stream(chunks: AsyncIterator[str]) -> AsyncIterator[str]:
             match = _WORD_RE.match(buf)
             if not match:
                 break
-            # Word is "complete" iff there's whitespace after it OR we know
-            # more content is coming. Trailing-whitespace match means complete.
             word = match.group(0)
             # If the buffer is exactly the match and the match has no trailing
             # whitespace, the word might still be growing. Hold it.
@@ -64,41 +88,63 @@ async def _words_from_stream(chunks: AsyncIterator[str]) -> AsyncIterator[str]:
         yield buf
 
 
-async def paced_word_emitter(
+async def _clauses_from_words(
+    word_source: AsyncIterator[str],
+) -> AsyncIterator[tuple[str, int]]:
+    """Group an async word stream into ``(clause_text, word_count)``
+    pairs. A clause closes on terminal punctuation, a paragraph break,
+    or the soft word cap. Joining the clause texts reconstructs the
+    original text."""
+    buf: list[str] = []
+    n_words = 0
+    async for word in word_source:
+        buf.append(word)
+        n_words += 1
+        if _is_clause_end(word) or n_words >= MAX_CLAUSE_WORDS:
+            yield "".join(buf), n_words
+            buf = []
+            n_words = 0
+    if buf:
+        yield "".join(buf), n_words
+
+
+async def paced_clause_emitter(
     word_source: AsyncIterator[str],
     emit: Callable[[dict], Awaitable[None]],
     *,
     event_kind: str,
-    min_interval: float = WORD_PACE_S,
     extra: dict | None = None,
 ) -> str:
-    """Emit each word from `word_source` as an SSE event, throttled to at
-    least `min_interval` seconds between emissions. Returns the accumulated
-    full text.
+    """Group `word_source` into clauses and emit each as one SSE event,
+    holding ``max(words × CLAUSE_WORD_PACE_S, MIN_CLAUSE_PACE_S)``
+    seconds between emissions. The constants are read at call time so
+    tests can monkeypatch them down. Returns the accumulated full text.
 
     Two call sites in v2:
     1. Phase-2 prose: `word_source = _words_from_stream(llm_stream)` —
-       words emerge as the LLM produces them; the emitter throttles when
-       the LLM outpaces the cadence and passes through when the LLM is
-       slower.
+       words emerge as the LLM produces them; we group into clauses and
+       throttle when the LLM outpaces the cadence and pass through when
+       the LLM is slower.
     2. Log entry: same shape (`_words_from_stream(log_stream)`).
     """
     next_slot = time.monotonic()
     idx = 0
     full = ""
-    async for word in word_source:
+    async for clause, n_words in _clauses_from_words(word_source):
         now = time.monotonic()
         if now < next_slot:
             await asyncio.sleep(next_slot - now)
-        payload: dict[str, Any] = {"event": event_kind, "idx": idx, "word": word}
+        payload: dict[str, Any] = {"event": event_kind, "idx": idx, "text": clause}
         if extra:
             payload.update(extra)
         await emit(payload)
-        full += word
+        full += clause
         idx += 1
-        next_slot = time.monotonic() + min_interval
+        next_slot = time.monotonic() + max(
+            n_words * CLAUSE_WORD_PACE_S, MIN_CLAUSE_PACE_S,
+        )
     sentinel: dict[str, Any] = {
-        "event": event_kind, "idx": idx, "word": "", "is_last": True,
+        "event": event_kind, "idx": idx, "text": "", "is_last": True,
     }
     if extra:
         sentinel.update(extra)
