@@ -397,7 +397,7 @@ async def emit_placements(
     Empty bundle is the common case — most scene entries don't need
     movement. Caller (scene_loop.play_scene) applies non-empty
     placements to `state.npc_locations` before the populator-aware
-    Phase 1 / Phase 2 prompts render `[PRESENT]`.
+    Phase 1 / Phase 2 prompts render `## Present`.
 
     Stateless across scenes (no message_history); the case file
     (`state.case_file_entries`) is the cross-scene context the populator

@@ -154,12 +154,12 @@ def test_phase1_prose_writer_choice_author_system_prompts_diverge():
     assert p1 != ca, "phase 1 and choice author must diverge"
     assert pw != ca, "prose writer and choice author must diverge"
     # Phase 1 carries beat structure; the others do not.
-    assert "[THE TRUTH]" in p1
-    assert "[THE TRUTH]" not in pw
-    assert "[THE TRUTH]" not in ca
+    assert "## The Truth" in p1
+    assert "## The Truth" not in pw
+    assert "## The Truth" not in ca
     # Prose writer carries voice + crime overview.
-    assert "[WHAT HAPPENED]" in pw
-    assert "[STYLE EXAMPLES]" in pw
+    assert "## What Happened" in pw
+    assert "## Style Examples" in pw
     # Choice author has neither.
-    assert "[WHAT HAPPENED]" not in ca
-    assert "[STYLE EXAMPLES]" not in ca
+    assert "## What Happened" not in ca
+    assert "## Style Examples" not in ca

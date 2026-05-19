@@ -2,12 +2,12 @@
 // label + restart confirmation + connection banner) and the scrollable
 // region containing either the Frontispiece (pre-start) or the chapters.
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "../store";
 import { Chapter } from "./Chapter";
 import { Frontispiece } from "./Frontispiece";
+import { CatchUpLink } from "./CatchUpLink";
 import { buildGlossIndex } from "./glosses";
-import { useMemo } from "react";
 
 export function PanelScroll({
   starting,
@@ -33,6 +33,46 @@ export function PanelScroll({
     () => (world ? buildGlossIndex(world.glosses) : null),
     [world],
   );
+
+  // Follow-the-live-edge state. The sentinel renders as a sibling after
+  // the last Chapter; an IntersectionObserver rooted on `.panel-scroll`
+  // toggles `following`. rootMargin -80px on the bottom keeps us from
+  // flapping at the very edge during smooth page-turns. `followingRef`
+  // mirrors the state for synchronous reads (page-turn gate, auto-scroll
+  // gate) without forcing those effects to re-run on every flip.
+  const [following, setFollowing] = useState(true);
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  const followingRef = useRef(true);
+  useEffect(() => {
+    const panel = scrollRef.current;
+    const sentinel = sentinelRef.current;
+    if (!panel || !sentinel) return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        const entry = entries[0];
+        if (!entry) return;
+        if (followingRef.current === entry.isIntersecting) return;
+        followingRef.current = entry.isIntersecting;
+        setFollowing(entry.isIntersecting);
+      },
+      { root: panel, rootMargin: "0px 0px -80px 0px", threshold: 0 },
+    );
+    io.observe(sentinel);
+    return () => io.disconnect();
+  }, [phase]);
+
+  const catchUp = useCallback(() => {
+    // Scroll the panel to its absolute bottom (past the colophon). The
+    // sentinel ends up safely above the panel-bottom-80px deadzone used
+    // by the follow IntersectionObserver, so `following` flips true and
+    // the catch-up link hides.
+    const panel = scrollRef.current;
+    if (!panel) return;
+    panel.scrollTo({
+      top: panel.scrollHeight - panel.clientHeight,
+      behavior: "smooth",
+    });
+  }, []);
 
   // Track which chapter is centred so the world pane swaps backdrops.
   // Effect re-binds only when a scene is added — scene_id lookup inside
@@ -66,19 +106,20 @@ export function PanelScroll({
     return () => el.removeEventListener("scroll", onScroll);
   }, [scenes.length, setCurrentChapterIdx]);
 
-  // Auto-scroll into newest chapter on append.
+  // Auto-scroll into newest chapter on append. Skip when the player is
+  // scrolled up reading older content — yanking them down would
+  // contradict the page-turn gate; the CatchUpLink covers their return.
   useEffect(() => {
     if (scenes.length === 0) return;
+    if (!followingRef.current) return;
     const last = scenes[scenes.length - 1];
     const node = document.getElementById(`ch-${last.scene_id}`);
-    if (node) {
-      // Delay so the chapter has mounted.
-      const t = setTimeout(
-        () => node.scrollIntoView({ behavior: "smooth", block: "start" }),
-        80,
-      );
-      return () => clearTimeout(t);
-    }
+    if (!node) return;
+    const t = setTimeout(
+      () => node.scrollIntoView({ behavior: "smooth", block: "start" }),
+      80,
+    );
+    return () => clearTimeout(t);
   }, [scenes.length]);
 
   return (
@@ -105,6 +146,7 @@ export function PanelScroll({
         ) : (
           <>
             {scenes.map((scene, i) => {
+              const isCurrent = i === scenes.length - 1;
               const fromLocationName =
                 i > 0 ? scenes[i - 1].location_name : null;
               return (
@@ -112,12 +154,18 @@ export function PanelScroll({
                   key={scene.scene_id}
                   scene={scene}
                   chapterNo={i + 1}
-                  isCurrent={i === scenes.length - 1}
+                  isCurrent={isCurrent}
                   fromLocationName={fromLocationName}
                   glossIndex={glossIndex}
+                  following={following}
                 />
               );
             })}
+            <div
+              className="live-sentinel"
+              ref={sentinelRef}
+              aria-hidden="true"
+            />
             {phase === "game_over" && (
               <div className="colophon">
                 <div className="colophon-rule" />
@@ -135,6 +183,9 @@ export function PanelScroll({
                 <div className="colophon-rule" />
                 in progress
               </div>
+            )}
+            {!following && phase !== "game_over" && phase !== "stranded" && (
+              <CatchUpLink onCatchUp={catchUp} />
             )}
           </>
         )}

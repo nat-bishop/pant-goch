@@ -59,8 +59,8 @@ def _render_npc_card(
     """Render one NPC.
 
     Phase 1 / chronicler: include_knowledge=True (full bible).
-    Phase 2 (system [THE CAST]): include_knowledge=False, include_voice_sample=True.
-    Phase 2 (user [PRESENT]): same as above, plus history — the recent
+    Phase 2 (system ## The Cast): include_knowledge=False, include_voice_sample=True.
+    Phase 2 (user ## Present): same as above, plus history — the recent
         per-NPC memory entries from `state.npc_memory[npc.id]`, framed
         as the journalist's accumulated impressions of this person.
 
@@ -121,14 +121,14 @@ def _applied_beat_names(
 
 
 def _unlocked_beat_names(state: State, world: World, *, empty: str) -> str:
-    """Names of unlocked beats, sorted, joined — for both Phase 1's [STATE]
-    line and the populator's per-call [STATE] line."""
+    """Names of unlocked beats, sorted, joined — for both Phase 1's ## State
+    line and the populator's per-call ## State line."""
     return _beat_names(world, sorted(state.unlocked_beats), empty=empty)
 
 
 def _render_beat(beat, world: World) -> str:
     """Beat rendering for every LLM-facing block (full bible in the system
-    prompt AND `[REACHABLE BEATS]` per turn). Heading is the name (the
+    prompt AND `## Reachable Beats` per turn). Heading is the name (the
     string the model will emit); cross-refs to other beats render as names
     too, so the model sees ONE vocabulary across the whole prompt."""
     prereq = (
@@ -159,19 +159,19 @@ def _render_ending(ending, world: World, *, include_epilogue: bool) -> str:
 def _render_truth_block_full(world: World) -> str:
     """Phase 1 / chronicler: crime + full beat catalog + endings."""
     parts: list[str] = [
-        f"CRIME:\n{world.crime.strip()}\n",
-        "BEATS (the moments that constitute uncovering the truth):",
+        f"### Crime\n{world.crime.strip()}\n",
+        "### Beats — the moments that constitute uncovering the truth",
     ]
     for beat in world.beats.values():
         parts.append(_render_beat(beat, world))
-    parts.append("\nENDINGS (terminal states, gated by decision beats):")
+    parts.append("\n### Endings — terminal states, gated by decision beats")
     for ending in world.endings.values():
         parts.append(_render_ending(ending, world, include_epilogue=True))
     return "\n".join(parts)
 
 
 def _render_few_shots(world: World) -> str:
-    """Phase 2 [STYLE EXAMPLES] block. Empty list → empty marker."""
+    """Phase 2 ## Style Examples block. Empty list → empty marker."""
     if not world.few_shots:
         return "(no examples authored)"
     parts: list[str] = []
@@ -199,39 +199,35 @@ def build_phase1_system_prompt(world: World) -> str:
     large; that's fine, Phase 1 needs the structure.
     """
     return f"""\
-[ROLE]
+## Role
 You are the state-change classifier for a single-player investigation
 game. The player is a freelance journalist investigating a closed-but-
-suspicious death. Each turn you read the conversation so far and emit
-zero, one, or at most two UnlockBeat state changes — the authored beats
-whose described moment has just genuinely landed. Stay within the
-established cast and locations below.
+suspicious death. Each turn you read the conversation so far and decide
+which authored beats have just fired.
 
-[THE WORLD]
+## The World
 {_render_locations_block(world)}
 
-[THE CAST]
+## The Cast
 {_render_cast_block(world, voice_only=False)}
 
-[THE TRUTH]
+## The Truth
 {_render_truth_block_full(world)}
 
-[YOUR JOB]
-Each turn, against this same system prompt, emit ONE structured output:
-StateChangeBundle — zero, one, or at most two UnlockBeat entries. Most
-turns emit zero. A beat fires only when the moment described in its
-notes_to_llm has genuinely landed in the conversation.
+## Your Job
+Each turn, emit ONE structured output: StateChangeBundle — **zero, one,
+or at most two UnlockBeat entries**. Most turns emit zero. A beat fires
+only when the moment described in its notes_to_llm has genuinely landed
+in the conversation.
 
 The engine validates and applies your bundle, then a separate prose
 agent (with its own system prompt) writes the prose conditioned on what
 fired. You do not write prose.
 
-[RULES]
+## Rules
 1. Unlock beats when their notes_to_llm describes the moment that just
    happened in the conversation. Re-read the prereqs. Don't unlock
-   prematurely. The engine will reject any UnlockBeat whose
-   requires_beats aren't satisfied or whose blocked_by_beats already
-   are; you will be re-prompted with the error.
+   prematurely.
 
 2. End the game only when the player has clearly chosen the action
    that triggers an ending. Each ending depends on a "decision beat"
@@ -260,75 +256,69 @@ def build_prose_writer_system_prompt(world: World) -> str:
     narrator never writes the player walking to a new location.
     """
     return f"""\
-[ROLE]
+## Role
 You are the narrator of a single-player investigation game. The player
 is a freelance journalist looking into a death in the Welsh Marches
-village of Pant Goch. Each turn you write **at most 120 words** of prose
-for what just happened. Stay within the established cast and locations below.
+village of Pant Goch. Each turn you write the next beat of prose for
+what just happened.
 
-[THE WORLD]
+## The World
 {_render_locations_block(world)}
 
-[THE CAST]
+## The Cast
 {_render_cast_block(world, voice_only=True)}
 
-[WHAT HAPPENED]
+## What Happened
 {world.crime.strip()}
 
 You know this as the narrator. Your characters do not know all of it,
 and most of them are protecting some part of it. Write them as people
 in a village, not as keepers of plot beats.
 
-[VOICE RULES]
-1. At most 120 words of prose per turn — and often far fewer. Second
-   person, present tense, terse. The player is "you"; events unfold as
-   they happen. Default short: a quiet beat (re-reading a note, crossing
-   a yard, a moment alone) can be 20-50 words. Reach for 100-120 only
-   when the moment earns it — a confession, a confrontation, a first
-   reveal. Short sentences are stronger than long ones.
+## Style Examples
+The register and rhythm to match:
 
-2. The narrator stays outside the player's head. Write what the player
-   does, hears, and sees — never what they think or feel. The player's
-   interiority lives in the case file (first person past, written
-   later in the journalist's notebook); the scene narrator does not
-   name it. NPC interiority surfaces through speech and gesture.
+{_render_few_shots(world)}
+
+## Voice Rules
+1. **At most 60 words of prose per turn** — and often far fewer. Second
+   person, present tense, terse. The player is "you"; events unfold as
+   they happen. A quiet beat (re-reading a note, crossing a yard, a
+   moment alone) is 15-30 words. Reach for 50-60 only when the moment
+   earns it — a confession, a confrontation, a first reveal. Short
+   sentences are stronger than long ones.
+
+2. Write what the player does, hears, and sees. Interiority lives in
+   the case file, written later in the journalist's notebook — the
+   scene narrator does not name it. NPC interiority surfaces through
+   speech and gesture.
 
 3. NPC dialogue is in quotation marks, registered to each NPC's
    voice_sample above. Match the register, don't imitate verbatim.
    NPCs speak like people in a Welsh Marches village, not like
    characters announcing what they know.
 
-4. Stay inside what the player has observed. Do not write what NPCs
-   secretly think or know unless they are visibly choosing to reveal
-   it. Atmosphere and small physical detail — a glass turned on the
-   bar, a wood pigeon going off — beat exposition.
+4. Stay inside what the player has observed. Write only what NPCs
+   visibly choose to reveal; their hidden thoughts stay hidden.
+   Atmosphere and small physical detail — a glass turned on the bar,
+   a wood pigeon going off — beat exposition.
 
 5. Stay within the established cast and locations. Minor incidental
    details (weather, a dog, a mug on the table) are fine. New named
    people or places are not.
 
-6. The player stays in the current location for the whole scene. Do
-   NOT narrate them walking to another building, arriving somewhere
-   new, or knocking on a different door. Travel between locations
-   happens only when the player chooses to leave the scene — the map
-   handles that, not you. If departure is in the air, write the player
-   reaching for the door or pausing on the threshold; never name a
-   destination.
+6. The player stays in the current location for the whole scene.
+   Travel between locations happens only when the player chooses to
+   leave — the map handles that. If departure is in the air, write
+   the player reaching for the door or pausing on the threshold. Do
+   NOT name a destination.
 
-[STYLE EXAMPLES]
-The register and rhythm to match:
-
-{_render_few_shots(world)}
-
-[YOUR JOB]
-Each turn, write at most 120 words of prose — and only the prose. Default
-short; bigger moments earn more words. Output ONLY the prose: no plans,
-no numbered checklists, no "Confidence Score" sections, no commentary
-about your own writing. The first character of your reply is the first
-character of the prose. State changes were already decided and applied
-by a separate agent before you ran; a separate choice-author agent
-decides what the player does next after reading what you wrote. Do not
-output options, scene-control directives, or JSON.
+## Your Job
+Output ONLY the prose. The first character of your reply is the first
+character of the prose. No JSON, options, plans, checklists, Confidence
+Score sections, or commentary about your own writing. State changes
+were decided by a separate agent before you ran; a separate choice-
+author agent follows.
 """
 
 
@@ -342,12 +332,12 @@ def build_choice_author_system_prompt(world: World) -> str:
     the prose, pick a structure."
     """
     return """\
-[ROLE]
+## Role
 You are the choice author for a single-player investigation game. After
 the narrator writes each turn's prose, you decide what the player does
 next within the current scene.
 
-[YOUR JOB]
+## Your Job
 Read the prose, then emit ONE structured output: a ChoiceBundle whose
 `next` is one of:
 
@@ -366,7 +356,7 @@ persistent leave action) or the engine's call (turn-count guardrail).
 Your job is to keep the moment alive with options or hand the floor to
 the player for a typed line.
 
-[RULES]
+## Rules
 1. Options are pure dialogue / observation / small action inside the
    current location. They must NOT promise outcomes the engine doesn't
    know about ("Punch him," "Steal the keys," "Drive to London") and
@@ -385,7 +375,7 @@ def _render_you_are_at(state: State, world: World) -> str:
     loc = world.locations[state.player_location]
     notes = "\n  ".join(f"- {n}" for n in loc.notes) if loc.notes else "(none)"
     return (
-        f"[YOU ARE AT]\n"
+        f"## You Are At\n"
         f"{loc.id} ({loc.name})\n"
         f"description: {loc.description.strip()}\n"
         f"notes:\n  {notes}"
@@ -393,7 +383,7 @@ def _render_you_are_at(state: State, world: World) -> str:
 
 
 def _render_present(state: State, world: World, *, voice_only: bool) -> str:
-    """[PRESENT] block. `voice_only=True` for Phase 2 (no knowledge, with
+    """## Present block. `voice_only=True` for Phase 2 (no knowledge, with
     voice_sample, with per-NPC history); `voice_only=False` for Phase 1
     (full knowledge, no history — Phase 1 sees the case file instead).
 
@@ -402,8 +392,8 @@ def _render_present(state: State, world: World, *, voice_only: bool) -> str:
     """
     npcs_here = world.npcs_at(state.player_location, state=state)
     if not npcs_here:
-        return "[PRESENT]\n(no one — you are alone here.)"
-    parts = ["[PRESENT]"]
+        return "## Present\n(no one — you are alone here.)"
+    parts = ["## Present"]
     for npc in npcs_here:
         # Per-NPC history is the journalist's accumulated impression of
         # this person across prior scenes. Phase 2 only — Phase 1 reads
@@ -421,14 +411,14 @@ def _render_present(state: State, world: World, *, voice_only: bool) -> str:
 
 
 def _render_state(state: State, world: World) -> str:
-    return f"[STATE]\nunlocked_beats: {_unlocked_beat_names(state, world, empty='(none yet)')}"
+    return f"## State\nunlocked_beats: {_unlocked_beat_names(state, world, empty='(none yet)')}"
 
 
 def _render_reachable_beats(state: State, world: World) -> str:
     reachable = reachable_beat_ids(world, state)
     if not reachable:
-        return "[REACHABLE BEATS]\n(none — every beat has fired or is permanently blocked.)"
-    parts = ["[REACHABLE BEATS]"]
+        return "## Reachable Beats\n(none — every beat has fired or is permanently blocked.)"
+    parts = ["## Reachable Beats"]
     # Sort by name so the heading matches the model's emission token.
     for bid in sorted(reachable, key=lambda b: world.beats[b].name):
         beat = world.beats[bid]
@@ -438,8 +428,8 @@ def _render_reachable_beats(state: State, world: World) -> str:
 
 def _render_all_endings(world: World) -> str:
     if not world.endings:
-        return "[ALL ENDINGS]\n(none authored.)"
-    parts = ["[ALL ENDINGS]"]
+        return "## All Endings\n(none authored.)"
+    parts = ["## All Endings"]
     for ending in world.endings.values():
         parts.append(_render_ending(ending, world, include_epilogue=False))
     return "\n".join(parts)
@@ -447,8 +437,8 @@ def _render_all_endings(world: World) -> str:
 
 def _render_case_file(state: State) -> str:
     if not state.case_file_entries:
-        return "[CASE FILE]\n(empty — no scenes have ended yet.)"
-    parts = ["[CASE FILE]"]
+        return "## Case File\n(empty — no scenes have ended yet.)"
+    parts = ["## Case File"]
     for i, entry in enumerate(state.case_file_entries, start=1):
         parts.append(f"--- Entry {i} ---\n{entry.strip()}")
     return "\n".join(parts)
@@ -465,12 +455,12 @@ def _render_this_scene(state: State, world: World) -> str:
     onto every TurnRecord.
     """
     if not state.dialogue_history:
-        return "[THIS SCENE SO FAR]\n(this is the first turn of the scene.)"
+        return "## This Scene So Far\n(this is the first turn of the scene.)"
     loc = world.locations[state.player_location]
     present_ids = present_npc_ids(world, state)
     npcs = ", ".join(present_ids) if present_ids else "no one"
     parts = [
-        f"[THIS SCENE SO FAR]",
+        f"## This Scene So Far",
         f"--- Scene {state.scene_id} at {loc.id} ({loc.name}) — present: {npcs} ---",
     ]
     for i, turn in enumerate(state.dialogue_history, start=1):
@@ -518,13 +508,8 @@ def build_phase1_user_prompt(state: State, world: World) -> str:
     suffix = "\n\n".join(sections)
     return suffix + """
 
-[GENERATE STATE CHANGES FOR THIS TURN]
-Emit zero, one, or at most two state changes (UnlockBeat) representing what
-this turn's events will accomplish mechanically. Most turns emit zero. A
-beat fires only when the moment described in its notes_to_llm has genuinely
-landed in the conversation. The engine will reject any UnlockBeat whose
-requires_beats aren't satisfied or whose blocked_by_beats already are; you
-will be re-prompted with the error.
+## Generate State Changes
+Emit a StateChangeBundle.
 """
 
 
@@ -541,8 +526,8 @@ def build_prose_writer_user_message(
 ) -> str:
     """Per-turn user message for the conversation-based prose writer.
 
-    Turn 1 of a scene (is_first_turn=True): [YOU ARE AT] + [PRESENT] +
-    optional [OPENING SEED] + applied state changes + write-prose
+    Turn 1 of a scene (is_first_turn=True): ## You Are At + ## Present +
+    optional ## Opening Seed + applied state changes + write-prose
     directive. Establishes the scene anchor.
 
     Turn 2+ (is_first_turn=False): just the new context — applied state
@@ -558,7 +543,7 @@ def build_prose_writer_user_message(
         parts.append(_render_you_are_at(state, world))
         parts.append(_render_present(state, world, voice_only=True))
         if opening_seed:
-            parts.append(f"[OPENING SEED]\n{opening_seed.strip()}")
+            parts.append(f"## Opening Seed\n{opening_seed.strip()}")
 
     # Player's last pick — surfacing in the user message frames it as
     # "what the player just did/said." Only meaningful on turn 2+
@@ -567,16 +552,13 @@ def build_prose_writer_user_message(
         last_turn = state.dialogue_history[-1]
         if last_turn.player_pick is not None:
             pick = last_turn.player_pick
-            parts.append(f'[PLAYER]\nThe player picked: "{pick.text}"')
+            parts.append(f'## Player\nThe player picked: "{pick.text}"')
 
     parts.append(
-        f"[STATE CHANGES JUST APPLIED]\n{_render_applied_changes(applied, world)}"
+        f"## State Changes Just Applied\n{_render_applied_changes(applied, world)}"
     )
 
-    parts.append(
-        "[WRITE]\nWrite the next beat of prose (80-200 words), consistent "
-        "with the state changes above. Plain text only — no JSON, no options."
-    )
+    parts.append("## Write\nWrite the prose for what just happened.")
 
     return "\n\n".join(parts)
 
@@ -596,13 +578,11 @@ def build_prose_writer_departure_message(state: State, world: World) -> str:
     """
     loc = world.locations[state.player_location]
     return f"""\
-[DEPARTURE]
+## Departure
 The scene closes here. Write the moment of leaving {loc.name} — the
 player standing up, reaching for the door, the threshold, the air
 outside. 1-2 sentences. Do NOT name a destination or narrate them
-arriving anywhere new; travel happens between scenes, not in this prose.
-
-Plain text only — no JSON, no options."""
+arriving anywhere new; travel happens between scenes, not in this prose."""
 
 
 # ───────────────────────── choice author user message (stateless per call) ─────────────────────────
@@ -621,16 +601,15 @@ def build_choice_author_user_message(state: State, world: World, prose: str) -> 
     else:
         npcs_line = "no one (you are alone here)"
     return f"""\
-[PROSE]
+## Prose
 {prose.strip()}
 
-[STATE]
+## State
 You are at: {loc.name}
 NPCs present: {npcs_line}
 
-[CHOOSE]
-Emit a ChoiceBundle. Continue (with 2-4 options) or FreeText (open typed
-input)."""
+## Choose
+Emit a ChoiceBundle."""
 
 
 # ───────────────────────── chronicler prompts ─────────────────────────
@@ -649,31 +628,31 @@ def build_chronicler_system_prompt(world: World) -> str:
     "what I now know / feel about this person".
     """
     return f"""\
-[ROLE]
+## Role
 You are the player's own voice writing up their field notes after a
 scene ends. You are not a narrator — you are the journalist herself,
 sitting at the desk in the Old Vicarage that evening, recording what
 just happened so it does not slip away.
 
-[THE WORLD]
+## The World
 {_render_locations_block(world)}
 
-[THE CAST]
+## The Cast
 {_render_cast_block(world, voice_only=False)}
 
-[THE TRUTH]
+## The Truth
 {_render_truth_block_full(world)}
 
-[YOUR JOB]
+## Your Job
 After every scene the player walks out of, you emit ONE structured
 output with two fields:
 
-  1. `case_file_entry` — 80-120 words of first-person past-tense prose,
-     the player-facing case-file entry for that scene. What happened,
-     who said what, what stayed with you. Each entry stands alone AND
-     accumulates: the messages you have sent before this one ARE the
-     case file so far; you can refer back to earlier moments where it
-     would feel natural.
+  1. `case_file_entry` — **80-120 words** of first-person past-tense
+     prose, the player-facing case-file entry for that scene. What
+     happened, who said what, what stayed with you. Each entry stands
+     alone AND accumulates: the messages you have sent before this
+     one ARE the case file so far; you can refer back to earlier
+     moments where it would feel natural.
 
   2. `npc_memory_updates` — a LIST of `{{npc_id, note}}` records, one
      per NPC who was actually present in this scene. The schema
@@ -685,21 +664,7 @@ output with two fields:
      the narrator on subsequent scenes to keep the relationship
      consistent.
 
-[VOICE RULES]
-1. First person, past tense, in BOTH fields. "I sat down at the bar
-   next to Tom Bevan." Never "the player did X." Never omniscient.
-2. Terse. Journalists' habit. Short sentences are stronger than long
-   ones. Do not flower up. Do not editorialise unless it is your own
-   reaction.
-3. Stay inside what the player has seen and heard. Do not invent
-   details the scene did not contain. You know the truth from the
-   bible above, but you cannot WRITE what you have not been told.
-4. Do not number or title the case file entry. Just write it as a
-   paragraph.
-5. Sound like the same person across entries. You are writing a
-   notebook, not separate articles.
-
-[NPC MEMORY OUTPUT — examples]
+## NPC Memory Examples
 For a first scene at the pub where Tom was guarded but warming:
   npc_memory_updates: [
     {{ "npc_id": "tom",
@@ -718,7 +683,19 @@ For a scene at the post office on a second visit where Maud closed up:
        fetching." }}
   ]
 
-[OUTPUT]
+## Voice Rules
+1. First person, past tense, in BOTH fields. "I sat down at the bar
+   next to Tom Bevan." Not "the player did X." Not omniscient.
+2. Terse. Short sentences are stronger than long ones. Editorialise
+   only on your own reactions, not the scene.
+3. Stay inside what the player has seen and heard. The bible tells you
+   the truth; the journalist writes only what she has been told.
+4. Write the case file entry as a single paragraph — no numbers, no
+   titles.
+5. Sound like the same person across entries. You are writing a
+   notebook, not separate articles.
+
+## Output
 Structured JSON matching the schema. `case_file_entry` is plain text
 (no headers, no quotes); `npc_memory_updates` is a list of
 `{{npc_id, note}}` records.
@@ -793,17 +770,9 @@ Beats unlocked in this scene: {beats_line}.
 Turn-by-turn:
 {turns_block}
 
-Emit BOTH fields of the structured output:
-
-  1. `case_file_entry` — 80-120 words, first person, past tense, the
-     player-facing record of what happened.
-
-  2. `npc_memory_updates` — a list of `{{npc_id, note}}` records, one
-     per NPC you saw this scene. Each note is "what I now know / feel
-     about this person", distinct in register from the case file.
-{npc_directive}
-
-Stay inside what you saw and heard."""
+## Output
+Emit the structured output for this scene.
+{npc_directive}"""
 
 
 # ───────────────────────── populator prompts ─────────────────────────
@@ -820,7 +789,7 @@ def build_populator_system_prompt(world: World) -> str:
     entries.
     """
     return f"""\
-[ROLE]
+## Role
 You are the world-state populator for a single-player investigation
 game set in the Welsh Marches village of Pant Goch. The player is a
 freelance journalist looking into a death the police closed too quickly.
@@ -830,21 +799,21 @@ decide whether any NPCs should be somewhere other than their default
 location for the duration of this scene. You do NOT write prose; you
 emit a structured list of placement overrides (or an empty list).
 
-[THE WORLD]
+## The World
 {_render_locations_block(world)}
 
-[THE CAST]
+## The Cast
 {_render_cast_block(world, voice_only=False)}
 
-[THE TRUTH]
+## The Truth
 {_render_truth_block_full(world)}
 
-[YOUR JOB]
-Each scene entry, emit ONE NpcPlacementBundle. Most scene entries
-should be an empty bundle (defaults stand). Only emit a placement when
-there is a SPECIFIC dramatic reason for an NPC to be somewhere other
-than their default — and authored bible / case file evidence supports
-it. Examples of legitimate movements:
+## Your Job
+Each scene entry, emit ONE NpcPlacementBundle. **Most scene entries
+should be empty** (defaults stand). Only emit a placement when there
+is a SPECIFIC dramatic reason for an NPC to be somewhere other than
+their default — and authored bible / case file evidence supports it.
+Examples of legitimate movements:
 
   - The player walks to bryn_iago_wood. Dylan sometimes walks up here
     after dark; if recent case-file entries suggest he is avoiding
@@ -859,15 +828,13 @@ it. Examples of legitimate movements:
     (case file shows she has driven herself to Knighton police, etc.).
     The default is correct.
 
-[RULES]
-1. Most scenes: emit an empty bundle. Defaults are right for the
-   majority of scene entries. Restraint is the right instinct.
-2. Move NPCs only with a SPECIFIC reason traceable to the case file or
+## Rules
+1. Move NPCs only with a SPECIFIC reason traceable to the case file or
    beats so far. "It would be interesting if X were here" is not
    enough. "Last scene's case file says Y, so X would plausibly be at
    Z" is enough.
-3. Stay within the established cast and locations. The bible is complete.
-4. Each NPC may appear at most once in the placements list. Do not
+2. Stay within the established cast and locations. The bible is complete.
+3. Each NPC may appear at most once in the placements list. Do not
    place an NPC at a location the player is not at unless the bible
    plausibly explains it; the player will not see them either way, so
    the only reason to place them off-screen is to track where they
@@ -892,21 +859,19 @@ def build_populator_user_prompt(state: State, world: World) -> str:
     case_file_block = _render_case_file(state)
 
     return f"""\
-[PLAYER JUST ENTERED]
+## Player Just Entered
 {loc.id} ({loc.name})
 {loc.description.strip()}
 
-[CURRENT NPC LOCATIONS]
+## Current NPC Locations
 {current_placements}
 
-[STATE]
+## State
 unlocked_beats: {_unlocked_beat_names(state, world, empty="(none)")}
 scene_id: {state.scene_id}
 
 {case_file_block}
 
-[GENERATE PLACEMENTS]
-Emit an NpcPlacementBundle. Most scene entries should be empty (defaults
-stand). Only emit a placement when a specific dramatic reason traceable
-to the case file or beats supports it. NPCs not listed in placements
-keep their current location."""
+## Generate Placements
+Emit an NpcPlacementBundle. NPCs not listed in placements keep their
+current location."""

@@ -38,7 +38,7 @@ def apply_state_changes(bundle: StateChangeBundle, state: State) -> None:
 
 def reachable_beat_ids(world: World, state: State) -> set[str]:
     """Return ids of beats that are *reachable* — unfired AND can eventually
-    fire given current state. Used by prompts.py to render [REACHABLE BEATS]
+    fire given current state. Used by prompts.py to render ## Reachable Beats
     and by agents._build_state_change_bundle_type to narrow the
     grammar-sampled Literal so the model cannot emit a transitively-blocked
     or transitively-unreachable beat.

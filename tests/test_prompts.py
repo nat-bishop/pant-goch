@@ -65,7 +65,7 @@ def test_phase1_system_prompt_includes_full_world_bible():
         assert npc.id in sys_prompt
         assert npc.name in sys_prompt
     # Phase 1 sees beat NAMES (not ids) — the LLM emits the name and the
-    # prompt's [THE TRUTH] / [REACHABLE BEATS] sections render names too.
+    # prompt's ## The Truth / ## Reachable Beats sections render names too.
     for beat in world.beats.values():
         assert beat.name in sys_prompt
         assert beat.notes_to_llm.strip() in sys_prompt
@@ -88,7 +88,7 @@ def test_prose_writer_system_prompt_excludes_beats_and_notes_to_llm():
             f"prose writer prompt leaks beat id {beat.id!r}"
         )
         assert beat.notes_to_llm.strip() not in sys_prompt
-    assert "[THE TRUTH]" not in sys_prompt
+    assert "## The Truth" not in sys_prompt
     assert "requires_beats" not in sys_prompt
     assert "blocked_by_beats" not in sys_prompt
 
@@ -113,7 +113,7 @@ def test_prose_writer_system_prompt_includes_crime_overview():
     world = load_world(FIXTURE_VALID)
     sys_prompt = build_prose_writer_system_prompt(world)
     assert world.crime.strip() in sys_prompt
-    assert "[WHAT HAPPENED]" in sys_prompt
+    assert "## What Happened" in sys_prompt
 
 
 def test_prose_writer_system_prompt_includes_voice_samples_when_authored():
@@ -131,7 +131,7 @@ def test_prose_writer_system_prompt_includes_voice_samples_when_authored():
 def test_prose_writer_system_prompt_includes_few_shots_when_authored():
     world = load_world(FIXTURE_VALID)
     sys_prompt = build_prose_writer_system_prompt(world)
-    assert "[STYLE EXAMPLES]" in sys_prompt
+    assert "## Style Examples" in sys_prompt
     if world.few_shots:
         for fs in world.few_shots:
             assert fs.setup.strip() in sys_prompt
@@ -155,9 +155,9 @@ def test_choice_author_system_prompt_excludes_bible():
         assert ending.id not in sys_prompt
     for npc in world.npcs.values():
         assert npc.knowledge.strip() not in sys_prompt
-    assert "[THE TRUTH]" not in sys_prompt
-    assert "[WHAT HAPPENED]" not in sys_prompt
-    assert "[STYLE EXAMPLES]" not in sys_prompt
+    assert "## The Truth" not in sys_prompt
+    assert "## What Happened" not in sys_prompt
+    assert "## Style Examples" not in sys_prompt
 
 
 def test_choice_author_system_prompt_describes_variants():
@@ -202,16 +202,16 @@ def test_phase1_user_prompt_includes_reachable_beats_and_endings():
     world = load_world(FIXTURE_VALID)
     state = make_initial_state(world)
     prompt = build_phase1_user_prompt(state, world)
-    assert "[REACHABLE BEATS]" in prompt
-    assert "[ALL ENDINGS]" in prompt
-    assert "[STATE]" in prompt
-    assert "[CASE FILE]" in prompt
-    assert "[THIS SCENE SO FAR]" in prompt
-    assert "GENERATE STATE CHANGES" in prompt
+    assert "## Reachable Beats" in prompt
+    assert "## All Endings" in prompt
+    assert "## State" in prompt
+    assert "## Case File" in prompt
+    assert "## This Scene So Far" in prompt
+    assert "## Generate State Changes" in prompt
 
 
 def test_phase1_reachable_beats_hides_fired_and_blocked():
-    """[REACHABLE BEATS] must omit fired beats and beats whose blockers
+    """## Reachable Beats must omit fired beats and beats whose blockers
     have fired (or whose chain is transitively blocked). Renders use the
     LLM-facing beat NAME."""
     world = load_world(FIXTURE_VALID)
@@ -226,7 +226,7 @@ def test_phase1_reachable_beats_hides_fired_and_blocked():
     # transitively unreachable.
     state.unlocked_beats.add("tom_closes_off")
     prompt = build_phase1_user_prompt(state, world)
-    reachable_block = prompt.split("[REACHABLE BEATS]")[1].split("\n\n")[0]
+    reachable_block = prompt.split("## Reachable Beats")[1].split("\n\n")[0]
     assert "(none" in reachable_block
 
 
@@ -235,7 +235,7 @@ def test_phase1_present_block_lists_npcs_at_current_location():
     state = make_initial_state(world)
     state.player_location = "the_slaughtered_lamb"
     prompt = build_phase1_user_prompt(state, world)
-    present_block = prompt.split("[PRESENT]")[1].split("[STATE]")[0]
+    present_block = prompt.split("## Present")[1].split("## State")[0]
     assert "tom" in present_block
     assert "maud" not in present_block
 
@@ -244,7 +244,7 @@ def test_phase1_present_block_says_alone_at_npc_free_location():
     world = load_world(FIXTURE_VALID)
     state = make_initial_state(world)  # vicarage, no NPCs
     prompt = build_phase1_user_prompt(state, world)
-    present_block = prompt.split("[PRESENT]")[1].split("[STATE]")[0]
+    present_block = prompt.split("## Present")[1].split("## State")[0]
     assert "alone" in present_block.lower()
 
 
@@ -258,8 +258,8 @@ def test_prose_writer_user_message_first_turn_includes_scene_anchor():
     msg = build_prose_writer_user_message(
         state, world, StateChangeBundle(), is_first_turn=True
     )
-    assert "[YOU ARE AT]" in msg
-    assert "[PRESENT]" in msg
+    assert "## You Are At" in msg
+    assert "## Present" in msg
     assert "the_slaughtered_lamb" in msg
 
 
@@ -271,8 +271,8 @@ def test_prose_writer_user_message_subsequent_turn_drops_scene_anchor():
     msg = build_prose_writer_user_message(
         state, world, StateChangeBundle(), is_first_turn=False
     )
-    assert "[YOU ARE AT]" not in msg
-    assert "[PRESENT]" not in msg
+    assert "## You Are At" not in msg
+    assert "## Present" not in msg
 
 
 def test_prose_writer_user_message_excludes_reachable_beats_and_endings():
@@ -282,10 +282,10 @@ def test_prose_writer_user_message_excludes_reachable_beats_and_endings():
         msg = build_prose_writer_user_message(
             state, world, StateChangeBundle(), is_first_turn=first
         )
-        assert "[REACHABLE BEATS]" not in msg
-        assert "[ALL ENDINGS]" not in msg
-        assert "[CASE FILE]" not in msg
-        assert "[THIS SCENE SO FAR]" not in msg
+        assert "## Reachable Beats" not in msg
+        assert "## All Endings" not in msg
+        assert "## Case File" not in msg
+        assert "## This Scene So Far" not in msg
 
 
 def test_prose_writer_user_message_includes_applied_state_changes():
@@ -297,7 +297,7 @@ def test_prose_writer_user_message_includes_applied_state_changes():
     msg = build_prose_writer_user_message(
         state, world, applied, is_first_turn=True
     )
-    assert "[STATE CHANGES JUST APPLIED]" in msg
+    assert "## State Changes Just Applied" in msg
     assert world.beats["tom_named_a_vehicle"].name in msg
 
 
@@ -327,7 +327,7 @@ def test_prose_writer_user_message_includes_player_pick_on_subsequent_turn():
     msg = build_prose_writer_user_message(
         state, world, StateChangeBundle(), is_first_turn=False
     )
-    assert "[PLAYER]" in msg
+    assert "## Player" in msg
     assert "Ask Tom about the night" in msg
 
 
@@ -340,9 +340,9 @@ def test_choice_author_user_message_carries_prose_as_load_bearing_context():
     state.player_location = "the_slaughtered_lamb"
     prose = "Tom looks at you and sets down his pint."
     msg = build_choice_author_user_message(state, world, prose)
-    assert "[PROSE]" in msg
+    assert "## Prose" in msg
     assert prose in msg
-    assert "[CHOOSE]" in msg
+    assert "## Choose" in msg
 
 
 def test_choice_author_user_message_lists_present_npcs():
@@ -366,9 +366,9 @@ def test_choice_author_user_message_when_alone():
 
 
 def test_prose_writer_user_message_renders_npc_history_when_present():
-    """The prose writer's [PRESENT] NPC card includes 'history with
+    """The prose writer's ## Present NPC card includes 'history with
     player' when state.npc_memory has entries for that NPC. Phase 1's
-    [PRESENT] does NOT (it sees the prose case file separately)."""
+    ## Present does NOT (it sees the prose case file separately)."""
     world = load_world(FIXTURE_VALID)
     state = make_initial_state(world)
     state.player_location = "the_slaughtered_lamb"
@@ -397,7 +397,7 @@ def test_phase1_user_prompt_omits_npc_history():
 
 
 def test_prose_writer_applied_changes_includes_beat_description():
-    """When a beat fires, the prose writer's [STATE CHANGES JUST APPLIED]
+    """When a beat fires, the prose writer's ## State Changes Just Applied
     block surfaces the beat description (not just the slug). This is the
     load-bearing channel for the narrator to write the reveal moment
     with specifics — the prose writer's system prompt has no beat
@@ -409,7 +409,7 @@ def test_prose_writer_applied_changes_includes_beat_description():
         state_changes=[UnlockBeat(beat_id="tom_named_a_vehicle")]
     )
     msg = build_prose_writer_user_message(state, world, applied, is_first_turn=True)
-    assert "[STATE CHANGES JUST APPLIED]" in msg
+    assert "## State Changes Just Applied" in msg
     beat = world.beats["tom_named_a_vehicle"]
     assert beat.name in msg
     description_words = beat.description.strip().split()
@@ -428,9 +428,9 @@ def test_populator_system_prompt_carries_full_bible():
     # Cast knowledge appears.
     assert "Old Tom Bevan" in prompt
     # Beats + ending structure appears.
-    assert "BEATS" in prompt
+    assert "### Beats" in prompt
     # Job directive establishes restraint.
-    assert "empty bundle" in prompt or "empty placements" in prompt
+    assert "should be empty" in prompt or "empty bundle" in prompt
 
 
 def test_populator_user_prompt_includes_current_placements_and_case_file():
@@ -440,9 +440,9 @@ def test_populator_user_prompt_includes_current_placements_and_case_file():
     state.player_location = "the_slaughtered_lamb"
     state.case_file_entries = ["A prior scene at the pub."]
     prompt = build_populator_user_prompt(state, world)
-    assert "[PLAYER JUST ENTERED]" in prompt
+    assert "## Player Just Entered" in prompt
     assert "the_slaughtered_lamb" in prompt
-    assert "[CURRENT NPC LOCATIONS]" in prompt
+    assert "## Current NPC Locations" in prompt
     assert "tom:" in prompt
     # Case file accumulation surfaces (the populator reads it for context).
     assert "A prior scene at the pub" in prompt

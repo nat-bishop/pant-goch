@@ -122,8 +122,9 @@ def test_chronicler_user_prompt_includes_scene_anchors():
     assert "Turn 1" in prompt and "Turn 2" in prompt and "Turn 3" in prompt
     # Player picks surface
     assert "Take the stool next to him" in prompt
-    # Closing instruction is there
-    assert "First person" in prompt or "first person" in prompt
+    # Output directive is there (voice rules — first person, terse — are
+    # canonical in the system prompt; not restated per-call)
+    assert "Emit the structured output" in prompt
 
 
 # ───────────────────────── runtime construction ─────────────────────────
