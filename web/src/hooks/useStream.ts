@@ -6,7 +6,7 @@ import { useStore } from "../store";
  * of phase=idle. Dispatches every incoming event into the store. Returns
  * nothing — purely a side effect.
  *
- * Backend already paces word emissions >=104 ms so the renderer can naively
+ * Backend already paces word emissions >=150 ms so the renderer can naively
  * append events as they arrive. The hook stays simple.
  *
  * Lifted from v1 web/src/hooks/useStream.ts:11-61. The 14-line comment

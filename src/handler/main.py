@@ -127,6 +127,7 @@ class SessionRuntime:
     walk_future: "asyncio.Future[str] | None" = None
     free_text_future: "asyncio.Future[str] | None" = None
     play_task: "asyncio.Task | None" = None
+    skip_event: asyncio.Event = field(default_factory=asyncio.Event)
 
 
 def build_model(api_url: str, model_name: str = "gemma-4-e4b") -> OpenAIChatModel:
@@ -456,6 +457,7 @@ async def start_session() -> dict[str, str]:
                 pick_walk=walk,
                 pick_free_text=free_text,
                 emit_event=emit,
+                skip_event=rt.skip_event,
             )
         except asyncio.CancelledError:
             pass
@@ -495,6 +497,17 @@ async def walk(body: WalkBody) -> dict[str, str]:
             400, f"{body.to_location!r} is not adjacent to {loc.id!r}"
         )
     SESSION.walk_future.set_result(body.to_location)
+    return {"status": "ok"}
+
+
+@app.post("/skip")
+async def skip() -> dict[str, str]:
+    """Signal `paced_word_emitter` to flush the current paced stream at
+    full speed. Idempotent — extra clicks during the same stream are
+    no-ops because the emitter clears the event on completion. No-op
+    when no session or no stream is active."""
+    if SESSION is not None:
+        SESSION.skip_event.set()
     return {"status": "ok"}
 
 

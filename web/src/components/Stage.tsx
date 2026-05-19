@@ -2,7 +2,7 @@
 // SSE stream activation, gloss popup root.
 
 import { useEffect, useState } from "react";
-import { fetchWorld, startSession } from "../api";
+import { fetchWorld, postSkip, startSession } from "../api";
 import { useStream } from "../hooks/useStream";
 import { useStore } from "../store";
 import { GlossPopup } from "./GlossPopup";
@@ -54,17 +54,21 @@ export function Stage() {
     setTimeout(() => setStreaming(true), 0);
   };
 
-  // Click-to-reveal: when the user clicks the panel during a streaming
-  // turn, snap visible words to full opacity. The space key does the
-  // same when the panel has focus. Server pacing is unaffected — this
-  // collapses the *animation*, not the event stream.
+  // Click-to-skip during a streaming turn: tell the backend to flush
+  // the rest of the current paced stream at full speed, AND collapse
+  // the per-word CSS fade-in so the burst of incoming words snaps to
+  // full opacity instead of overlapping ~3 mid-fade at once.
+  const skipNow = () => {
+    triggerFastForward();
+    void postSkip().catch((e) => console.warn("skip failed", e));
+  };
   const onPanelClick = () => {
-    if (phase === "in_scene") triggerFastForward();
+    if (phase === "in_scene") skipNow();
   };
   const onPanelKey = (e: React.KeyboardEvent) => {
     if (e.key === " " && phase === "in_scene") {
       e.preventDefault();
-      triggerFastForward();
+      skipNow();
     }
   };
 

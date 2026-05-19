@@ -44,6 +44,14 @@ export async function postFreeText(text: string): Promise<void> {
   await ensureOk(r, "free_text");
 }
 
+/** Tell the backend to flush the current paced word stream at full
+ * speed. Fire-and-forget on click — the server is idempotent if no
+ * stream is active. */
+export async function postSkip(): Promise<void> {
+  const r = await fetch(`${API}/skip`, { method: "POST" });
+  await ensureOk(r, "skip");
+}
+
 // ─── /world payload ──────────────────────────────────────────────────
 
 export interface WorldLocation {

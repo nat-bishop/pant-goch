@@ -1,7 +1,7 @@
 """M4 — SSE event emission + paced word emitter.
 
 Tests the event surface from two angles:
-1. `paced_word_emitter` directly (unit) — words emerge at >=104ms cadence,
+1. `paced_word_emitter` directly (unit) — words emerge at >=150ms cadence,
    indices increment, sentinel fires with is_last=True.
 2. `play_scene` / `play_session` with stubbed agents + an event-recording
    `emit_event` callback — verifies which events fire at which boundaries
@@ -163,13 +163,17 @@ def world_and_bundle():
 
 def _patched_paced_emitter(interval: float):
     """Helper that returns a paced_word_emitter wrapper using a custom
-    interval. Used by tests to skip the 104 ms wait per word."""
+    interval. Used by tests to skip the 150 ms wait per word."""
     from handler import sse
 
-    async def _wrapped(word_source, emit, *, event_kind, min_interval=None, extra=None):
+    async def _wrapped(
+        word_source, emit, *,
+        event_kind, min_interval=None, extra=None, skip_event=None,
+    ):
         return await sse.paced_word_emitter(
             word_source, emit,
             event_kind=event_kind, min_interval=interval, extra=extra,
+            skip_event=skip_event,
         )
 
     return _wrapped

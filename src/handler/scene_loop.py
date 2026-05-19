@@ -23,6 +23,7 @@ player.
 """
 from __future__ import annotations
 
+import asyncio
 import inspect
 from collections.abc import Awaitable, Callable
 from contextlib import contextmanager
@@ -252,6 +253,7 @@ async def play_scene(
     pick_option: PickOption,
     pick_free_text: PickFreeText | None = None,
     emit_event: EmitEvent | None = None,
+    skip_event: asyncio.Event | None = None,
 ) -> ProsePart:
     """Run a scene from the current player_location until EndScene or
     EndGame. `pick_option(prose_part) -> int` returns the index of the
@@ -263,8 +265,10 @@ async def play_scene(
     If `emit_event` is supplied, the scene also emits SSE events at each
     boundary (scene_start, state_change, prose_word, options /
     free_text_request / scene_exit / game_over). Prose words are paced at
-    80 ms by `paced_word_emitter` so the SSE client gets steady cadence
-    regardless of LLM speed.
+    150 ms by `paced_word_emitter` so the SSE client gets steady cadence
+    regardless of LLM speed. `skip_event`, when set mid-stream, flushes
+    the remaining words without pacing — the FastAPI surface drives it
+    from POST /skip.
 
     Scene-entry sequence: (1) enter_scene → init scene_id, clear
     dialogue_history, set player_location. (2) populator (emit_placements)
@@ -321,6 +325,7 @@ async def play_scene(
                 _words_from_text(prose_part.prose),
                 emit_event,
                 event_kind="prose_word",
+                skip_event=skip_event,
             )
 
         # ── dispatch on next ──
@@ -369,6 +374,7 @@ async def play_session(
     on_chronicle_entry: OnChronicleEntry | None = None,
     on_scene_close: OnSceneClose | None = None,
     emit_event: EmitEvent | None = None,
+    skip_event: asyncio.Event | None = None,
 ) -> ProsePart:
     """Play one full session (multiple scenes) from `state` until the
     LLM fires Leave→EndGame or the player gets stranded at a location
@@ -409,6 +415,7 @@ async def play_session(
             pick_option=pick_option,
             pick_free_text=pick_free_text,
             emit_event=emit_event,
+            skip_event=skip_event,
         )
 
         # Surface the closing prose before the chronicler runs — the
@@ -438,6 +445,7 @@ async def play_session(
                 emit_event,
                 event_kind="log_entry_word",
                 extra={"scene_id": state.scene_id},
+                skip_event=skip_event,
             )
 
         if isinstance(terminal.next, EndGame):

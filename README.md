@@ -21,7 +21,7 @@ Two pydantic-ai agents per session:
 - **Scene runner.** Two-stage emission per turn against one stable system prompt. Phase 1 emits a `StateChangeBundle` (`unlock_beat`, `move_npc`, ...) validated against `requires_beats` / `blocked_by_beats`; `ModelRetry` on failure, budget 2. Phase 2 emits a `ProsePart` (free-form prose + ≤4 options including ≥1 "Leave for…"). Both calls share KV cache because the system prompt is byte-identical.
 - **Log writer.** Conversation-based; one user+assistant pair appended per scene-end. System prompt carries the world bible + journalist's voice rules. The accumulating history is the case file.
 
-Word-pacing is server-side at ≥104 ms cadence. The frontend's `<StreamingText>` only animates fade-in.
+Word-pacing is server-side at ≥150 ms cadence (`POST /skip` flushes the remainder at full speed). The frontend's `<StreamingText>` only animates fade-in.
 
 ## Prerequisites
 

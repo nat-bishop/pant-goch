@@ -1,6 +1,6 @@
 // StreamingProse renders an array of paragraphs. Each paragraph's words
 // fade in via CSS as they arrive (no JS pacing — backend already paces
-// at ≥104ms). When a paragraph is "closed" (the next paragraph has
+// at ≥150ms). When a paragraph is "closed" (the next paragraph has
 // started OR `streaming=false`), it is post-processed by the gloss
 // matcher so authored aliases become hover triggers.
 //

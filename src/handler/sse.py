@@ -2,10 +2,12 @@
 
 Two responsibilities:
 
-1. **Paced word emitter.** The 104 ms pace floor is non-negotiable —
+1. **Paced word emitter.** The 150 ms pace floor is non-negotiable —
    it's the source of truth for streaming cadence, NOT the frontend's
    job to re-pace. Two call sites: the scene runner's phase-2 prose
-   stream and the chronicler's entry stream.
+   stream and the chronicler's entry stream. An optional
+   `skip_event` lets the session flush the remainder at full speed
+   in response to a player click — see `paced_word_emitter` below.
 
 2. **Event helpers.** Small builder functions for the v2 SSE event
    surface (SPEC §5 table). Plain dicts on the wire so the frontend's
@@ -28,7 +30,7 @@ from typing import Any
 
 # ───────────────────────── paced word-stream emitter ─────────────────────────
 
-WORD_PACE_S = 0.104  # min seconds between paced word emissions
+WORD_PACE_S = 0.15  # min seconds between paced word emissions
 
 _WORD_RE = re.compile(r"\S+\s*")
 
@@ -71,6 +73,7 @@ async def paced_word_emitter(
     event_kind: str,
     min_interval: float = WORD_PACE_S,
     extra: dict | None = None,
+    skip_event: asyncio.Event | None = None,
 ) -> str:
     """Emit each word from `word_source` as an SSE event, throttled to at
     least `min_interval` seconds between emissions. Returns the accumulated
@@ -82,14 +85,23 @@ async def paced_word_emitter(
        the LLM outpaces the cadence and passes through when the LLM is
        slower.
     2. Log entry: same shape (`_words_from_stream(log_stream)`).
+
+    `skip_event`: when set (e.g. by POST /skip in response to a player
+    click), the remaining words flush without pacing until the source is
+    exhausted. Each emitter call clears the event on entry so a stray
+    click landing between two paced streams doesn't leak into the next
+    one — and so a mid-stream exception still leaves a clean slate.
     """
+    if skip_event is not None:
+        skip_event.clear()
     next_slot = time.monotonic()
     idx = 0
     full = ""
     async for word in word_source:
-        now = time.monotonic()
-        if now < next_slot:
-            await asyncio.sleep(next_slot - now)
+        if skip_event is None or not skip_event.is_set():
+            now = time.monotonic()
+            if now < next_slot:
+                await asyncio.sleep(next_slot - now)
         payload: dict[str, Any] = {"event": event_kind, "idx": idx, "word": word}
         if extra:
             payload.update(extra)
