@@ -11,11 +11,11 @@ from pydantic import ValidationError
 from pydantic_ai.models.test import TestModel
 
 from handler.agents import (
-    _build_choice_bundle_type,
     _build_state_change_bundle_type,
     build_scene_runner_bundle,
 )
-from handler.state import State, make_initial_state
+from handler.schemas import ChoiceBundle, FreeTextGate
+from handler.state import make_initial_state
 from handler.world import load_world
 
 
@@ -63,13 +63,11 @@ def test_state_change_bundle_type_accepts_empty():
     assert bundle.state_changes == []
 
 
-def test_choice_bundle_type_continue_passes():
-    """A 2-option Continue must validate against the dynamic ChoiceBundle."""
-    world = load_world(FIXTURE_VALID)
-    state = make_initial_state(world)
-    state.player_location = "the_slaughtered_lamb"
-    ChoiceType = _build_choice_bundle_type(world, state)
-    bundle = ChoiceType.model_validate({
+def test_choice_bundle_continue_passes():
+    """A 2-option Continue must validate against the canonical ChoiceBundle.
+    The choice author now uses the static `ChoiceBundle` directly — no
+    dynamic narrowing (FreeText was moved to the engine + gate)."""
+    bundle = ChoiceBundle.model_validate({
         "next": {
             "type": "continue",
             "options": [{"text": "stay"}, {"text": "ask"}],
@@ -78,44 +76,34 @@ def test_choice_bundle_type_continue_passes():
     assert bundle.next.type == "continue"  # type: ignore[union-attr]
 
 
-def test_choice_bundle_type_accepts_leave():
+def test_choice_bundle_accepts_leave():
     """Leave is a marker variant — no payload required."""
-    world = load_world(FIXTURE_VALID)
-    state = make_initial_state(world)
-    state.player_location = "the_slaughtered_lamb"
-    ChoiceType = _build_choice_bundle_type(world, state)
-    bundle = ChoiceType.model_validate({"next": {"type": "leave"}})
+    bundle = ChoiceBundle.model_validate({"next": {"type": "leave"}})
     assert bundle.next.type == "leave"  # type: ignore[union-attr]
 
 
-def test_choice_bundle_type_free_text_narrows_npc_id_to_present():
-    """Tom is at the pub by default. FreeText addressed to tom passes;
-    addressed to maud (at the post office) is rejected."""
-    world = load_world(FIXTURE_VALID)
-    state = make_initial_state(world)
-    state.player_location = "the_slaughtered_lamb"
-    ChoiceType = _build_choice_bundle_type(world, state)
-
-    bundle = ChoiceType.model_validate({
-        "next": {"type": "free_text", "prompt": "go on", "npc_id": "tom"},
-    })
-    assert bundle.next.npc_id == "tom"  # type: ignore[union-attr]
-
+def test_choice_bundle_rejects_free_text():
+    """FreeText is no longer a choice-author arm — the gate + engine own
+    it. The choice author cannot emit it."""
     with pytest.raises(ValidationError):
-        ChoiceType.model_validate({
-            "next": {"type": "free_text", "prompt": "go on", "npc_id": "maud"},
+        ChoiceBundle.model_validate({
+            "next": {"type": "free_text", "prompt": "go on", "npc_id": None},
         })
 
 
-def test_choice_bundle_type_continue_min_2_options_enforced():
-    world = load_world(FIXTURE_VALID)
-    state = make_initial_state(world)
-    state.player_location = "the_slaughtered_lamb"
-    ChoiceType = _build_choice_bundle_type(world, state)
+def test_choice_bundle_continue_min_2_options_enforced():
     with pytest.raises(ValidationError):
-        ChoiceType.model_validate({
+        ChoiceBundle.model_validate({
             "next": {"type": "continue", "options": [{"text": "only"}]},
         })
+
+
+def test_free_text_gate_schema():
+    """The gate emits a single bool."""
+    assert FreeTextGate.model_validate({"offer": True}).offer is True
+    assert FreeTextGate.model_validate({"offer": False}).offer is False
+    with pytest.raises(ValidationError):
+        FreeTextGate.model_validate({})  # offer is required
 
 
 def test_build_scene_runner_bundle_constructs_cleanly():
@@ -128,6 +116,7 @@ def test_build_scene_runner_bundle_constructs_cleanly():
     assert bundle.phase1 is not None
     assert bundle.prose_writer is not None
     assert bundle.choice_author is not None
+    assert bundle.free_text_gate is not None
     assert bundle.populator is not None
     assert bundle.chronicler is not None
 

@@ -8,16 +8,21 @@ into two sequential calls:
     Voice continuity accumulates within a scene, resets at scene boundary.
 
   - `emit_choices` (choice author) — structured `ChoiceBundle` output
-    (Continue | Leave | FreeText). Stateless per call; the just-written
-    prose is the load-bearing context. System prompt holds neither bible
-    nor voice rules.
+    (Continue | Leave). Stateless per call; the just-written prose is the
+    load-bearing context. System prompt holds neither bible nor voice
+    rules.
 
-The engine composes the two outputs into a `ProsePart` for downstream
+  - `emit_free_text_gate` (Phase 2c) — `FreeTextGate` (a single bool).
+    Runs concurrently with the choice author (both read only the prose).
+    Decides whether the player writes their own move this turn.
+
+The engine composes the outputs into a `ProsePart` for downstream
 dispatch — see `scene_loop._assemble_prose_part`.
 
 Per-call dynamic types narrow `beat_name` to `Literal[*reachable_beat_names]`
-(Phase 1) and `FreeText.npc_id` to `Literal[*present_npc_ids]` (choice
-author) so llama.cpp's grammar sampler rejects invalid ids at decode time.
+(Phase 1) so llama.cpp's grammar sampler rejects invalid ids at decode
+time. The choice author and gate need no dynamic narrowing — their
+output schemas are static.
 
 State-INDEPENDENT structural rules (≤2 unlock_beat cap, Continue option
 count 2-4, no duplicate beat ids) live on the canonical schemas in
@@ -34,7 +39,7 @@ no JSON schema involved.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Annotated, Any, Literal, Union
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field, create_model, model_validator
 from pydantic_ai import Agent, NativeOutput
@@ -47,6 +52,8 @@ from .prompts import (
     build_choice_author_user_message,
     build_chronicler_system_prompt,
     build_chronicler_user_prompt,
+    build_free_text_gate_system_prompt,
+    build_free_text_gate_user_message,
     build_phase1_system_prompt,
     build_phase1_user_prompt,
     build_populator_system_prompt,
@@ -57,6 +64,7 @@ from .prompts import (
 from .schemas import (
     ChoiceBundle,
     ChronicleEntry,
+    FreeTextGate,
     NpcMemoryUpdate,
     NpcPlacementBundle,
     StateChangeBundle,
@@ -74,8 +82,8 @@ class AgentBundle:
     """One world's agents. Built once in lifespan via
     `build_scene_runner_bundle(model, world)`.
 
-    Five agents (Phase 1 classifier, prose writer, choice author,
-    populator, chronicler) have world-scoped system prompts and are
+    Six agents (Phase 1 classifier, prose writer, choice author, free-text
+    gate, populator, chronicler) have world-scoped system prompts and are
     constructed once at bundle-build time. Per-call dynamic schemas are
     passed at `agent.run()` time via NativeOutput (or `output_type=str`
     for the prose writer). System prompts are byte-stable across the
@@ -86,6 +94,7 @@ class AgentBundle:
     phase1: Agent[None, StateChangeBundle]
     prose_writer: Agent[None, str]
     choice_author: Agent[None, ChoiceBundle]
+    free_text_gate: Agent[None, FreeTextGate]
     populator: Agent[None, NpcPlacementBundle]
     chronicler: Agent[None, ChronicleEntry]
     world: World
@@ -189,36 +198,6 @@ def _build_state_change_bundle_type(world: World, state: State) -> type[BaseMode
     )
 
 
-def _build_choice_bundle_type(world: World, state: State) -> type[BaseModel]:
-    """ChoiceBundle whose FreeText.npc_id is
-    `Literal[*present_npc_ids] | None`. No narrowing on Continue.options
-    (no leaves_for anymore) or Leave (marker variant).
-
-    The discriminated union reuses the canonical `Continue` and `Leave`
-    so their structural validators (Continue's 2-4 options) fire during
-    the agent's retry loop. The dynamic FreeText is a fresh model — its
-    only mutation is the per-call npc_id Literal.
-    """
-    npc_ids = present_npc_ids(world, state)
-    if npc_ids:
-        NpcIdType = Union[Literal[npc_ids], None]  # type: ignore[valid-type]
-    else:
-        # No NPCs present → npc_id must be None.
-        NpcIdType = type(None)  # type: ignore[assignment]
-
-    from .schemas import Continue, Leave
-
-    DynamicFreeText = create_model(
-        "FreeText",
-        type=(Literal["free_text"], "free_text"),
-        prompt=(str, ...),
-        npc_id=(NpcIdType, None),
-    )
-    NextUnion = Union[Continue, Leave, DynamicFreeText]  # type: ignore[valid-type]
-    NextField = Annotated[NextUnion, Field(discriminator="type")]
-    return create_model("ChoiceBundle", next=(NextField, ...))
-
-
 # ───────────────────────── populator dynamic schema ─────────────────────────
 
 
@@ -306,9 +285,9 @@ def _build_chronicle_entry_type(
 def build_scene_runner_bundle(
     model: OpenAIChatModel, world: World
 ) -> AgentBundle:
-    """Construct the agent bundle for `world`. Bakes five system prompts
-    (Phase 1 classifier, prose writer, choice author, populator,
-    chronicler) and builds one agent per role. Per-call dynamic
+    """Construct the agent bundle for `world`. Bakes six system prompts
+    (Phase 1 classifier, prose writer, choice author, free-text gate,
+    populator, chronicler) and builds one agent per role. Per-call dynamic
     output_type is passed at agent.run() time via NativeOutput, except
     the prose writer which uses `output_type=str`.
     """
@@ -334,6 +313,12 @@ def build_scene_runner_bundle(
         system_prompt=build_choice_author_system_prompt(world),
         output_retries=3,
     )
+    free_text_gate = Agent[None, FreeTextGate](
+        model=model,
+        name="free_text_gate",
+        system_prompt=build_free_text_gate_system_prompt(world),
+        output_retries=3,
+    )
     populator = Agent[None, NpcPlacementBundle](
         model=model,
         name="populator",
@@ -345,6 +330,7 @@ def build_scene_runner_bundle(
         phase1=phase1,
         prose_writer=prose_writer,
         choice_author=choice_author,
+        free_text_gate=free_text_gate,
         populator=populator,
         chronicler=chronicler,
         world=world,
@@ -459,17 +445,36 @@ async def emit_choices(
     just-written prose is the load-bearing context; the system prompt
     has no bible/voice rules.
 
-    `output_type=NativeOutput(DynamicChoiceBundle, strict=True)` baked
-    per call. Dynamic FreeText.npc_id is grammar-narrowed to present
-    NPCs.
+    The output schema is static (`Continue | Leave`, no per-call id
+    narrowing) so the canonical `ChoiceBundle` is passed directly — its
+    `Continue` 2-4-option validator fires during the agent's retry loop.
     """
     user_msg = build_choice_author_user_message(state, bundle.world, prose)
-    DynamicChoiceBundle = _build_choice_bundle_type(bundle.world, state)
     result = await bundle.choice_author.run(
         user_msg,
-        output_type=NativeOutput(DynamicChoiceBundle, strict=True),
+        output_type=NativeOutput(ChoiceBundle, strict=True),
     )
     return ChoiceBundle.model_validate(result.output.model_dump())
+
+
+async def emit_free_text_gate(
+    bundle: AgentBundle,
+    state: State,
+    prose: str,
+) -> bool:
+    """Free-text gate LLM call (Phase 2c). Stateless. Pure-prose judgment:
+    should the player write their own move this turn instead of picking a
+    canned option? Runs concurrently with `emit_choices` (both read only
+    the prose). Returns the `offer` bool.
+
+    Static output schema (`FreeTextGate`, a single bool) → fast decode.
+    """
+    user_msg = build_free_text_gate_user_message(state, bundle.world, prose)
+    result = await bundle.free_text_gate.run(
+        user_msg,
+        output_type=NativeOutput(FreeTextGate, strict=True),
+    )
+    return result.output.offer
 
 
 # ───────────────────────── chronicler agent ─────────────────────────

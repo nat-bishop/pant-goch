@@ -25,10 +25,15 @@ packages = ["src/handler"]
 dev = [
     "pytest>=8,<9",
     "pytest-asyncio>=0.24,<0.25",
+    # Playtest harness (evals/) orchestration + invariant scoring.
+    "pydantic-evals>=1.93,<2",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Repo root on sys.path so tests can import the top-level `evals/` harness
+# package (the installed `handler` package is already importable).
+pythonpath = ["."]
 asyncio_mode = "auto"
 markers = [
     "integration: tests that require a running llama-server (skipped by default; run with `uv run pytest -m integration`)",

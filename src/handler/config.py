@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -92,6 +92,19 @@ class Settings(BaseSettings):
     # inferno-aware projects on the same box.
     use_inferno: bool = Field(default=False, validation_alias="SMALLVILLE_USE_INFERNO")
     inferno_url: str = "http://127.0.0.1:7770"
+
+    # ───────── playtest harness (eval tooling) ─────────
+    # Gemini model the simulated player uses (evals/). Engine model is
+    # unaffected — the player is a separate cloud agent.
+    playtest_player_model: str = "gemini-3.1-flash-lite"
+    # API key for the Gemini player. Sourced from the project .env (which
+    # `uv run` does NOT export to os.environ), so the harness reads it here
+    # and passes it explicitly to GoogleProvider rather than relying on the
+    # provider's env lookup. Accepts either GEMINI_API_KEY or GOOGLE_API_KEY.
+    gemini_api_key: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("GEMINI_API_KEY", "GOOGLE_API_KEY"),
+    )
 
     # ───────── world directory ─────────
     # Path to the world bible (locations + cast + truth + brief). None →

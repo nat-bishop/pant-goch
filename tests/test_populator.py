@@ -150,10 +150,14 @@ async def test_play_scene_applies_populator_placements(monkeypatch):
     async def fake_choices(*args, **kwargs):
         return ChoiceBundle(next=Leave())
 
+    async def fake_gate(*args, **kwargs):
+        return False
+
     monkeypatch.setattr("handler.scene_loop.emit_placements", fake_placements)
     monkeypatch.setattr("handler.scene_loop.emit_state_changes", fake_phase1)
     monkeypatch.setattr("handler.scene_loop.emit_prose_text", fake_prose)
     monkeypatch.setattr("handler.scene_loop.emit_choices", fake_choices)
+    monkeypatch.setattr("handler.scene_loop.emit_free_text_gate", fake_gate)
 
     events: list[dict] = []
 

@@ -371,11 +371,9 @@ Read the prose, then emit ONE structured output: a ChoiceBundle whose
     just-written prose as the closing beat and resolves which ending
     (if any) fires from the state.
 
-  - FreeText with a `prompt` and an optional `npc_id`. Use when the
-    natural next move is the player typing their own line — an
-    interrogation, a delicate moment where canned options would
-    cheapen it. Set `npc_id` to the NPC the typed line is addressed
-    to, if any.
+(A separate agent decides whether the player writes their own move this
+turn instead of picking your options — that is not your concern. Always
+emit Continue or Leave.)
 
 ## Rules
 1. Options are pure dialogue / observation / small action inside the
@@ -386,8 +384,7 @@ Read the prose, then emit ONE structured output: a ChoiceBundle whose
    character knowledge, or backstory. Trust what the narrator wrote.
 3. Match the structure to the moment. Continue when the scene still
    has air. Leave when the beat has resolved and a next exchange would
-   be filler. FreeText when canned options would cheapen the player's
-   own voice.
+   be filler.
 4. A scene with no NPC present is exploration. It has shallower
    natural depth than a conversation. After a handful of observation
    turns it has run its course — Leave is the right call even without
@@ -478,6 +475,18 @@ def _render_case_file(state: State) -> str:
     return "\n".join(parts)
 
 
+def _render_player_pick(
+    pick_text: str, *, typed: bool, typed_label: str, menu_label: str
+) -> str:
+    """Render a player's pick. A typed free-text line is the player's own
+    words — quoted verbatim so the reader honors it as written; a clicked
+    option is an intent, rendered bare for the narrator to dramatize. The
+    quote-vs-bare convention lives here so the render sites can't drift."""
+    if typed:
+        return f'{typed_label}: "{pick_text}"'
+    return f"{menu_label}: {pick_text}"
+
+
 def _render_this_scene(state: State, world: World) -> str:
     """Phase 1's view of the current scene — structured turn-by-turn data
     (the classifier needs the applied state changes per turn to decide
@@ -494,7 +503,7 @@ def _render_this_scene(state: State, world: World) -> str:
     present_ids = present_npc_ids(world, state)
     npcs = ", ".join(present_ids) if present_ids else "no one"
     parts = [
-        f"## This Scene So Far",
+        "## This Scene So Far",
         f"--- Scene {state.scene_id} at {loc.id} ({loc.name}) — present: {npcs} ---",
     ]
     for i, turn in enumerate(state.dialogue_history, start=1):
@@ -504,7 +513,11 @@ def _render_this_scene(state: State, world: World) -> str:
             f"Turn {i} state_changes_applied: {applied}"
         )
         if turn.player_pick is not None:
-            parts.append(f'Turn {i} player picked: "{turn.player_pick.text}"')
+            parts.append(_render_player_pick(
+                turn.player_pick.text, typed=turn.player_pick_typed,
+                typed_label=f"Turn {i} player's own words",
+                menu_label=f"Turn {i} player chose to",
+            ))
     return "\n".join(parts)
 
 
@@ -581,12 +594,20 @@ def build_prose_writer_user_message(
 
     # Player's last pick — surfacing in the user message frames it as
     # "what the player just did/said." Only meaningful on turn 2+
-    # (turn 1 has no prior pick).
+    # (turn 1 has no prior pick). A typed free-text line is the player's
+    # OWN words/action — honor it verbatim; a clicked option is an intent
+    # to dramatize.
     if not is_first_turn and state.dialogue_history:
         last_turn = state.dialogue_history[-1]
         if last_turn.player_pick is not None:
-            pick = last_turn.player_pick
-            parts.append(f'## Player\nThe player picked: "{pick.text}"')
+            body = _render_player_pick(
+                last_turn.player_pick.text, typed=last_turn.player_pick_typed,
+                typed_label="The player's own words",
+                menu_label="The player chose to",
+            )
+            if last_turn.player_pick_typed:
+                body += "\nHonor this as written — do not re-paraphrase it."
+            parts.append(f"## Player\n{body}")
 
     parts.append(
         f"## State Changes Just Applied\n{_render_applied_changes(applied, world)}"
@@ -650,8 +671,8 @@ This is turn {turn_n}. No Leave has been emitted yet. {nudge}
 def build_choice_author_user_message(state: State, world: World, prose: str) -> str:
     """Per-turn user message for the stateless choice author. The
     just-written prose is the load-bearing context; everything else is a
-    thin scene anchor (where, who's present) so the FreeText `npc_id`
-    field has a referent and Continue options can ground in location.
+    thin scene anchor (where, who's present) so Continue options can
+    ground in location.
     """
     loc = world.locations[state.player_location]
     present_ids = present_npc_ids(world, state)
@@ -672,6 +693,62 @@ NPCs present: {npcs_line}
 {pacing_block}
 ## Choose
 Emit a ChoiceBundle."""
+
+
+# ───────────────────────── free-text gate (Phase 2c) ─────────────────────────
+
+
+def build_free_text_gate_system_prompt(world: World) -> str:
+    """Free-text gate system prompt — slim, mechanics-only, byte-stable
+    across the session (KV-cache hits across turns like the choice author).
+
+    The gate runs concurrently with the choice author and decides ONE
+    thing: should the player write their own move this turn, instead of
+    picking from canned options? It sees only the just-written prose.
+    Output is a single bool — fast to decode.
+    """
+    return """\
+## Role
+You are the free-text gate for a single-player investigation game. After
+the narrator writes each turn's prose, you decide ONE thing: should the
+player write their own move next — in their own words, a line of dialogue
+or a specific action — instead of choosing from a short list of canned
+options?
+
+## Output
+Emit ONE structured output: `{ "offer": true }` or `{ "offer": false }`.
+
+## When to offer (true)
+The prose has reached a moment that *invites the player's own voice or a
+deliberate move of their choosing* and canned options would flatten it:
+  - someone has put an open question or a challenge directly to the player
+  - a charged, intimate, or confrontational beat where the exact words matter
+  - an open space to act where many distinct moves are plausible
+
+## When NOT to offer (false)
+  - the moment is routine connective tissue — any phrasing lands the same
+  - 2-4 concrete options would genuinely capture the live possibilities
+  - the scene is plainly winding down
+
+## Rules
+1. The prose alone is your context. You do not see beats, character
+   knowledge, or backstory. Trust what the narrator wrote.
+2. Offer sparingly. Most turns are fine with canned options — reserve
+   `true` for moments that genuinely call for the player's own move.
+   Typing every turn is a chore; make it earn its place.
+3. This applies in conversation AND exploration — it is about whether the
+   moment wants the player's own move, not about who is present."""
+
+
+def build_free_text_gate_user_message(state: State, world: World, prose: str) -> str:
+    """Per-turn user message for the stateless free-text gate. Pure-prose
+    judgment: the just-written prose is the only context."""
+    return f"""\
+## Prose
+{prose.strip()}
+
+## Decide
+Emit a FreeTextGate."""
 
 
 # ───────────────────────── chronicler prompts ─────────────────────────
@@ -798,9 +875,11 @@ def build_chronicler_user_prompt(state: State, world: World) -> str:
             f"  Narrator: {turn.prose.strip()}"
         )
         if turn.player_pick is not None:
-            turn_parts.append(
-                f'  You picked: "{turn.player_pick.text}"'
-            )
+            turn_parts.append("  " + _render_player_pick(
+                turn.player_pick.text, typed=turn.player_pick_typed,
+                typed_label="Your own words",
+                menu_label="You chose to",
+            ))
 
     turns_block = "\n".join(turn_parts)
 

@@ -7,10 +7,9 @@ that used to live in `validate_state_change_bundle` and
   - State-INDEPENDENT rules (≤2 unlock_beat cap, no duplicate beats,
     Continue option count 2-4) → `@model_validator` / `Field(...)` on
     the canonical schemas in `schemas.py`.
-  - State-DEPENDENT enum constraints (`beat_id` ∈ reachable beats,
-    `FreeText.npc_id` ∈ present NPCs) → per-call `Literal[...]` narrowing
-    in `agents._build_state_change_bundle_type` /
-    `_build_choice_bundle_type`.
+  - State-DEPENDENT enum constraints (`beat_id` ∈ reachable beats) →
+    per-call `Literal[...]` narrowing in
+    `agents._build_state_change_bundle_type`.
 
 `reachable_beat_ids` and `resolved_ending_id_at_close` stay here — used
 by both grammar narrowing (`agents.py`) and prompt rendering
@@ -18,9 +17,16 @@ by both grammar narrowing (`agents.py`) and prompt rendering
 """
 from __future__ import annotations
 
-from .schemas import StateChangeBundle, UnlockBeat
+from .schemas import FreeText, StateChangeBundle, UnlockBeat
 from .state import State, TurnRecord
 from .world import World
+
+
+# The free-text box surfaced when the gate offers it. General agency: a
+# fixed, neutral caption (the move may be speech or action) and no
+# addressee (`npc_id=None`). Built by the engine, never by the LLM —
+# the gate emits only a bool. See `scene_loop._assemble_prose_part`.
+SCENE_FREE_TEXT = FreeText(prompt="What do you do next?", npc_id=None)
 
 
 def apply_state_changes(bundle: StateChangeBundle, state: State) -> None:

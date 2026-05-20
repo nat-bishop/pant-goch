@@ -7,8 +7,8 @@ After the Phase-2-split refactor, rules that used to live in
     constraints) — tested here by directly constructing the canonical
     models.
   - Per-call dynamic builders (state-DEPENDENT Literal narrowing) —
-    tested here against `_build_state_change_bundle_type` /
-    `_build_choice_bundle_type` via `ValidationError` at parse time.
+    tested here against `_build_state_change_bundle_type` via
+    `ValidationError` at parse time.
 """
 from __future__ import annotations
 
@@ -17,18 +17,18 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from handler.agents import (
-    _build_choice_bundle_type,
-    _build_state_change_bundle_type,
-)
+from handler.agents import _build_state_change_bundle_type
 from handler.engine import (
+    SCENE_FREE_TEXT,
     apply_state_changes,
     reachable_beat_ids,
     resolved_ending_id_at_close,
 )
 from handler.models import Beat, Brief, Ending, Location, NPC
 from handler.schemas import (
+    ChoiceBundle,
     Continue,
+    FreeText,
     Option,
     StateChangeBundle,
     UnlockBeat,
@@ -274,11 +274,10 @@ def test_dynamic_bundle_max_length_three_rejected():
 # ───────────────────────── dynamic ChoiceBundle (Literal narrowing) ─────────────────────────
 
 
-def test_dynamic_choice_continue_with_two_options_passes():
-    world = _make_world()
-    state = State(player_location="loc_a")
-    ChoiceType = _build_choice_bundle_type(world, state)
-    bundle = ChoiceType.model_validate({
+def test_choice_continue_with_two_options_passes():
+    """The choice author uses the canonical `ChoiceBundle` directly (no
+    per-call narrowing now that FreeText is gone)."""
+    bundle = ChoiceBundle.model_validate({
         "next": {
             "type": "continue",
             "options": [{"text": "a"}, {"text": "b"}],
@@ -287,75 +286,33 @@ def test_dynamic_choice_continue_with_two_options_passes():
     assert bundle.next.type == "continue"  # type: ignore[union-attr]
 
 
-def test_dynamic_choice_continue_with_one_option_rejected():
-    """Continue's `min_length=2` lives on the canonical schema and fires
-    via the discriminated-union member."""
-    world = _make_world()
-    state = State(player_location="loc_a")
-    ChoiceType = _build_choice_bundle_type(world, state)
+def test_choice_continue_with_one_option_rejected():
+    """Continue's `min_length=2` lives on the canonical schema."""
     with pytest.raises(ValidationError):
-        ChoiceType.model_validate({
+        ChoiceBundle.model_validate({
             "next": {"type": "continue", "options": [{"text": "only"}]},
         })
 
 
-def test_dynamic_choice_accepts_leave_marker():
-    """`Leave` is a marker variant with no payload. The dynamic schema
-    must accept it so the choice author can close scenes."""
-    world = _make_world()
-    state = State(player_location="loc_a")
-    ChoiceType = _build_choice_bundle_type(world, state)
-    bundle = ChoiceType.model_validate({"next": {"type": "leave"}})
+def test_choice_accepts_leave_marker():
+    """`Leave` is a marker variant with no payload."""
+    bundle = ChoiceBundle.model_validate({"next": {"type": "leave"}})
     assert bundle.next.type == "leave"  # type: ignore[union-attr]
 
 
-def test_dynamic_choice_free_text_narrows_npc_id_to_present():
-    """FreeText.npc_id is Literal[*present_npc_ids] | None — an NPC
-    present at the player's location is accepted; one elsewhere is
-    rejected."""
-    here = NPC(
-        id="here", name="Here", default_location="loc_a",
-        themes=["x"], knowledge="x", attitude="x", voice_sample=[],
-    )
-    elsewhere = NPC(
-        id="elsewhere", name="Elsewhere", default_location="loc_b",
-        themes=["x"], knowledge="x", attitude="x", voice_sample=[],
-    )
-    world = _make_world(npcs=[here, elsewhere])
-    state = make_initial_state(world)
-    state.player_location = "loc_a"
-    ChoiceType = _build_choice_bundle_type(world, state)
-
-    # Present NPC: ok.
-    bundle = ChoiceType.model_validate({
-        "next": {"type": "free_text", "prompt": "go on", "npc_id": "here"},
-    })
-    assert bundle.next.npc_id == "here"  # type: ignore[union-attr]
-
-    # Out-of-scene NPC: rejected.
+def test_choice_rejects_free_text():
+    """FreeText is no longer a choice-author arm — the gate + engine own it."""
     with pytest.raises(ValidationError):
-        ChoiceType.model_validate({
-            "next": {
-                "type": "free_text", "prompt": "go on", "npc_id": "elsewhere",
-            },
+        ChoiceBundle.model_validate({
+            "next": {"type": "free_text", "prompt": "go on", "npc_id": None},
         })
 
-    # None: also ok (un-addressed free text).
-    bundle = ChoiceType.model_validate({
-        "next": {"type": "free_text", "prompt": "go on", "npc_id": None},
-    })
-    assert bundle.next.npc_id is None  # type: ignore[union-attr]
 
-
-def test_dynamic_choice_free_text_when_no_npcs_present():
-    """No NPCs at the player's location → npc_id must be None."""
-    world = _make_world()  # zero NPCs in this fixture
-    state = State(player_location="loc_a")
-    ChoiceType = _build_choice_bundle_type(world, state)
-    bundle = ChoiceType.model_validate({
-        "next": {"type": "free_text", "prompt": "go on", "npc_id": None},
-    })
-    assert bundle.next.npc_id is None  # type: ignore[union-attr]
+def test_scene_free_text_constant_is_general_agency():
+    """The engine-built free-text box: fixed neutral caption, no addressee."""
+    assert isinstance(SCENE_FREE_TEXT, FreeText)
+    assert SCENE_FREE_TEXT.prompt == "What do you do next?"
+    assert SCENE_FREE_TEXT.npc_id is None
 
 
 # ───────────────────────── resolved_ending_id_at_close ─────────────────────────

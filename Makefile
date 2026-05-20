@@ -17,6 +17,7 @@ help:
 	@echo "  make download-model      Fetch the Gemma 4 E4B Q8_0 GGUF (~8 GB)"
 	@echo "  make test                Run pytest (unit suite, skips live-llama integration)"
 	@echo "  make test-integration    Run pytest including the live-llama integration test"
+	@echo "  make playtest            Run simulated Gemini-player playthroughs + invariant report"
 	@echo "  make typecheck           Run TS typecheck on web/"
 	@echo "  make build               Production build of web/"
 	@echo "  make kill                Force-kill stragglers on :8000/:8080/:5173-5176"
@@ -68,6 +69,13 @@ test:
 .PHONY: test-integration
 test-integration:
 	uv run pytest -q
+
+# Simulated playtest harness — a Gemini player drives many sessions in parallel
+# against the configured engine (inferno by default), each scored against the
+# invariant suite. Requires GOOGLE_API_KEY in env. See EVALS.md.
+.PHONY: playtest
+playtest:
+	SMALLVILLE_USE_INFERNO=1 uv run python -m evals.run
 
 .PHONY: typecheck
 typecheck:

@@ -53,6 +53,10 @@ class TurnRecord:
     prose: str
     applied_state_changes: list[UnlockBeat]
     player_pick: Option | None = None  # set by engine when player picks
+    # True when player_pick is a verbatim free-text line the player typed
+    # (vs. a clicked menu option). Lets the next turn's prompts render it
+    # as the player's own words rather than an intent to dramatize.
+    player_pick_typed: bool = False
 
 
 @dataclass

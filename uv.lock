@@ -801,6 +801,7 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "pydantic-evals" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
 ]
@@ -819,6 +820,7 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "pydantic-evals", specifier = ">=1.93,<2" },
     { name = "pytest", specifier = ">=8,<9" },
     { name = "pytest-asyncio", specifier = ">=0.24,<0.25" },
 ]

@@ -102,6 +102,33 @@ def _patch_choice_author(monkeypatch, choices):
     monkeypatch.setattr("handler.scene_loop.emit_choices", fake)
 
 
+def _patch_gate(monkeypatch, offers):
+    """`offers` is a bool (every turn) or an iterable of bools (one per
+    expected call). Patches the free-text gate."""
+    if isinstance(offers, bool):
+        async def fake(*args, **kwargs):
+            return offers
+    else:
+        it = iter(offers)
+
+        async def fake(*args, **kwargs):
+            return next(it)
+
+    monkeypatch.setattr("handler.scene_loop.emit_free_text_gate", fake)
+
+
+@pytest.fixture(autouse=True)
+def _default_gate_off(monkeypatch):
+    """Default: the free-text gate offers nothing, so run_turn/play_scene
+    tests get deterministic canned-option behavior without a real TestModel
+    gate call. Tests exercising free text re-patch via `_patch_gate` (the
+    later setattr in the test body wins)."""
+    async def fake(*args, **kwargs):
+        return False
+
+    monkeypatch.setattr("handler.scene_loop.emit_free_text_gate", fake)
+
+
 @pytest.fixture
 def bundle_and_state():
     world = load_world(FIXTURE_VALID)
@@ -149,14 +176,29 @@ def test_assemble_leave_with_satisfied_ending_maps_to_end_game():
     assert pp.next.ending_id == "published_story"
 
 
-def test_assemble_free_text_passes_through():
+def test_assemble_free_text_offer_overrides_continue():
+    """Gate offers free text + choice author said Continue → engine builds
+    the fixed-caption FreeText, dropping the canned options."""
     world = load_world(FIXTURE_VALID)
     state = make_initial_state(world)
-    choices = ChoiceBundle(next=FreeText(prompt="go on", npc_id=None))
-    pp = _assemble_prose_part(world, state, "prose", choices)
+    choices = ChoiceBundle(next=Continue(options=[
+        Option(text="a"), Option(text="b"),
+    ]))
+    pp = _assemble_prose_part(world, state, "prose", choices, free_text_offer=True)
     assert isinstance(pp.next, FreeText)
-    assert pp.next.prompt == "go on"
+    assert pp.next.prompt == "What do you do next?"
     assert pp.next.npc_id is None
+
+
+def test_assemble_leave_beats_free_text_offer():
+    """Precedence: Leave wins over a gate offer — a closing scene never
+    gets a free-text box."""
+    world = load_world(FIXTURE_VALID)
+    state = make_initial_state(world)
+    pp = _assemble_prose_part(
+        world, state, "prose", ChoiceBundle(next=Leave()), free_text_offer=True,
+    )
+    assert isinstance(pp.next, EndScene)
 
 
 # ───────────────────────── run_turn happy path ─────────────────────────
@@ -301,6 +343,27 @@ async def test_run_turn_leave_resolves_to_endscene_when_no_ending_satisfied(monk
     assert isinstance(result.next, EndScene)
 
 
+async def test_run_turn_gate_offers_free_text_in_exploration(monkeypatch):
+    """General agency: the gate can offer free text even with no NPC
+    present (exploration), overriding the choice author's Continue."""
+    world = load_world(FIXTURE_VALID)
+    bundle = build_scene_runner_bundle(TestModel(), world)
+    runtime = make_scene_runner_runtime()
+    state = make_initial_state(world)
+    enter_scene(state, world, "the_old_vicarage")  # solo location — no NPC
+
+    _patch_phase1(monkeypatch)
+    _patch_prose_writer(monkeypatch, ["The wood is silent."])
+    _patch_choice_author(monkeypatch, [
+        ChoiceBundle(next=Continue(options=[Option(text="a"), Option(text="b")])),
+    ])
+    _patch_gate(monkeypatch, True)
+
+    result = await run_turn(bundle, runtime, state)
+    assert isinstance(result.next, FreeText)
+    assert result.next.npc_id is None
+
+
 # ───────────────────────── play_scene ─────────────────────────
 
 
@@ -332,9 +395,9 @@ async def test_play_scene_drives_until_endscene(monkeypatch):
 
 
 async def test_play_scene_dispatches_free_text(monkeypatch):
-    """Choice author emits FreeText → play_scene calls pick_free_text →
-    typed string becomes next turn's player_pick. Final turn emits
-    Leave."""
+    """Gate offers free text on turn 1 → play_scene calls pick_free_text →
+    typed string becomes the turn's player_pick (flagged typed). Turn 2 the
+    gate declines and the choice author emits Leave → EndScene."""
     world = load_world(FIXTURE_VALID)
     bundle = build_scene_runner_bundle(TestModel(), world)
     runtime = make_scene_runner_runtime()
@@ -345,14 +408,17 @@ async def test_play_scene_dispatches_free_text(monkeypatch):
     _patch_phase1(monkeypatch)
     _patch_prose_writer(monkeypatch, ["t1", "t2"])
     _patch_choice_author(monkeypatch, [
-        ChoiceBundle(next=FreeText(prompt="What do you say?", npc_id="tom")),
+        # Turn 1 Continue is overridden by the gate offer; turn 2 Leave wins.
+        ChoiceBundle(next=Continue(options=[Option(text="a"), Option(text="b")])),
         ChoiceBundle(next=Leave()),
     ])
+    _patch_gate(monkeypatch, [True, False])
 
     typed_replies = iter(["I came because of Megan."])
 
     def pick_free_text(req: FreeText) -> str:
-        assert req.npc_id == "tom"
+        assert req.prompt == "What do you do next?"
+        assert req.npc_id is None
         return next(typed_replies)
 
     result = await play_scene(
@@ -361,9 +427,13 @@ async def test_play_scene_dispatches_free_text(monkeypatch):
         pick_free_text=pick_free_text,
     )
     assert isinstance(result.next, EndScene)
-    # First TurnRecord got the typed string as the player's pick.
+    # First TurnRecord got the typed string as the player's pick, flagged typed.
     assert state.dialogue_history[0].player_pick is not None
     assert state.dialogue_history[0].player_pick.text == "I came because of Megan."
+    assert state.dialogue_history[0].player_pick_typed is True
+    # The clicked-option turn (none here) would have player_pick_typed False;
+    # the Leave turn has no pick.
+    assert state.dialogue_history[1].player_pick is None
 
 
 async def test_play_scene_resets_prose_writer_message_history_at_scene_start(monkeypatch):

@@ -56,6 +56,12 @@ def _patch_populator(monkeypatch):
     monkeypatch.setattr("handler.scene_loop.emit_placements", _empty_placements)
 
 
+async def _gate_off(*args, **kwargs):
+    """Free-text gate stub: never offer. TestModel can't run the real
+    NativeOutput gate call, and these tests don't exercise free text."""
+    return False
+
+
 def _patch_chronicler(monkeypatch, text: str = "case-file entry"):
     async def fake_emit(*args, **kwargs):
         return ChronicleEntry(
@@ -201,6 +207,7 @@ async def test_play_scene_emits_scene_start_then_terminal_events(monkeypatch, wo
     monkeypatch.setattr("handler.scene_loop.emit_state_changes", fake_phase1)
     monkeypatch.setattr("handler.scene_loop.emit_prose_text", fake_prose)
     monkeypatch.setattr("handler.scene_loop.emit_choices", fake_choices)
+    monkeypatch.setattr("handler.scene_loop.emit_free_text_gate", _gate_off)
 
     events: list[dict] = []
 
@@ -259,6 +266,7 @@ async def test_play_scene_emits_options_event_for_continue(monkeypatch, world_an
     monkeypatch.setattr("handler.scene_loop.emit_state_changes", fake_phase1)
     monkeypatch.setattr("handler.scene_loop.emit_prose_text", fake_prose)
     monkeypatch.setattr("handler.scene_loop.emit_choices", fake_choices)
+    monkeypatch.setattr("handler.scene_loop.emit_free_text_gate", _gate_off)
     monkeypatch.setattr("handler.scene_loop.paced_word_emitter",
                         _patched_paced_emitter(0.001))
 
@@ -299,6 +307,7 @@ async def test_play_scene_emits_game_over_for_end_game(monkeypatch, world_and_bu
     monkeypatch.setattr("handler.scene_loop.emit_state_changes", fake_phase1)
     monkeypatch.setattr("handler.scene_loop.emit_prose_text", fake_prose)
     monkeypatch.setattr("handler.scene_loop.emit_choices", fake_choices)
+    monkeypatch.setattr("handler.scene_loop.emit_free_text_gate", _gate_off)
     monkeypatch.setattr("handler.scene_loop.paced_word_emitter",
                         _patched_paced_emitter(0.001))
 
@@ -357,6 +366,7 @@ async def test_play_session_emits_location_change_and_log_entry_words(
     monkeypatch.setattr("handler.scene_loop.emit_state_changes", fake_phase1)
     monkeypatch.setattr("handler.scene_loop.emit_prose_text", fake_prose)
     monkeypatch.setattr("handler.scene_loop.emit_choices", fake_choices)
+    monkeypatch.setattr("handler.scene_loop.emit_free_text_gate", _gate_off)
     monkeypatch.setattr("handler.scene_loop.paced_word_emitter",
                         _patched_paced_emitter(0.001))
 

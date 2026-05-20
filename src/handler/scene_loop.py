@@ -38,11 +38,13 @@ from .agents import (
     SceneRunnerRuntime,
     emit_chronicle_entry,
     emit_choices,
+    emit_free_text_gate,
     emit_placements,
     emit_prose_text,
     emit_state_changes,
 )
 from .engine import (
+    SCENE_FREE_TEXT,
     apply_state_changes,
     append_turn_record,
     enter_scene,
@@ -118,11 +120,16 @@ async def _maybe_await(value):
 
 def _assemble_prose_part(
     world: World, state: State, prose: str, choices: ChoiceBundle,
+    *, free_text_offer: bool = False,
 ) -> ProsePart:
-    """Compose the choice author's ChoiceBundle and the prose writer's
-    text into the engine-facing ProsePart. Continue and FreeText pass
-    through verbatim; Leave → EndGame (when an ending is satisfied) or
-    EndScene.
+    """Compose the choice author's ChoiceBundle, the free-text gate's
+    offer, and the prose writer's text into the engine-facing ProsePart.
+
+    Precedence: **Leave > free-text > Continue**.
+      - Leave → EndGame (when an ending is satisfied) or EndScene. A
+        closing scene never gets a free-text box, even if the gate offered.
+      - else, gate offered → engine-built FreeText (fixed caption).
+      - else → the choice author's Continue, verbatim.
     """
     nxt = choices.next
     if isinstance(nxt, Leave):
@@ -130,6 +137,8 @@ def _assemble_prose_part(
         if ending_id is not None:
             return ProsePart(prose=prose, next=EndGame(ending_id=ending_id))
         return ProsePart(prose=prose, next=EndScene())
+    if free_text_offer:
+        return ProsePart(prose=prose, next=SCENE_FREE_TEXT)
     return ProsePart(prose=prose, next=nxt)
 
 
@@ -192,17 +201,42 @@ async def run_turn(
         )
         prose = _fallback_prose()
 
-    # ── Phase 2b: choice author ────────────────────────────────────────────
-    try:
-        choices = await emit_choices(bundle, state, prose)
-    except UnexpectedModelBehavior as e:
+    # ── Phase 2b/2c: choice author ‖ free-text gate ─────────────────────────
+    # Both read only the just-written prose and are mutually independent,
+    # so they run concurrently. The gate is a single-bool decode batched
+    # alongside the choice author — its latency is largely hidden. Each is
+    # guarded independently: a failure falls back without sinking the turn.
+    choices_res, gate_res = await asyncio.gather(
+        emit_choices(bundle, state, prose),
+        emit_free_text_gate(bundle, state, prose),
+        return_exceptions=True,
+    )
+
+    if isinstance(choices_res, UnexpectedModelBehavior):
         logfire.warn(
             "choice_author fallback: retries exhausted; emitting generic Continue",
-            error=str(e),
+            error=str(choices_res),
         )
         choices = _fallback_choices()
+    elif isinstance(choices_res, BaseException):
+        raise choices_res
+    else:
+        choices = choices_res
 
-    prose_part = _assemble_prose_part(bundle.world, state, prose, choices)
+    if isinstance(gate_res, UnexpectedModelBehavior):
+        logfire.warn(
+            "free_text_gate fallback: retries exhausted; not offering free text",
+            error=str(gate_res),
+        )
+        free_text_offer = False
+    elif isinstance(gate_res, BaseException):
+        raise gate_res
+    else:
+        free_text_offer = gate_res
+
+    prose_part = _assemble_prose_part(
+        bundle.world, state, prose, choices, free_text_offer=free_text_offer,
+    )
 
     append_turn_record(
         state,
@@ -343,11 +377,12 @@ async def play_scene(
             if emit_event is not None:
                 await emit_event(free_text_request_event(prose_part.next))
             assert pick_free_text is not None, (
-                "choice author emitted FreeText but no pick_free_text "
-                "callback was supplied"
+                "engine surfaced a free-text box (gate offered) but no "
+                "pick_free_text callback was supplied"
             )
             typed = await _maybe_await(pick_free_text(prose_part.next))
             state.dialogue_history[-1].player_pick = Option(text=typed)
+            state.dialogue_history[-1].player_pick_typed = True
             continue
 
         if emit_event is not None:

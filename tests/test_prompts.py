@@ -14,6 +14,8 @@ from handler.prompts import (
     build_choice_author_system_prompt,
     build_choice_author_user_message,
     build_chronicler_system_prompt,
+    build_free_text_gate_system_prompt,
+    build_free_text_gate_user_message,
     build_phase1_system_prompt,
     build_phase1_user_prompt,
     build_prose_writer_system_prompt,
@@ -160,13 +162,67 @@ def test_choice_author_system_prompt_excludes_bible():
 
 
 def test_choice_author_system_prompt_describes_variants():
-    """All three ChoiceBundle variants must be documented for the
-    choice author to know its full vocabulary."""
+    """The choice author's vocabulary is now Continue | Leave only —
+    FreeText moved to the free-text gate + engine."""
     world = load_world(FIXTURE_VALID)
     sys_prompt = build_choice_author_system_prompt(world)
     assert "Continue" in sys_prompt
     assert "Leave" in sys_prompt
-    assert "FreeText" in sys_prompt
+    assert "FreeText" not in sys_prompt
+
+
+def test_free_text_gate_system_prompt_is_byte_stable_and_minimal():
+    """Byte-stable for KV-cache; mechanics-only (no bible, no voice)."""
+    world = load_world(FIXTURE_VALID)
+    a = build_free_text_gate_system_prompt(world)
+    b = build_free_text_gate_system_prompt(world)
+    assert a == b
+    assert "offer" in a
+    assert "## The Truth" not in a
+    assert "## Style Examples" not in a
+
+
+def test_free_text_gate_user_message_is_prose_only():
+    """Pure-prose judgment: the prose is the only context."""
+    world = load_world(FIXTURE_VALID)
+    msg = build_free_text_gate_user_message(
+        make_initial_state(world), world, "Tom sets down his pint.",
+    )
+    assert "Tom sets down his pint." in msg
+    assert "FreeTextGate" in msg
+
+
+def test_prose_writer_user_message_distinguishes_typed_from_menu_pick():
+    """A typed free-text line is rendered as the player's own words; a
+    clicked option is rendered as an intent to dramatize. Never 'said'."""
+    world = load_world(FIXTURE_VALID)
+    applied = StateChangeBundle()
+
+    # Typed (verbatim).
+    state = make_initial_state(world)
+    state.dialogue_history.append(TurnRecord(
+        prose="Tom waits.", applied_state_changes=[],
+        player_pick=Option(text="Where were you that night?"),
+        player_pick_typed=True,
+    ))
+    typed_msg = build_prose_writer_user_message(
+        state, world, applied, is_first_turn=False,
+    )
+    assert 'own words: "Where were you that night?"' in typed_msg
+    assert "chose to:" not in typed_msg
+
+    # Clicked menu option (intent).
+    state2 = make_initial_state(world)
+    state2.dialogue_history.append(TurnRecord(
+        prose="Tom waits.", applied_state_changes=[],
+        player_pick=Option(text="press him on the alibi"),
+        player_pick_typed=False,
+    ))
+    menu_msg = build_prose_writer_user_message(
+        state2, world, applied, is_first_turn=False,
+    )
+    assert "chose to: press him on the alibi" in menu_msg
+    assert "own words" not in menu_msg
 
 
 def test_prose_writer_system_prompt_forbids_travel():

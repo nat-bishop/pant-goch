@@ -7,15 +7,18 @@ and choice-author calls (SPEC §0.4 / §3.3 + the Phase-2-split refactor):
             Cap: ≤2 UnlockBeat per bundle.
   Phase 2a — prose writer: plain `str` output (no schema below — the agent
             uses `output_type=str`).
-  Phase 2b — choice author: `ChoiceBundle` with a Continue | Leave | FreeText
-            tagged union. Stateless per call.
+  Phase 2b — choice author: `ChoiceBundle` with a Continue | Leave tagged
+            union. Stateless per call. Runs concurrently with —
+  Phase 2c — free-text gate: `FreeTextGate` (a single `offer: bool`).
+            Decides whether the player writes their own move this turn
+            instead of picking a canned option. Stateless, pure-prose.
 
-The engine assembles a composite `ProsePart` from the two Phase 2 calls so
+The engine assembles a composite `ProsePart` from the Phase 2 calls so
 downstream consumers (scene_loop, CLI, SSE) keep dispatching on the same
 shape. `ProsePart.next` is `Continue | EndScene | EndGame | FreeText` —
-`Continue` and `FreeText` pass through from the choice author verbatim;
-`EndScene` and `EndGame` are engine-only (the LLM never emits an
-`ending_id`).
+`Continue` passes through from the choice author verbatim; `FreeText` is
+built by the engine (fixed caption) when the gate offers it; `EndScene`
+and `EndGame` are engine-only (the LLM never emits an `ending_id`).
 
 The schemas here use `str` for id fields. At call time, `agents.py` builds
 per-call dynamic types (`Literal[*beat_names]`, `Literal[*present_npc_ids]`)
@@ -93,15 +96,21 @@ class Leave(_Strict):
 
 
 class FreeText(_Strict):
-    """Choice-author variant: the natural next move is the player typing
-    their own line — interrogation, a delicate moment where canned options
-    would cheapen it. The engine surfaces the prompt to the player, takes
-    the typed string, and feeds it into the next turn as the player's pick.
+    """Engine-built ProsePart variant: the natural next move is the player
+    writing their own move (speech *or* action) rather than picking a
+    canned option. Surfaced when the free-text gate (`FreeTextGate`) offers
+    it. The engine builds this with a fixed caption and feeds the typed
+    string into the next turn as the player's pick.
 
-    `npc_id` (optional) is narrowed per-call to `Literal[*present_npc_ids]`
-    so the model cannot direct typed input at an NPC who is not in the
-    scene.
+    The LLM never emits this — the gate emits only a bool; the engine
+    constructs the `FreeText`. `npc_id` is always None (general agency:
+    the typed move is not necessarily addressed to anyone).
+
+    `frozen` so the engine's shared `SCENE_FREE_TEXT` singleton can't be
+    mutated by a downstream consumer.
     """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     type: Literal["free_text"] = "free_text"
     prompt: str
@@ -109,7 +118,7 @@ class FreeText(_Strict):
 
 
 ChoiceNext = Annotated[
-    Union[Continue, Leave, FreeText],
+    Union[Continue, Leave],
     Field(discriminator="type"),
 ]
 
@@ -119,6 +128,17 @@ class ChoiceBundle(_Strict):
     are composed by the engine into a `ProsePart` for downstream dispatch."""
 
     next: ChoiceNext
+
+
+class FreeTextGate(_Strict):
+    """Free-text gate output (Phase 2c). A single yes/no: should the player
+    write their own move this turn instead of picking a canned option?
+
+    Pure-prose judgment, runs concurrently with the choice author. When
+    `offer` is True the engine surfaces a free-text box (and Leave still
+    takes precedence — see `scene_loop._assemble_prose_part`)."""
+
+    offer: bool
 
 
 # ───────────────────────── engine-composite: ProsePart for downstream dispatch ─────────────────────────
