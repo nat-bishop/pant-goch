@@ -308,22 +308,33 @@ def test_phase1_user_prompt_scene_anchor_is_compact():
     assert tom.knowledge.strip() not in prompt
 
 
-def test_phase1_reachable_beats_hides_fired_and_blocked():
-    """## Reachable Beats must omit fired beats and beats whose blockers
-    have fired (or whose chain is transitively blocked). Renders use the
-    LLM-facing beat NAME."""
+def test_phase1_reachable_beats_shows_only_fireable_now():
+    """## Reachable Beats lists only beats fireable RIGHT NOW: prerequisites
+    unlocked (not merely reachable), required NPCs present, valid location.
+    Renders use the LLM-facing beat NAME."""
     world = load_world(FIXTURE_VALID)
     state = make_initial_state(world)
-    prompt = build_phase1_user_prompt(state, world)
-    # All three fixture beats reachable initially — assert by name.
-    assert world.beats["tom_named_a_vehicle"].name in prompt
-    assert world.beats["tom_admits_more"].name in prompt
-    assert world.beats["tom_closes_off"].name in prompt
+    state.player_location = "the_slaughtered_lamb"  # Tom is here
 
-    # Fire tom_closes_off → tom_named_a_vehicle is blocked, tom_admits_more
-    # transitively unreachable.
-    state.unlocked_beats.add("tom_closes_off")
     prompt = build_phase1_user_prompt(state, world)
+    # tom_named_a_vehicle fires now (Tom present, no prereq). tom_admits_more
+    # needs tom_named_a_vehicle UNLOCKED first, so it is NOT yet fireable —
+    # the strict gate stops the ladder from skipping ahead.
+    assert world.beats["tom_named_a_vehicle"].name in prompt
+    assert world.beats["tom_closes_off"].name in prompt
+    reachable_block = prompt.split("## Reachable Beats")[1].split("\n\n")[0]
+    assert world.beats["tom_admits_more"].name not in reachable_block
+
+    # Once the vehicle is named, the next rung becomes fireable.
+    state.unlocked_beats.add("tom_named_a_vehicle")
+    prompt = build_phase1_user_prompt(state, world)
+    assert world.beats["tom_admits_more"].name in prompt
+
+    # Fire tom_closes_off → the whole Tom ladder is blocked; nothing fireable.
+    state2 = make_initial_state(world)
+    state2.player_location = "the_slaughtered_lamb"
+    state2.unlocked_beats.add("tom_closes_off")
+    prompt = build_phase1_user_prompt(state2, world)
     reachable_block = prompt.split("## Reachable Beats")[1].split("\n\n")[0]
     assert "(none" in reachable_block
 

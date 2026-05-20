@@ -9,6 +9,7 @@ beats:
     description: |
       Tom tells the player he saw Eluned Vaughn's Land Rover speeding
       from the bend the night Megan died.
+    requires_npcs_present: [tom]
     blocked_by_beats: [tom_closes_off]
     notes_to_llm: |
       Earn through patience. Tom won't volunteer.
@@ -18,6 +19,7 @@ beats:
     description: |
       Tom expands on what he saw — speed, sound, time.
     requires_beats: [tom_named_a_vehicle]
+    requires_npcs_present: [tom]
     notes_to_llm: |
       Only after he has named the vehicle. Don't fire prematurely.
 
@@ -26,6 +28,7 @@ beats:
     description: |
       Tom decides he will not speak to the player again about anything
       that matters.
+    requires_npcs_present: [tom]
     notes_to_llm: |
       Fire when the player has lied, threatened, or pressed too hard.
 

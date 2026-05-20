@@ -405,6 +405,74 @@ def test_invariant_12_requires_npcs_present_undefined_npc(tmp_path):
         load_world(target)
 
 
+# ───────────────────────── invariant 13: requires_location refs ─────────────────────────
+
+
+def test_invariant_13_requires_location_undefined_location(tmp_path):
+    """A beat's requires_location must reference defined location ids — an
+    unknown id would silently make the beat permanently unfireable."""
+    target = _copy_valid(tmp_path)
+    truth_path = target / "truth.yaml"
+    truth = yaml.safe_load(truth_path.read_text(encoding="utf-8"))
+    for beat in truth["beats"]:
+        if beat["id"] == "tom_named_a_vehicle":
+            beat["requires_location"] = ["ghost_location"]
+    _write_yaml(truth_path, truth)
+    with pytest.raises(
+        WorldLoadError, match="requires_location references undefined location"
+    ):
+        load_world(target)
+
+
+def test_invariant_13_requires_location_valid(tmp_path):
+    """A defined location id in requires_location loads cleanly."""
+    target = _copy_valid(tmp_path)
+    truth_path = target / "truth.yaml"
+    truth = yaml.safe_load(truth_path.read_text(encoding="utf-8"))
+    for beat in truth["beats"]:
+        if beat["id"] == "tom_named_a_vehicle":
+            beat["requires_location"] = ["the_slaughtered_lamb"]
+    _write_yaml(truth_path, truth)
+    world = load_world(target)
+    assert world.beats["tom_named_a_vehicle"].requires_location == [
+        "the_slaughtered_lamb"
+    ]
+
+
+# ───────────────────────── invariant 14: every beat is gated ─────────────────────────
+
+
+def test_invariant_14_ungated_beat_rejected(tmp_path):
+    """A beat with no hard gate (requires_beats / requires_any_beats /
+    requires_npcs_present / requires_location) and not marked
+    always_available is globally fireable from turn 1 — the loader must
+    reject it."""
+    target = _copy_valid(tmp_path)
+    truth_path = target / "truth.yaml"
+    truth = yaml.safe_load(truth_path.read_text(encoding="utf-8"))
+    for beat in truth["beats"]:
+        if beat["id"] == "tom_closes_off":
+            beat.pop("requires_npcs_present", None)  # strip its only gate
+    _write_yaml(truth_path, truth)
+    with pytest.raises(WorldLoadError, match="no hard gate"):
+        load_world(target)
+
+
+def test_invariant_14_always_available_exempts(tmp_path):
+    """An intentionally ungated beat loads cleanly when it opts in via
+    always_available (the player's 'I'm walking away' commitment)."""
+    target = _copy_valid(tmp_path)
+    truth_path = target / "truth.yaml"
+    truth = yaml.safe_load(truth_path.read_text(encoding="utf-8"))
+    for beat in truth["beats"]:
+        if beat["id"] == "tom_closes_off":
+            beat.pop("requires_npcs_present", None)
+            beat["always_available"] = True
+    _write_yaml(truth_path, truth)
+    world = load_world(target)
+    assert world.beats["tom_closes_off"].always_available is True
+
+
 def test_invariant_8_self_reference_in_blocked_by(tmp_path):
     target = _copy_valid(tmp_path)
     truth_path = target / "truth.yaml"

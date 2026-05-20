@@ -220,6 +220,46 @@ def _check_beat_npc_refs(beats: dict[str, Beat], npcs: dict[str, NPC]) -> None:
                 )
 
 
+def _check_beat_location_refs(
+    beats: dict[str, Beat], locations: dict[str, Location]
+) -> None:
+    """Invariant 13 — every requires_location reference resolves to a defined
+    location. Gates the place-aware fireability narrowing in
+    engine.fireable_beat_ids."""
+    for beat in beats.values():
+        for ref in beat.requires_location:
+            if ref not in locations:
+                raise WorldLoadError(
+                    f"beat {beat.id!r}: requires_location references "
+                    f"undefined location {ref!r}"
+                )
+
+
+def _check_beats_gated(beats: dict[str, Beat]) -> None:
+    """Invariant 14 — every beat carries ≥1 hard gate (requires_beats,
+    requires_any_beats, requires_npcs_present, or requires_location) OR is
+    explicitly marked `always_available`. An ungated, unmarked beat is
+    globally fireable from turn 1 regardless of place or progress — the
+    failure mode that let `examined_the_crash_site` / `village_runs_you_out`
+    fire in the empty prologue. The only legitimate ungated beat is the
+    player's always-available "I'm walking away" commitment, which opts in
+    via `always_available`."""
+    for beat in beats.values():
+        has_gate = (
+            beat.requires_beats
+            or beat.requires_any_beats
+            or beat.requires_npcs_present
+            or beat.requires_location
+        )
+        if not has_gate and not beat.always_available:
+            raise WorldLoadError(
+                f"beat {beat.id!r}: no hard gate (requires_beats / "
+                f"requires_any_beats / requires_npcs_present / "
+                f"requires_location) and not marked always_available — it "
+                f"would be globally fireable from turn 1"
+            )
+
+
 def _check_no_requires_cycles(beats: dict[str, Beat]) -> None:
     """Invariant 9 — the dependency graph (union of requires_beats AND
     requires_any_beats) has no cycles. A cycle anywhere would make a beat
@@ -319,6 +359,8 @@ def load_world(path: Path) -> World:
     beat_name_to_id = _build_beat_name_to_id(beats)
     _check_beat_refs(beats)
     _check_beat_npc_refs(beats, npcs)
+    _check_beat_location_refs(beats, locations)
+    _check_beats_gated(beats)
     _check_no_requires_cycles(beats)
     _check_ending_refs(endings, beats)
 

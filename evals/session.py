@@ -11,6 +11,7 @@ world-free and trivially serializable.
 from __future__ import annotations
 
 import json
+import random
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -43,6 +44,16 @@ from handler.world import World
 class SessionBudgetExceeded(Exception):
     """Raised between scenes once the scene budget is hit, to bound a session
     whose player never commits to an ending."""
+
+
+# Coverage: the simulated player normally leaves ONLY at a soft-close, so the
+# engine's mid-scene map walk (a WalkTo that ends a Continue turn — the live
+# "Step outside" / map exit in the real UI) would never be exercised by the
+# harness. Give it a small, seeded chance to walk out mid-scene once a scene
+# has some content behind it, so the eval covers that path too. Seeded per
+# session for reproducibility within a run.
+MID_SCENE_WALK_P = 0.12
+MID_SCENE_WALK_MIN_TURNS = 3
 
 
 class Player(Protocol):
@@ -149,16 +160,35 @@ async def run_session(
     started_at = time.strftime("%Y-%m-%dT%H:%M:%S")
     t0 = time.monotonic()
     truncated = False
+    walk_rng = random.Random(session_id)
+
+    async def walk_out(s: State, w: World, *, mid_scene: bool) -> WalkTo:
+        """Player leaves via the map. The scene budget trips here (only ever on
+        a scene transition, never on an EndGame), so a real ending is never
+        falsely truncated."""
+        if rec.scene_count >= max_scenes:
+            raise SessionBudgetExceeded()
+        dest = await player.pick_walk(s, w)
+        entry = {"kind": "walk", "from": s.player_location, "to": dest}
+        if mid_scene:
+            entry["mid_scene"] = True
+        rec.transcript.append(entry)
+        return WalkTo(location_id=dest)
 
     async def request_player_input(
         prose_part: ProsePart, s: State, w: World
     ) -> PlayerAction:
         # Map the awaited input back onto the Player protocol's three
         # methods. The simulated player acts inside the scene (pick /
-        # free-text) and leaves only at a soft-close — it never walks
-        # mid-scene, which is the realistic "thorough journalist" behavior.
+        # free-text) and leaves at a soft-close — plus a small seeded chance of
+        # a mid-scene map walk so the eval covers the engine's any-turn WalkTo.
         nxt = prose_part.next
         if isinstance(nxt, Continue):
+            if (
+                len(state.dialogue_history) >= MID_SCENE_WALK_MIN_TURNS
+                and walk_rng.random() < MID_SCENE_WALK_P
+            ):
+                return await walk_out(s, w, mid_scene=True)
             idx = await player.pick_option(prose_part)
             options = nxt.options
             rec.transcript.append({
@@ -181,14 +211,8 @@ async def run_session(
                 "typed": typed,
             })
             return TypeText(text=typed)
-        # Soft-close (EndScene): the scene is spent — the player walks. The
-        # budget trips here (a scene transition), never on an EndGame, so a
-        # real ending is never falsely truncated.
-        if rec.scene_count >= max_scenes:
-            raise SessionBudgetExceeded()
-        dest = await player.pick_walk(s, w)
-        rec.transcript.append({"kind": "walk", "from": s.player_location, "to": dest})
-        return WalkTo(location_id=dest)
+        # Soft-close (EndScene): the scene is spent — the player walks.
+        return await walk_out(s, w, mid_scene=False)
 
     def on_scene_close(terminal: ProsePart) -> None:
         rec.transcript.append({

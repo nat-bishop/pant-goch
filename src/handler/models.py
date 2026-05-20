@@ -89,6 +89,19 @@ class Beat(_Frozen):
     # object beats (reading a letter) and decision beats (player commitments)
     # that fire with no NPC in the room. Validated against the cast at load.
     requires_npcs_present: list[str] = Field(default_factory=list)
+    # State-dependent fireability: when non-empty, the beat is only emittable
+    # while the player is physically at one of these locations (enforced via
+    # engine.fireable_beat_ids → per-call grammar narrowing). The hard gate
+    # for place-bound beats like `examined_the_crash_site` (the Black Dog
+    # Bend) that `notes_to_llm` alone could not enforce against a 4B model.
+    # Validated against the locations at load.
+    requires_location: list[str] = Field(default_factory=list)
+    # Explicit opt-out of Invariant 14 (every beat carries ≥1 hard gate).
+    # Set only on a beat that is *intentionally* ungated — the player's
+    # always-available "I'm walking away" commitment. Self-documenting so the
+    # ungated beat is a deliberate, greppable exception rather than an
+    # oversight the loader would otherwise reject.
+    always_available: bool = False
     prerequisites: str = ""  # soft prereqs the LLM judges, beyond requires/blocks
     notes_to_llm: str
 

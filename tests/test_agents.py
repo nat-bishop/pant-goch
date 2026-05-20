@@ -22,14 +22,20 @@ from handler.world import load_world
 FIXTURE_VALID = Path(__file__).parent / "fixtures" / "world_valid"
 
 
-def test_state_change_bundle_type_accepts_reachable_beat_names():
-    """Phase 1 emits beat NAMES, not ids. Every initially-reachable beat's
-    name must round-trip through the dynamic schema."""
+def test_state_change_bundle_type_accepts_fireable_beat_names():
+    """Phase 1 emits beat NAMES, not ids. Every currently-FIREABLE beat's name
+    must round-trip through the dynamic schema (the schema is built from
+    `fireable_beat_ids`, the fire-now gate). Use a state at the pub so Tom's
+    presence-gated beats are actually fireable and the round-trip is
+    non-vacuous."""
     world = load_world(FIXTURE_VALID)
     state = make_initial_state(world)
+    state.player_location = "the_slaughtered_lamb"  # Tom is here
     BundleType = _build_state_change_bundle_type(world, state)
-    from handler.engine import reachable_beat_ids
-    for beat_id in reachable_beat_ids(world, state):
+    from handler.engine import fireable_beat_ids
+    fireable = fireable_beat_ids(world, state)
+    assert fireable, "expected at least one fireable beat at the pub"
+    for beat_id in fireable:
         beat_name = world.beats[beat_id].name
         bundle = BundleType.model_validate({
             "state_changes": [

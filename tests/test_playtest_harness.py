@@ -21,10 +21,13 @@ from handler.schemas import (
     StateChangeBundle,
     UnlockBeat,
 )
-from handler.world import load_world
+from handler.models import Beat, Brief, Ending, Location
+from handler.world import World, load_world
 
 from evals.evaluators import (
+    EndingEarned,
     EndingReached,
+    ExploredBeyondStart,
     NoDuplicateCaseFiles,
     NotTruncated,
     coverage_report,
@@ -86,6 +89,76 @@ def test_no_duplicate_case_files():
     assert NoDuplicateCaseFiles().evaluate(
         _ctx(_artifact(case_file_entries=["a", "a"]))
     ) is False
+
+
+def _evidence_world() -> World:
+    """Tiny world: an evidence-bearing ending (gates on a decision beat that
+    carries requires_any_beats) plus a trivial walk-away ending (decision beat
+    with no evidence). Enough for EndingEarned / ExploredBeyondStart."""
+    locs = {
+        "start": Location(id="start", name="Start", adjacent_to=["village"], description="x"),
+        "village": Location(id="village", name="Village", adjacent_to=["start"], description="y"),
+    }
+    beats = {
+        "evidence": Beat(id="evidence", name="Evidence", description="x", notes_to_llm="y",
+                         requires_location=["village"]),
+        "decided_file": Beat(id="decided_file", name="Decided file", description="x",
+                             notes_to_llm="y", requires_any_beats=["evidence"]),
+        "decided_quit": Beat(id="decided_quit", name="Decided quit", description="x",
+                             notes_to_llm="y", always_available=True),
+    }
+    endings = {
+        "published": Ending(id="published", requires_beats=["decided_file"],
+                            notes_to_llm="y", epilogue="z"),
+        "quit": Ending(id="quit", requires_beats=["decided_quit"],
+                       notes_to_llm="y", epilogue="z"),
+    }
+    return World(
+        locations=locs, npcs={}, crime="c", beats=beats, endings=endings,
+        brief=Brief(player_starts_at="start", opening_seed="s"),
+        npcs_by_location={"start": [], "village": []}, few_shots=[],
+        map_coords={}, glosses=[], beat_name_to_id={b.name: b.id for b in beats.values()},
+    )
+
+
+def test_ending_earned_flags_unearned_ending():
+    """An evidence-bearing ending reached with NO evidence unlocked fails
+    (the prologue-collapse regression); with evidence it passes; a walk-away
+    ending passes vacuously."""
+    world = _evidence_world()
+    earned = EndingEarned(world)
+    # decision beat fired but its evidence never unlocked → unearned → fail
+    assert earned.evaluate(_ctx(_artifact(
+        ending_id="published", unlocked_beats=["decided_file"]))) is False
+    # evidence present → earned → pass
+    assert earned.evaluate(_ctx(_artifact(
+        ending_id="published", unlocked_beats=["decided_file", "evidence"]))) is True
+    # walk-away ending (no evidence requirement) → passes vacuously
+    assert earned.evaluate(_ctx(_artifact(
+        ending_id="quit", unlocked_beats=["decided_quit"]))) is True
+    # truncated runs exempt
+    assert earned.evaluate(_ctx(_artifact(
+        ending_id=None, truncated=True))) is True
+
+
+def test_explored_beyond_start_flags_prologue_only_session():
+    """A substantive ending reached without leaving the start location fails;
+    visiting the village passes; a walk-away ending is exempt."""
+    world = _evidence_world()
+    explored = ExploredBeyondStart(world)
+    confined = [{"kind": "turn", "location": "start"}]
+    walked = [
+        {"kind": "turn", "location": "start"},
+        {"kind": "walk", "from": "start", "to": "village"},
+        {"kind": "turn", "location": "village"},
+    ]
+    assert explored.evaluate(_ctx(_artifact(
+        ending_id="published", transcript=confined))) is False
+    assert explored.evaluate(_ctx(_artifact(
+        ending_id="published", transcript=walked))) is True
+    # walk-away ending at the start is legitimate
+    assert explored.evaluate(_ctx(_artifact(
+        ending_id="quit", transcript=confined))) is True
 
 
 # ───────────────────────── coverage_report ─────────────────────────

@@ -88,6 +88,7 @@ class GeminiPlayer:
         self.agent = Agent(
             GoogleModel(model_name, provider=GoogleProvider(api_key=api_key)),
             instructions=instructions,
+            name="gemini_player",
         )
         self.history: list = []
 

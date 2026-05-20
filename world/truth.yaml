@@ -67,6 +67,7 @@ beats:
 
   - id: letter_from_iwan_read
     name: Read Iwan's letter
+    requires_location: [the_old_vicarage]
     description: |
       The player opens the sealed letter from Iwan Pritchard on the hall
       table and reads it through. Iwan's "Whatever you find, I would like
@@ -91,6 +92,7 @@ beats:
       will come up to Lower Hafod when convenient. Brief, formal, both
       sides careful.
     requires_beats: [letter_from_iwan_read]
+    requires_location: [the_old_vicarage]
     notes_to_llm: |
       Fire when the player picks up the receiver and dials Iwan, not on
       a general "I should phone him" intent. The conversation is short
@@ -529,6 +531,7 @@ beats:
 
   - id: examined_the_crash_site
     name: Examined the crash site
+    requires_location: [the_black_dog_bend]
     description: |
       The player walks the lay-by and verge at the Black Dog Bend.
       They see the flowers, the place where the grass grows differently
@@ -577,6 +580,7 @@ beats:
 
   - id: helen_wont_take_your_call
     name: Helen won't take your call
+    requires_any_beats: [maud_lets_a_name_slip, helen_will_meet_off_record]
     description: |
       DC Helen Mortimer has decided the player is a professional risk
       and will not meet again. She will not return calls.
@@ -603,6 +607,11 @@ beats:
 
   - id: village_runs_you_out
     name: Village runs you out
+    requires_any_beats:
+      - tom_closes_off
+      - dylan_refuses_to_speak_again
+      - eluned_throws_you_out
+      - helen_wont_take_your_call
     description: |
       The village has collectively decided the player is unwelcome.
       The pub falls silent on entry; Maud is "out" whenever the player
@@ -658,6 +667,7 @@ beats:
 
   - id: decided_to_walk_away
     name: Decided to walk away
+    always_available: true
     description: |
       The player has explicitly chosen to abandon the investigation
       and go home.

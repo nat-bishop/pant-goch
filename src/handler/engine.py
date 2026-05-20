@@ -80,10 +80,16 @@ def apply_state_changes(bundle: StateChangeBundle, state: State) -> None:
 
 def reachable_beat_ids(world: World, state: State) -> set[str]:
     """Return ids of beats that are *reachable* — unfired AND can eventually
-    fire given current state. Used by prompts.py to render ## Reachable Beats
-    and by agents._build_state_change_bundle_type to narrow the
-    grammar-sampled Literal so the model cannot emit a transitively-blocked
-    or transitively-unreachable beat.
+    fire given current state. This is the graph-only "could fire someday"
+    view: prerequisites count as satisfied if they are unlocked OR themselves
+    reachable.
+
+    NOTE: this is NOT the fire-now gate. The Phase-1 grammar narrowing and
+    the `## Reachable Beats` prompt block both ride on `fireable_beat_ids`,
+    which requires prerequisites to be actually *unlocked* (not merely
+    reachable) — so a decision beat cannot fire before its evidence exists.
+    `reachable_beat_ids` is kept for "what's still on the horizon" reasoning
+    (and external docs) but is off the per-turn hot path.
 
     Reachability (memoized recursion):
       A beat B is reachable iff:
@@ -139,24 +145,47 @@ def present_npc_ids(world: World, state: State) -> tuple[str, ...]:
 
 
 def fireable_beat_ids(world: World, state: State) -> set[str]:
-    """Reachable beats further narrowed to those that can fire RIGHT NOW
-    given who is in the room: a beat with a non-empty `requires_npcs_present`
-    is dropped unless every listed NPC is present at the player's location.
+    """Beats that can fire RIGHT NOW — the source of both the Phase-1 grammar
+    `Literal` (`agents._build_state_change_bundle_type`) and the
+    `## Reachable Beats` prompt block (`prompts._render_reachable_beats`). A
+    beat is fireable iff ALL of:
 
-    This is the state-dependent layer over the graph-only `reachable_beat_ids`
-    (kept pure for ending resolution + tests). Used by the Phase-1 grammar
-    narrowing (`agents._build_state_change_bundle_type`) and the Reachable
-    Beats prompt render (`prompts._render_reachable_beats`), so the model
-    literally cannot emit (and is never even told about) an NPC's beat while
-    that NPC is absent — e.g. Tom's beats are off the table everywhere but
-    wherever Tom currently is.
+      - it is not already unlocked;
+      - no `blocked_by_beats` member is unlocked;
+      - every `requires_beats` is **unlocked** (not merely reachable);
+      - if `requires_any_beats` is non-empty, at least one is **unlocked**;
+      - every `requires_npcs_present` NPC is present at the player's location;
+      - `requires_location` is empty OR contains the player's location.
+
+    The "unlocked, not merely reachable" rule is the load-bearing one: it
+    forces ladders to advance one rung per turn and stops a decision beat
+    (or its ending) from firing before its evidence has actually been
+    gathered. NPC-presence keeps Tom's beats off the table wherever Tom is
+    not; location keeps place-bound beats (the crash site) off the table
+    until the player is there. The model literally cannot emit — and is
+    never even told about — a beat that fails any of these.
     """
-    reachable = reachable_beat_ids(world, state)
     present = set(present_npc_ids(world, state))
-    return {
-        bid for bid in reachable
-        if set(world.beats[bid].requires_npcs_present).issubset(present)
-    }
+    here = state.player_location
+    unlocked = state.unlocked_beats
+    out: set[str] = set()
+    for bid, beat in world.beats.items():
+        if bid in unlocked:
+            continue
+        if any(b in unlocked for b in beat.blocked_by_beats):
+            continue
+        if not set(beat.requires_beats).issubset(unlocked):
+            continue
+        if beat.requires_any_beats and not any(
+            b in unlocked for b in beat.requires_any_beats
+        ):
+            continue
+        if not set(beat.requires_npcs_present).issubset(present):
+            continue
+        if beat.requires_location and here not in beat.requires_location:
+            continue
+        out.add(bid)
+    return out
 
 
 def resolved_ending_id_at_close(world: World, state: State) -> str | None:

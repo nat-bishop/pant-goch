@@ -91,8 +91,19 @@ logfire.configure(
 logfire.instrument_pydantic_ai(version=3)
 # `record="failure"` is critical — `record="all"` floods stdout during
 # streaming chat completions and was the observed cause of a logfire-buffer
-# blow-up that killed v1's sidecar mid-day. Don't change.
-logfire.instrument_pydantic(record="failure")
+# blow-up that killed v1's sidecar mid-day. Don't change the record mode.
+# `include` whitelists ONLY our own `handler.*` schemas (canonical models in
+# `handler.schemas`, dynamic NativeOutput models created in `handler.agents`).
+# A blacklist `exclude` could not reliably suppress the google-genai SDK's
+# union-resolution failures: those record under an inner `Part` schema name
+# while the *instrumented* top-level validator is a pydantic-ai/TypeAdapter
+# schema that no `google.genai…::Part` pattern matches — so the noise (≈74% of
+# all `make playtest` spans, pure union try-and-discard) leaked through. A
+# whitelist sidesteps that entirely: anything not under `handler.` (google,
+# pydantic_ai, pydantic_evals) is never instrumented. Our schema validations
+# (the signal — StateChangeBundle / ChoiceBundle / dynamic bundle retries)
+# still record.
+logfire.instrument_pydantic(record="failure", include={r"handler\..*"})
 logfire.instrument_httpx(capture_all=True)
 logging.getLogger().addHandler(logfire.LogfireLoggingHandler())
 

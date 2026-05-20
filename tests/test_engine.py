@@ -157,6 +157,53 @@ def test_fireable_respects_npc_location_override():
     assert "tom_beat" in fireable_beat_ids(world, state)
 
 
+# ───────────── fireable_beat_ids (strict prereq + location gating) ─────────────
+
+
+def test_fireable_excludes_beat_whose_requires_beats_not_unlocked():
+    """A beat whose requires_beats is reachable-but-not-yet-unlocked is NOT
+    fireable now — the fire-now gate demands prerequisites be unlocked, so a
+    ladder advances one rung per turn. (reachable_beat_ids, the horizon view,
+    still includes it.)"""
+    world = _make_world(beats=[
+        _beat("root"),
+        _beat("leaf", requires_beats=["root"]),
+    ])
+    state = State(player_location="loc_a")
+    assert "leaf" in reachable_beat_ids(world, state)       # on the horizon
+    assert "leaf" not in fireable_beat_ids(world, state)    # but not now
+    assert "root" in fireable_beat_ids(world, state)
+    state.unlocked_beats.add("root")
+    assert "leaf" in fireable_beat_ids(world, state)        # now the next rung
+
+
+def test_fireable_decision_beat_needs_evidence_unlocked():
+    """A decision beat gated on requires_any_beats (evidence) is not fireable
+    until at least one evidence beat is actually unlocked — the fix for
+    decision beats / endings firing in the prologue before any evidence
+    exists."""
+    world = _make_world(beats=[
+        _beat("ev_a"),
+        _beat("ev_b"),
+        _beat("decided", requires_any_beats=["ev_a", "ev_b"]),
+    ])
+    state = State(player_location="loc_a")
+    assert "decided" in reachable_beat_ids(world, state)    # eventually reachable
+    assert "decided" not in fireable_beat_ids(world, state)  # but unearned now
+    state.unlocked_beats.add("ev_b")
+    assert "decided" in fireable_beat_ids(world, state)
+
+
+def test_fireable_excludes_beat_at_wrong_location():
+    """requires_location keeps a place-bound beat off the table everywhere
+    but at one of its locations (the crash-site fix)."""
+    world = _make_world(beats=[
+        _beat("at_bend", requires_location=["loc_b"]),
+    ])
+    assert "at_bend" not in fireable_beat_ids(world, State(player_location="loc_a"))
+    assert "at_bend" in fireable_beat_ids(world, State(player_location="loc_b"))
+
+
 # ───────────────────────── apply_state_changes ─────────────────────────
 
 
@@ -693,9 +740,10 @@ def test_dynamic_builder_against_loaded_fixture():
     before constructing the canonical bundle."""
     world = load_world(FIXTURE_VALID)
     state = make_initial_state(world)
+    state.player_location = "the_slaughtered_lamb"  # Tom present → his beats fireable
     BundleType = _build_state_change_bundle_type(world, state)
-    # tom_named_a_vehicle has no requires, and its blocker (tom_closes_off)
-    # hasn't fired — so it's reachable.
+    # tom_named_a_vehicle has no beat prereq, its blocker (tom_closes_off)
+    # hasn't fired, and Tom is in the room — so it's fireable now.
     bundle = BundleType.model_validate({
         "state_changes": [
             {"type": "unlock_beat", "beat_name": "Tom named a vehicle"}
@@ -707,7 +755,7 @@ def test_dynamic_builder_against_loaded_fixture():
     ])
     apply_state_changes(canonical, state)
     assert "tom_named_a_vehicle" in state.unlocked_beats
-    # Now tom_admits_more (requires tom_named_a_vehicle) is reachable.
+    # Now tom_admits_more (requires tom_named_a_vehicle, Tom present) is fireable.
     BundleType2 = _build_state_change_bundle_type(world, state)
     BundleType2.model_validate({
         "state_changes": [

@@ -64,7 +64,7 @@ def _parse_args() -> argparse.Namespace:
     ap.add_argument("--runs-per-persona", type=int, default=4)
     ap.add_argument("--parallel", type=int, default=None,
                     help="max concurrent sessions (default: llama_n_parallel)")
-    ap.add_argument("--max-scenes", type=int, default=30,
+    ap.add_argument("--max-scenes", type=int, default=60,
                     help="scene budget per session before truncation")
     ap.add_argument("--personas", type=str, default=None,
                     help="comma-separated subset of persona names")
@@ -81,9 +81,11 @@ async def main() -> None:
             "no Gemini API key — set GEMINI_API_KEY (or GOOGLE_API_KEY) in .env "
             "or the environment."
         )
-    parallel = args.parallel or settings.llama_n_parallel
     subset = args.personas.split(",") if args.personas else None
     personas = load_personas(subset)
+    # Default to running every case at once (personas x repeats); the engine
+    # must have enough KV slots (-np) to serve them without queuing.
+    parallel = args.parallel or (len(personas) * args.runs_per_persona)
     out_dir = args.out or (_REPO_ROOT / "evals" / "artifacts" / time.strftime("%Y%m%d-%H%M%S"))
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -111,7 +113,7 @@ async def main() -> None:
     dataset = Dataset(
         name="handler_playtest",
         cases=[Case(name=p, inputs=p) for p in personas],
-        evaluators=invariant_evaluators(),
+        evaluators=invariant_evaluators(world),
     )
     report = await dataset.evaluate(
         task, max_concurrency=parallel, repeat=args.runs_per_persona,
