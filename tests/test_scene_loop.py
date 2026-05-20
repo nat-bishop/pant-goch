@@ -1,6 +1,6 @@
 """Scene-loop orchestration tests.
 
-Mocks emit_state_changes / emit_prose_text / emit_choices / emit_free_text_gate
+Mocks emit_state_changes / stream_prose_text / emit_choices / emit_free_text_gate
 / emit_caption (and the engine cadence gate) to avoid LLM dependency. Verifies
 that run_turn sequences phase 1 → apply → prose writer → choice author ‖ gate →
 (cadence + caption) → assemble ProsePart → append, that fallbacks fire on
@@ -37,6 +37,9 @@ from handler.schemas import (
     UnlockBeat,
 )
 from handler.scene_loop import (
+    PickOption,
+    TypeText,
+    WalkTo,
     _assemble_prose_part,
     play_scene,
     play_session,
@@ -84,13 +87,16 @@ def _patch_phase1(monkeypatch, bundle: StateChangeBundle | None = None):
 def _patch_prose_writer(monkeypatch, proses):
     """`proses` is an iterable of strings — one per expected call. The
     test should provide enough to cover all turns; if it runs out, the
-    iterator raises StopIteration → the test fails loudly."""
+    iterator raises StopIteration → the test fails loudly.
+
+    The real `stream_prose_text` is an async generator yielding text
+    deltas, so the double yields each turn's prose as a single delta."""
     it = iter(proses)
 
     async def fake(*args, **kwargs):
-        return next(it)
+        yield next(it)
 
-    monkeypatch.setattr("handler.scene_loop.emit_prose_text", fake)
+    monkeypatch.setattr("handler.scene_loop.stream_prose_text", fake)
 
 
 def _patch_choice_author(monkeypatch, choices):
@@ -138,6 +144,27 @@ def _patch_cadence(monkeypatch, ok: bool):
     monkeypatch.setattr(
         "handler.scene_loop.free_text_cadence_ok", lambda state, rng: ok
     )
+
+
+def _patch_closing_prose(monkeypatch, text: str = "You step out into the dark."):
+    """Stub the closing-prose LLM call (used on a WalkTo leave) so play_scene
+    tests don't hit a real prose-writer run."""
+    async def fake(*args, **kwargs):
+        return text
+
+    monkeypatch.setattr("handler.scene_loop.emit_closing_prose", fake)
+
+
+def _walk_first_adjacent(prose_part, state, world):
+    """Default `request_player_input`: pick option 0 on a Continue, type a
+    stock line on free text, and walk to the first adjacent location on a
+    soft-close (EndScene). Tests needing specific actions pass their own."""
+    nxt = prose_part.next
+    if nxt.type == "continue":
+        return PickOption(index=0)
+    if nxt.type == "free_text":
+        return TypeText(text="I look around.")
+    return WalkTo(location_id=world.locations[state.player_location].adjacent_to[0])
 
 
 @pytest.fixture(autouse=True)
@@ -302,8 +329,9 @@ async def test_run_turn_prose_writer_fallback(monkeypatch, bundle_and_state):
 
     async def fake_prose_fails(*args, **kwargs):
         raise UnexpectedModelBehavior("simulated")
+        yield  # pragma: no cover — makes this an async generator
 
-    monkeypatch.setattr("handler.scene_loop.emit_prose_text", fake_prose_fails)
+    monkeypatch.setattr("handler.scene_loop.stream_prose_text", fake_prose_fails)
     _patch_choice_author(monkeypatch, [
         ChoiceBundle(next=Continue(options=[
             Option(text="wait"), Option(text="look"),
@@ -328,8 +356,9 @@ async def test_run_turn_prose_writer_fallback_does_not_pollute_message_history(
 
     async def fake_prose_fails(*args, **kwargs):
         raise UnexpectedModelBehavior("simulated")
+        yield  # pragma: no cover — makes this an async generator
 
-    monkeypatch.setattr("handler.scene_loop.emit_prose_text", fake_prose_fails)
+    monkeypatch.setattr("handler.scene_loop.stream_prose_text", fake_prose_fails)
     _patch_choice_author(monkeypatch, [
         ChoiceBundle(next=Continue(options=[
             Option(text="a"), Option(text="b"),
@@ -467,8 +496,10 @@ async def test_run_turn_caption_failure_falls_back_to_fixed_box(monkeypatch):
 # ───────────────────────── play_scene ─────────────────────────
 
 
-async def test_play_scene_drives_until_endscene(monkeypatch):
-    """Three turns: turn 1+2 Continue, turn 3 Leave → EndScene."""
+async def test_play_scene_drives_until_walk(monkeypatch):
+    """Three turns: turn 1+2 Continue (picks), turn 3 Leave → soft-close →
+    the player walks → play_scene returns a finalized EndScene whose
+    to_location names the destination, with the closing prose streamed."""
     world = load_world(FIXTURE_VALID)
     bundle = build_scene_runner_bundle(TestModel(), world)
     runtime = make_scene_runner_runtime()
@@ -478,26 +509,32 @@ async def test_play_scene_drives_until_endscene(monkeypatch):
     _patch_populator(monkeypatch)
     _patch_phase1(monkeypatch)
     _patch_prose_writer(monkeypatch, ["t1", "t2", "t3"])
+    _patch_closing_prose(monkeypatch, "You shoulder the door open.")
     _patch_choice_author(monkeypatch, [
         ChoiceBundle(next=Continue(options=[Option(text="stay"), Option(text="ask")])),
         ChoiceBundle(next=Continue(options=[Option(text="watch"), Option(text="speak")])),
         ChoiceBundle(next=Leave()),
     ])
 
-    result = await play_scene(bundle, runtime, state, pick_option=lambda pp: 0)
+    result = await play_scene(
+        bundle, runtime, state, request_player_input=_walk_first_adjacent
+    )
     assert isinstance(result.next, EndScene)
-    # Three TurnRecords.
+    assert result.next.to_location in world.locations["the_slaughtered_lamb"].adjacent_to
+    assert result.prose == "You shoulder the door open."
+    # Three TurnRecords (the closing prose is not a turn).
     assert len(state.dialogue_history) == 3
-    # Two Continue turns had a pick; the EndScene turn had none.
+    # Two Continue turns had a pick; the soft-close turn had none (walked).
     assert state.dialogue_history[0].player_pick is not None
     assert state.dialogue_history[1].player_pick is not None
     assert state.dialogue_history[2].player_pick is None
 
 
 async def test_play_scene_dispatches_free_text(monkeypatch):
-    """Gate offers free text on turn 1 → play_scene calls pick_free_text →
-    typed string becomes the turn's player_pick (flagged typed). Turn 2 the
-    gate declines and the choice author emits Leave → EndScene."""
+    """Gate offers free text on turn 1 → request_player_input returns a
+    TypeText → typed string becomes the turn's player_pick (flagged typed).
+    Turn 2 the gate declines and the choice author emits Leave → soft-close
+    → the player walks out."""
     world = load_world(FIXTURE_VALID)
     bundle = build_scene_runner_bundle(TestModel(), world)
     runtime = make_scene_runner_runtime()
@@ -507,6 +544,7 @@ async def test_play_scene_dispatches_free_text(monkeypatch):
     _patch_populator(monkeypatch)
     _patch_phase1(monkeypatch)
     _patch_prose_writer(monkeypatch, ["t1", "t2"])
+    _patch_closing_prose(monkeypatch)
     _patch_choice_author(monkeypatch, [
         # Turn 1 Continue is overridden by the gate offer; turn 2 Leave wins.
         ChoiceBundle(next=Continue(options=[Option(text="a"), Option(text="b")])),
@@ -518,26 +556,25 @@ async def test_play_scene_dispatches_free_text(monkeypatch):
         FreeTextCaption(caption="What do you say?", suggested="I tell him about Megan."),
     ])
 
-    typed_replies = iter(["I came because of Megan."])
-
-    def pick_free_text(req: FreeText) -> str:
-        assert req.prompt == "What do you say?"
-        assert req.suggested == "I tell him about Megan."
-        assert req.npc_id is None
-        return next(typed_replies)
+    def request(prose_part, s, w):
+        nxt = prose_part.next
+        if nxt.type == "free_text":
+            assert nxt.prompt == "What do you say?"
+            assert nxt.suggested == "I tell him about Megan."
+            assert nxt.npc_id is None
+            return TypeText(text="I came because of Megan.")
+        # turn 2 soft-close → walk out
+        return WalkTo(location_id=w.locations[s.player_location].adjacent_to[0])
 
     result = await play_scene(
-        bundle, runtime, state,
-        pick_option=lambda pp: 0,
-        pick_free_text=pick_free_text,
+        bundle, runtime, state, request_player_input=request,
     )
     assert isinstance(result.next, EndScene)
     # First TurnRecord got the typed string as the player's pick, flagged typed.
     assert state.dialogue_history[0].player_pick is not None
     assert state.dialogue_history[0].player_pick.text == "I came because of Megan."
     assert state.dialogue_history[0].player_pick_typed is True
-    # The clicked-option turn (none here) would have player_pick_typed False;
-    # the Leave turn has no pick.
+    # The soft-close turn has no pick (the player walked).
     assert state.dialogue_history[1].player_pick is None
 
 
@@ -560,12 +597,13 @@ async def test_play_scene_resets_prose_writer_message_history_at_scene_start(mon
         # Observe message_history at the time of the first prose-writer
         # call.
         captured.append(list(rt.prose_writer_message_history))
-        return "end"
+        yield "end"
 
-    monkeypatch.setattr("handler.scene_loop.emit_prose_text", fake_prose)
+    monkeypatch.setattr("handler.scene_loop.stream_prose_text", fake_prose)
+    _patch_closing_prose(monkeypatch)
     _patch_choice_author(monkeypatch, [ChoiceBundle(next=Leave())])
 
-    await play_scene(bundle, runtime, state, pick_option=lambda pp: 0)
+    await play_scene(bundle, runtime, state, request_player_input=_walk_first_adjacent)
     # The first observed prose-writer call MUST see an empty history.
     assert captured == [[]]
 
@@ -591,6 +629,7 @@ async def test_play_session_calls_both_callbacks_and_terminates_on_end_game(monk
 
     _patch_populator(monkeypatch)
     _patch_chronicler(monkeypatch)
+    _patch_closing_prose(monkeypatch)
     # Phase 1 fires nothing until scene 2 turn 2 (the fourth call).
     phase1_outputs = iter([
         StateChangeBundle(),  # scene 1 turn 1
@@ -608,7 +647,7 @@ async def test_play_session_calls_both_callbacks_and_terminates_on_end_game(monk
     _patch_prose_writer(monkeypatch, ["t1", "t1-end", "t2", "t2-end"])
     _patch_choice_author(monkeypatch, [
         ChoiceBundle(next=Continue(options=[Option(text="ask"), Option(text="go")])),
-        ChoiceBundle(next=Leave()),  # scene 1 EndScene (no ending satisfied)
+        ChoiceBundle(next=Leave()),  # scene 1 soft-close (no ending) → player walks
         ChoiceBundle(next=Continue(options=[Option(text="ask"), Option(text="go")])),
         ChoiceBundle(next=Leave()),  # scene 2 EndGame (decision beat now in state)
     ])
@@ -616,19 +655,12 @@ async def test_play_session_calls_both_callbacks_and_terminates_on_end_game(monk
     log_entries: list[tuple[State, ChronicleEntry]] = []
     closes: list[ProsePart] = []
 
-    def policy_pick(pp: ProsePart) -> int:
-        return 0
-
-    def policy_walk(state: State, world: World) -> str:
-        return world.locations[state.player_location].adjacent_to[0]
-
     def record_log(s: State, o: ChronicleEntry) -> None:
         log_entries.append((s, o))
 
     terminal = await play_session(
         bundle, runtime, chronicler, state, world,
-        pick_option=policy_pick,
-        pick_walk=policy_walk,
+        request_player_input=_walk_first_adjacent,
         on_chronicle_entry=record_log,
         on_scene_close=closes.append,
     )
@@ -637,16 +669,16 @@ async def test_play_session_calls_both_callbacks_and_terminates_on_end_game(monk
     assert isinstance(terminal.next, EndGame)
     assert state.game_over is not None
     assert state.game_over.ending_id == "published_story"
-    # Both callbacks fired once per scene end.
+    # on_scene_close + chronicler fired once per scene end (walk-out, then EndGame).
     assert len(closes) == 2
     assert len(log_entries) == 2
     assert len(state.case_file_entries) == 2
 
 
-async def test_play_session_pick_walk_only_called_between_scenes(monkeypatch):
-    """If the session ends in EndGame on the first scene, pick_walk is
-    never called. Phase 1 fires the decision beat on the only turn so
-    Leave resolves to EndGame."""
+async def test_play_session_no_input_when_first_turn_ends_game(monkeypatch):
+    """If the session ends in EndGame on the first scene's first turn (the
+    decision beat fires, Leave resolves straight to EndGame), the player is
+    never asked for input — request_player_input is not called."""
     world, bundle, runtime, chronicler, state = _make_session_fixtures()
     decision_beats = world.endings["published_story"].requires_beats
 
@@ -658,19 +690,18 @@ async def test_play_session_pick_walk_only_called_between_scenes(monkeypatch):
     _patch_prose_writer(monkeypatch, ["opening"])
     _patch_choice_author(monkeypatch, [ChoiceBundle(next=Leave())])
 
-    walk_calls: list[str] = []
+    input_calls: list[str] = []
 
-    def policy_walk(state: State, world: World) -> str:
-        walk_calls.append(state.player_location)
-        return world.locations[state.player_location].adjacent_to[0]
+    def request(prose_part, s, w):
+        input_calls.append(s.player_location)
+        return _walk_first_adjacent(prose_part, s, w)
 
     terminal = await play_session(
         bundle, runtime, chronicler, state, world,
-        pick_option=lambda pp: 0,
-        pick_walk=policy_walk,
+        request_player_input=request,
     )
     assert isinstance(terminal.next, EndGame)
-    assert walk_calls == []
+    assert input_calls == []
 
 
 async def test_play_session_case_file_entries_accumulate_on_state(monkeypatch):
@@ -687,8 +718,76 @@ async def test_play_session_case_file_entries_accumulate_on_state(monkeypatch):
 
     await play_session(
         bundle, runtime, chronicler, state, world,
-        pick_option=lambda pp: 0,
-        pick_walk=lambda s, w: w.locations[s.player_location].adjacent_to[0],
+        request_player_input=_walk_first_adjacent,
     )
     assert len(state.case_file_entries) == 1
     assert state.case_file_entries[0] == "entry"
+
+
+# ───────────────────────── mid-scene leave (player-authored movement) ─────────────────────────
+
+
+async def test_play_scene_walk_mid_continue_ends_scene(monkeypatch):
+    """The player walks out on turn 1 while a Continue is offered (no pick):
+    play_scene runs the closing prose and returns EndScene(to_location). The
+    turn keeps no player_pick (they left instead of choosing)."""
+    world = load_world(FIXTURE_VALID)
+    bundle = build_scene_runner_bundle(TestModel(), world)
+    runtime = make_scene_runner_runtime()
+    state = make_initial_state(world)
+    state.player_location = "the_slaughtered_lamb"
+
+    _patch_populator(monkeypatch)
+    _patch_phase1(monkeypatch)
+    _patch_prose_writer(monkeypatch, ["Tom eyes you over his pint."])
+    _patch_closing_prose(monkeypatch, "You leave him to it.")
+    _patch_choice_author(monkeypatch, [
+        ChoiceBundle(next=Continue(options=[Option(text="stay"), Option(text="ask")])),
+    ])
+
+    dest = world.locations["the_slaughtered_lamb"].adjacent_to[0]
+
+    def request(prose_part, s, w):
+        assert prose_part.next.type == "continue"  # mid-scene, options offered
+        return WalkTo(location_id=dest)
+
+    result = await play_scene(bundle, runtime, state, request_player_input=request)
+    assert isinstance(result.next, EndScene)
+    assert result.next.to_location == dest
+    assert result.prose == "You leave him to it."
+    assert len(state.dialogue_history) == 1
+    assert state.dialogue_history[0].player_pick is None
+
+
+async def test_play_scene_walk_resolves_endgame_when_ending_satisfied(monkeypatch):
+    """A WalkTo while an ending's beats are already satisfied → EndGame,
+    reusing the last prose. emit_closing_prose is NOT called (no journey is
+    narrated for a game that's ending)."""
+    world = load_world(FIXTURE_VALID)
+    bundle = build_scene_runner_bundle(TestModel(), world)
+    runtime = make_scene_runner_runtime()
+    state = make_initial_state(world)
+    state.player_location = "the_slaughtered_lamb"
+    # Satisfy the ending's prereqs up front.
+    state.unlocked_beats = set(world.endings["published_story"].requires_beats)
+
+    _patch_populator(monkeypatch)
+    _patch_phase1(monkeypatch)
+    _patch_prose_writer(monkeypatch, ["The room goes quiet."])
+    _patch_choice_author(monkeypatch, [
+        ChoiceBundle(next=Continue(options=[Option(text="stay"), Option(text="ask")])),
+    ])
+
+    async def _closing_must_not_run(*args, **kwargs):
+        raise AssertionError("emit_closing_prose must not run on a walk-to-ending")
+
+    monkeypatch.setattr("handler.scene_loop.emit_closing_prose", _closing_must_not_run)
+
+    dest = world.locations["the_slaughtered_lamb"].adjacent_to[0]
+    result = await play_scene(
+        bundle, runtime, state,
+        request_player_input=lambda pp, s, w: WalkTo(location_id=dest),
+    )
+    assert isinstance(result.next, EndGame)
+    assert result.next.ending_id == "published_story"
+    assert result.prose == "The room goes quiet."  # last prose reused, no closing line

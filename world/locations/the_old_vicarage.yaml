@@ -1,5 +1,6 @@
 id: the_old_vicarage
 name: The Old Vicarage
+short_name: the vicarage
 adjacent_to: [the_post_office]
 
 description: |

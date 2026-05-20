@@ -125,7 +125,7 @@ async def test_play_scene_applies_populator_placements(monkeypatch):
         Leave,
         StateChangeBundle,
     )
-    from handler.scene_loop import play_scene
+    from handler.scene_loop import WalkTo, play_scene
 
     world = load_world(FIXTURE_VALID)
     bundle = build_scene_runner_bundle(TestModel(), world)
@@ -145,7 +145,7 @@ async def test_play_scene_applies_populator_placements(monkeypatch):
         return StateChangeBundle()
 
     async def fake_prose(*args, **kwargs):
-        return "A quiet pub."
+        yield "A quiet pub."
 
     async def fake_choices(*args, **kwargs):
         return ChoiceBundle(next=Leave())
@@ -153,11 +153,15 @@ async def test_play_scene_applies_populator_placements(monkeypatch):
     async def fake_gate(*args, **kwargs):
         return False
 
+    async def fake_closing(*args, **kwargs):
+        return "You step back out."
+
     monkeypatch.setattr("handler.scene_loop.emit_placements", fake_placements)
     monkeypatch.setattr("handler.scene_loop.emit_state_changes", fake_phase1)
-    monkeypatch.setattr("handler.scene_loop.emit_prose_text", fake_prose)
+    monkeypatch.setattr("handler.scene_loop.stream_prose_text", fake_prose)
     monkeypatch.setattr("handler.scene_loop.emit_choices", fake_choices)
     monkeypatch.setattr("handler.scene_loop.emit_free_text_gate", fake_gate)
+    monkeypatch.setattr("handler.scene_loop.emit_closing_prose", fake_closing)
 
     events: list[dict] = []
 
@@ -167,9 +171,12 @@ async def test_play_scene_applies_populator_placements(monkeypatch):
     # Speed up pacing.
     monkeypatch.setattr("handler.sse.WORD_PACE_S", 0.001)
 
+    # The scene soft-closes (Leave, no ending); the player walks out.
     await play_scene(
         bundle, runtime, state,
-        pick_option=lambda _pp: 0,
+        request_player_input=lambda pp, s, w: WalkTo(
+            location_id=w.locations[s.player_location].adjacent_to[0]
+        ),
         emit_event=emit,
     )
 

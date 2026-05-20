@@ -37,7 +37,13 @@ from .schemas import (
     FreeText,
     ProsePart,
 )
-from .scene_loop import play_session
+from .scene_loop import (
+    PickOption,
+    PlayerAction,
+    TypeText,
+    WalkTo,
+    play_session,
+)
 from .state import State, make_initial_state
 from .world import World, load_world
 
@@ -76,58 +82,75 @@ def _print_prose_part(prose_part: ProsePart) -> None:
         print(f"[game ends — {prose_part.next.ending_id}]")
 
 
-def _prompt_pick(prose_part: ProsePart) -> int:
-    assert isinstance(prose_part.next, Continue)
+def _request_input(prose_part: ProsePart, state: State, world: World) -> PlayerAction:
+    """Single stdin input handler — the CLI's `request_player_input`. Prints
+    the turn (prose + options or free-text prompt) plus the adjacent
+    locations as `go <n>`, then parses one line into a `PlayerAction`:
+
+      - a bare number picks an option (Continue);
+      - `go <n>` walks to an adjacent location — always available, since the
+        map is a way out of any turn;
+      - any other text is a typed move (FreeText), or, at a soft-close, only
+        a `go <n>` is accepted.
+    """
     _print_prose_part(prose_part)
-    n = len(prose_part.next.options)
-    while True:
-        raw = input(f"Pick 1-{n}: ").strip()
-        try:
-            idx = int(raw) - 1
-        except ValueError:
-            print("Enter a number.")
-            continue
-        if 0 <= idx < n:
-            return idx
-        print(f"Out of range. Pick 1-{n}.")
-
-
-def _prompt_free_text(req: FreeText) -> str:
-    """Read a typed line from stdin for the FreeText flow. The req's
-    `prompt` is rendered by `_print_prose_part` already; this just
-    re-shows it as the input prompt label."""
-    label = req.prompt.strip() or "Type your reply"
-    while True:
-        raw = input(f"{label}: ").strip()
-        if raw:
-            return raw
-        # Empty line falls back to the suggested move, mirroring the web
-        # box's pre-loaded, submittable suggestion.
-        if req.suggested:
-            return req.suggested
-        print("(non-empty)")
-
-
-def _prompt_walk(state: State, world: World) -> str:
-    """Between-scenes adjacent picker for the CLI. The web/eval drivers
-    supply their own pick_walk callback to play_session; this one reads
-    stdin."""
-    location = world.locations[state.player_location]
+    adj = world.locations[state.player_location].adjacent_to
     print()
-    for i, adj in enumerate(location.adjacent_to, start=1):
-        print(f"  {i}) Walk to {world.locations[adj].name}")
+    for i, a in enumerate(adj, start=1):
+        print(f"  go {i}) → {world.locations[a].name}")
+
+    def _parse_walk(raw: str) -> WalkTo | None:
+        parts = raw.split()
+        if len(parts) == 2 and parts[0].lower() in ("go", "g") and parts[1].isdigit():
+            gi = int(parts[1]) - 1
+            if 0 <= gi < len(adj):
+                return WalkTo(location_id=adj[gi])
+        return None
+
+    nxt = prose_part.next
+    if isinstance(nxt, Continue):
+        n = len(nxt.options)
+        while True:
+            raw = input(f"Pick 1-{n}, or 'go <n>' to leave: ").strip()
+            walk = _parse_walk(raw)
+            if walk is not None:
+                return walk
+            try:
+                idx = int(raw) - 1
+            except ValueError:
+                print("Enter an option number or 'go <n>'.")
+                continue
+            if 0 <= idx < n:
+                return PickOption(index=idx)
+            print(f"Out of range. Pick 1-{n}.")
+
+    if isinstance(nxt, FreeText):
+        label = nxt.prompt.strip() or "Type your reply"
+        while True:
+            raw = input(f"{label} (or 'go <n>' to leave): ").strip()
+            walk = _parse_walk(raw)
+            if walk is not None:
+                return walk
+            if raw:
+                return TypeText(text=raw)
+            # Empty line falls back to the suggested move, mirroring the web
+            # box's pre-loaded, submittable suggestion.
+            if nxt.suggested:
+                return TypeText(text=nxt.suggested)
+            print("(non-empty)")
+
+    # Soft-close (EndScene): the scene is spent — only a walk remains, so a
+    # bare number is unambiguous here and accepted alongside 'go <n>'.
     while True:
-        raw = input(f"Pick adjacent 1-{len(location.adjacent_to)}: ").strip()
-        try:
-            idx = int(raw) - 1
-        except ValueError:
-            print("Enter a number.")
-            continue
-        if 0 <= idx < len(location.adjacent_to):
-            destination = location.adjacent_to[idx]
-            print(f"\n=== Scene at {destination} ===")
-            return destination
-        print(f"Out of range. Pick 1-{len(location.adjacent_to)}.")
+        raw = input(f"Scene's spent. Go where? 1-{len(adj)} (or 'go <n>'): ").strip()
+        walk = _parse_walk(raw)
+        if walk is not None:
+            return walk
+        if raw.isdigit():
+            gi = int(raw) - 1
+            if 0 <= gi < len(adj):
+                return WalkTo(location_id=adj[gi])
+        print(f"Enter 1-{len(adj)}.")
 
 
 def _print_chronicle_entry(state: State, output: ChronicleEntry) -> None:
@@ -154,9 +177,7 @@ async def _amain() -> int:
         print(f"\n=== Scene at {state.player_location} ===")
         terminal = await play_session(
             bundle, scene_runner, chronicler, state, world,
-            pick_option=_prompt_pick,
-            pick_walk=_prompt_walk,
-            pick_free_text=_prompt_free_text,
+            request_player_input=_request_input,
             on_scene_close=_print_prose_part,
             on_chronicle_entry=_print_chronicle_entry,
         )
@@ -164,9 +185,6 @@ async def _amain() -> int:
             ending = world.endings[terminal.next.ending_id]
             print()
             print(ending.epilogue.strip())
-        else:
-            # Stranded — only EndScene reachable, no adjacents.
-            print("[stranded — no adjacents]")
         return 0
     finally:
         stop_llama(llama_proc)

@@ -174,10 +174,21 @@ class FreeTextCaption(_Strict):
 
 
 class EndScene(_Strict):
-    """Engine-only variant: from a choice-author Leave when no ending is
-    satisfied. The LLM never emits this."""
+    """Engine-only variant. The LLM never emits this. Two roles, disambiguated
+    by `to_location`:
+
+    - `to_location=None` — a **soft-close request**: the choice author emitted
+      Leave with no ending satisfied, so the scene is spent and the engine
+      awaits the player's destination (`scene_loop.play_scene` surfaces the
+      map and waits for a `WalkTo`).
+    - `to_location` set — the **finalized scene end**: the player has walked,
+      the closing prose has streamed, and this names where they went. Returned
+      by `play_scene` for `play_session` to drive `location_change` + the
+      player_location update.
+    """
 
     type: Literal["end_scene"] = "end_scene"
+    to_location: str | None = None
 
 
 class EndGame(_Strict):

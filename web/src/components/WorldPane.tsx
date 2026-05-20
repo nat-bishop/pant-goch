@@ -90,7 +90,7 @@ export function WorldPane() {
           {walking ? "on the road" : "the survey · pant goch & the marches"}
         </div>
         <MapView
-          active={phase === "between_scenes" && !walking}
+          active={phase !== "idle" && phase !== "game_over" && !walking}
           currentLocId={walking ? walking.fromId : visibleScene?.location_id ?? null}
           visitedIds={visitedIds}
         />

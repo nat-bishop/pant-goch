@@ -22,8 +22,20 @@ from handler.agents import (
     make_chronicler_runtime,
     make_scene_runner_runtime,
 )
-from handler.schemas import ChronicleEntry, EndGame, FreeText, ProsePart
-from handler.scene_loop import play_session
+from handler.schemas import (
+    ChronicleEntry,
+    Continue,
+    EndGame,
+    FreeText,
+    ProsePart,
+)
+from handler.scene_loop import (
+    PickOption,
+    PlayerAction,
+    TypeText,
+    WalkTo,
+    play_session,
+)
 from handler.state import State, make_initial_state
 from handler.world import World
 
@@ -138,39 +150,45 @@ async def run_session(
     t0 = time.monotonic()
     truncated = False
 
-    async def pick_option(prose_part: ProsePart) -> int:
-        idx = await player.pick_option(prose_part)
-        options = prose_part.next.options  # type: ignore[union-attr]
-        rec.transcript.append({
-            "kind": "turn",
-            "scene_id": state.scene_id,
-            "location": state.player_location,
-            "prose": prose_part.prose,
-            "options": [o.text for o in options],
-            "pick_index": idx,
-            "pick_text": options[idx].text,
-        })
-        return idx
-
-    async def pick_free_text(req: FreeText) -> str:
-        typed = await player.pick_free_text(req)
-        rec.transcript.append({
-            "kind": "free_text",
-            "scene_id": state.scene_id,
-            "location": state.player_location,
-            "prompt": req.prompt,
-            "typed": typed,
-        })
-        return typed
-
-    async def pick_walk(s: State, w: World) -> str:
-        # Budget trips only between scenes — never on an EndGame, so a real
-        # ending is never falsely truncated.
+    async def request_player_input(
+        prose_part: ProsePart, s: State, w: World
+    ) -> PlayerAction:
+        # Map the awaited input back onto the Player protocol's three
+        # methods. The simulated player acts inside the scene (pick /
+        # free-text) and leaves only at a soft-close — it never walks
+        # mid-scene, which is the realistic "thorough journalist" behavior.
+        nxt = prose_part.next
+        if isinstance(nxt, Continue):
+            idx = await player.pick_option(prose_part)
+            options = nxt.options
+            rec.transcript.append({
+                "kind": "turn",
+                "scene_id": state.scene_id,
+                "location": state.player_location,
+                "prose": prose_part.prose,
+                "options": [o.text for o in options],
+                "pick_index": idx,
+                "pick_text": options[idx].text,
+            })
+            return PickOption(index=idx)
+        if isinstance(nxt, FreeText):
+            typed = await player.pick_free_text(nxt)
+            rec.transcript.append({
+                "kind": "free_text",
+                "scene_id": state.scene_id,
+                "location": state.player_location,
+                "prompt": nxt.prompt,
+                "typed": typed,
+            })
+            return TypeText(text=typed)
+        # Soft-close (EndScene): the scene is spent — the player walks. The
+        # budget trips here (a scene transition), never on an EndGame, so a
+        # real ending is never falsely truncated.
         if rec.scene_count >= max_scenes:
             raise SessionBudgetExceeded()
         dest = await player.pick_walk(s, w)
         rec.transcript.append({"kind": "walk", "from": s.player_location, "to": dest})
-        return dest
+        return WalkTo(location_id=dest)
 
     def on_scene_close(terminal: ProsePart) -> None:
         rec.transcript.append({
@@ -187,9 +205,7 @@ async def run_session(
     try:
         await play_session(
             bundle, runtime, chronicler, state, world,
-            pick_option=pick_option,
-            pick_walk=pick_walk,
-            pick_free_text=pick_free_text,
+            request_player_input=request_player_input,
             on_scene_close=on_scene_close,
             on_chronicle_entry=on_chronicle_entry,
         )

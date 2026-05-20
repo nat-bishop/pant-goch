@@ -1,5 +1,6 @@
 id: the_lane
 name: The Lane
+short_name: the lane
 adjacent_to: [st_caradocs, knighton, tan_y_coed]
 
 description: |

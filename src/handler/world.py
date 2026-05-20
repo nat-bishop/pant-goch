@@ -136,6 +136,21 @@ def _check_symmetric_adjacency(locations: dict[str, Location]) -> None:
                 )
 
 
+def _check_no_dead_ends(locations: dict[str, Location]) -> None:
+    """Invariant 11 — every location has ≥1 adjacent_to. Under
+    player-authored movement (the map is the only leave control and the
+    LLM soft-close removes all in-scene options), a location with no
+    adjacents is an unrecoverable soft-lock: the player can neither stay
+    nor go. Hard-fail at load."""
+    for loc in locations.values():
+        if not loc.adjacent_to:
+            raise WorldLoadError(
+                f"location {loc.id!r} has no adjacent_to — dead-end "
+                f"locations are unreachable-from under player-authored "
+                f"movement (the map is the only exit)"
+            )
+
+
 def _check_npc_default_locations(npcs: dict[str, NPC], locations: dict[str, Location]) -> None:
     """Invariant 4 — every NPC's default_location references a defined location."""
     for npc in npcs.values():
@@ -264,6 +279,7 @@ def load_world(path: Path) -> World:
     _check_unique_ids(location_records, "location", str(locations_dir))
     locations: dict[str, Location] = {loc.id: loc for loc in location_records}
     _check_symmetric_adjacency(locations)
+    _check_no_dead_ends(locations)
 
     cast_path = path / "cast.yaml"
     if not cast_path.is_file():

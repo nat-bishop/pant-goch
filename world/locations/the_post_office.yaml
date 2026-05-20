@@ -1,5 +1,6 @@
 id: the_post_office
 name: The Post Office
+short_name: the post office
 adjacent_to: [the_old_vicarage, the_slaughtered_lamb]
 
 description: |

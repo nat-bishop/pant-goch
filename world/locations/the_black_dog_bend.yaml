@@ -1,5 +1,6 @@
 id: the_black_dog_bend
 name: The Black Dog Bend
+short_name: the bend
 adjacent_to: [knighton]
 
 description: |

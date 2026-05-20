@@ -26,7 +26,8 @@ from __future__ import annotations
 import asyncio
 import inspect
 from collections.abc import Awaitable, Callable
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
+from dataclasses import dataclass
 from typing import Union
 
 import logfire
@@ -39,10 +40,11 @@ from .agents import (
     emit_caption,
     emit_chronicle_entry,
     emit_choices,
+    emit_closing_prose,
     emit_free_text_gate,
     emit_placements,
-    emit_prose_text,
     emit_state_changes,
+    stream_prose_text,
 )
 from .engine import (
     FREE_TEXT_FALLBACK,
@@ -67,6 +69,7 @@ from .schemas import (
     StateChangeBundle,
 )
 from .sse import (
+    _words_from_stream,
     _words_from_text,
     free_text_request_event,
     game_over_event,
@@ -75,6 +78,7 @@ from .sse import (
     options_event,
     paced_word_emitter,
     scene_exit_event,
+    scene_spent_event,
     scene_start_event,
     state_change_event,
     walk_ready_event,
@@ -86,11 +90,43 @@ from .world import World
 EmitEvent = Callable[[dict], Awaitable[None]]
 
 
-# Callback shapes: sync OR async. The driver picks. CLI uses sync
-# `input()`; SSE backend uses async (await a Future resolved by POST).
-PickOption = Callable[["ProsePart"], Union[int, Awaitable[int]]]
-PickFreeText = Callable[["FreeText"], Union[str, Awaitable[str]]]
-PickWalk = Callable[[State, World], Union[str, Awaitable[str]]]
+# ── player action: the single input a scene awaits ──
+# One tagged union covers every way a turn can resolve: pick a canned
+# option, type a free-text move, or walk out via the map (mid-scene or at
+# a soft-close). `request_player_input` returns one of these. The map is
+# live at every input-await point, so a WalkTo can end any turn.
+@dataclass(frozen=True)
+class PickOption:
+    """Player chose the canned option at `index` from a Continue."""
+
+    index: int
+
+
+@dataclass(frozen=True)
+class TypeText:
+    """Player typed their own move (the free-text box)."""
+
+    text: str
+
+
+@dataclass(frozen=True)
+class WalkTo:
+    """Player clicked the map to leave for `location_id` (always adjacent
+    to the current location). Ends the scene from any turn."""
+
+    location_id: str
+
+
+PlayerAction = Union[PickOption, TypeText, WalkTo]
+
+
+# Sync OR async. The driver picks. CLI parses one stdin line; the SSE
+# backend awaits a single Future resolved by POST /pick|/walk|/free_text;
+# tests/evals script it.
+RequestPlayerInput = Callable[
+    ["ProsePart", State, World],
+    Union[PlayerAction, Awaitable[PlayerAction]],
+]
 OnChronicleEntry = Callable[
     [State, ChronicleEntry], Union[None, Awaitable[None]]
 ]
@@ -171,10 +207,138 @@ def _fallback_choices() -> ChoiceBundle:
     ]))
 
 
+def _fallback_closing_prose() -> str:
+    """Engine-authored closing line when the prose writer's retries
+    exhaust on a leave. Voice-neutral; never shown as engine metatext."""
+    return "You step out, and the door falls shut behind you."
+
+
+async def _stream_pace_and_author(
+    bundle: AgentBundle,
+    runtime: SceneRunnerRuntime,
+    state: State,
+    applied: StateChangeBundle,
+    *,
+    emit_event: EmitEvent | None,
+    skip_event: asyncio.Event | None,
+) -> tuple[str, object, object]:
+    """Phase 2a + 2b/2c, fused so the reveal overlaps the authoring.
+
+    The prose writer is streamed and its words paced to the client as the
+    LLM produces them (the player starts reading at `prose TTFT`, not after
+    the whole turn assembles). The choice author and free-text gate need the
+    finished prose, so they are kicked off the *moment generation completes*
+    — concurrently with the reveal's remaining 150 ms holds. The model is
+    free during pacing (those are pure `asyncio.sleep`s), so the authoring
+    decode overlaps the reveal and options are ready as it ends.
+
+    Returns `(prose, choices_res, gate_res)` where the two results are the
+    raw `asyncio.gather(..., return_exceptions=True)` outputs; the caller
+    interprets their fallbacks. `prose` is the streamed text (or the
+    engine fallback on prose-writer failure).
+
+    Mechanics: a producer task drains `stream_prose_text` eagerly into a
+    queue (so the LLM is NOT throttled to pacing speed by TCP back-pressure
+    — that would pin the model for the whole reveal and block the authoring
+    overlap). A pacer task pulls from the queue and either paces to the
+    client (`emit_event` set) or drains quietly (CLI / tests / evals). The
+    producer's `finally` always enqueues the `None` sentinel so the pacer
+    unblocks even when the prose writer fails mid-stream.
+    """
+    queue: asyncio.Queue[str | None] = asyncio.Queue()
+    acc: list[str] = []
+
+    async def _produce() -> None:
+        try:
+            async for delta in stream_prose_text(bundle, runtime, state, applied):
+                acc.append(delta)
+                await queue.put(delta)
+        finally:
+            await queue.put(None)
+
+    async def _queue_iter() -> AsyncIterator[str]:
+        while True:
+            item = await queue.get()
+            if item is None:
+                return
+            yield item
+
+    async def _drain_quiet() -> str:
+        full = ""
+        async for word in _words_from_stream(_queue_iter()):
+            full += word
+        return full
+
+    producer = asyncio.create_task(_produce())
+    if emit_event is not None:
+        pacer = asyncio.create_task(paced_word_emitter(
+            _words_from_stream(_queue_iter()), emit_event,
+            event_kind="prose_word", skip_event=skip_event,
+        ))
+    else:
+        pacer = asyncio.create_task(_drain_quiet())
+
+    try:
+        try:
+            await producer
+        except UnexpectedModelBehavior as e:
+            # Why: fallback prose is engine-authored, generic, and intentionally
+            # NOT appended to runtime.prose_writer_message_history (stream_prose_text
+            # skips that on failure). Persisting it would taint the next turn's
+            # conversation with a line the narrator never wrote — breaking voice
+            # continuity. The producer's finally already released the pacer.
+            logfire.warn(
+                "prose_writer fallback: retries exhausted; emitting generic prose",
+                error=str(e),
+            )
+            await pacer  # drains whatever streamed + emits its is_last sentinel
+            if acc:
+                # A partial line already reached the player; keep it rather than
+                # appending fallback prose on top of it.
+                prose = "".join(acc)
+            else:
+                prose = _fallback_prose()
+                if emit_event is not None:
+                    await paced_word_emitter(
+                        _words_from_text(prose), emit_event,
+                        event_kind="prose_word", skip_event=skip_event,
+                    )
+            choices_res, gate_res = await asyncio.gather(
+                emit_choices(bundle, state, prose),
+                emit_free_text_gate(bundle, state, prose),
+                return_exceptions=True,
+            )
+            return prose, choices_res, gate_res
+
+        # Generation finished cleanly: the full prose is known and the model
+        # is free. Author the choices/gate now, overlapping the reveal tail.
+        # gather() schedules both coroutines immediately, so they run while we
+        # await the pacer's remaining holds.
+        prose = "".join(acc)
+        authoring = asyncio.gather(
+            emit_choices(bundle, state, prose),
+            emit_free_text_gate(bundle, state, prose),
+            return_exceptions=True,
+        )
+        await pacer
+        choices_res, gate_res = await authoring
+        return prose, choices_res, gate_res
+    finally:
+        # Safety net: a non-UnexpectedModelBehavior escaping above must not
+        # leave the pacer task pending ("Task was destroyed but is pending").
+        if not pacer.done():
+            pacer.cancel()
+            with suppress(asyncio.CancelledError):
+                await pacer
+
+
 async def run_turn(
     bundle: AgentBundle,
     runtime: SceneRunnerRuntime,
     state: State,
+    *,
+    emit_event: EmitEvent | None = None,
+    skip_event: asyncio.Event | None = None,
 ) -> ProsePart:
     """One full turn end-to-end. Returns the engine-assembled ProsePart
     so the caller can dispatch on `prose_part.next` (Continue → wait
@@ -185,6 +349,13 @@ async def run_turn(
     Prose writer's conversation history (`runtime.prose_writer_message_history`)
     is mutated on successful prose-writer call; left UNCHANGED on
     fallback.
+
+    When `emit_event` is supplied, the turn's SSE events are emitted here:
+    `state_change` (right after Phase 1, before any prose word) and the
+    paced `prose_word` stream (live, as the prose writer produces it — see
+    `_stream_pace_and_author`). `skip_event` flushes the reveal at full
+    speed. Both default to None for CLI / tests / evals, which drive the
+    turn without SSE.
     """
     # ── Phase 1 ────────────────────────────────────────────────────────────
     try:
@@ -197,32 +368,18 @@ async def run_turn(
         applied = StateChangeBundle()
     apply_state_changes(applied, state)
 
-    # ── Phase 2a: prose writer ─────────────────────────────────────────────
-    try:
-        prose = await emit_prose_text(bundle, runtime, state, applied)
-    except UnexpectedModelBehavior as e:
-        # Why: fallback prose is engine-authored, generic, and intentionally
-        # NOT appended to runtime.prose_writer_message_history. Persisting
-        # it would taint the next turn's conversation context with a
-        # stand-in line that the narrator didn't actually write — breaking
-        # voice continuity. Player still sees the fallback prose; the
-        # conversation just behaves as if the failed turn didn't exist on
-        # the next call.
-        logfire.warn(
-            "prose_writer fallback: retries exhausted; emitting generic prose",
-            error=str(e),
-        )
-        prose = _fallback_prose()
+    # state_change events go out before any prose word, so the frontend
+    # unlocks beats ahead of the reveal.
+    if emit_event is not None:
+        for change in applied.state_changes:
+            await emit_event(state_change_event(
+                kind="unlock_beat", payload={"beat_id": change.beat_id}
+            ))
 
-    # ── Phase 2b/2c: choice author ‖ free-text gate ─────────────────────────
-    # Both read only the just-written prose and are mutually independent,
-    # so they run concurrently. The gate is a single-bool decode batched
-    # alongside the choice author — its latency is largely hidden. Each is
-    # guarded independently: a failure falls back without sinking the turn.
-    choices_res, gate_res = await asyncio.gather(
-        emit_choices(bundle, state, prose),
-        emit_free_text_gate(bundle, state, prose),
-        return_exceptions=True,
+    # ── Phase 2a + 2b/2c: stream prose live, author over the reveal tail ────
+    prose, choices_res, gate_res = await _stream_pace_and_author(
+        bundle, runtime, state, applied,
+        emit_event=emit_event, skip_event=skip_event,
     )
 
     if isinstance(choices_res, UnexpectedModelBehavior):
@@ -316,27 +473,24 @@ async def play_scene(
     runtime: SceneRunnerRuntime,
     state: State,
     *,
-    pick_option: PickOption,
-    pick_free_text: PickFreeText | None = None,
+    request_player_input: RequestPlayerInput,
     emit_event: EmitEvent | None = None,
     skip_event: asyncio.Event | None = None,
 ) -> ProsePart:
-    """Run a scene from the current player_location until EndScene or
-    EndGame. `pick_option(prose_part) -> int` returns the index of the
-    player's pick when a Continue is emitted. `pick_free_text(req)
-    -> str` returns the typed string when a FreeText is emitted;
-    required only if the choice author may emit FreeText (eval / test
-    drivers that don't expect it can leave it None).
+    """Run a scene from the current player_location until it ends.
 
-    If `emit_event` is supplied, the scene also emits SSE events at each
-    boundary (scene_start, state_change, prose_word, options /
-    free_text_request / scene_exit / game_over). Prose words are paced at
-    a 150 ms floor by `paced_word_emitter` so the SSE client gets steady
-    cadence regardless of LLM speed, the hold lengthening at punctuation
-    boundaries (clause < sentence < paragraph). `skip_event`, when set
-    mid-stream, flushes
-    the remaining words without pacing — the FastAPI surface drives it
-    from POST /skip.
+    Each turn, `request_player_input(prose_part, state, world)` returns one
+    `PlayerAction`: a `PickOption` / `TypeText` continues the scene; a
+    `WalkTo` ends it. The map is live at every await, so a `WalkTo` can end
+    any turn — a `Continue`, a `FreeText`, or a soft-close (`EndScene` from
+    the choice author's Leave, which removes the options and leaves the map
+    as the only way on).
+
+    If `emit_event` is supplied, the scene emits SSE at each boundary
+    (scene_start, state_change, the live-paced prose_word stream, then the
+    input cue: options / free_text_request / scene_spent — each followed by
+    walk_ready to arm the map). Prose is paced at a 150 ms floor by
+    `paced_word_emitter`; `skip_event` flushes the reveal at full speed.
 
     Scene-entry sequence: (1) enter_scene → init scene_id, clear
     dialogue_history, set player_location. (2) populator (emit_placements)
@@ -346,7 +500,11 @@ async def play_scene(
     On populator failure (retries exhausted), defaults stand — scene
     continues without crashing.
 
-    Returns the terminating ProsePart (EndScene or EndGame).
+    Returns the terminating ProsePart:
+      - `EndGame` — the LLM soft-closed into a satisfied ending, or the
+        player walked out while one was satisfied.
+      - `EndScene(to_location=...)` — the player walked; the closing prose
+        has already streamed and `to_location` names where they went.
     """
     enter_scene(state, bundle.world, state.player_location)
 
@@ -369,62 +527,90 @@ async def play_scene(
 
     while True:
         # The pick_option / pick_free_text wait below stays OUT of the
-        # turn span — span duration should measure LLM work, not the idle
-        # wait for the player to click.
+        # turn span — span duration should measure the turn's work, not the
+        # idle wait for the player to click. run_turn now emits the turn's
+        # SSE (state_change, then the live-paced prose_word stream) itself,
+        # so the span also covers the reveal pacing; per-agent LLM latency
+        # is still isolated by pydantic-ai's own instrumentation spans.
         with _root_span(
             "turn",
             scene_id=state.scene_id,
             turn_n=state.turn_n,
             location=state.player_location,
         ):
-            prose_part = await run_turn(bundle, runtime, state)
+            prose_part = await run_turn(
+                bundle, runtime, state,
+                emit_event=emit_event, skip_event=skip_event,
+            )
 
-            # ── emit state_change events ──
+        nxt = prose_part.next
+
+        # LLM-resolved terminal: Leave + a satisfied ending. No player
+        # input — the climax already committed in fiction.
+        if isinstance(nxt, EndGame):
             if emit_event is not None:
-                last_turn = state.dialogue_history[-1]
-                for change in last_turn.applied_state_changes:
-                    await emit_event(state_change_event(
-                        kind="unlock_beat", payload={"beat_id": change.beat_id}
-                    ))
+                await emit_event(game_over_event(nxt.ending_id))
+            return prose_part
 
-        # ── pace prose words ──
+        # Every other branch awaits one PlayerAction. Surface the matching
+        # in-scene cue, then arm the map (walk_ready) so a WalkTo is legal
+        # everywhere — including mid-scene. Only the soft-close cue
+        # (scene_spent) flips the frontend to the map; options / free-text
+        # leave the location photo up (quiet voluntary leave).
         if emit_event is not None:
-            await paced_word_emitter(
-                _words_from_text(prose_part.prose),
-                emit_event,
-                event_kind="prose_word",
-                skip_event=skip_event,
-            )
-
-        # ── dispatch on next ──
-        if isinstance(prose_part.next, Continue):
-            if emit_event is not None:
+            if isinstance(nxt, Continue):
                 await emit_event(options_event([
-                    {"text": o.text} for o in prose_part.next.options
+                    {"text": o.text} for o in nxt.options
                 ]))
-            idx = await _maybe_await(pick_option(prose_part))
-            picked = prose_part.next.options[idx]
-            state.dialogue_history[-1].player_pick = picked
-            continue
+            elif isinstance(nxt, FreeText):
+                await emit_event(free_text_request_event(nxt))
+            else:  # EndScene soft-close — scene spent, only a walk remains
+                await emit_event(scene_spent_event())
+            await emit_event(walk_ready_event())
 
-        if isinstance(prose_part.next, FreeText):
-            if emit_event is not None:
-                await emit_event(free_text_request_event(prose_part.next))
-            assert pick_free_text is not None, (
-                "engine surfaced a free-text box (gate offered) but no "
-                "pick_free_text callback was supplied"
-            )
-            typed = await _maybe_await(pick_free_text(prose_part.next))
-            state.dialogue_history[-1].player_pick = Option(text=typed)
+        action = await _maybe_await(
+            request_player_input(prose_part, state, bundle.world)
+        )
+
+        if isinstance(action, PickOption):
+            assert isinstance(nxt, Continue), "PickOption with no options offered"
+            state.dialogue_history[-1].player_pick = nxt.options[action.index]
+            continue
+        if isinstance(action, TypeText):
+            state.dialogue_history[-1].player_pick = Option(text=action.text)
             state.dialogue_history[-1].player_pick_typed = True
             continue
 
+        # WalkTo — the player leaves; the scene ends from whatever branch.
+        assert isinstance(action, WalkTo)
+        ending_id = resolved_ending_id_at_close(bundle.world, state)
+        if ending_id is not None:
+            # An ending's beats are already met — the game ends as they
+            # leave. No destination line (they aren't arriving anywhere);
+            # the last turn's prose stands as the terminal beat.
+            if emit_event is not None:
+                await emit_event(game_over_event(ending_id))
+            return ProsePart(prose=prose_part.prose, next=EndGame(ending_id=ending_id))
+
+        try:
+            closing = await emit_closing_prose(
+                bundle, runtime, state, bundle.world, action.location_id
+            )
+        except UnexpectedModelBehavior as e:
+            logfire.warn(
+                "closing_prose fallback: retries exhausted; using fixed line",
+                error=str(e),
+            )
+            closing = _fallback_closing_prose()
         if emit_event is not None:
-            if isinstance(prose_part.next, EndGame):
-                await emit_event(game_over_event(prose_part.next.ending_id))
-            else:
-                await emit_event(scene_exit_event())
-        return prose_part
+            await paced_word_emitter(
+                _words_from_text(closing), emit_event,
+                event_kind="prose_word", skip_event=skip_event,
+            )
+            await emit_event(scene_exit_event())
+        return ProsePart(
+            prose=closing, next=EndScene(to_location=action.location_id)
+        )
 
 
 # ───────────────────────── session loop ─────────────────────────
@@ -437,40 +623,29 @@ async def play_session(
     state: State,
     world: World,
     *,
-    pick_option: PickOption,
-    pick_walk: PickWalk,
-    pick_free_text: PickFreeText | None = None,
+    request_player_input: RequestPlayerInput,
     on_chronicle_entry: OnChronicleEntry | None = None,
     on_scene_close: OnSceneClose | None = None,
     emit_event: EmitEvent | None = None,
     skip_event: asyncio.Event | None = None,
 ) -> ProsePart:
-    """Play one full session (multiple scenes) from `state` until the
-    LLM fires Leave→EndGame or the player gets stranded at a location
-    with no adjacents. Returns the terminal ProsePart (always EndGame in
-    the normal path).
+    """Play one full session (multiple scenes) from `state` until an ending
+    fires. Returns the terminal EndGame ProsePart.
 
-    Three policy callbacks make this driver-agnostic — supply CLI/stdin
-    variants from `__main__.py`, SSE/HTTP variants from `main.py`'s
-    FastAPI routes, or scripted/random/LLM-as-player variants from an
-    eval harness. The shape is the same.
+    `request_player_input` makes this driver-agnostic — supply a CLI/stdin
+    variant from `__main__.py`, the SSE/HTTP variant from `main.py`, or a
+    scripted/random/LLM-as-player variant from an eval harness. The shape
+    is the same: it returns one `PlayerAction` per await.
 
     Args:
-        pick_option: called when a Continue needs a player pick.
-            Receives the just-streamed ProsePart; returns the index of
-            the chosen option.
-        pick_walk: called between scenes (after EndScene) to choose
-            which adjacent location to walk to. Receives the live state
-            and world; returns the destination location id (MUST be in
-            the current location's adjacent_to).
-        pick_free_text: called when the choice author emits a FreeText
-            variant. Receives the FreeText; returns the typed string.
-            Required only if the choice author may emit FreeText;
-            pass-through to play_scene.
+        request_player_input: called every turn that awaits the player —
+            returns a `PickOption` / `TypeText` (continue the scene) or a
+            `WalkTo` (leave; the WalkTo's location_id MUST be adjacent).
         on_chronicle_entry: optional callback fired after each scene-end
             chronicler call.
-        on_scene_close: optional callback fired with the terminal
-            ProsePart (EndScene or EndGame) BEFORE the chronicler runs.
+        on_scene_close: optional callback fired with the terminal ProsePart
+            (the closing prose / EndGame) after the scene ends, before the
+            chronicler runs.
 
     Side effects:
         - Mutates `state` (location, scene_id, dialogue_history,
@@ -481,22 +656,20 @@ async def play_session(
     while state.game_over is None:
         terminal = await play_scene(
             bundle, runtime, state,
-            pick_option=pick_option,
-            pick_free_text=pick_free_text,
+            request_player_input=request_player_input,
             emit_event=emit_event,
             skip_event=skip_event,
         )
 
-        # Surface the closing prose before the chronicler runs — the
-        # player should read the scene's last line before the case file
-        # gets its commentary.
+        # The closing prose already streamed inside play_scene (EndScene),
+        # or game_over already fired (EndGame). on_scene_close lets a driver
+        # render the terminal ProsePart (the CLI prints it).
         if on_scene_close is not None:
             await _maybe_await(on_scene_close(terminal))
 
-        # Chronicler fires after every scene close — both EndScene and
-        # EndGame. The just-completed scene is still in dialogue_history;
-        # the next enter_scene will clear it. Decompose into the two
-        # state channels right here so the callback sees a settled state.
+        # Chronicler runs while player_location still points at the scene
+        # just closed, so present_npc_ids is correct. The completed scene
+        # is still in dialogue_history; the next enter_scene clears it.
         with _root_span("chronicler_call", scene_id=state.scene_id):
             output = await emit_chronicle_entry(bundle, chronicler, world, state)
         state.case_file_entries.append(output.case_file_entry)
@@ -521,24 +694,18 @@ async def play_session(
             state.game_over = GameOver(ending_id=terminal.next.ending_id)
             return terminal
 
-        # EndScene — between-scenes. Caller picks adjacent.
-        location = world.locations[state.player_location]
-        if not location.adjacent_to:
-            # Stranded — only EndScene was reachable from a dead-end
-            # location and the player can't move. Return the terminal
-            # ProsePart so the caller can render whatever closing UI it
-            # wants. game_over stays None.
-            return terminal
-
-        # The walk pick is now armed (chronicler + case-file pacing done).
-        # Tell the frontend so map pins become clickable — before this,
-        # POST /walk would 409.
-        if emit_event is not None:
-            await emit_event(walk_ready_event())
-        to_location = await _maybe_await(pick_walk(state, world))
-        assert to_location in location.adjacent_to, (
-            f"pick_walk returned {to_location!r}, not in "
-            f"{location.adjacent_to!r}"
+        # EndScene — the player already walked; terminal.next.to_location
+        # names the destination (validated adjacent at the /walk route and
+        # in play_scene). Move them now that the chronicler has settled the
+        # closing state; the frontend animates the tracer off this event.
+        assert isinstance(terminal.next, EndScene)
+        to_location = terminal.next.to_location
+        assert (
+            to_location is not None
+            and to_location in world.locations[state.player_location].adjacent_to
+        ), (
+            f"finalized EndScene.to_location={to_location!r} is not adjacent "
+            f"to {state.player_location!r}"
         )
         if emit_event is not None:
             await emit_event(location_change_event(

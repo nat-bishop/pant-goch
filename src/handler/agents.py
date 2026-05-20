@@ -3,7 +3,8 @@
 Phase 1 (`emit_state_changes`) emits `StateChangeBundle`; Phase 2 is split
 into two sequential calls:
 
-  - `emit_prose_text` (prose writer) — plain text output. Scene-bounded
+  - `stream_prose_text` (prose writer) — plain text output, streamed as
+    deltas so the caller can pace words to the client live. Scene-bounded
     message history on `SceneRunnerRuntime.prose_writer_message_history`.
     Voice continuity accumulates within a scene, resets at scene boundary.
 
@@ -44,6 +45,7 @@ no JSON schema involved.
 from __future__ import annotations
 
 import random
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Annotated, Any, Literal
 
@@ -58,6 +60,7 @@ from .prompts import (
     build_caption_author_user_message,
     build_choice_author_system_prompt,
     build_choice_author_user_message,
+    build_closing_prose_user_message,
     build_chronicler_system_prompt,
     build_chronicler_user_prompt,
     build_free_text_gate_system_prompt,
@@ -420,22 +423,31 @@ async def emit_placements(
     return NpcPlacementBundle.model_validate(result.output.model_dump())
 
 
-async def emit_prose_text(
+async def stream_prose_text(
     bundle: AgentBundle,
     runtime: SceneRunnerRuntime,
     state: State,
     applied: StateChangeBundle,
-) -> str:
-    """Prose writer LLM call. Scene-bounded conversation: the model sees
-    its own prior turns' prose as assistant messages via
-    `runtime.prose_writer_message_history`. On success, history is updated
-    with `result.all_messages()` (atomic: pydantic-ai's internal
-    ModelRetry loop doesn't pollute — only the final accepted result is
-    appended).
+) -> AsyncIterator[str]:
+    """Prose writer LLM call, streamed. Yields text DELTAS as the model
+    produces them, so the caller can pace them to the client live instead
+    of waiting for the whole turn to assemble.
 
-    On UnexpectedModelBehavior (retries exhausted), this function raises;
-    caller (scene_loop.run_turn) catches and uses fallback prose, which
-    does NOT mutate runtime.prose_writer_message_history.
+    Scene-bounded conversation: the model sees its own prior turns' prose
+    as assistant messages via `runtime.prose_writer_message_history`. On
+    clean completion (the `async for` exhausting), history is updated with
+    `result.all_messages()` — atomic, only the final accepted result.
+
+    On UnexpectedModelBehavior (retries exhausted), the `async for` raises
+    BEFORE the history line, so it is skipped: the caller
+    (scene_loop._stream_pace_and_author) catches and uses fallback prose,
+    and `runtime.prose_writer_message_history` is left UNCHANGED. Same
+    contract as the prior blocking `emit_prose_text`.
+
+    Uses cumulative `stream_text()` (not `delta=True`): per pydantic-ai,
+    `delta=True` omits the final assistant message from `all_messages()`,
+    which would break voice continuity. We diff against the previous
+    cumulative chunk to recover deltas ourselves.
 
     `is_first_turn` is derived from runtime.prose_writer_message_history
     being empty. On the first turn of the first scene, the opening seed
@@ -451,6 +463,40 @@ async def emit_prose_text(
         opening_seed=opening_seed,
         is_first_turn=is_first_turn,
     )
+    async with bundle.prose_writer.run_stream(
+        user_msg,
+        message_history=runtime.prose_writer_message_history,
+        output_type=str,
+    ) as result:
+        prev = ""
+        async for cumulative in result.stream_text():
+            yield cumulative[len(prev):]
+            prev = cumulative
+        runtime.prose_writer_message_history = result.all_messages()
+
+
+async def emit_closing_prose(
+    bundle: AgentBundle,
+    runtime: SceneRunnerRuntime,
+    state: State,
+    world: World,
+    to_location_id: str,
+) -> str:
+    """One closing line as the player leaves for `to_location_id`. Reuses
+    the prose writer with the scene's `prose_writer_message_history` so the
+    exit keeps the scene's voice; the user message names the destination
+    (via `Location.display_short`) and asks for a single line — see
+    `build_closing_prose_user_message`. Single-phase (no Phase 1, no
+    choices) per SPEC §3.2.
+
+    Blocking (`.run`, not streamed): it's one short line and the caller
+    (scene_loop.play_scene) paces it to the client itself. On
+    UnexpectedModelBehavior (retries exhausted) this raises like the prose
+    writer; the caller catches and uses a fixed fallback line. History is
+    updated only on success, so a failed close leaves the (about-to-be-
+    reset) scene history untouched.
+    """
+    user_msg = build_closing_prose_user_message(state, world, to_location_id)
     result = await bundle.prose_writer.run(
         user_msg,
         message_history=runtime.prose_writer_message_history,

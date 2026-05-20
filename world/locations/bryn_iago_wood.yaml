@@ -1,5 +1,6 @@
 id: bryn_iago_wood
 name: Bryn Iago Wood
+short_name: the wood
 adjacent_to: [tan_y_coed]
 
 description: |

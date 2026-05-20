@@ -641,6 +641,29 @@ def _render_stay_here(state: State, world: World) -> str:
     )
 
 
+def build_closing_prose_user_message(
+    state: State, world: World, to_location: str
+) -> str:
+    """Per-turn user message for the prose writer's single closing line as
+    the player leaves the current scene for `to_location`.
+
+    Mirrors the prose-writer message shape (## sections) and rides the
+    scene's accumulated `prose_writer_message_history` for voice continuity.
+    Deliberately OMITS `_render_stay_here` — this is the one moment the
+    narrator *should* narrate the exit. One line, no new threads, no
+    dialogue, no options. Uses `Location.display_short` so the line reads
+    naturally ("toward the church", not "toward St Caradoc's")."""
+    here = world.locations[state.player_location].display_short
+    dest = world.locations[to_location].display_short
+    return (
+        f"## Leaving\n"
+        f"The player is leaving {here}, heading toward {dest}.\n\n"
+        f"## Write\n"
+        f"Write ONE line of closing prose — their exit, moving off toward "
+        f"{dest}. Just the leaving; no new threads, no dialogue, no choices."
+    )
+
+
 # ───────────────────────── choice author user message (stateless per call) ─────────────────────────
 
 

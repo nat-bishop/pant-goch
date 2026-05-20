@@ -46,7 +46,14 @@ from .launcher import (
     stop_llama,
     wait_healthy,
 )
-from .scene_loop import play_session
+from .schemas import Continue, EndScene, FreeText
+from .scene_loop import (
+    PickOption,
+    PlayerAction,
+    TypeText,
+    WalkTo,
+    play_session,
+)
 from .state import State, make_initial_state
 from .world import World, load_world
 
@@ -106,10 +113,13 @@ class SessionRuntime:
     """Per-session async glue for the SSE backend.
 
     Holds only what binds the FastAPI side to the scene loop: the live
-    state, the three runtimes, the event queue, and the pick/walk
-    futures resolved by POST /pick and POST /walk. Session-persistent
-    data (case_file_entries, npc_memory, dialogue_history, ...) lives
-    on `state` so the save-game shape is unambiguous.
+    state, the three runtimes, the event queue, and the single
+    `action_future` resolved by whichever of POST /pick, /walk, /free_text
+    fires first. `awaiting` records which in-scene input is currently legal
+    so the routes can reject the wrong one (a /pick at a soft-close, say) —
+    /walk is legal in every awaiting state. Session-persistent data
+    (case_file_entries, npc_memory, dialogue_history, ...) lives on `state`
+    so the save-game shape is unambiguous.
 
     The `event_queue` is single-consumer (per the lift note on
     `useStream`: React StrictMode dev-mode double-mounts; the
@@ -123,9 +133,12 @@ class SessionRuntime:
     state: State
     world: World
     event_queue: "asyncio.Queue[dict]" = field(default_factory=asyncio.Queue)
-    pick_future: "asyncio.Future[int] | None" = None
-    walk_future: "asyncio.Future[str] | None" = None
-    free_text_future: "asyncio.Future[str] | None" = None
+    action_future: "asyncio.Future[PlayerAction] | None" = None
+    # The `next` of the ProsePart currently awaiting the player — the single
+    # source of truth for which input is legal (set/cleared in lockstep with
+    # action_future). A /walk is legal whenever a future is pending; a /pick
+    # only against a Continue, a /free_text only against a FreeText.
+    awaiting_next: "Continue | FreeText | EndScene | None" = None
     play_task: "asyncio.Task | None" = None
     skip_event: asyncio.Event = field(default_factory=asyncio.Event)
 
@@ -428,34 +441,23 @@ async def start_session() -> dict[str, str]:
     async def emit(event: dict) -> None:
         await rt.event_queue.put(event)
 
-    async def pick(_prose_part) -> int:
-        rt.pick_future = asyncio.get_event_loop().create_future()
+    async def request_player_input(prose_part, _state, _world) -> PlayerAction:
+        # The matching SSE cue (options / free_text_request / scene_spent)
+        # has already gone out from play_scene; record what's awaited so the
+        # routes can reject the wrong input (a WalkTo is always legal).
+        rt.awaiting_next = prose_part.next
+        rt.action_future = asyncio.get_event_loop().create_future()
         try:
-            return await rt.pick_future
+            return await rt.action_future
         finally:
-            rt.pick_future = None
-
-    async def walk(_state, _world) -> str:
-        rt.walk_future = asyncio.get_event_loop().create_future()
-        try:
-            return await rt.walk_future
-        finally:
-            rt.walk_future = None
-
-    async def free_text(_req) -> str:
-        rt.free_text_future = asyncio.get_event_loop().create_future()
-        try:
-            return await rt.free_text_future
-        finally:
-            rt.free_text_future = None
+            rt.action_future = None
+            rt.awaiting_next = None
 
     async def run() -> None:
         try:
             await play_session(
                 bundle, scene_runner, chronicler, state, world,
-                pick_option=pick,
-                pick_walk=walk,
-                pick_free_text=free_text,
+                request_player_input=request_player_input,
                 emit_event=emit,
                 skip_event=rt.skip_event,
             )
@@ -471,32 +473,41 @@ async def start_session() -> dict[str, str]:
     return {"status": "started"}
 
 
+def _pending_action_future(rt: "SessionRuntime") -> "asyncio.Future[PlayerAction]":
+    """The in-flight action future, or 409 if none is awaiting."""
+    if rt.action_future is None or rt.action_future.done():
+        raise HTTPException(409, "no input awaiting")
+    return rt.action_future
+
+
 @app.post("/pick")
 async def pick(body: PickBody) -> dict[str, str]:
-    """Resolve the in-flight pick_option future with the chosen option index."""
+    """Resolve the in-flight action future with a PickOption. Legal only
+    while the scene is awaiting options (a Continue)."""
     if SESSION is None:
         raise HTTPException(409, "no active session — call POST /start first")
-    if SESSION.pick_future is None or SESSION.pick_future.done():
+    fut = _pending_action_future(SESSION)
+    if not isinstance(SESSION.awaiting_next, Continue):
         raise HTTPException(409, "no pick awaiting")
-    SESSION.pick_future.set_result(body.option_idx)
+    fut.set_result(PickOption(index=body.option_idx))
     return {"status": "ok"}
 
 
 @app.post("/walk")
 async def walk(body: WalkBody) -> dict[str, str]:
-    """Resolve the in-flight pick_walk future with the chosen destination
-    location id. Validates adjacency defensively (the frontend already
-    disables non-adjacent map clicks)."""
+    """Resolve the in-flight action future with a WalkTo. Legal at every
+    input-await — including mid-scene (a Continue / free-text turn) — so the
+    map is always a way out. Validates adjacency defensively (the frontend
+    already disables non-adjacent map clicks)."""
     if SESSION is None:
         raise HTTPException(409, "no active session — call POST /start first")
-    if SESSION.walk_future is None or SESSION.walk_future.done():
-        raise HTTPException(409, "no walk awaiting — scene is active")
+    fut = _pending_action_future(SESSION)
     loc = SESSION.world.locations[SESSION.state.player_location]
     if body.to_location not in loc.adjacent_to:
         raise HTTPException(
             400, f"{body.to_location!r} is not adjacent to {loc.id!r}"
         )
-    SESSION.walk_future.set_result(body.to_location)
+    fut.set_result(WalkTo(location_id=body.to_location))
     return {"status": "ok"}
 
 
@@ -513,16 +524,17 @@ async def skip() -> dict[str, str]:
 
 @app.post("/free_text")
 async def free_text(body: FreeTextBody) -> dict[str, str]:
-    """Resolve the in-flight pick_free_text future with the player's
-    typed line. The next turn's prose writer sees the typed string as
-    the player's pick."""
+    """Resolve the in-flight action future with a TypeText. Legal only
+    while the scene is awaiting a free-text move. The next turn's prose
+    writer sees the typed string as the player's pick."""
     if SESSION is None:
         raise HTTPException(409, "no active session — call POST /start first")
-    if SESSION.free_text_future is None or SESSION.free_text_future.done():
+    fut = _pending_action_future(SESSION)
+    if not isinstance(SESSION.awaiting_next, FreeText):
         raise HTTPException(409, "no free-text awaiting")
     if not body.text.strip():
         raise HTTPException(400, "typed text must not be empty")
-    SESSION.free_text_future.set_result(body.text.strip())
+    fut.set_result(TypeText(text=body.text.strip()))
     return {"status": "ok"}
 
 

@@ -1,5 +1,6 @@
 id: st_caradocs
 name: St Caradoc's
+short_name: the church
 adjacent_to: [the_slaughtered_lamb, the_lane]
 
 description: |

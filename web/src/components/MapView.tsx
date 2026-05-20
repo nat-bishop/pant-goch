@@ -1,15 +1,17 @@
 // MapView: backdrop is /api/world/map.png; overlay an SVG with hotspot
-// pins (current / there / visited / adjacent) and the walking tracer.
+// pins (here / there / visited / reachable) and the walking tracer.
 //
-// Hotspot interaction: between scenes, adjacent locations are clickable
-// → POST /walk. During an active scene the map is dim and clicks are
-// suppressed; the scene closes when the choice author emits Leave.
+// Hotspot interaction: a reachable (adjacent) pin is clickable whenever
+// the backend is awaiting input (`walkReady`) — including mid-scene, so
+// the map is a way out of any turn → POST /walk. Reachable pins pulse a
+// ring; hovering one previews the route from the current location.
 //
 // Tracer: a quadratic bezier from from.map_xy → to.map_xy with a control
 // point offset perpendicular to the line by 8% of distance — gives all
 // paths a subtle drawn-by-hand curve. Progress is driven by the
 // `walking.phase` field on the store (depart → arrive-hold → complete),
-// using CSS custom properties --tracer-progress and --tracer-len.
+// using CSS custom properties --tracer-progress and --tracer-len. The
+// hover preview reuses the same geometry with a faint dashed stroke.
 
 import { useEffect, useMemo, useState } from "react";
 import { postWalk } from "../api";
@@ -58,9 +60,11 @@ export function MapView({
 }) {
   const world = useStore((s) => s.world);
   const walking = useStore((s) => s.walking);
-  const phase = useStore((s) => s.phase);
   const walkReady = useStore((s) => s.walkReady);
   const [walkBusy, setWalkBusy] = useState(false);
+  // Pin the player is hovering, for the route preview. Only meaningful for
+  // a reachable pin; cleared on mouse-out.
+  const [hoverId, setHoverId] = useState<string | null>(null);
 
   // Tracer progress driven by walking.phase.
   const [tracerProgress, setTracerProgress] = useState(0);
@@ -123,7 +127,6 @@ export function MapView({
   const onPinClick = async (locId: string) => {
     if (!active || walkBusy || !walkReady) return;
     if (!adjacent.includes(locId)) return;
-    if (phase !== "between_scenes") return;
     setWalkBusy(true);
     try {
       await postWalk(locId);
@@ -134,6 +137,18 @@ export function MapView({
     }
   };
 
+  // Route preview: a faint dashed tracer from the current location to the
+  // hovered reachable pin. Reuses tracerPath() geometry; only while not
+  // walking (the live tracer owns the overlay during a walk).
+  const hereXy = currentLocId
+    ? toVb(locations.find((l) => l.id === currentLocId)?.map_xy ?? null)
+    : null;
+  const hoverXy =
+    hoverId && !walking
+      ? toVb(locations.find((l) => l.id === hoverId)?.map_xy ?? null)
+      : null;
+  const preview = hereXy && hoverXy ? tracerPath(hereXy, hoverXy) : null;
+
   return (
     <div className="world-map-inner">
       <div className="world-map-frame">
@@ -143,6 +158,13 @@ export function MapView({
           viewBox={`0 0 ${VB_W} ${VB_H}`}
           preserveAspectRatio="xMidYMid meet"
         >
+          {preview && (
+            <path
+              d={preview.d}
+              className="tracer tracer--preview"
+              style={{ ["--tracer-len" as never]: preview.len.toFixed(2) }}
+            />
+          )}
           {tracer && (
             <path
               d={tracer.d}
@@ -159,12 +181,21 @@ export function MapView({
             const isHere = walking ? l.id === walking.fromId : l.id === currentLocId;
             const isThere = walking != null && l.id === walking.toId;
             const isVisited = visitedIds.has(l.id) && !isHere && !isThere;
-            const isAdjacent =
-              active && !walking && adjacent.includes(l.id) && phase === "between_scenes";
-            const clickable = isAdjacent && walkReady && !walkBusy;
+            // Reachable NOW: an adjacent pin while the backend awaits input
+            // (walkReady) and we're not mid-walk. This is the affordance the
+            // old map lacked — gated on walkReady so the pulse only shows
+            // when a click would actually register.
+            const reachable =
+              active && !walking && walkReady && adjacent.includes(l.id);
+            const clickable = reachable && !walkBusy;
             const r = isHere || isThere ? 0.9 : isVisited ? 0.6 : 0.45;
             return (
               <g key={l.id} transform={`translate(${xy.x}, ${xy.y})`}>
+                {reachable && (
+                  // Pulsing ring — "you can walk here." Concentric, behind
+                  // the pin; animation lives in CSS.
+                  <circle r={r + 0.6} className="pin-ring" />
+                )}
                 <circle
                   r={r}
                   className={
@@ -172,7 +203,7 @@ export function MapView({
                     (isHere ? " pin--here" : "") +
                     (isThere ? " pin--there" : "") +
                     (isVisited ? " pin--visited" : "") +
-                    (isAdjacent ? " pin--adjacent" : "")
+                    (reachable ? " pin--reachable" : "")
                   }
                 />
                 <circle
@@ -185,6 +216,10 @@ export function MapView({
                     clickable ? `walk to ${l.name}` : `${l.name} (not adjacent)`
                   }
                   onClick={() => onPinClick(l.id)}
+                  onMouseEnter={() => reachable && setHoverId(l.id)}
+                  onMouseLeave={() => setHoverId((h) => (h === l.id ? null : h))}
+                  onFocus={() => reachable && setHoverId(l.id)}
+                  onBlur={() => setHoverId((h) => (h === l.id ? null : h))}
                   onKeyDown={(e) => {
                     if (clickable && (e.key === "Enter" || e.key === " ")) {
                       e.preventDefault();
@@ -197,7 +232,8 @@ export function MapView({
                   y="0.7"
                   className={
                     "pin-label" +
-                    (!isHere && !isThere && !isVisited && !isAdjacent
+                    (reachable ? " pin-label--reachable" : "") +
+                    (!isHere && !isThere && !isVisited && !reachable
                       ? " pin-label--dim"
                       : "")
                   }

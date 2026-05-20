@@ -122,7 +122,8 @@ notes:
 **Fields:**
 - `id` (unique) — referenced by adjacency lists and `cast.yaml` default_locations.
 - `name` — display name in the map UI.
-- `adjacent_to` (list of location ids) — symmetric adjacency, validated at load.
+- `short_name` (optional) — concise, prose-friendly form for inline closing-line narration ("heading toward the church"). Falls back to `name` via `Location.display_short`. Authored where the full name reads stiffly mid-sentence; left unset for proper-noun names (Knighton, Tan-y-coed) that read fine as-is.
+- `adjacent_to` (list of location ids) — symmetric adjacency, and ≥1 entry, validated at load.
 - `description` — rich prose. The scene runner pulls this into context whenever a scene plays here.
 - `notes` (list of strings) — atmospheric and factual details the LLM can weave in. Treat as a fact bank, not a script.
 
@@ -426,6 +427,7 @@ The world loader enforces these at startup. Each is a single Pydantic validator.
 8. **Every `requires_beats` and `blocked_by_beats` reference resolves to a defined beat id.** No self-reference.
 9. **The `requires_beats` graph has no cycles.** A cycle would make a beat unfireable; load fails with the cycle path.
 10. **Every ending's `requires_beats` references a defined beat id.** Strongly recommended (warning, not error) that every ending's prereqs include exactly one decision beat.
+11. **No dead-end locations.** Every location has ≥1 `adjacent_to`. Under player-authored movement the map is the only leave control and the LLM soft-close removes all in-scene options, so a location with no adjacents is an unrecoverable soft-lock.
 
 That's the entire validation surface. There are no predicates to validate, no exit graphs to check, no effects to parse. The world is mostly prose; the validation is mostly "do the few ids resolve and is the beat graph well-formed."
 
@@ -499,20 +501,15 @@ RUN TURN (opening_seed=None, player_pick=None):
     - on final failure: rewrite next as ContinueScene with a synthetic option ("[engine: ending prereqs not met; continue scene]"); log error
   - stream prose word-by-word (paced ~150ms/word via paced_word_emitter; POST /skip flushes the remainder)
   - append (prose, applied_state_changes, options_or_next) to state.dialogue_history
-  - dispatch next:
-    - ContinueScene: emit options; wait for player pick; recurse to RUN TURN with player_pick
-    - EndScene: emit SSE scene_exit; trigger log_writer; return to map view
+  - dispatch next (await one PlayerAction via request_player_input — see §3.4):
+    - ContinueScene: emit options + walk_ready; on PickOption recurse to RUN TURN;
+      on WalkTo end the scene (closing prose / EndGame)
+    - EndScene (soft-close): emit scene_spent + walk_ready (map-as-home); await a
+      WalkTo (only a leave remains)
     - EndGame: set state.game_over, stream ending.epilogue, emit SSE game_over
-
-PLAYER CLICKS MAP (to_location: str):
-- only valid if to_location is in current_location.adjacent_to
-- if a scene is active:
-  - hard-end the scene: call scene_runner.emit_closing_prose(to_location) once,
-    stream the result as the scene's final prose, skip phase 1 (no state changes
-    on the way out), no options emitted
-- emit SSE location_change { from, to }
-- state.player_location = to_location
-- enter_scene(to_location)
+  - A WalkTo from any of the above runs the leave path in §3.4 (emit_closing_prose
+    or EndGame), then between-scene handling: chronicler → location_change →
+    enter_scene(to_location).
 ```
 
 ### 3.3 LLM output schemas (two-stage)
@@ -565,11 +562,24 @@ All `Literal[...]` types are built dynamically per call from the loaded world bi
 
 **No `KillNPC`.** This story has no in-game deaths. If a future scenario needs one, add it as a new state-change kind; do not pretend it's authored already.
 
-### 3.4 Player-driven leave
+### 3.4 Player-driven leave + the unified input model
 
-When the player clicks an adjacent location during an active scene, the engine hard-ends the scene without offering the LLM a choice to continue. It calls a dedicated closing-prose method on the scene runner — single phase, structured output is just `closing_prose: str` — passing the destination as context: "the player is leaving for {to_location.name}; write one line of closing prose."
+**The player authors all movement; the map is the leave control.** Free text is for acting *inside* a scene; clicking an adjacent map pin is how you leave — and a pin is clickable at *every* input-await point, so a leave can end any turn (mid-scene or at a soft-close).
 
-The closing prose streams; SSE `scene_exit` fires; `location_change { from, to }` fires; `enter_scene(to_location)` runs. No state changes are accepted on the way out — the closing-prose schema doesn't include `state_changes`. Player agency on movement is absolute.
+**One input, one transport.** Every turn that awaits the player resolves through a single callback `request_player_input(prose_part, state, world) -> PlayerAction`, where
+
+```python
+PlayerAction = PickOption(index: int) | TypeText(text: str) | WalkTo(location_id: str)
+```
+
+`PickOption` / `TypeText` continue the scene; `WalkTo` ends it. The SSE backend backs this with one `action_future` resolved by whichever of `POST /pick` | `/walk` | `/free_text` fires first — a `/walk` is legal in every awaiting state, a `/pick` / `/free_text` only in its matching one (`SessionRuntime.awaiting`). The CLI parses one stdin line; tests script it.
+
+**Two ways a scene ends, one path out.** The choice author's `Leave` is a *soft-close*: when no ending is satisfied it resolves to `EndScene(to_location=None)` — the engine pulls the options and the only way on is to leave (the frontend flips to the map: "map-as-home"). The player then clicks a pin (the same `WalkTo`) exactly as they could mid-scene. On any `WalkTo`:
+
+- If an ending's beats are already satisfied → `EndGame` (the last prose stands; **no** destination line — the player isn't arriving anywhere).
+- Otherwise → `emit_closing_prose(to_location)` streams one destination-aware line ("heading toward {to_location.display_short}"), then `EndScene(to_location=…)` is finalized. The chronicler runs (player_location still intact → correct present-NPC set), then SSE `location_change { from, to }` fires and `player_location` advances.
+
+No state changes are accepted on the way out — the closing-prose call is single-phase. Player agency on movement is absolute.
 
 ### 3.5 What the engine does NOT do
 
@@ -745,7 +755,8 @@ Single-page web app. Two-pane composition, **58fr / 42fr**:
 
 - **Left pane (the "stage").** Full-height, edge-to-edge. Three modes switched by a small tab strip at the top-left:
   - `location` (default) — a sepia-pushed photograph of the current scene's location. Cross-fades when the scene changes. Film-slate caption at the bottom-left (location name + date).
-  - `map` — full Pant Goch survey. Every pin labelled in italic display serif. Current location red, visited locations dim-red, dashed roads, river, contours. Read-only in v1.
+  - `map` — full Pant Goch survey, and the **leave control**. Every pin labelled in italic display serif. Pin states: **here** (red, with a static ring), **reachable now** (adjacent + the backend awaiting input — bright cream pin with a pulsing ring; hovering previews a dashed route from the current location), **visited** (dim-red), **unreachable** (faint, `not-allowed`). A reachable pin is clickable at *every* input-await — including mid-scene — so the map is a way out of any turn. Reachability is gated on the `walk_ready` signal so the pulse only shows when a click would register.
+    - **Map-as-home (forced moves only):** on a soft-close (`scene_spent`) the left pane auto-flips to the map — the scene is spent and the only way on is to leave. On ordinary turns the location photo stays up and the map is openable but **not** forced, with no nag cue: voluntary mid-scene leave is something the player discovers.
   - `notes` — vertical list of case-file entries (one per visited scene). Click an entry → switches to `location` and scrolls the prose panel to that chapter.
   - Walking auto-takes over with a map view + red pencil tracer drawing along the road from current → destination location. Tabs disable during walk; reverts to `location` mode when the walk completes.
 - **Right pane (the prose panel).** Vellum paper background. Top bar with case-file label, entry count, restart. Internal scroll — **the page does not scroll, the panel does**. Chapters accumulate inside it separated by a thin rule. Each chapter: italic display chapter heading, drop cap, justified prose streaming word-by-word, choices as numbered italic footnotes at the end.
@@ -760,9 +771,12 @@ SSE event surface:
 |-------|---------|------|
 | `scene_start` | `{ location_id, location_name }` | entering a scene |
 | `prose_word` | `{ word, idx, is_last }` | each word of streamed prose |
-| `options` | `{ options: [{text}, ...] }` | turn waits on player input |
+| `options` | `{ options: [{text}, ...] }` | turn waits on a player pick |
+| `free_text_request` | `{ prompt, suggested, npc_id }` | turn waits on a typed move |
+| `scene_spent` | `{}` | soft-close (Leave, no ending) — flip to the map (map-as-home) |
+| `walk_ready` | `{}` | backend awaiting input — arm the map pins (after every input cue) |
 | `state_change` | `{ kind, payload }` | each applied state change (for animations / debug) |
-| `scene_exit` | `{}` | EndScene fired |
+| `scene_exit` | `{}` | scene fully closed (player walked, closing prose streamed) |
 | `location_change` | `{ from, to }` | between scenes when location changed |
 | `log_entry_word` | `{ word, idx, is_last }` | case-file entry streaming |
 | `game_over` | `{ ending_id }` | EndGame fired |

@@ -202,15 +202,29 @@ def free_text_request_event(req) -> dict:
 
 
 def scene_exit_event() -> dict:
+    """Emitted when a scene has fully ended — the player walked and the
+    closing prose has streamed. Marks the scene closed and (with the walk
+    consumed) disarms the map until the next input-await. Followed by
+    `location_change` once the chronicler + case file settle."""
     return {"event": "scene_exit"}
 
 
+def scene_spent_event() -> dict:
+    """Emitted on a **soft-close**: the choice author's Leave with no
+    ending satisfied. The scene is spent and the only way on is to leave,
+    so the frontend flips the left pane to the map (map-as-home). Distinct
+    from `scene_exit` (which fires after the player has actually walked):
+    the scene is not yet closed here — a closing line still streams once
+    the player picks a destination."""
+    return {"event": "scene_spent"}
+
+
 def walk_ready_event() -> dict:
-    """Emitted in the EndScene branch once the chronicler + case-file
-    pacing have finished and the engine is about to await `pick_walk`.
-    Tells the frontend the walk pick is now armed — map pins should
-    become clickable. Closes the window where an early POST /walk would
-    hit 409 'no walk awaiting'."""
+    """Emitted right after every in-scene input cue (options /
+    free_text_request / scene_spent), once the engine is awaiting the
+    player's action. Arms the map — adjacent pins become clickable so a
+    WalkTo can end any turn (mid-scene voluntary leave or a forced
+    soft-close). Closes the window where an early POST /walk would 409."""
     return {"event": "walk_ready"}
 
 

@@ -94,10 +94,11 @@ interface Store {
   worldMode: WorldMode;
   /** Active walking interstitial state; null when not walking. */
   walking: WalkingState | null;
-  /** True once the backend has armed the walk pick (after the chronicler
-   * + case-file pacing finish, on the `walk_ready` event). Gates map-pin
-   * clickability during `between_scenes` so an early POST /walk can't
-   * 409. Cleared on scene_start / location_change. */
+  /** True while the backend is awaiting the player's action (armed by the
+   * `walk_ready` event, emitted after every in-scene input cue). Gates
+   * map-pin clickability so a WalkTo can end any turn — mid-scene or at a
+   * soft-close — without an early POST /walk hitting 409. Cleared when the
+   * player acts (attachPick), on scene_start / scene_exit / location_change. */
   walkReady: boolean;
   /** The chapter index whose body is centred in the right panel.
    * Drives which backdrop the left pane shows when scrolling back. */
@@ -186,7 +187,10 @@ export const useStore = create<Store>((set) => ({
       if (!last) return s;
       turns[turns.length - 1] = { ...last, player_pick: option };
       scenes[scenes.length - 1] = { ...cur, turns };
-      return { scenes, phase: "in_scene", freeTextRequest: null };
+      // The player acted (pick or free-text), so the map disarms until the
+      // next turn's input cue re-arms it — a click during the gap while the
+      // next turn generates would 409.
+      return { scenes, phase: "in_scene", freeTextRequest: null, walkReady: false };
     }),
 
   handleEvent: (event) =>
@@ -295,11 +299,20 @@ export const useStore = create<Store>((set) => ({
           };
         }
 
+        case "scene_spent": {
+          // Soft-close: the choice author's Leave with no ending. The scene
+          // is spent and the only way on is to leave, so flip the left pane
+          // to the map (map-as-home). The scene is NOT yet closed — a
+          // closing line still streams once the player picks a destination.
+          // walk_ready follows immediately to arm the pins.
+          return { phase: "between_scenes", worldMode: "map" };
+        }
+
         case "scene_exit": {
-          // Scene closed. Swap the (now stale) location backdrop for the
-          // map so the player sees where they can go next; the walk pick
-          // isn't armed yet (walk_ready follows once the case file is
-          // written), so pins stay inert until then.
+          // The player has walked and the closing prose has streamed —
+          // the scene is now closed. Disarm the map (walk consumed) and
+          // keep it up for the imminent tracer. location_change follows
+          // once the chronicler + case file settle.
           const scenes = [...s.scenes];
           const cur = scenes[scenes.length - 1];
           if (!cur) return s;
@@ -313,7 +326,7 @@ export const useStore = create<Store>((set) => ({
         }
 
         case "walk_ready": {
-          // Backend is now awaiting pick_walk — map pins go live.
+          // Backend is awaiting the player's action — arm the map pins.
           return { walkReady: true };
         }
 

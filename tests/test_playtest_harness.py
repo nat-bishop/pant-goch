@@ -130,7 +130,7 @@ def _patch_engine_for_endgame(monkeypatch, decision_beats):
         )
 
     async def _prose(*a, **k):
-        return "The pub falls quiet."
+        yield "The pub falls quiet."
 
     async def _choices(*a, **k):
         return ChoiceBundle(next=Leave())
@@ -143,7 +143,7 @@ def _patch_engine_for_endgame(monkeypatch, decision_beats):
 
     monkeypatch.setattr("handler.scene_loop.emit_placements", _placements)
     monkeypatch.setattr("handler.scene_loop.emit_state_changes", _phase1)
-    monkeypatch.setattr("handler.scene_loop.emit_prose_text", _prose)
+    monkeypatch.setattr("handler.scene_loop.stream_prose_text", _prose)
     monkeypatch.setattr("handler.scene_loop.emit_choices", _choices)
     monkeypatch.setattr("handler.scene_loop.emit_free_text_gate", _gate)
     monkeypatch.setattr("handler.scene_loop.emit_chronicle_entry", _chronicle)

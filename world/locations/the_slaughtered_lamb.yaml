@@ -1,5 +1,6 @@
 id: the_slaughtered_lamb
 name: The Slaughtered Lamb
+short_name: the pub
 adjacent_to: [the_post_office, st_caradocs]
 
 description: |

@@ -32,8 +32,23 @@ from handler.schemas import (
     StateChangeBundle,
     UnlockBeat,
 )
-from handler.scene_loop import play_scene, play_session
+from handler.scene_loop import PickOption, WalkTo, play_scene, play_session
 from handler.schemas import FreeText
+
+
+def _patch_closing_prose(monkeypatch, text: str = "You step out into the dark."):
+    async def fake(*args, **kwargs):
+        return text
+
+    monkeypatch.setattr("handler.scene_loop.emit_closing_prose", fake)
+
+
+def _walk_first_adjacent(prose_part, state, world):
+    """Test `request_player_input`: pick option 0 on a Continue, otherwise
+    (free-text / soft-close) walk to the first adjacent location."""
+    if prose_part.next.type == "continue":
+        return PickOption(index=0)
+    return WalkTo(location_id=world.locations[state.player_location].adjacent_to[0])
 from handler.sse import (
     PACE_CLAUSE_X,
     PACE_PARAGRAPH_X,
@@ -241,27 +256,29 @@ def _patched_paced_emitter(interval: float):
     return _wrapped
 
 
-async def test_play_scene_emits_scene_start_then_terminal_events(monkeypatch, world_and_bundle):
-    """One-turn scene ending in EndScene: scene_start -> state_change*
-    -> prose_word* -> scene_exit."""
+async def test_play_scene_soft_close_then_walk_emits_scene_spent_and_exit(monkeypatch, world_and_bundle):
+    """A Leave with no ending is a soft-close: scene_start -> state_change*
+    -> prose_word* -> scene_spent -> walk_ready, then the player walks ->
+    closing prose_word* -> scene_exit (the terminal event)."""
     world, bundle = world_and_bundle
     state = make_initial_state(world)
 
     async def fake_phase1(*args, **kwargs):
         # tom_closes_off is a negative beat — not in any ending's
         # requires_beats — so the choice author's Leave below resolves
-        # to EndScene, not EndGame.
+        # to a soft-close EndScene, not EndGame.
         return StateChangeBundle(state_changes=[UnlockBeat(beat_id="tom_closes_off")])
 
     async def fake_prose(*args, **kwargs):
-        return "Tom shuts down."
+        yield "Tom shuts down."
 
     async def fake_choices(*args, **kwargs):
         return ChoiceBundle(next=Leave())
 
     _patch_populator(monkeypatch)
+    _patch_closing_prose(monkeypatch)
     monkeypatch.setattr("handler.scene_loop.emit_state_changes", fake_phase1)
-    monkeypatch.setattr("handler.scene_loop.emit_prose_text", fake_prose)
+    monkeypatch.setattr("handler.scene_loop.stream_prose_text", fake_prose)
     monkeypatch.setattr("handler.scene_loop.emit_choices", fake_choices)
     monkeypatch.setattr("handler.scene_loop.emit_free_text_gate", _gate_off)
 
@@ -277,14 +294,20 @@ async def test_play_scene_emits_scene_start_then_terminal_events(monkeypatch, wo
                         _patched_paced_emitter(0.001))
 
     state.player_location = "the_slaughtered_lamb"
-    await play_scene(bundle, make_scene_runner_runtime(), state, pick_option=lambda pp: 0, emit_event=emit)
+    await play_scene(
+        bundle, make_scene_runner_runtime(), state,
+        request_player_input=_walk_first_adjacent, emit_event=emit,
+    )
 
     kinds = [e["event"] for e in events]
     assert kinds[0] == "scene_start"
     assert "state_change" in kinds
-    # Prose word events
     assert any(e["event"] == "prose_word" for e in events)
-    # Final event for an EndScene is scene_exit
+    # Soft-close cue (flips frontend to the map), then the map is armed.
+    assert "scene_spent" in kinds
+    assert "walk_ready" in kinds
+    assert kinds.index("scene_spent") < kinds.index("walk_ready")
+    # After the player walks, the scene closes with scene_exit (terminal).
     assert kinds[-1] == "scene_exit"
     # state_change carries the beat_id
     sc = next(e for e in events if e["event"] == "state_change")
@@ -313,14 +336,15 @@ async def test_play_scene_emits_options_event_for_continue(monkeypatch, world_an
         return StateChangeBundle()
 
     async def fake_prose(*args, **kwargs):
-        return next(proses)
+        yield next(proses)
 
     async def fake_choices(*args, **kwargs):
         return next(choices)
 
     _patch_populator(monkeypatch)
+    _patch_closing_prose(monkeypatch)
     monkeypatch.setattr("handler.scene_loop.emit_state_changes", fake_phase1)
-    monkeypatch.setattr("handler.scene_loop.emit_prose_text", fake_prose)
+    monkeypatch.setattr("handler.scene_loop.stream_prose_text", fake_prose)
     monkeypatch.setattr("handler.scene_loop.emit_choices", fake_choices)
     monkeypatch.setattr("handler.scene_loop.emit_free_text_gate", _gate_off)
     monkeypatch.setattr("handler.scene_loop.paced_word_emitter",
@@ -331,13 +355,18 @@ async def test_play_scene_emits_options_event_for_continue(monkeypatch, world_an
     async def emit(e: dict) -> None:
         events.append(e)
 
-    await play_scene(bundle, make_scene_runner_runtime(), state, pick_option=lambda pp: 0, emit_event=emit)
+    await play_scene(
+        bundle, make_scene_runner_runtime(), state,
+        request_player_input=_walk_first_adjacent, emit_event=emit,
+    )
 
     options_events = [e for e in events if e["event"] == "options"]
     assert len(options_events) == 1
     opts = options_events[0]["options"]
     assert opts[0] == {"text": "Stay quiet"}
     assert opts[1] == {"text": "Walk to post"}
+    # The options cue is followed by walk_ready (the map is armed mid-scene).
+    assert "walk_ready" in [e["event"] for e in events]
 
 
 async def test_play_scene_emits_game_over_for_end_game(monkeypatch, world_and_bundle):
@@ -354,14 +383,14 @@ async def test_play_scene_emits_game_over_for_end_game(monkeypatch, world_and_bu
         return StateChangeBundle()
 
     async def fake_prose(*args, **kwargs):
-        return "The story runs."
+        yield "The story runs."
 
     async def fake_choices(*args, **kwargs):
         return ChoiceBundle(next=Leave())
 
     _patch_populator(monkeypatch)
     monkeypatch.setattr("handler.scene_loop.emit_state_changes", fake_phase1)
-    monkeypatch.setattr("handler.scene_loop.emit_prose_text", fake_prose)
+    monkeypatch.setattr("handler.scene_loop.stream_prose_text", fake_prose)
     monkeypatch.setattr("handler.scene_loop.emit_choices", fake_choices)
     monkeypatch.setattr("handler.scene_loop.emit_free_text_gate", _gate_off)
     monkeypatch.setattr("handler.scene_loop.paced_word_emitter",
@@ -372,7 +401,10 @@ async def test_play_scene_emits_game_over_for_end_game(monkeypatch, world_and_bu
     async def emit(e: dict) -> None:
         events.append(e)
 
-    await play_scene(bundle, make_scene_runner_runtime(), state, pick_option=lambda pp: 0, emit_event=emit)
+    await play_scene(
+        bundle, make_scene_runner_runtime(), state,
+        request_player_input=_walk_first_adjacent, emit_event=emit,
+    )
     kinds = [e["event"] for e in events]
     assert kinds[-1] == "game_over"
     go = events[-1]
@@ -412,15 +444,16 @@ async def test_play_session_emits_location_change_and_log_entry_words(
         return next(phase1_outputs)
 
     async def fake_prose(*args, **kwargs):
-        return next(proses)
+        yield next(proses)
 
     async def fake_choices(*args, **kwargs):
         return next(choices)
 
     _patch_populator(monkeypatch)
     _patch_chronicler(monkeypatch, text="The pub, the road. Tom was at the bar.")
+    _patch_closing_prose(monkeypatch)
     monkeypatch.setattr("handler.scene_loop.emit_state_changes", fake_phase1)
-    monkeypatch.setattr("handler.scene_loop.emit_prose_text", fake_prose)
+    monkeypatch.setattr("handler.scene_loop.stream_prose_text", fake_prose)
     monkeypatch.setattr("handler.scene_loop.emit_choices", fake_choices)
     monkeypatch.setattr("handler.scene_loop.emit_free_text_gate", _gate_off)
     monkeypatch.setattr("handler.scene_loop.paced_word_emitter",
@@ -431,19 +464,15 @@ async def test_play_session_emits_location_change_and_log_entry_words(
     async def emit(e: dict) -> None:
         events.append(e)
 
-    async def pick_option(_pp):
-        return 0
-
-    async def pick_walk(_state, _world):
-        # Walk to post office from pub.
-        return "the_post_office"
+    async def request(_pp, _state, _world):
+        # Scene 1 is a soft-close — walk from the pub to the post office.
+        return WalkTo(location_id="the_post_office")
 
     state.player_location = "the_slaughtered_lamb"
 
     await play_session(
         bundle, make_scene_runner_runtime(), chronicler, state, world,
-        pick_option=pick_option,
-        pick_walk=pick_walk,
+        request_player_input=request,
         emit_event=emit,
     )
 

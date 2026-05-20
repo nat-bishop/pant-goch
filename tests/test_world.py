@@ -79,6 +79,37 @@ def test_npc_voice_sample_defaults_to_empty_for_legacy_fixture():
         assert npc.voice_sample == []
 
 
+def test_location_display_short_uses_short_name_then_name(tmp_path):
+    """display_short returns short_name when authored, else the full name."""
+    target = _copy_valid(tmp_path)
+    p = target / "locations" / "the_slaughtered_lamb.yaml"
+    data = yaml.safe_load(p.read_text(encoding="utf-8"))
+    data["short_name"] = "the pub"
+    _write_yaml(p, data)
+    world = load_world(target)
+    assert world.locations["the_slaughtered_lamb"].display_short == "the pub"
+    # No short_name authored → falls back to the full name.
+    assert world.locations["the_post_office"].display_short == "The Post Office"
+
+
+def test_load_world_rejects_dead_end_location(tmp_path):
+    """Invariant 11 — a location with no adjacent_to is an unrecoverable
+    soft-lock under player-authored movement (the map is the only exit), so
+    the loader hard-fails. Drop the vicarage from the post office too, so
+    adjacency stays symmetric and the dead-end check is what fires."""
+    target = _copy_valid(tmp_path)
+    for fname, adj in [
+        ("the_old_vicarage.yaml", []),
+        ("the_post_office.yaml", ["the_slaughtered_lamb"]),
+    ]:
+        p = target / "locations" / fname
+        data = yaml.safe_load(p.read_text(encoding="utf-8"))
+        data["adjacent_to"] = adj
+        _write_yaml(p, data)
+    with pytest.raises(WorldLoadError, match="dead-end"):
+        load_world(target)
+
+
 def test_load_world_tolerates_missing_map_yaml():
     """map.yaml is optional; fixtures without one load with empty
     map_coords and the frontend falls back to the text walk panel."""

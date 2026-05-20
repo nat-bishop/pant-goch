@@ -26,9 +26,19 @@ class _Frozen(BaseModel):
 class Location(_Frozen):
     id: str
     name: str
+    # Short, prose-friendly form for closing-line narration ("heading
+    # toward the church"). Falls back to `name` via `display_short` when
+    # unset. The full `name` still drives slates, labels, the case file.
+    short_name: str | None = None
     adjacent_to: list[str] = Field(default_factory=list)
     description: str
     notes: list[str] = Field(default_factory=list)
+
+    @property
+    def display_short(self) -> str:
+        """Concise name for inline prose; the full name when no
+        `short_name` is authored."""
+        return self.short_name or self.name
 
 
 class NPC(_Frozen):
