@@ -94,6 +94,10 @@ export async function fetchWorld(): Promise<WorldMeta> {
 
 export interface OptionPayload {
   text: string;
+  /** Engine-injected "Step outside" entry. Rendered apart from the
+   * numbered choices; clicking opens the map (the pin → /walk flow leaves).
+   * Never present on a real in-scene option. */
+  leave?: boolean;
 }
 
 export type SseEvent =

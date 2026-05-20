@@ -54,7 +54,7 @@ from pydantic_ai import Agent, NativeOutput
 from pydantic_ai.messages import ModelMessage
 from pydantic_ai.models.openai import OpenAIChatModel
 
-from .engine import present_npc_ids, reachable_beat_ids
+from .engine import fireable_beat_ids, present_npc_ids
 from .prompts import (
     build_caption_author_system_prompt,
     build_caption_author_user_message,
@@ -172,7 +172,7 @@ def _build_state_change_bundle_type(world: World, state: State) -> type[BaseMode
     validators still fire at the round-trip in `emit_state_changes`
     (defense in depth).
     """
-    reachable_ids = tuple(sorted(reachable_beat_ids(world, state)))
+    reachable_ids = tuple(sorted(fireable_beat_ids(world, state)))
     reachable_names = tuple(world.beats[bid].name for bid in reachable_ids)
     if not reachable_names:
         # Nothing fireable from this state → bundle must be empty.

@@ -26,6 +26,7 @@ from handler.engine import (
     FREE_TEXT_OFFER_P,
     _turns_since_typed,
     apply_state_changes,
+    fireable_beat_ids,
     free_text_cadence_ok,
     reachable_beat_ids,
     resolved_ending_id_at_close,
@@ -90,6 +91,70 @@ def _make_world(
         glosses=[],
         beat_name_to_id={b.name: b.id for b in beat_dict.values()},
     )
+
+
+# ───────────────────────── fireable_beat_ids (NPC-presence gating) ─────────────────────────
+
+
+def _npc(id: str, default_location: str) -> NPC:
+    return NPC(
+        id=id, name=id.capitalize(), default_location=default_location,
+        knowledge="x", attitude="y",
+    )
+
+
+def test_fireable_excludes_beat_when_required_npc_absent():
+    """A beat gated on an NPC is dropped from the fireable set when that NPC
+    is elsewhere — even though it's still graph-reachable. This is the fix
+    for the Tom-beat firing in the empty vicarage."""
+    world = _make_world(
+        npcs=[_npc("tom", "loc_b")],
+        beats=[_beat("tom_beat", requires_npcs_present=["tom"])],
+    )
+    state = State(player_location="loc_a")  # tom is at loc_b, not here
+    assert "tom_beat" in reachable_beat_ids(world, state)  # graph says reachable
+    assert "tom_beat" not in fireable_beat_ids(world, state)  # but not here-and-now
+
+
+def test_fireable_includes_beat_when_required_npc_present():
+    world = _make_world(
+        npcs=[_npc("tom", "loc_a")],
+        beats=[_beat("tom_beat", requires_npcs_present=["tom"])],
+    )
+    assert "tom_beat" in fireable_beat_ids(world, State(player_location="loc_a"))
+
+
+def test_fireable_includes_object_beat_with_no_npc_requirement():
+    """Object/decision beats (empty requires_npcs_present) fire with no NPC
+    in the room — e.g. reading the letter at the vicarage."""
+    world = _make_world(beats=[_beat("letter", requires_npcs_present=[])])
+    assert "letter" in fireable_beat_ids(world, State(player_location="loc_a"))
+
+
+def test_fireable_requires_all_listed_npcs_present():
+    """A beat gated on two NPCs needs BOTH in the room — one present is not
+    enough (a confrontation that only works with both parties there)."""
+    world = _make_world(
+        npcs=[_npc("tom", "loc_a"), _npc("dylan", "loc_b")],
+        beats=[_beat("confrontation", requires_npcs_present=["tom", "dylan"])],
+    )
+    state = State(player_location="loc_a")  # only tom is here
+    assert "confrontation" not in fireable_beat_ids(world, state)
+    state.npc_locations["dylan"] = "loc_a"  # now both are here
+    assert "confrontation" in fireable_beat_ids(world, state)
+
+
+def test_fireable_respects_npc_location_override():
+    """Presence honours the live npc_locations override (populator moves),
+    not just default_location."""
+    world = _make_world(
+        npcs=[_npc("tom", "loc_b")],
+        beats=[_beat("tom_beat", requires_npcs_present=["tom"])],
+    )
+    state = State(player_location="loc_a")
+    assert "tom_beat" not in fireable_beat_ids(world, state)
+    state.npc_locations["tom"] = "loc_a"  # populator brought Tom here
+    assert "tom_beat" in fireable_beat_ids(world, state)
 
 
 # ───────────────────────── apply_state_changes ─────────────────────────

@@ -57,12 +57,13 @@ crime: |
 
 beats:
   # ─────────────────────── Opening beats (the Old Vicarage) ───────────────────────
-  # The opening location was a beat-empty room before these. The player
-  # arrives, has nothing to do, and bounces. These three beats give the
-  # vicarage solo investigative weight: the letter sets the moral compass,
-  # the marked map plants a question, the phone call commits the player
-  # to acting on Iwan's request. None gate any ending — they exist to make
-  # the first scene feel like the start of a story.
+  # The vicarage is a deliberately short PROLOGUE, not an explorable room.
+  # The letter is the moral hook; phoning Iwan is the optional exit ramp that
+  # points the player out toward the village (Lower Hafod). Neither gates an
+  # ending. Do NOT turn the vicarage into an object hunt — there is nothing to
+  # rummage for here. The OS map in the desk is atmosphere only (see the
+  # location notes), not a beat: mention it in passing if the player looks,
+  # then move them out. After the letter, the scene should wind down quickly.
 
   - id: letter_from_iwan_read
     name: Read Iwan's letter
@@ -78,22 +79,9 @@ beats:
       for seven years. After this beat, subsequent prose may reference
       the journalist's sense of obligation to Iwan as a quiet
       throughline; do NOT have characters reference the letter unless the
-      player has shown it.
-
-  - id: ordnance_map_noticed
-    name: Noticed the marked map
-    description: |
-      The player finds the 2017 OS map in the desk drawer with the
-      previous occupant's pencil markings — small circles near the Black
-      Dog Bend, a question mark by Tan-y-coed, a pencilled "T?" by the
-      pub. The previous occupant was looking too.
-    notes_to_llm: |
-      Fire when the player examines the desk drawer or the map with
-      attention. Narrate the markings concretely — they suggest the
-      previous resident reached similar suspicions. This is an
-      atmospheric beat: the question "who was the previous occupant"
-      need not resolve. Use sparingly in later prose as a quiet sense
-      that the player is not the first.
+      player has shown it. This is the prologue's purpose — once it has
+      fired, there is nothing more to do at the vicarage; steer the player
+      out toward the village rather than deeper into the house.
 
   - id: phoned_iwan_from_the_vicarage
     name: Phoned Iwan from the vicarage
@@ -118,6 +106,7 @@ beats:
 
   - id: tom_speaks_of_megan_as_a_person
     name: Tom speaks of Megan
+    requires_npcs_present: [tom]
     description: |
       Tom shares a memory of Megan Pritchard that has nothing to do with
       the road — a small, particular thing (a school sports day, a song
@@ -141,6 +130,7 @@ beats:
 
   - id: tom_alludes_to_being_on_the_road
     name: Tom alludes to being on the road
+    requires_npcs_present: [tom]
     description: |
       Tom mentions, obliquely, that he was driving the B4368 the night
       Megan died — coming back from a friend's farm. He does not yet
@@ -161,6 +151,7 @@ beats:
 
   - id: tom_named_a_vehicle
     name: Tom named a vehicle
+    requires_npcs_present: [tom]
     description: |
       Tom Bevan tells the player he saw a Land Rover speeding away from
       the Black Dog Bend the night Megan died, and that he recognised
@@ -186,6 +177,7 @@ beats:
 
   - id: tom_admits_full_silence
     name: Tom admits full silence
+    requires_npcs_present: [tom]
     description: |
       Tom tells the player, in his own words, that he never said whose
       vehicle it was, and why — that he convinced himself the Vaughns
@@ -201,6 +193,7 @@ beats:
 
   - id: maud_confirms_the_affair
     name: Maud confirms the affair
+    requires_npcs_present: [maud]
     description: |
       Maud Pryce, in the post office or as an aside elsewhere in the
       village, confirms that Megan and Dylan were sleeping together
@@ -219,6 +212,7 @@ beats:
 
   - id: dylan_acknowledges_the_player
     name: Dylan acknowledges the player
+    requires_npcs_present: [dylan]
     description: |
       Dylan Vaughn, in a private setting away from Tan-y-coed, agrees
       to speak with the player at all. He does not admit anything yet —
@@ -240,6 +234,7 @@ beats:
 
   - id: dylan_admits_the_relationship
     name: Dylan admits the relationship
+    requires_npcs_present: [dylan]
     description: |
       Dylan Vaughn admits to the player that he and Megan were
       together. He does not (yet) admit knowing what his mother did.
@@ -260,6 +255,7 @@ beats:
 
   - id: dylan_speaks_of_megan
     name: Dylan speaks of Megan
+    requires_npcs_present: [dylan]
     description: |
       Dylan talks about Megan as a person — what she was like, what
       they did together, what he misses. Not as evidence. The
@@ -281,6 +277,7 @@ beats:
 
   - id: dylan_admits_he_knows
     name: Dylan admits he knows
+    requires_npcs_present: [dylan]
     description: |
       Dylan tells the player he has known since April 2019 what his
       mother did on the road that night.
@@ -305,6 +302,7 @@ beats:
 
   - id: helen_will_meet_off_record
     name: Helen will meet off-record
+    requires_npcs_present: [helen]
     description: |
       DC Helen Mortimer agrees to meet the player at the Costa in
       Knighton (not the station). She makes the off-record framing
@@ -323,6 +321,7 @@ beats:
 
   - id: helen_confirms_she_suspected
     name: Helen confirms she suspected
+    requires_npcs_present: [helen]
     description: |
       Helen tells the player, in conversation at the Costa, that she
       always suspected Eluned Vaughn was on the road that night. She
@@ -343,6 +342,7 @@ beats:
 
   - id: helen_hands_over_notes
     name: Helen hands over notes
+    requires_npcs_present: [helen]
     description: |
       Helen hands the player a manila envelope containing her
       unofficial notes from the 2019 investigation. The handover is
@@ -364,6 +364,7 @@ beats:
 
   - id: iwan_grants_you_intimacy
     name: Iwan grants you intimacy
+    requires_npcs_present: [iwan]
     description: |
       Iwan Pritchard takes the player into Megan's bedroom at Lower
       Hafod — preserved largely as she left it — and speaks of her as
@@ -380,6 +381,7 @@ beats:
 
   - id: eluned_breaks
     name: Eluned breaks
+    requires_npcs_present: [eluned]
     description: |
       Eluned Vaughn, confronted at Tan-y-coed by a player who has
       enough, confirms — not in words exactly, but in a moment of
@@ -403,6 +405,7 @@ beats:
 
   - id: tom_decides_to_speak_to_police
     name: Tom decides to speak to police
+    requires_npcs_present: [tom]
     description: |
       Tom Bevan, having unburdened himself to the player across two
       conversations and feeling steadier than he has in seven years,
@@ -428,6 +431,7 @@ beats:
 
   - id: gareth_points_to_tom
     name: Gareth points to Tom
+    requires_npcs_present: [gareth]
     description: |
       Father Gareth Hughes, speaking around the seal of confession,
       tells the player they should speak to Tom Bevan — "properly".
@@ -444,6 +448,7 @@ beats:
 
   - id: gareth_acknowledges_the_seal
     name: Gareth acknowledges the seal
+    requires_npcs_present: [gareth]
     description: |
       Father Gareth confirms, without saying what, that there is
       something he heard in confession that he cannot speak of. The
@@ -458,6 +463,7 @@ beats:
 
   - id: owain_tells_of_the_dog
     name: Owain tells of the dog
+    requires_npcs_present: [owain]
     description: |
       Owain Pugh, in his folklore voice, tells the player the
       black-dog story of the Bend — sightings before deaths, the
@@ -473,6 +479,7 @@ beats:
 
   - id: owain_lets_slip_about_iwan
     name: Owain lets slip about Iwan
+    requires_npcs_present: [owain]
     description: |
       Owain, loyal but unguarded, mentions Iwan's monthly flowers at
       the Black Dog Bend — that he goes at dawn on the 14th and
@@ -488,6 +495,7 @@ beats:
 
   - id: maud_lets_a_name_slip
     name: Maud lets a name slip
+    requires_npcs_present: [maud]
     description: |
       Maud Pryce, gossiping about the case in her postmistress way,
       mentions that DC Helen Mortimer "wasn't happy" about how the
@@ -504,6 +512,7 @@ beats:
 
   - id: wendy_asks_you_to_stop
     name: Wendy asks you to stop
+    requires_npcs_present: [wendy]
     description: |
       Wendy Pritchard tells the player, plainly and without anger,
       that she wants the investigation dropped. She is not throwing
@@ -537,6 +546,7 @@ beats:
 
   - id: tom_closes_off
     name: Tom closes off
+    requires_npcs_present: [tom]
     description: |
       Tom has decided he will not speak to the player again about
       anything that matters. He may be civil in passing but he will
@@ -554,6 +564,7 @@ beats:
 
   - id: dylan_refuses_to_speak_again
     name: Dylan refuses to speak again
+    requires_npcs_present: [dylan]
     description: |
       Dylan has decided the player is dangerous to him and will not
       engage further on any topic that matters.
@@ -579,6 +590,7 @@ beats:
 
   - id: eluned_throws_you_out
     name: Eluned throws you out
+    requires_npcs_present: [eluned]
     description: |
       Eluned has decided the player will not be on Tan-y-coed land
       again. The next attempt to visit will be met at the gate.

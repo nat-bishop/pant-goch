@@ -47,6 +47,7 @@ export const Chapter = memo(function Chapter({
   followingRef.current = following;
   const fastForward = useStore((s) => s.fastForward);
   const attachPick = useStore((s) => s.attachPick);
+  const setWorldMode = useStore((s) => s.setWorldMode);
   const phase = useStore((s) => s.phase);
   const freeTextRequest = useStore((s) => s.freeTextRequest);
   const [pickBusy, setPickBusy] = useState(false);
@@ -135,6 +136,7 @@ export const Chapter = memo(function Chapter({
             options={lastTurn.options}
             picked={lastTurn.player_pick}
             onPick={onPick}
+            onLeave={() => setWorldMode("map")}
             busy={pickBusy}
           />
         )}

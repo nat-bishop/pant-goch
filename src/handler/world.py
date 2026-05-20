@@ -207,6 +207,19 @@ def _check_beat_refs(beats: dict[str, Beat]) -> None:
                     )
 
 
+def _check_beat_npc_refs(beats: dict[str, Beat], npcs: dict[str, NPC]) -> None:
+    """Invariant 12 — every requires_npcs_present reference resolves to a
+    defined NPC id. Gates the presence-aware fireability narrowing in
+    engine.fireable_beat_ids."""
+    for beat in beats.values():
+        for ref in beat.requires_npcs_present:
+            if ref not in npcs:
+                raise WorldLoadError(
+                    f"beat {beat.id!r}: requires_npcs_present references "
+                    f"undefined npc {ref!r}"
+                )
+
+
 def _check_no_requires_cycles(beats: dict[str, Beat]) -> None:
     """Invariant 9 — the dependency graph (union of requires_beats AND
     requires_any_beats) has no cycles. A cycle anywhere would make a beat
@@ -305,6 +318,7 @@ def load_world(path: Path) -> World:
     _check_beat_ending_namespace(beats, endings)
     beat_name_to_id = _build_beat_name_to_id(beats)
     _check_beat_refs(beats)
+    _check_beat_npc_refs(beats, npcs)
     _check_no_requires_cycles(beats)
     _check_ending_refs(endings, beats)
 

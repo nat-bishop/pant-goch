@@ -9,22 +9,30 @@ export function ChoicesBlock({
   options,
   picked,
   onPick,
+  onLeave,
   busy,
 }: {
   options: OptionPayload[];
   picked: OptionPayload | null;
   onPick: (idx: number) => void;
+  onLeave: () => void;
   busy: boolean;
 }) {
   const pickedIdx = picked
     ? options.findIndex((o) => o.text === picked.text)
     : -1;
   const hasPick = picked !== null;
+  // The engine appends leave entries after the real options, so the real
+  // ones keep indices 0..N-1 (aligned with PickOption). Render the leave
+  // entry apart from the numbered list; clicking it opens the map rather
+  // than consuming the turn's pick.
+  const leaveEntry = options.find((o) => o.leave);
 
   return (
     <div className="choices-wrap">
       <ol className="choices">
         {options.map((opt, i) => {
+          if (opt.leave) return null;
           const state: "default" | "chosen" | "unchosen" = !hasPick
             ? "default"
             : i === pickedIdx
@@ -49,6 +57,16 @@ export function ChoicesBlock({
           );
         })}
       </ol>
+      {leaveEntry && !hasPick && (
+        <button
+          type="button"
+          className="choice-leave"
+          onClick={onLeave}
+          disabled={busy}
+        >
+          {leaveEntry.text} <span className="choice-leave-arrow">→</span>
+        </button>
+      )}
     </div>
   );
 }

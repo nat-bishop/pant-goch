@@ -83,6 +83,12 @@ class Beat(_Frozen):
     # reachable) — in addition to all of `requires_beats`. Empty = no OR.
     requires_any_beats: list[str] = Field(default_factory=list)
     blocked_by_beats: list[str] = Field(default_factory=list)
+    # State-dependent fireability: when non-empty, the beat is only emittable
+    # while every listed NPC is present at the player's location (enforced via
+    # engine.fireable_beat_ids → per-call grammar narrowing). Leave empty for
+    # object beats (reading a letter) and decision beats (player commitments)
+    # that fire with no NPC in the room. Validated against the cast at load.
+    requires_npcs_present: list[str] = Field(default_factory=list)
     prerequisites: str = ""  # soft prereqs the LLM judges, beyond requires/blocks
     notes_to_llm: str
 

@@ -17,8 +17,13 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import time
 from pathlib import Path
+
+# Tag eval spans env:eval before importing handler.main (which configures
+# Logfire at import time), so harness runs are filterable out of real plays.
+os.environ.setdefault("HANDLER_ENV", "eval")
 
 import yaml
 from pydantic_evals import Case, Dataset

@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import subprocess
+import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from dataclasses import replace as dc_replace
@@ -72,9 +73,13 @@ try:
     _service_version = importlib.metadata.version("handler")
 except importlib.metadata.PackageNotFoundError:
     _service_version = "unknown"
+# Run-mode tag (Logfire's deployment.environment) so test/eval spans are
+# filterable out of real playthroughs. Tests/evals set HANDLER_ENV.
+_handler_env = os.getenv("HANDLER_ENV", "play")
 logfire.configure(
     service_name="handler",
     service_version=_service_version,
+    environment=_handler_env,
     send_to_logfire="if-token-present",
     token=_logfire_token,
     console=ConsoleOptions() if _BOOT_SETTINGS.handler_logfire_console else False,
@@ -132,6 +137,9 @@ class SessionRuntime:
     chronicler: ChroniclerRuntime
     state: State
     world: World
+    # Short id stamped on every root span (turn / scene_enter / chronicler)
+    # and player-action log so one playthrough is groupable in Logfire.
+    session_id: str = ""
     event_queue: "asyncio.Queue[dict]" = field(default_factory=asyncio.Queue)
     action_future: "asyncio.Future[PlayerAction] | None" = None
     # The `next` of the ProsePart currently awaiting the player — the single
@@ -435,6 +443,7 @@ async def start_session() -> dict[str, str]:
         chronicler=chronicler,
         state=state,
         world=world,
+        session_id=uuid.uuid4().hex[:8],
     )
     SESSION = rt
 
@@ -460,6 +469,7 @@ async def start_session() -> dict[str, str]:
                 request_player_input=request_player_input,
                 emit_event=emit,
                 skip_event=rt.skip_event,
+                session_id=rt.session_id,
             )
         except asyncio.CancelledError:
             pass
@@ -489,6 +499,14 @@ async def pick(body: PickBody) -> dict[str, str]:
     fut = _pending_action_future(SESSION)
     if not isinstance(SESSION.awaiting_next, Continue):
         raise HTTPException(409, "no pick awaiting")
+    opts = SESSION.awaiting_next.options
+    option_text = opts[body.option_idx].text if 0 <= body.option_idx < len(opts) else None
+    logfire.info(
+        "player pick",
+        session_id=SESSION.session_id,
+        option_idx=body.option_idx,
+        option_text=option_text,
+    )
     fut.set_result(PickOption(index=body.option_idx))
     return {"status": "ok"}
 
@@ -507,6 +525,12 @@ async def walk(body: WalkBody) -> dict[str, str]:
         raise HTTPException(
             400, f"{body.to_location!r} is not adjacent to {loc.id!r}"
         )
+    logfire.info(
+        "player walk",
+        session_id=SESSION.session_id,
+        from_location=loc.id,
+        to_location=body.to_location,
+    )
     fut.set_result(WalkTo(location_id=body.to_location))
     return {"status": "ok"}
 
@@ -534,6 +558,11 @@ async def free_text(body: FreeTextBody) -> dict[str, str]:
         raise HTTPException(409, "no free-text awaiting")
     if not body.text.strip():
         raise HTTPException(400, "typed text must not be empty")
+    logfire.info(
+        "player free_text",
+        session_id=SESSION.session_id,
+        text=body.text.strip(),
+    )
     fut.set_result(TypeText(text=body.text.strip()))
     return {"status": "ok"}
 

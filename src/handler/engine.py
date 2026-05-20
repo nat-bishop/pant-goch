@@ -138,6 +138,27 @@ def present_npc_ids(world: World, state: State) -> tuple[str, ...]:
     return tuple(n.id for n in world.npcs_at(state.player_location, state=state))
 
 
+def fireable_beat_ids(world: World, state: State) -> set[str]:
+    """Reachable beats further narrowed to those that can fire RIGHT NOW
+    given who is in the room: a beat with a non-empty `requires_npcs_present`
+    is dropped unless every listed NPC is present at the player's location.
+
+    This is the state-dependent layer over the graph-only `reachable_beat_ids`
+    (kept pure for ending resolution + tests). Used by the Phase-1 grammar
+    narrowing (`agents._build_state_change_bundle_type`) and the Reachable
+    Beats prompt render (`prompts._render_reachable_beats`), so the model
+    literally cannot emit (and is never even told about) an NPC's beat while
+    that NPC is absent — e.g. Tom's beats are off the table everywhere but
+    wherever Tom currently is.
+    """
+    reachable = reachable_beat_ids(world, state)
+    present = set(present_npc_ids(world, state))
+    return {
+        bid for bid in reachable
+        if set(world.beats[bid].requires_npcs_present).issubset(present)
+    }
+
+
 def resolved_ending_id_at_close(world: World, state: State) -> str | None:
     """Pick the ending that fires when a scene closes. Iterates endings in
     author (YAML) order; returns the first whose `requires_beats` are all

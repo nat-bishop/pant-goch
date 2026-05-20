@@ -386,6 +386,25 @@ def test_invariant_8_self_reference_in_requires_any(tmp_path):
         load_world(target)
 
 
+# ───────────────────────── invariant 12: requires_npcs_present refs ─────────────────────────
+
+
+def test_invariant_12_requires_npcs_present_undefined_npc(tmp_path):
+    """A beat's requires_npcs_present must reference defined NPC ids — an
+    unknown id would silently make the beat permanently unfireable."""
+    target = _copy_valid(tmp_path)
+    truth_path = target / "truth.yaml"
+    truth = yaml.safe_load(truth_path.read_text(encoding="utf-8"))
+    for beat in truth["beats"]:
+        if beat["id"] == "tom_named_a_vehicle":
+            beat["requires_npcs_present"] = ["ghost_npc"]
+    _write_yaml(truth_path, truth)
+    with pytest.raises(
+        WorldLoadError, match="requires_npcs_present references undefined npc"
+    ):
+        load_world(target)
+
+
 def test_invariant_8_self_reference_in_blocked_by(tmp_path):
     target = _copy_valid(tmp_path)
     truth_path = target / "truth.yaml"

@@ -146,10 +146,11 @@ def _agent_system_prompt(agent) -> str:
 
 
 def test_phase1_prose_writer_choice_author_system_prompts_diverge():
-    """All three Phase-2-relevant system prompts must differ from each
-    other. The classifier has the full bible; the prose writer has voice
-    samples + crime overview only; the choice author has neither bible
-    nor voice."""
+    """All three Phase-2-relevant system prompts must differ from each other.
+    The classifier carries cast knowledge + crime narrative (no beat catalog
+    — beats live in the per-turn user prompt); the prose writer has voice
+    samples + crime overview only; the choice author has neither bible nor
+    voice."""
     world = load_world(FIXTURE_VALID)
     bundle = build_scene_runner_bundle(TestModel(), world)
     p1 = _agent_system_prompt(bundle.phase1)
@@ -158,13 +159,16 @@ def test_phase1_prose_writer_choice_author_system_prompts_diverge():
     assert p1 != pw, "phase 1 and prose writer must diverge"
     assert p1 != ca, "phase 1 and choice author must diverge"
     assert pw != ca, "prose writer and choice author must diverge"
-    # Phase 1 carries beat structure; the others do not.
-    assert "## The Truth" in p1
-    assert "## The Truth" not in pw
-    assert "## The Truth" not in ca
-    # Prose writer carries voice + crime overview.
+    # Phase 1 carries cast knowledge; the others do not.
+    tom = world.npcs["tom"]
+    assert tom.knowledge.strip() in p1
+    assert tom.knowledge.strip() not in pw
+    assert tom.knowledge.strip() not in ca
+    # Phase 1 + prose writer carry crime context via ## What Happened.
+    assert "## What Happened" in p1
     assert "## What Happened" in pw
-    assert "## Style Examples" in pw
-    # Choice author has neither.
     assert "## What Happened" not in ca
+    # Style examples remain Phase-2-only.
+    assert "## Style Examples" in pw
+    assert "## Style Examples" not in p1
     assert "## Style Examples" not in ca

@@ -27,7 +27,7 @@ See SceneRunnerRuntime in agents.py.
 """
 from __future__ import annotations
 
-from .engine import present_npc_ids, reachable_beat_ids
+from .engine import fireable_beat_ids, present_npc_ids
 from .schemas import StateChangeBundle, UnlockBeat
 from .state import State
 from .world import World
@@ -47,6 +47,20 @@ def _render_locations_block(world: World) -> str:
             f"  description: {loc.description.strip()}\n"
             f"  notes:\n    {notes}"
         )
+    return "\n".join(parts)
+
+
+def _render_locations_compact(world: World) -> str:
+    """One line per location — `- {id} ({name}): {first sentence}.` for the
+    narrator's system prompt. The narrator writes inside ONE location per
+    turn and the per-turn user prompt's ## You Are At block carries that
+    location's full description + notes; this compact catalogue only gives
+    the narrator a sense of village geography for atmospheric reference."""
+    parts: list[str] = []
+    for loc in world.locations.values():
+        # First sentence — a terse signal of what the place is.
+        first_sentence = loc.description.strip().split(".")[0].strip()
+        parts.append(f"- {loc.id} ({loc.name}): {first_sentence}.")
     return "\n".join(parts)
 
 
@@ -153,34 +167,17 @@ def _render_beat(beat, world: World) -> str:
     )
 
 
-def _render_ending(ending, world: World, *, include_epilogue: bool) -> str:
-    parts = [
-        f"- {ending.id}:",
-        f"  requires_beats: {_beat_names(world, ending.requires_beats)}",
-    ]
-    if ending.requires_any_beats:
-        parts.append(
-            f"  requires_any_beats (any one of): "
-            f"{_beat_names(world, ending.requires_any_beats)}"
-        )
-    parts.append(f"  notes_to_llm: {ending.notes_to_llm.strip()}")
-    if include_epilogue:
-        parts.append(f"  epilogue: {ending.epilogue.strip()}")
-    return "\n".join(parts)
-
-
-def _render_truth_block_full(world: World) -> str:
-    """Phase 1 / chronicler: crime + full beat catalog + endings."""
-    parts: list[str] = [
-        f"### Crime\n{world.crime.strip()}\n",
-        "### Beats — the moments that constitute uncovering the truth",
-    ]
-    for beat in world.beats.values():
-        parts.append(_render_beat(beat, world))
-    parts.append("\n### Endings — terminal states, gated by decision beats")
-    for ending in world.endings.values():
-        parts.append(_render_ending(ending, world, include_epilogue=True))
-    return "\n".join(parts)
+def _render_beats_compact(world: World) -> str:
+    """Compact beat catalog — `- {name}: {description}` per beat. Used by the
+    populator and chronicler system prompts: both reason about story shape
+    (who is talking to whom, what the arcs are) but neither fires beats, so
+    the full firing guidance (requires/blocks, prerequisites, notes_to_llm)
+    is dead weight in their context. Endings are omitted entirely — no agent
+    emits EndGame; the engine resolves it from state.unlocked_beats at scene
+    close (engine.resolved_ending_id_at_close)."""
+    return "\n".join(
+        f"- {beat.name}: {beat.description.strip()}" for beat in world.beats.values()
+    )
 
 
 def _render_few_shots(world: World) -> str:
@@ -203,13 +200,15 @@ def _render_few_shots(world: World) -> str:
 
 def build_phase1_system_prompt(world: World) -> str:
     """Phase 1 system prompt — the state-change classifier. Carries the
-    full world bible: locations, cast with knowledge, beats with
-    requires/blocks/notes_to_llm, endings. Byte-stable across the session.
+    world surface (locations + cast with knowledge) and a slim crime
+    narrative. The beat catalog and endings are NOT here — beats appear
+    only in the per-turn user prompt's ## Reachable Beats block (narrowed
+    by NPC presence + dependency), and endings are pure engine data (no
+    agent emits EndGame). Byte-stable across the session.
 
     Phase 1 is a classifier dressed as a writer: it reads the conversation
     so far and decides which (if any) authored beats just fired. Voice
-    instructions are not its job — Phase 2 handles prose. This prompt is
-    large; that's fine, Phase 1 needs the structure.
+    instructions are not its job — Phase 2 handles prose.
     """
     return f"""\
 ## Role
@@ -224,29 +223,32 @@ which authored beats have just fired.
 ## The Cast
 {_render_cast_block(world, voice_only=False)}
 
-## The Truth
-{_render_truth_block_full(world)}
+## What Happened
+{world.crime.strip()}
+
+You know this as the classifier. The cast above does not know all of it,
+and most of them are protecting some part of it. Read their conversations
+against this truth when judging which beats have landed.
 
 ## Your Job
 Each turn, emit ONE structured output: StateChangeBundle — **zero, one,
-or at most two UnlockBeat entries**. Most turns emit zero. A beat fires
-only when the moment described in its notes_to_llm has genuinely landed
-in the conversation.
+or at most two UnlockBeat entries**. The user prompt's ## Reachable Beats
+block names the beats that could fire right now (filtered by who is in the
+room and by dependency); pick one or two only if their described moment
+has genuinely landed in the conversation. Most turns emit zero.
 
-The engine validates and applies your bundle, then a separate prose
-agent (with its own system prompt) writes the prose conditioned on what
-fired. You do not write prose.
+The engine validates and applies your bundle, then a separate prose agent
+writes the prose conditioned on what fired. You do not write prose.
 
 ## Rules
 1. Unlock beats when their notes_to_llm describes the moment that just
    happened in the conversation. Re-read the prereqs. Don't unlock
    prematurely.
 
-2. End the game only when the player has clearly chosen the action
-   that triggers an ending. Each ending depends on a "decision beat"
-   that fires only when the player explicitly commits. (Phase 2 will
-   emit the EndGame; your job is to fire the decision beat when it
-   lands.)
+2. Decision beats fire only when the player explicitly commits — "I'm
+   filing it", "I'm walking away", "I'm going up to Tan-y-coed". Endings
+   are engine-decided once the right decision beat is in state; you do
+   not emit them.
 
 3. Stay within the established cast and locations. The bible above is
    complete.
@@ -257,7 +259,9 @@ def build_prose_writer_system_prompt(world: World) -> str:
     """Prose-writer system prompt — the narrator. Slim, voice-focused. NO
     beats, NO notes_to_llm, NO endings, NO per-NPC knowledge, NO option
     or scene-control mechanics. The narrator knows what happened (the
-    crime overview), the cast's voice and attitude, and the locations.
+    crime overview), the cast's voice and attitude, and a compact one-line
+    catalogue of locations. The current location's full description arrives
+    each turn in the user prompt's ## You Are At block.
 
     Byte-stable across the session; KV cache hits across every turn AND
     across scenes. The prose writer accumulates scene-bounded message
@@ -276,7 +280,11 @@ village of Pant Goch. Each turn you write the next beat of prose for
 what just happened.
 
 ## The World
-{_render_locations_block(world)}
+The village and its surroundings — a one-line catalogue for orientation.
+The full description of the current location arrives each turn in the
+user prompt's ## You Are At block.
+
+{_render_locations_compact(world)}
 
 ## The Cast
 {_render_cast_block(world, voice_only=True)}
@@ -422,10 +430,19 @@ def _render_you_are_at(state: State, world: World) -> str:
     )
 
 
-def _render_present(state: State, world: World, *, voice_only: bool) -> str:
-    """## Present block. `voice_only=True` for Phase 2 (no knowledge, with
-    voice_sample, with per-NPC history); `voice_only=False` for Phase 1
-    (full knowledge, no history — Phase 1 sees the case file instead).
+def _render_you_are_at_brief(state: State, world: World) -> str:
+    """Compact scene anchor — id + name only. For Phase 1's user prompt: the
+    classifier's system prompt already carries the full locations block, so
+    the user prompt only needs to name the current location (no re-render of
+    description / notes every turn)."""
+    loc = world.locations[state.player_location]
+    return f"## You Are At\n{loc.id} ({loc.name})"
+
+
+def _render_present(state: State, world: World) -> str:
+    """## Present block for the prose writer's per-turn user message. No
+    knowledge re-render (the narrator never sees it); voice_sample + per-NPC
+    history included so the writer has voice continuity across scenes.
 
     Reads NPC positions from `state.npc_locations` (set by the populator
     at scene entry), not from default_location.
@@ -436,17 +453,28 @@ def _render_present(state: State, world: World, *, voice_only: bool) -> str:
     parts = ["## Present"]
     for npc in npcs_here:
         # Per-NPC history is the journalist's accumulated impression of
-        # this person across prior scenes. Phase 2 only — Phase 1 reads
-        # the prose case file in `_render_case_file` and doesn't need
-        # the structured per-NPC channel.
-        history = state.npc_memory.get(npc.id, []) if voice_only else None
+        # this person across prior scenes — voice continuity for the narrator.
+        history = state.npc_memory.get(npc.id, [])
         parts.append(_render_npc_card(
             npc,
             include_default_location=False,
-            include_knowledge=not voice_only,
-            include_voice_sample=voice_only,
+            include_knowledge=False,
+            include_voice_sample=True,
             history=history,
         ))
+    return "\n".join(parts)
+
+
+def _render_present_brief(state: State, world: World) -> str:
+    """Compact ## Present for Phase 1's user prompt — npc_id + name only. The
+    classifier's system prompt already carries the full cast with knowledge;
+    the user prompt only needs to name who is in the room."""
+    npcs_here = world.npcs_at(state.player_location, state=state)
+    if not npcs_here:
+        return "## Present\n(no one — you are alone here.)"
+    parts = ["## Present"]
+    for npc in npcs_here:
+        parts.append(f"- {npc.id} ({npc.name})")
     return "\n".join(parts)
 
 
@@ -455,23 +483,14 @@ def _render_state(state: State, world: World) -> str:
 
 
 def _render_reachable_beats(state: State, world: World) -> str:
-    reachable = reachable_beat_ids(world, state)
+    reachable = fireable_beat_ids(world, state)
     if not reachable:
-        return "## Reachable Beats\n(none — every beat has fired or is permanently blocked.)"
+        return "## Reachable Beats\n(none — nothing is fireable here right now: every beat has fired, is permanently blocked, or needs an NPC who isn't present.)"
     parts = ["## Reachable Beats"]
     # Sort by name so the heading matches the model's emission token.
     for bid in sorted(reachable, key=lambda b: world.beats[b].name):
         beat = world.beats[bid]
         parts.append(_render_beat(beat, world))
-    return "\n".join(parts)
-
-
-def _render_all_endings(world: World) -> str:
-    if not world.endings:
-        return "## All Endings\n(none authored.)"
-    parts = ["## All Endings"]
-    for ending in world.endings.values():
-        parts.append(_render_ending(ending, world, include_epilogue=False))
     return "\n".join(parts)
 
 
@@ -549,15 +568,20 @@ def _render_applied_changes(applied: StateChangeBundle, world: World) -> str:
 
 
 def build_phase1_user_prompt(state: State, world: World) -> str:
-    """Phase 1 user prompt — rich context for the classifier. Includes
-    reachable beats, endings, full scene-so-far, case file. Stateless
-    per turn (Phase 1 has no message_history)."""
+    """Phase 1 user prompt — turn-specific context for the classifier.
+
+    The scene anchor is rendered compactly (id + name only for location and
+    present NPCs): the full locations / cast / crime live in the cached
+    system prompt. ## Reachable Beats is the load-bearing block, listing
+    every beat that could fire right now (filtered by NPC presence +
+    dependency). Endings appear nowhere — they are pure engine data, not
+    part of Phase 1's output. Stateless per turn (Phase 1 has no
+    message_history)."""
     sections = [
-        _render_you_are_at(state, world),
-        _render_present(state, world, voice_only=False),
+        _render_you_are_at_brief(state, world),
+        _render_present_brief(state, world),
         _render_state(state, world),
         _render_reachable_beats(state, world),
-        _render_all_endings(world),
         _render_case_file(state),
         _render_this_scene(state, world),
     ]
@@ -597,7 +621,7 @@ def build_prose_writer_user_message(
     parts: list[str] = []
     if is_first_turn:
         parts.append(_render_you_are_at(state, world))
-        parts.append(_render_present(state, world, voice_only=True))
+        parts.append(_render_present(state, world))
         if opening_seed:
             parts.append(f"## Opening Seed\n{opening_seed.strip()}")
 
@@ -669,6 +693,11 @@ def build_closing_prose_user_message(
 
 # Below this many turns: scene needs room to breathe — no Leave nudge.
 PACING_QUIET_TURNS = 3
+# Solo scenes (no NPC present — the vicarage prologue, an empty location)
+# have shallow natural depth, so they nudge toward Leave one turn in: arrive,
+# take in the place, head out. Keeps the opening from sprawling into an
+# object hunt the way the empty vicarage did.
+PACING_QUIET_TURNS_SOLO = 1
 # Above this many turns: hard Leave nudge regardless of NPC presence.
 PACING_HARD_NUDGE_TURNS = 5
 
@@ -677,7 +706,8 @@ def _render_scene_pacing(state: State, *, solo: bool) -> str:
     """Turn-aware Leave nudge block. Empty string when no nudge needed
     (caller renders nothing between the ## State block and ## Choose)."""
     turn_n = state.turn_n
-    if turn_n <= PACING_QUIET_TURNS:
+    quiet = PACING_QUIET_TURNS_SOLO if solo else PACING_QUIET_TURNS
+    if turn_n <= quiet:
         return ""
     if turn_n <= PACING_HARD_NUDGE_TURNS and not solo:
         return ""
@@ -856,9 +886,10 @@ def build_caption_author_user_message(state: State, world: World, prose: str) ->
 
 def build_chronicler_system_prompt(world: World) -> str:
     """Stable system prompt for the chronicler. Baked once at bundle
-    construction. Carries the full bible — the chronicler needs cast and
-    truth context to write coherently about people and events, and the
-    KV cache amortises the cost.
+    construction. Carries locations + cast (with knowledge) + the slim crime
+    narrative + a compact beat catalog (names + descriptions only, no firing
+    guidance — the chronicler doesn't fire beats). Endings are omitted; they
+    are pure engine data.
 
     Dual output per call: `case_file_entry` (UI prose, sidebar) AND
     `npc_memory_updates` (structured per-NPC notes surfaced to Phase 2
@@ -879,8 +910,11 @@ just happened so it does not slip away.
 ## The Cast
 {_render_cast_block(world, voice_only=False)}
 
-## The Truth
-{_render_truth_block_full(world)}
+## What Happened
+{world.crime.strip()}
+
+## Story Beats
+{_render_beats_compact(world)}
 
 ## Your Job
 After every scene the player walks out of, you emit ONE structured
@@ -1021,10 +1055,11 @@ Emit the structured output for this scene.
 
 def build_populator_system_prompt(world: World) -> str:
     """System prompt for the populator agent. Runs once at scene entry
-    to decide which NPCs are at which locations now. The populator sees
-    the full bible (cast knowledge, beats, endings) so it can reason
-    dramatically — e.g., Dylan retreats to the wood after a tense scene
-    at Tan-y-coed; Helen agrees to the Costa for a discreet meeting.
+    to decide which NPCs are at which locations now. Carries locations +
+    cast (with knowledge) + the slim crime narrative + a compact beat
+    catalog (names + descriptions only — the populator reasons about story
+    shape, not firing). Endings are omitted; placement decisions key off
+    case-file evidence, not future endings.
 
     Byte-stable across the session for KV cache hits across scene
     entries.
@@ -1046,8 +1081,11 @@ emit a structured list of placement overrides (or an empty list).
 ## The Cast
 {_render_cast_block(world, voice_only=False)}
 
-## The Truth
-{_render_truth_block_full(world)}
+## What Happened
+{world.crime.strip()}
+
+## Story Beats
+{_render_beats_compact(world)}
 
 ## Your Job
 Each scene entry, emit ONE NpcPlacementBundle. **Most scene entries

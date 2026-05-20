@@ -55,10 +55,14 @@ def test_choice_author_system_prompt_is_byte_stable():
     assert a == b
 
 
-# ───────────────────────── phase 1 system prompt: full bible ─────────────────────────
+# ───────────────────────── phase 1 system prompt: world surface + crime only ─────────────────────────
 
 
-def test_phase1_system_prompt_includes_full_world_bible():
+def test_phase1_system_prompt_carries_world_surface_and_crime_only():
+    """Phase 1 system prompt holds locations + cast (with knowledge) + the
+    slim ## What Happened crime narrative. Beats and endings are NOT here —
+    beats live in the per-turn user prompt's ## Reachable Beats, endings
+    nowhere (engine-only data)."""
     world = load_world(FIXTURE_VALID)
     sys_prompt = build_phase1_system_prompt(world)
     for loc in world.locations.values():
@@ -67,14 +71,22 @@ def test_phase1_system_prompt_includes_full_world_bible():
     for npc in world.npcs.values():
         assert npc.id in sys_prompt
         assert npc.name in sys_prompt
-    # Phase 1 sees beat NAMES (not ids) — the LLM emits the name and the
-    # prompt's ## The Truth / ## Reachable Beats sections render names too.
-    for beat in world.beats.values():
-        assert beat.name in sys_prompt
-        assert beat.notes_to_llm.strip() in sys_prompt
-    for ending in world.endings.values():
-        assert ending.id in sys_prompt
+        assert npc.knowledge.strip() in sys_prompt
+    # Crime narrative under ## What Happened.
+    assert "## What Happened" in sys_prompt
+    assert world.crime.strip() in sys_prompt
     assert "Megan Pritchard" in sys_prompt
+    # Beats: NOT in the system prompt (they live in the user prompt only).
+    for beat in world.beats.values():
+        assert beat.notes_to_llm.strip() not in sys_prompt, (
+            f"phase1 system leaks beat notes_to_llm {beat.id!r}"
+        )
+    # Endings: removed everywhere.
+    for ending in world.endings.values():
+        assert ending.id not in sys_prompt, (
+            f"phase1 system leaks ending id {ending.id!r}"
+        )
+    assert "## The Truth" not in sys_prompt
 
 
 # ───────────────────────── prose writer system prompt: slim, voice-focused ─────────────────────────
@@ -264,16 +276,36 @@ def test_prose_writer_system_prompt_forbids_travel():
 # ───────────────────────── phase 1 user prompt ─────────────────────────
 
 
-def test_phase1_user_prompt_includes_reachable_beats_and_endings():
+def test_phase1_user_prompt_includes_reachable_beats_and_no_endings():
+    """Endings are removed from Phase 1 entirely (no agent emits EndGame).
+    Reachable beats are the load-bearing block."""
     world = load_world(FIXTURE_VALID)
     state = make_initial_state(world)
     prompt = build_phase1_user_prompt(state, world)
     assert "## Reachable Beats" in prompt
-    assert "## All Endings" in prompt
+    assert "## All Endings" not in prompt
     assert "## State" in prompt
     assert "## Case File" in prompt
     assert "## This Scene So Far" in prompt
     assert "## Generate State Changes" in prompt
+
+
+def test_phase1_user_prompt_scene_anchor_is_compact():
+    """## You Are At and ## Present are name-only in Phase 1's user prompt —
+    the full location description and cast knowledge live in the cached
+    system prompt, so the user prompt does not re-render them."""
+    world = load_world(FIXTURE_VALID)
+    state = make_initial_state(world)
+    state.player_location = "the_slaughtered_lamb"
+    prompt = build_phase1_user_prompt(state, world)
+    loc = world.locations["the_slaughtered_lamb"]
+    # Name is mentioned, but the long description is NOT re-rendered.
+    assert loc.name in prompt
+    assert loc.description.strip() not in prompt
+    # Present NPCs are listed compactly without their knowledge.
+    tom = world.npcs["tom"]
+    assert tom.id in prompt
+    assert tom.knowledge.strip() not in prompt
 
 
 def test_phase1_reachable_beats_hides_fired_and_blocked():
@@ -429,10 +461,11 @@ def test_choice_author_user_message_when_alone():
 
 
 def test_choice_author_user_message_omits_pacing_block_early_turns():
-    """Turns 1-3 should not render the Scene Pacing nudge (scene needs
-    room to breathe)."""
+    """With an NPC present, turns 1-3 should not render the Scene Pacing
+    nudge (an NPC scene needs room to breathe)."""
     world = load_world(FIXTURE_VALID)
     state = make_initial_state(world)
+    state.player_location = "the_slaughtered_lamb"  # Tom present → not solo
     # Turn 1: empty history. No nudge.
     msg = build_choice_author_user_message(state, world, "Anything.")
     assert "## Scene Pacing" not in msg
@@ -443,6 +476,18 @@ def test_choice_author_user_message_omits_pacing_block_early_turns():
     ]
     msg = build_choice_author_user_message(state, world, "Anything.")
     assert "## Scene Pacing" not in msg
+
+
+def test_choice_author_user_message_nudges_solo_from_turn_2():
+    """Solo scenes (no NPC present) have shallow depth, so the Leave nudge
+    appears from turn 2 — keeps the vicarage prologue from sprawling into an
+    object hunt."""
+    world = load_world(FIXTURE_VALID)
+    state = make_initial_state(world)  # vicarage; alone
+    state.dialogue_history = [TurnRecord(prose="a", applied_state_changes=[])]
+    msg = build_choice_author_user_message(state, world, "Anything.")
+    assert "## Scene Pacing" in msg
+    assert "turn 2" in msg
 
 
 def test_choice_author_user_message_nudges_solo_after_quiet_turns():
@@ -544,16 +589,23 @@ def test_prose_writer_applied_changes_includes_beat_description():
 # ───────────────────────── populator prompts ─────────────────────────
 
 
-def test_populator_system_prompt_carries_full_bible():
-    """Populator needs cast knowledge + beats + endings to reason
-    dramatically about where NPCs should be."""
+def test_populator_system_prompt_carries_cast_knowledge_and_compact_beats():
+    """Populator needs cast knowledge for dramatic placement reasoning. Beats
+    appear in compact form (name + description) — no firing guidance, no
+    endings."""
     from handler.prompts import build_populator_system_prompt
     world = load_world(FIXTURE_VALID)
     prompt = build_populator_system_prompt(world)
     # Cast knowledge appears.
     assert "Old Tom Bevan" in prompt
-    # Beats + ending structure appears.
-    assert "### Beats" in prompt
+    # Compact beats: names appear, but firing guidance (notes_to_llm) does not.
+    assert "## Story Beats" in prompt
+    for beat in world.beats.values():
+        assert beat.name in prompt
+        assert beat.notes_to_llm.strip() not in prompt
+    # Endings are dropped.
+    for ending in world.endings.values():
+        assert ending.id not in prompt
     # Job directive establishes restraint.
     assert "should be empty" in prompt or "empty bundle" in prompt
 
@@ -591,3 +643,34 @@ def test_chronicler_system_prompt_describes_dual_output():
     prompt = build_chronicler_system_prompt(world)
     assert "case_file_entry" in prompt
     assert "npc_memory_updates" in prompt
+
+
+def test_chronicler_system_prompt_carries_compact_beats_only():
+    """Chronicler reasons about story shape — names + descriptions are
+    enough. Firing guidance and endings are not."""
+    world = load_world(FIXTURE_VALID)
+    prompt = build_chronicler_system_prompt(world)
+    assert "## Story Beats" in prompt
+    assert "## What Happened" in prompt
+    for beat in world.beats.values():
+        assert beat.name in prompt
+        assert beat.notes_to_llm.strip() not in prompt
+    for ending in world.endings.values():
+        assert ending.id not in prompt
+
+
+def test_prose_writer_system_prompt_uses_compact_locations():
+    """Narrator's system prompt carries a one-line catalogue of locations;
+    the long descriptions and notes live in the per-turn user prompt's
+    ## You Are At block (current location only)."""
+    world = load_world(FIXTURE_VALID)
+    sys_prompt = build_prose_writer_system_prompt(world)
+    # Names + ids are present.
+    for loc in world.locations.values():
+        assert loc.id in sys_prompt
+        assert loc.name in sys_prompt
+    # But location NOTES are not rendered in the system prompt — the compact
+    # catalogue takes only the first sentence of each description.
+    pub = world.locations["the_slaughtered_lamb"]
+    for note in pub.notes:
+        assert note.strip() not in sys_prompt

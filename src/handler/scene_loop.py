@@ -52,6 +52,7 @@ from .engine import (
     append_turn_record,
     enter_scene,
     free_text_cadence_ok,
+    present_npc_ids,
     resolved_ending_id_at_close,
 )
 from .schemas import (
@@ -196,6 +197,16 @@ def _fallback_prose() -> str:
     Never shown as engine metatext — looks like ordinary prose to the
     player."""
     return "A pause. The moment passes without movement."
+
+
+# Caption for the engine-injected leave entry appended to the options SSE
+# payload (see play_scene). Diegetic and short; the frontend styles it as a
+# distinct control, not a numbered choice.
+LEAVE_OPTION_TEXT = "Step outside"
+# Surface the leave entry only once the scene has a completed turn behind it
+# (dialogue_history length): the first turn stays focused on scene-setting,
+# every turn after offers a visible way out.
+LEAVE_OPTION_MIN_HISTORY = 2
 
 
 def _fallback_choices() -> ChoiceBundle:
@@ -364,9 +375,21 @@ async def run_turn(
         logfire.warn(
             "phase1 fallback: retries exhausted; dropping state_changes",
             error=str(e),
+            location=state.player_location,
+            present_npcs=list(present_npc_ids(bundle.world, state)),
         )
         applied = StateChangeBundle()
     apply_state_changes(applied, state)
+    if applied.state_changes:
+        # One queryable record per turn that moved state: which beats fired
+        # and the resulting set. Pairs with the per-action logs in main.py so
+        # a session's progress is reconstructable from Logfire alone.
+        logfire.info(
+            "beats applied",
+            applied_beats=[c.beat_id for c in applied.state_changes],
+            unlocked_beats=sorted(state.unlocked_beats),
+            location=state.player_location,
+        )
 
     # state_change events go out before any prose word, so the frontend
     # unlocks beats ahead of the reveal.
@@ -476,6 +499,7 @@ async def play_scene(
     request_player_input: RequestPlayerInput,
     emit_event: EmitEvent | None = None,
     skip_event: asyncio.Event | None = None,
+    session_id: str = "",
 ) -> ProsePart:
     """Run a scene from the current player_location until it ends.
 
@@ -509,7 +533,7 @@ async def play_scene(
     enter_scene(state, bundle.world, state.player_location)
 
     # ── populator: resolve scene-entry NPC placements ──
-    with _root_span("scene_enter", scene_id=state.scene_id, location=state.player_location):
+    with _root_span("scene_enter", session_id=session_id, scene_id=state.scene_id, location=state.player_location):
         try:
             placements = await emit_placements(bundle, state)
         except UnexpectedModelBehavior as e:
@@ -534,6 +558,7 @@ async def play_scene(
         # is still isolated by pydantic-ai's own instrumentation spans.
         with _root_span(
             "turn",
+            session_id=session_id,
             scene_id=state.scene_id,
             turn_n=state.turn_n,
             location=state.player_location,
@@ -559,9 +584,13 @@ async def play_scene(
         # leave the location photo up (quiet voluntary leave).
         if emit_event is not None:
             if isinstance(nxt, Continue):
-                await emit_event(options_event([
-                    {"text": o.text} for o in nxt.options
-                ]))
+                # Append the leave entry AFTER the real options so their
+                # indices stay aligned with PickOption. The walk it routes to
+                # is always legal — every location has ≥1 adjacent (invariant 11).
+                payload = [{"text": o.text} for o in nxt.options]
+                if len(state.dialogue_history) >= LEAVE_OPTION_MIN_HISTORY:
+                    payload.append({"text": LEAVE_OPTION_TEXT, "leave": True})
+                await emit_event(options_event(payload))
             elif isinstance(nxt, FreeText):
                 await emit_event(free_text_request_event(nxt))
             else:  # EndScene soft-close — scene spent, only a walk remains
@@ -628,6 +657,7 @@ async def play_session(
     on_scene_close: OnSceneClose | None = None,
     emit_event: EmitEvent | None = None,
     skip_event: asyncio.Event | None = None,
+    session_id: str = "",
 ) -> ProsePart:
     """Play one full session (multiple scenes) from `state` until an ending
     fires. Returns the terminal EndGame ProsePart.
@@ -659,6 +689,7 @@ async def play_session(
             request_player_input=request_player_input,
             emit_event=emit_event,
             skip_event=skip_event,
+            session_id=session_id,
         )
 
         # The closing prose already streamed inside play_scene (EndScene),
@@ -670,7 +701,7 @@ async def play_session(
         # Chronicler runs while player_location still points at the scene
         # just closed, so present_npc_ids is correct. The completed scene
         # is still in dialogue_history; the next enter_scene clears it.
-        with _root_span("chronicler_call", scene_id=state.scene_id):
+        with _root_span("chronicler_call", session_id=session_id, scene_id=state.scene_id):
             output = await emit_chronicle_entry(bundle, chronicler, world, state)
         state.case_file_entries.append(output.case_file_entry)
         for upd in output.npc_memory_updates:

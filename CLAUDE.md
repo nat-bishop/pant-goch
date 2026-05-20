@@ -1,10 +1,6 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
 HANDLER v2 is an LLM-driven investigation game set in the Welsh Marches village of Pant Goch. The player is a freelance journalist looking into a death the local police closed too quickly. The world (locations, cast, the truth) is hand-authored YAML; the LLM improvises scenes inside it via two-stage structured emission.
-
-**`SPEC.md` is the authoritative design doc.** Read it before changing the engine, schemas, prompts, or world loader.
 
 ## Repo
 
@@ -50,14 +46,10 @@ world/
   map.yaml / map.png # frontend map geometry + backdrop
 ```
 
-`make cli` to dogfood authoring changes interactively. World-loader invariants catch most authoring errors at startup; SPEC §2 explains each field.
-
 ## Load-bearing invariants
 
 - **Grammar-sampled enums over the catalog.** `beat_id`, `ending_id`, `npc_id`, `location_id`, `leaves_for` are narrowed per-call to `Literal[*valid_ids]`. llama.cpp's grammar sampler rejects invalid ids at decode time — the model literally cannot emit one it doesn't have access to. State-dependent constraints (reachable beats, satisfied endings, `leave_pick`→`EndScene`) are grammar-enforced too.
 - **Don't mix structural and state-dependent rules.** State-independent (prose length, ≤1 leave option) → validators on canonical schemas in `schemas.py`. State-dependent (which beats are reachable, which endings have prereqs met) → per-call Literal narrowing in `agents.py`.
-- **Two system prompts, not one.** Phase 1 (classifier, full bible) and Phase 2 (narrator: voice samples + few-shots + crime overview only — NO beats, NO notes_to_llm, NO endings, NO per-NPC knowledge) are separate. The split costs intra-turn KV reuse; it buys Phase 2 attention focus on writing. Don't merge them.
-- **Three runtimes, threaded through `play_session`.** `AgentBundle` (world-scoped, immutable). `SceneRunnerRuntime` (holds Phase 2 `phase2_message_history`; cleared in `enter_scene`). `ChroniclerRuntime` (accumulating one user+assistant pair per scene-end — the conversation is the case file).
 - **Player-driven endings.** Endings gate on decision beats authored as mutually-exclusive via pairwise `blocked_by_beats`. The engine cannot summon a climax; the player commits in fiction.
 - **Gemma 4 sampling.** temp=1.0 / top_p=0.95 / top_k=64 for all agents. Do not drop temp for "judgment" turns — the model needs creative latitude inside the bible's constraints.
 

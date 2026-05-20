@@ -32,7 +32,13 @@ from handler.schemas import (
     StateChangeBundle,
     UnlockBeat,
 )
-from handler.scene_loop import PickOption, WalkTo, play_scene, play_session
+from handler.scene_loop import (
+    LEAVE_OPTION_TEXT,
+    PickOption,
+    WalkTo,
+    play_scene,
+    play_session,
+)
 from handler.schemas import FreeText
 
 
@@ -367,6 +373,60 @@ async def test_play_scene_emits_options_event_for_continue(monkeypatch, world_an
     assert opts[1] == {"text": "Walk to post"}
     # The options cue is followed by walk_ready (the map is armed mid-scene).
     assert "walk_ready" in [e["event"] for e in events]
+
+
+async def test_play_scene_injects_leave_option_from_second_turn(monkeypatch, world_and_bundle):
+    """Turn 1's options stay clean; from turn 2 the engine appends a synthetic
+    leave entry (the always-visible way out) the frontend renders apart from
+    the numbered choices."""
+    world, bundle = world_and_bundle
+    state = make_initial_state(world)
+    state.player_location = "the_slaughtered_lamb"
+
+    proses = iter(["Turn one.", "Turn two.", "The hour ends."])
+    choices = iter([
+        ChoiceBundle(next=Continue(options=[Option(text="Stay"), Option(text="Ask")])),
+        ChoiceBundle(next=Continue(options=[Option(text="Press"), Option(text="Wait")])),
+        ChoiceBundle(next=Leave()),
+    ])
+
+    async def fake_phase1(*args, **kwargs):
+        return StateChangeBundle()
+
+    async def fake_prose(*args, **kwargs):
+        yield next(proses)
+
+    async def fake_choices(*args, **kwargs):
+        return next(choices)
+
+    _patch_populator(monkeypatch)
+    _patch_closing_prose(monkeypatch)
+    monkeypatch.setattr("handler.scene_loop.emit_state_changes", fake_phase1)
+    monkeypatch.setattr("handler.scene_loop.stream_prose_text", fake_prose)
+    monkeypatch.setattr("handler.scene_loop.emit_choices", fake_choices)
+    monkeypatch.setattr("handler.scene_loop.emit_free_text_gate", _gate_off)
+    monkeypatch.setattr("handler.scene_loop.paced_word_emitter",
+                        _patched_paced_emitter(0.001))
+
+    events: list[dict] = []
+
+    async def emit(e: dict) -> None:
+        events.append(e)
+
+    # Pick option 0 on each Continue (advances turns), walk on the soft-close.
+    await play_scene(
+        bundle, make_scene_runner_runtime(), state,
+        request_player_input=_walk_first_adjacent, emit_event=emit,
+    )
+
+    options_events = [e for e in events if e["event"] == "options"]
+    assert len(options_events) == 2
+    # Turn 1: real options only, no leave entry.
+    assert all("leave" not in o for o in options_events[0]["options"])
+    # Turn 2: leave entry appended after the real options.
+    turn2 = options_events[1]["options"]
+    assert turn2[:2] == [{"text": "Press"}, {"text": "Wait"}]
+    assert turn2[-1] == {"text": LEAVE_OPTION_TEXT, "leave": True}
 
 
 async def test_play_scene_emits_game_over_for_end_game(monkeypatch, world_and_bundle):
