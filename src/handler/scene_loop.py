@@ -36,6 +36,7 @@ from .agents import (
     AgentBundle,
     ChroniclerRuntime,
     SceneRunnerRuntime,
+    emit_caption,
     emit_chronicle_entry,
     emit_choices,
     emit_free_text_gate,
@@ -44,10 +45,11 @@ from .agents import (
     emit_state_changes,
 )
 from .engine import (
-    SCENE_FREE_TEXT,
+    FREE_TEXT_FALLBACK,
     apply_state_changes,
     append_turn_record,
     enter_scene,
+    free_text_cadence_ok,
     resolved_ending_id_at_close,
 )
 from .schemas import (
@@ -57,6 +59,7 @@ from .schemas import (
     EndGame,
     EndScene,
     FreeText,
+    FreeTextCaption,
     Leave,
     NpcPlacementBundle,
     Option,
@@ -120,15 +123,19 @@ async def _maybe_await(value):
 
 def _assemble_prose_part(
     world: World, state: State, prose: str, choices: ChoiceBundle,
-    *, free_text_offer: bool = False,
+    *, free_text_offer: bool = False, caption: FreeTextCaption | None = None,
 ) -> ProsePart:
-    """Compose the choice author's ChoiceBundle, the free-text gate's
-    offer, and the prose writer's text into the engine-facing ProsePart.
+    """Compose the choice author's ChoiceBundle, the resolved free-text
+    offer, the caption author's output, and the prose writer's text into
+    the engine-facing ProsePart.
 
     Precedence: **Leave > free-text > Continue**.
       - Leave → EndGame (when an ending is satisfied) or EndScene. A
-        closing scene never gets a free-text box, even if the gate offered.
-      - else, gate offered → engine-built FreeText (fixed caption).
+        closing scene never gets a free-text box, even if free text was
+        offered.
+      - else, free text offered → per-turn FreeText built from the caption
+        author's caption + suggested move; `FREE_TEXT_FALLBACK` when `caption` is
+        None (caption author failed but the offer already stands).
       - else → the choice author's Continue, verbatim.
     """
     nxt = choices.next
@@ -138,7 +145,12 @@ def _assemble_prose_part(
             return ProsePart(prose=prose, next=EndGame(ending_id=ending_id))
         return ProsePart(prose=prose, next=EndScene())
     if free_text_offer:
-        return ProsePart(prose=prose, next=SCENE_FREE_TEXT)
+        free_text = (
+            FreeText(prompt=caption.caption, suggested=caption.suggested)
+            if caption is not None
+            else FREE_TEXT_FALLBACK
+        )
+        return ProsePart(prose=prose, next=free_text)
     return ProsePart(prose=prose, next=nxt)
 
 
@@ -228,14 +240,33 @@ async def run_turn(
             "free_text_gate fallback: retries exhausted; not offering free text",
             error=str(gate_res),
         )
-        free_text_offer = False
+        gate_offered = False
     elif isinstance(gate_res, BaseException):
         raise gate_res
     else:
-        free_text_offer = gate_res
+        gate_offered = gate_res
+
+    # ── Phase 2d: caption author (only when free text actually surfaces) ────
+    # The LLM gate only judges whether the moment *could* take free text;
+    # the engine cadence (cooldown + probability, seeded RNG) decides whether
+    # to surface it now. We apply cadence BEFORE the caption call so its cost
+    # is paid only on turns that show a box. On caption failure the offer
+    # still stands — _assemble falls back to a fixed caption.
+    free_text_offer = gate_offered and free_text_cadence_ok(state, runtime.rng)
+    caption: FreeTextCaption | None = None
+    if free_text_offer:
+        try:
+            caption = await emit_caption(bundle, state, prose)
+        except UnexpectedModelBehavior as e:
+            logfire.warn(
+                "caption_author fallback: retries exhausted; using fixed caption",
+                error=str(e),
+            )
+            caption = None
 
     prose_part = _assemble_prose_part(
-        bundle.world, state, prose, choices, free_text_offer=free_text_offer,
+        bundle.world, state, prose, choices,
+        free_text_offer=free_text_offer, caption=caption,
     )
 
     append_turn_record(
@@ -299,8 +330,10 @@ async def play_scene(
     If `emit_event` is supplied, the scene also emits SSE events at each
     boundary (scene_start, state_change, prose_word, options /
     free_text_request / scene_exit / game_over). Prose words are paced at
-    150 ms by `paced_word_emitter` so the SSE client gets steady cadence
-    regardless of LLM speed. `skip_event`, when set mid-stream, flushes
+    a 150 ms floor by `paced_word_emitter` so the SSE client gets steady
+    cadence regardless of LLM speed, the hold lengthening at punctuation
+    boundaries (clause < sentence < paragraph). `skip_event`, when set
+    mid-stream, flushes
     the remaining words without pacing — the FastAPI surface drives it
     from POST /skip.
 

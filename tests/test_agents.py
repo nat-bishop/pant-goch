@@ -14,7 +14,7 @@ from handler.agents import (
     _build_state_change_bundle_type,
     build_scene_runner_bundle,
 )
-from handler.schemas import ChoiceBundle, FreeTextGate
+from handler.schemas import ChoiceBundle, FreeTextCaption, FreeTextGate
 from handler.state import make_initial_state
 from handler.world import load_world
 
@@ -106,6 +106,22 @@ def test_free_text_gate_schema():
         FreeTextGate.model_validate({})  # offer is required
 
 
+def test_free_text_caption_schema():
+    """The caption author emits a caption + suggested move, both required
+    and length-capped."""
+    cap = FreeTextCaption.model_validate(
+        {"caption": "What do you say?", "suggested": "I ask about the keys."}
+    )
+    assert cap.caption == "What do you say?"
+    assert cap.suggested == "I ask about the keys."
+    with pytest.raises(ValidationError):
+        FreeTextCaption.model_validate({"caption": "x"})  # suggested required
+    with pytest.raises(ValidationError):
+        FreeTextCaption.model_validate({"caption": "", "suggested": "y"})  # min_length
+    with pytest.raises(ValidationError):
+        FreeTextCaption.model_validate({"caption": "x" * 81, "suggested": "y"})  # max_length
+
+
 def test_build_scene_runner_bundle_constructs_cleanly():
     """End-to-end bundle construction with TestModel as the LLM
     placeholder. Verifies the bundle holds one phase-1, one prose-writer,
@@ -117,6 +133,7 @@ def test_build_scene_runner_bundle_constructs_cleanly():
     assert bundle.prose_writer is not None
     assert bundle.choice_author is not None
     assert bundle.free_text_gate is not None
+    assert bundle.caption_author is not None
     assert bundle.populator is not None
     assert bundle.chronicler is not None
 

@@ -14,6 +14,8 @@ from handler.prompts import (
     build_choice_author_system_prompt,
     build_choice_author_user_message,
     build_chronicler_system_prompt,
+    build_caption_author_system_prompt,
+    build_caption_author_user_message,
     build_free_text_gate_system_prompt,
     build_free_text_gate_user_message,
     build_phase1_system_prompt,
@@ -190,6 +192,28 @@ def test_free_text_gate_user_message_is_prose_only():
     )
     assert "Tom sets down his pint." in msg
     assert "FreeTextGate" in msg
+
+
+def test_caption_author_system_prompt_is_byte_stable_and_minimal():
+    """Byte-stable for KV-cache; mechanics-only (no bible, no voice)."""
+    world = load_world(FIXTURE_VALID)
+    a = build_caption_author_system_prompt(world)
+    b = build_caption_author_system_prompt(world)
+    assert a == b
+    assert "caption" in a
+    assert "suggested" in a
+    assert "## The Truth" not in a
+    assert "## Style Examples" not in a
+
+
+def test_caption_author_user_message_is_prose_only():
+    """Pure-prose judgment: the prose is the only context."""
+    world = load_world(FIXTURE_VALID)
+    msg = build_caption_author_user_message(
+        make_initial_state(world), world, "Tom sets down his pint.",
+    )
+    assert "Tom sets down his pint." in msg
+    assert "FreeTextCaption" in msg
 
 
 def test_prose_writer_user_message_distinguishes_typed_from_menu_pick():

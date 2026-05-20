@@ -18,9 +18,15 @@ import pytest
 from pydantic import ValidationError
 
 from handler.agents import _build_state_change_bundle_type
+import random
+
 from handler.engine import (
-    SCENE_FREE_TEXT,
+    FREE_TEXT_COOLDOWN,
+    FREE_TEXT_FALLBACK,
+    FREE_TEXT_OFFER_P,
+    _turns_since_typed,
     apply_state_changes,
+    free_text_cadence_ok,
     reachable_beat_ids,
     resolved_ending_id_at_close,
 )
@@ -33,7 +39,7 @@ from handler.schemas import (
     StateChangeBundle,
     UnlockBeat,
 )
-from handler.state import State, make_initial_state
+from handler.state import State, TurnRecord, make_initial_state
 from handler.world import World, load_world
 
 
@@ -308,11 +314,61 @@ def test_choice_rejects_free_text():
         })
 
 
-def test_scene_free_text_constant_is_general_agency():
-    """The engine-built free-text box: fixed neutral caption, no addressee."""
-    assert isinstance(SCENE_FREE_TEXT, FreeText)
-    assert SCENE_FREE_TEXT.prompt == "What do you do next?"
-    assert SCENE_FREE_TEXT.npc_id is None
+def test_free_text_fallback_is_general_agency():
+    """The fixed fallback box (caption author failed): neutral caption, no
+    addressee, no suggestion."""
+    assert isinstance(FREE_TEXT_FALLBACK, FreeText)
+    assert FREE_TEXT_FALLBACK.prompt == "What do you do next?"
+    assert FREE_TEXT_FALLBACK.npc_id is None
+    assert FREE_TEXT_FALLBACK.suggested is None
+
+
+# ───────────────────────── free-text cadence ─────────────────────────
+
+
+def _state_with_history(typed_flags: list[bool]) -> State:
+    """A State whose dialogue_history is one completed TurnRecord per flag
+    (oldest first), each marking whether the player typed that turn."""
+    state = State(player_location="x")
+    for typed in typed_flags:
+        state.dialogue_history.append(
+            TurnRecord(prose="p", applied_state_changes=[], player_pick_typed=typed)
+        )
+    return state
+
+
+def test_turns_since_typed_counts_back_to_last_typed_move():
+    # most recent typed move is 2 completed turns back
+    assert _turns_since_typed(_state_with_history([True, False, False])) == 2
+    # the last completed turn was typed → 0 turns since
+    assert _turns_since_typed(_state_with_history([False, True])) == 0
+
+
+def test_turns_since_typed_large_when_never_typed():
+    state = _state_with_history([False, False])
+    assert _turns_since_typed(state) > FREE_TEXT_COOLDOWN
+
+
+def test_cadence_suppresses_within_cooldown():
+    """A typed move within FREE_TEXT_COOLDOWN turns suppresses the offer
+    regardless of the RNG draw."""
+    # last turn was typed → 0 < cooldown → suppressed even with rng→0.0
+    state = _state_with_history([True])
+    rng = random.Random(0)
+    assert free_text_cadence_ok(state, rng) is False
+
+
+def test_cadence_probability_is_seedable_and_honored_past_cooldown():
+    """Past the cooldown, the offer is honored only with probability
+    FREE_TEXT_OFFER_P — deterministic under a seeded RNG."""
+    state = _state_with_history([False, False, False])  # no recent typed move
+
+    class _Stub:
+        def __init__(self, val): self.val = val
+        def random(self): return self.val
+
+    assert free_text_cadence_ok(state, _Stub(FREE_TEXT_OFFER_P - 0.01)) is True
+    assert free_text_cadence_ok(state, _Stub(FREE_TEXT_OFFER_P + 0.01)) is False
 
 
 # ───────────────────────── resolved_ending_id_at_close ─────────────────────────

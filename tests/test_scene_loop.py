@@ -1,10 +1,11 @@
 """Scene-loop orchestration tests.
 
-Mocks emit_state_changes / emit_prose_text / emit_choices to avoid LLM
-dependency. Verifies that run_turn sequences phase 1 → apply → prose
-writer → choice author → assemble ProsePart → append, that fallbacks
-fire on UnexpectedModelBehavior, and that play_scene drives Continue
-picks and FreeText typed input until termination.
+Mocks emit_state_changes / emit_prose_text / emit_choices / emit_free_text_gate
+/ emit_caption (and the engine cadence gate) to avoid LLM dependency. Verifies
+that run_turn sequences phase 1 → apply → prose writer → choice author ‖ gate →
+(cadence + caption) → assemble ProsePart → append, that fallbacks fire on
+UnexpectedModelBehavior, and that play_scene drives Continue picks and FreeText
+typed input until termination.
 """
 from __future__ import annotations
 
@@ -19,7 +20,7 @@ from handler.agents import (
     make_chronicler_runtime,
     make_scene_runner_runtime,
 )
-from handler.engine import enter_scene
+from handler.engine import FREE_TEXT_FALLBACK, enter_scene
 from handler.schemas import (
     ChoiceBundle,
     ChronicleEntry,
@@ -27,6 +28,7 @@ from handler.schemas import (
     EndGame,
     EndScene,
     FreeText,
+    FreeTextCaption,
     Leave,
     NpcPlacementBundle,
     Option,
@@ -117,6 +119,27 @@ def _patch_gate(monkeypatch, offers):
     monkeypatch.setattr("handler.scene_loop.emit_free_text_gate", fake)
 
 
+def _patch_caption(monkeypatch, captions):
+    """`captions` is an iterable of `FreeTextCaption` — one per expected
+    call. Mirrors `_patch_choice_author`. Use when the gate+cadence will
+    surface a box; the helper also asserts (implicitly, via StopIteration)
+    that it's called exactly as many times as captions supplied."""
+    it = iter(captions)
+
+    async def fake(*args, **kwargs):
+        return next(it)
+
+    monkeypatch.setattr("handler.scene_loop.emit_caption", fake)
+
+
+def _patch_cadence(monkeypatch, ok: bool):
+    """Force the engine-side free-text cadence gate to a fixed result,
+    isolating run_turn/play_scene tests from the seeded probability draw."""
+    monkeypatch.setattr(
+        "handler.scene_loop.free_text_cadence_ok", lambda state, rng: ok
+    )
+
+
 @pytest.fixture(autouse=True)
 def _default_gate_off(monkeypatch):
     """Default: the free-text gate offers nothing, so run_turn/play_scene
@@ -176,18 +199,36 @@ def test_assemble_leave_with_satisfied_ending_maps_to_end_game():
     assert pp.next.ending_id == "published_story"
 
 
-def test_assemble_free_text_offer_overrides_continue():
-    """Gate offers free text + choice author said Continue → engine builds
-    the fixed-caption FreeText, dropping the canned options."""
+def test_assemble_free_text_offer_with_caption_builds_per_turn_free_text():
+    """Offer + a caption → engine builds a per-turn FreeText carrying the
+    caption author's caption and suggested move, dropping canned options."""
+    world = load_world(FIXTURE_VALID)
+    state = make_initial_state(world)
+    choices = ChoiceBundle(next=Continue(options=[
+        Option(text="a"), Option(text="b"),
+    ]))
+    caption = FreeTextCaption(caption="What do you say to Tom?", suggested="I ask Tom about the keys.")
+    pp = _assemble_prose_part(
+        world, state, "prose", choices, free_text_offer=True, caption=caption,
+    )
+    assert isinstance(pp.next, FreeText)
+    assert pp.next.prompt == "What do you say to Tom?"
+    assert pp.next.suggested == "I ask Tom about the keys."
+    assert pp.next.npc_id is None
+
+
+def test_assemble_free_text_offer_without_caption_uses_fallback():
+    """Offer stands but the caption author failed (caption=None) → engine
+    falls back to the fixed-caption box with no suggestion."""
     world = load_world(FIXTURE_VALID)
     state = make_initial_state(world)
     choices = ChoiceBundle(next=Continue(options=[
         Option(text="a"), Option(text="b"),
     ]))
     pp = _assemble_prose_part(world, state, "prose", choices, free_text_offer=True)
-    assert isinstance(pp.next, FreeText)
+    assert pp.next == FREE_TEXT_FALLBACK
     assert pp.next.prompt == "What do you do next?"
-    assert pp.next.npc_id is None
+    assert pp.next.suggested is None
 
 
 def test_assemble_leave_beats_free_text_offer():
@@ -345,7 +386,8 @@ async def test_run_turn_leave_resolves_to_endscene_when_no_ending_satisfied(monk
 
 async def test_run_turn_gate_offers_free_text_in_exploration(monkeypatch):
     """General agency: the gate can offer free text even with no NPC
-    present (exploration), overriding the choice author's Continue."""
+    present (exploration). With cadence allowing, the caption author runs
+    and its caption + suggestion ride the FreeText, overriding Continue."""
     world = load_world(FIXTURE_VALID)
     bundle = build_scene_runner_bundle(TestModel(), world)
     runtime = make_scene_runner_runtime()
@@ -358,10 +400,68 @@ async def test_run_turn_gate_offers_free_text_in_exploration(monkeypatch):
         ChoiceBundle(next=Continue(options=[Option(text="a"), Option(text="b")])),
     ])
     _patch_gate(monkeypatch, True)
+    _patch_cadence(monkeypatch, True)
+    _patch_caption(monkeypatch, [
+        FreeTextCaption(caption="What do you do?", suggested="I search the desk."),
+    ])
 
     result = await run_turn(bundle, runtime, state)
     assert isinstance(result.next, FreeText)
+    assert result.next.prompt == "What do you do?"
+    assert result.next.suggested == "I search the desk."
     assert result.next.npc_id is None
+
+
+async def test_run_turn_cadence_suppresses_gate_offer(monkeypatch):
+    """Gate offers but the engine cadence declines → no caption call, the
+    choice author's Continue stands."""
+    world = load_world(FIXTURE_VALID)
+    bundle = build_scene_runner_bundle(TestModel(), world)
+    runtime = make_scene_runner_runtime()
+    state = make_initial_state(world)
+    enter_scene(state, world, "the_old_vicarage")
+
+    _patch_phase1(monkeypatch)
+    _patch_prose_writer(monkeypatch, ["The wood is silent."])
+    _patch_choice_author(monkeypatch, [
+        ChoiceBundle(next=Continue(options=[Option(text="a"), Option(text="b")])),
+    ])
+    _patch_gate(monkeypatch, True)
+    _patch_cadence(monkeypatch, False)
+
+    async def _fail_caption(*args, **kwargs):
+        raise AssertionError("caption author must not be called when cadence declines")
+
+    monkeypatch.setattr("handler.scene_loop.emit_caption", _fail_caption)
+
+    result = await run_turn(bundle, runtime, state)
+    assert isinstance(result.next, Continue)
+
+
+async def test_run_turn_caption_failure_falls_back_to_fixed_box(monkeypatch):
+    """Gate+cadence say offer but the caption author exhausts retries → the
+    box still surfaces, with the fixed fallback caption and no suggestion."""
+    world = load_world(FIXTURE_VALID)
+    bundle = build_scene_runner_bundle(TestModel(), world)
+    runtime = make_scene_runner_runtime()
+    state = make_initial_state(world)
+    enter_scene(state, world, "the_old_vicarage")
+
+    _patch_phase1(monkeypatch)
+    _patch_prose_writer(monkeypatch, ["The wood is silent."])
+    _patch_choice_author(monkeypatch, [
+        ChoiceBundle(next=Continue(options=[Option(text="a"), Option(text="b")])),
+    ])
+    _patch_gate(monkeypatch, True)
+    _patch_cadence(monkeypatch, True)
+
+    async def _boom(*args, **kwargs):
+        raise UnexpectedModelBehavior("retries exhausted")
+
+    monkeypatch.setattr("handler.scene_loop.emit_caption", _boom)
+
+    result = await run_turn(bundle, runtime, state)
+    assert result.next == FREE_TEXT_FALLBACK
 
 
 # ───────────────────────── play_scene ─────────────────────────
@@ -413,11 +513,16 @@ async def test_play_scene_dispatches_free_text(monkeypatch):
         ChoiceBundle(next=Leave()),
     ])
     _patch_gate(monkeypatch, [True, False])
+    _patch_cadence(monkeypatch, True)
+    _patch_caption(monkeypatch, [
+        FreeTextCaption(caption="What do you say?", suggested="I tell him about Megan."),
+    ])
 
     typed_replies = iter(["I came because of Megan."])
 
     def pick_free_text(req: FreeText) -> str:
-        assert req.prompt == "What do you do next?"
+        assert req.prompt == "What do you say?"
+        assert req.suggested == "I tell him about Megan."
         assert req.npc_id is None
         return next(typed_replies)
 

@@ -68,6 +68,8 @@ def _print_prose_part(prose_part: ProsePart) -> None:
             print(f"  {i}) {opt.text}")
     elif isinstance(prose_part.next, FreeText):
         print(f"[type your reply: {prose_part.next.prompt}]")
+        if prose_part.next.suggested:
+            print(f"  (suggested: {prose_part.next.suggested})")
     elif isinstance(prose_part.next, EndScene):
         print("[scene ends]")
     elif isinstance(prose_part.next, EndGame):
@@ -99,6 +101,10 @@ def _prompt_free_text(req: FreeText) -> str:
         raw = input(f"{label}: ").strip()
         if raw:
             return raw
+        # Empty line falls back to the suggested move, mirroring the web
+        # box's pre-loaded, submittable suggestion.
+        if req.suggested:
+            return req.suggested
         print("(non-empty)")
 
 

@@ -136,6 +136,7 @@ export const Chapter = memo(function Chapter({
         {freeTextReady && freeTextRequest && (
           <FreeTextInput
             prompt={freeTextRequest.prompt}
+            suggested={freeTextRequest.suggested}
             onSubmit={onFreeTextSubmit}
             busy={freeTextBusy}
           />

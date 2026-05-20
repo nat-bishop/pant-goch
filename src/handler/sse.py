@@ -4,8 +4,10 @@ Two responsibilities:
 
 1. **Paced word emitter.** The 150 ms pace floor is non-negotiable —
    it's the source of truth for streaming cadence, NOT the frontend's
-   job to re-pace. Two call sites: the scene runner's phase-2 prose
-   stream and the chronicler's entry stream. An optional
+   job to re-pace. The floor lengthens after punctuation so the reveal
+   breathes like read speech — clause < sentence < paragraph — see
+   `_pause_after` below. Two call sites: the scene runner's phase-2
+   prose stream and the chronicler's entry stream. An optional
    `skip_event` lets the session flush the remainder at full speed
    in response to a player click — see `paced_word_emitter` below.
 
@@ -30,9 +32,43 @@ from typing import Any
 
 # ───────────────────────── paced word-stream emitter ─────────────────────────
 
-WORD_PACE_S = 0.15  # min seconds between paced word emissions
+WORD_PACE_S = 0.15  # base min seconds between paced word emissions
+
+# Punctuation lengthens the hold *after* a word, as multiples of the base
+# interval, so WORD_PACE_S stays the single authoritative knob (tests that
+# monkeypatch it down scale the whole curve). Grounded in read-speech prosody
+# (comma ≈ 0.47 s, sentence boundary ≈ 0.6 s, between-sentence 0.6–1.2 s),
+# scaled down to suit a reveal brisker than spoken delivery: clause ≈ 0.32 s,
+# sentence ≈ 0.50 s, paragraph ≈ 0.70 s at the default base.
+PACE_CLAUSE_X = 2.1     # , ; : — –        clause break
+PACE_SENTENCE_X = 3.3   # . ! ? …          sentence end
+PACE_PARAGRAPH_X = 4.7  # blank line       paragraph break
+
+# Closing marks that can trail the operative punctuation (e.g. '"Stop." ').
+_CLOSERS = "\"'”’)]}»"
 
 _WORD_RE = re.compile(r"\S+\s*")
+
+
+def _pause_after(word: str, base: float) -> float:
+    """Seconds to wait AFTER emitting `word`, derived from its trailing
+    punctuation. `word` includes its trailing whitespace (per `_WORD_RE`),
+    so a blank line is detectable as a paragraph break.
+
+    Abbreviations ("Mr.", "St.") trip the sentence tier — the standard TTS
+    edge case; rare here and harmless (one slightly longer hold)."""
+    trailing_ws = word[len(word.rstrip()):]
+    if trailing_ws.count("\n") >= 2:  # blank line = paragraph break
+        return base * PACE_PARAGRAPH_X
+    core = word.rstrip().rstrip(_CLOSERS)
+    if not core:
+        return base
+    last = core[-1]
+    if last in ".!?…":
+        return base * PACE_SENTENCE_X
+    if last in ",;:—–":
+        return base * PACE_CLAUSE_X
+    return base
 
 
 async def _words_from_text(text: str) -> AsyncIterator[str]:
@@ -76,8 +112,10 @@ async def paced_word_emitter(
     skip_event: asyncio.Event | None = None,
 ) -> str:
     """Emit each word from `word_source` as an SSE event, throttled to at
-    least `min_interval` seconds between emissions. Returns the accumulated
-    full text.
+    least `min_interval` seconds between emissions. The hold after a word
+    lengthens with its trailing punctuation (`_pause_after`) so the reveal
+    breathes at clause / sentence / paragraph boundaries. Returns the
+    accumulated full text.
 
     Two call sites in v2:
     1. Phase-2 prose: `word_source = _words_from_stream(llm_stream)` —
@@ -108,7 +146,7 @@ async def paced_word_emitter(
         await emit(payload)
         full += word
         idx += 1
-        next_slot = time.monotonic() + min_interval
+        next_slot = time.monotonic() + _pause_after(word, min_interval)
     sentinel: dict[str, Any] = {
         "event": event_kind, "idx": idx, "word": "", "is_last": True,
     }
@@ -146,9 +184,9 @@ def options_event(options: list[dict]) -> dict:
 
 
 def free_text_request_event(req) -> dict:
-    """Emitted when the choice author asks for typed input from the
-    player (e.g. interrogation). Frontend / CLI opens an input box with
-    `prompt` as the placeholder; `npc_id` (when set) names the NPC the
+    """Emitted when the engine surfaces a free-text box. Frontend / CLI
+    opens an input box captioned with `prompt`; `suggested` (when set) is a
+    pre-loaded, editable backup move; `npc_id` (when set) names the NPC the
     typed line is addressed to. Resolved via POST /free_text on the SSE
     backend or stdin on the CLI.
 
@@ -158,6 +196,7 @@ def free_text_request_event(req) -> dict:
     return {
         "event": "free_text_request",
         "prompt": req.prompt,
+        "suggested": req.suggested,
         "npc_id": req.npc_id,
     }
 

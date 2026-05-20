@@ -15,6 +15,9 @@ KV cache:
     across every turn AND across scenes. Voice-shaped (slim).
   Choice author system prompt: byte-stable across the session — cache hits
     across every turn. Mechanics-shaped (tiny), no bible.
+  Free-text gate / caption author system prompts: byte-stable across the
+    session — same discipline. Mechanics-shaped (tiny), no bible; both see
+    only the just-written prose.
   Per-turn user prompts: rebuilt fresh per call.
 
 The prose writer is scene-bounded conversation: the model sees its own
@@ -740,15 +743,73 @@ deliberate move of their choosing* and canned options would flatten it:
    moment wants the player's own move, not about who is present."""
 
 
-def build_free_text_gate_user_message(state: State, world: World, prose: str) -> str:
-    """Per-turn user message for the stateless free-text gate. Pure-prose
-    judgment: the just-written prose is the only context."""
+def _prose_only_user_message(prose: str, *, action_heading: str, emit_line: str) -> str:
+    """Per-turn user message for the stateless prose-only judges (free-text
+    gate, caption author). The just-written prose is the only context; the
+    two callers differ only in their action heading and emit line."""
     return f"""\
 ## Prose
 {prose.strip()}
 
-## Decide
-Emit a FreeTextGate."""
+## {action_heading}
+{emit_line}"""
+
+
+def build_free_text_gate_user_message(state: State, world: World, prose: str) -> str:
+    """Per-turn user message for the stateless free-text gate."""
+    return _prose_only_user_message(prose, action_heading="Decide", emit_line="Emit a FreeTextGate.")
+
+
+def build_caption_author_system_prompt(world: World) -> str:
+    """Caption-author system prompt — slim, mechanics-only, byte-stable
+    across the session (KV-cache hits across turns like the gate).
+
+    Runs only when the gate offered AND the engine cadence allowed, so the
+    free-text box is definitely going to be shown. It writes the two strings
+    that dress the box: the caption above it and a suggested move pre-loaded
+    inside it. It sees only the just-written prose.
+    """
+    return """\
+## Role
+You are the caption author for a single-player investigation game. The
+player is a freelance journalist. A free-text box — where the player types
+their own move in their own words — is about to be shown beneath the
+narrator's latest prose. You write the two short strings that frame it.
+
+## Output
+Emit ONE structured output with two fields:
+  - `caption` — the short line shown ABOVE the box. An invitation fitted to
+    this exact moment: what the player is being called to say or do. A
+    handful of words, no trailing punctuation needed.
+  - `suggested` — ONE suggested move, written in the player's first-person
+    voice ("I ..."), pre-loaded into the box as an editable starting point
+    the player can send as-is, reword, or clear. A single sentence.
+
+## How to write them
+1. The prose alone is your context. You do not see beats, character
+   knowledge, or backstory. Trust what the narrator wrote; if it names a
+   person the player faces, you may name them in the caption.
+2. The caption is an opening, not a menu — "What do you say to her?",
+   "Press him on it.", "Your move." — not a list of options.
+3. The `suggested` move is a plausible, specific move the moment invites — a
+   line the journalist might actually say or a concrete action — concrete
+   enough to be usable, open enough that the player will want to make it
+   their own.
+4. Both are terse. The caption is a line; the suggested move is one sentence.
+
+## Examples
+Prose ends on Mair, jaw tight, waiting for the player to respond.
+  caption: "What do you say to Mair?"
+  suggested: "I ask her why she never reported the noise that night."
+
+Prose leaves the player alone in the unlocked study, papers everywhere.
+  caption: "What do you do?"
+  suggested: "I start with the drawers of the writing desk." """
+
+
+def build_caption_author_user_message(state: State, world: World, prose: str) -> str:
+    """Per-turn user message for the stateless caption author."""
+    return _prose_only_user_message(prose, action_heading="Write", emit_line="Emit a FreeTextCaption.")
 
 
 # ───────────────────────── chronicler prompts ─────────────────────────

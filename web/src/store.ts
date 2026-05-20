@@ -16,6 +16,7 @@ export type Phase =
 
 export interface FreeTextRequest {
   prompt: string;
+  suggested: string | null;
   npc_id: string | null;
 }
 
@@ -280,6 +281,7 @@ export const useStore = create<Store>((set) => ({
             phase: "awaiting_free_text",
             freeTextRequest: {
               prompt: event.prompt,
+              suggested: event.suggested,
               npc_id: event.npc_id,
             },
           };

@@ -114,6 +114,7 @@ export type SseEvent =
   | {
       event: "free_text_request";
       prompt: string;
+      suggested: string | null;
       npc_id: string | null;
     }
   | { event: "scene_exit" }

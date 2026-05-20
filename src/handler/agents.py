@@ -16,6 +16,11 @@ into two sequential calls:
     Runs concurrently with the choice author (both read only the prose).
     Decides whether the player writes their own move this turn.
 
+  - `emit_caption` (Phase 2d) — `FreeTextCaption` (caption + suggested
+    move). Stateless, prose-only. Runs only when the gate offered AND the
+    engine cadence allows (see `scene_loop.run_turn`), so its cost is paid
+    only on the turns that actually surface a free-text box.
+
 The engine composes the outputs into a `ProsePart` for downstream
 dispatch — see `scene_loop._assemble_prose_part`.
 
@@ -38,6 +43,7 @@ no JSON schema involved.
 """
 from __future__ import annotations
 
+import random
 from dataclasses import dataclass, field
 from typing import Annotated, Any, Literal
 
@@ -48,6 +54,8 @@ from pydantic_ai.models.openai import OpenAIChatModel
 
 from .engine import present_npc_ids, reachable_beat_ids
 from .prompts import (
+    build_caption_author_system_prompt,
+    build_caption_author_user_message,
     build_choice_author_system_prompt,
     build_choice_author_user_message,
     build_chronicler_system_prompt,
@@ -64,6 +72,7 @@ from .prompts import (
 from .schemas import (
     ChoiceBundle,
     ChronicleEntry,
+    FreeTextCaption,
     FreeTextGate,
     NpcMemoryUpdate,
     NpcPlacementBundle,
@@ -82,12 +91,12 @@ class AgentBundle:
     """One world's agents. Built once in lifespan via
     `build_scene_runner_bundle(model, world)`.
 
-    Six agents (Phase 1 classifier, prose writer, choice author, free-text
-    gate, populator, chronicler) have world-scoped system prompts and are
-    constructed once at bundle-build time. Per-call dynamic schemas are
-    passed at `agent.run()` time via NativeOutput (or `output_type=str`
-    for the prose writer). System prompts are byte-stable across the
-    session → KV cache hits across turns / scenes for each agent
+    Seven agents (Phase 1 classifier, prose writer, choice author, free-text
+    gate, caption author, populator, chronicler) have world-scoped system
+    prompts and are constructed once at bundle-build time. Per-call dynamic
+    schemas are passed at `agent.run()` time via NativeOutput (or
+    `output_type=str` for the prose writer). System prompts are byte-stable
+    across the session → KV cache hits across turns / scenes for each agent
     independently.
     """
 
@@ -95,6 +104,7 @@ class AgentBundle:
     prose_writer: Agent[None, str]
     choice_author: Agent[None, ChoiceBundle]
     free_text_gate: Agent[None, FreeTextGate]
+    caption_author: Agent[None, FreeTextCaption]
     populator: Agent[None, NpcPlacementBundle]
     chronicler: Agent[None, ChronicleEntry]
     world: World
@@ -120,15 +130,22 @@ class SceneRunnerRuntime:
     generic stand-in prose.
 
     The choice author is stateless per call (no history field needed).
+
+    `rng` is the session-scoped source for the free-text cadence draw
+    (`engine.free_text_cadence_ok`). It is NOT reset at scene boundary —
+    cadence is a session-long property. Seedable via
+    `make_scene_runner_runtime(seed=...)` so tests are deterministic.
     """
 
     prose_writer_message_history: list[ModelMessage] = field(default_factory=list)
+    rng: random.Random = field(default_factory=random.Random)
 
 
-def make_scene_runner_runtime() -> SceneRunnerRuntime:
+def make_scene_runner_runtime(seed: int | None = None) -> SceneRunnerRuntime:
     """Construct a fresh scene-runner runtime. Call once per session
-    (mirrors make_chronicler_runtime)."""
-    return SceneRunnerRuntime()
+    (mirrors make_chronicler_runtime). `seed` makes the free-text cadence
+    RNG deterministic (default: system entropy)."""
+    return SceneRunnerRuntime(rng=random.Random(seed))
 
 
 # ───────────────────────── dynamic type builders ─────────────────────────
@@ -285,11 +302,11 @@ def _build_chronicle_entry_type(
 def build_scene_runner_bundle(
     model: OpenAIChatModel, world: World
 ) -> AgentBundle:
-    """Construct the agent bundle for `world`. Bakes six system prompts
+    """Construct the agent bundle for `world`. Bakes seven system prompts
     (Phase 1 classifier, prose writer, choice author, free-text gate,
-    populator, chronicler) and builds one agent per role. Per-call dynamic
-    output_type is passed at agent.run() time via NativeOutput, except
-    the prose writer which uses `output_type=str`.
+    caption author, populator, chronicler) and builds one agent per role.
+    Per-call dynamic output_type is passed at agent.run() time via
+    NativeOutput, except the prose writer which uses `output_type=str`.
     """
     # `name=` is the suffix in the per-agent span name
     # (`invoke_agent {name}` under instrumentation version 3 — set in
@@ -319,6 +336,12 @@ def build_scene_runner_bundle(
         system_prompt=build_free_text_gate_system_prompt(world),
         output_retries=3,
     )
+    caption_author = Agent[None, FreeTextCaption](
+        model=model,
+        name="caption_author",
+        system_prompt=build_caption_author_system_prompt(world),
+        output_retries=3,
+    )
     populator = Agent[None, NpcPlacementBundle](
         model=model,
         name="populator",
@@ -331,6 +354,7 @@ def build_scene_runner_bundle(
         prose_writer=prose_writer,
         choice_author=choice_author,
         free_text_gate=free_text_gate,
+        caption_author=caption_author,
         populator=populator,
         chronicler=chronicler,
         world=world,
@@ -475,6 +499,29 @@ async def emit_free_text_gate(
         output_type=NativeOutput(FreeTextGate, strict=True),
     )
     return result.output.offer
+
+
+async def emit_caption(
+    bundle: AgentBundle,
+    state: State,
+    prose: str,
+) -> FreeTextCaption:
+    """Caption author LLM call (Phase 2d). Stateless. Pure-prose judgment
+    like the gate: from the just-written prose, write the eyebrow caption
+    above the free-text box and a suggested first-person move (the editable
+    backup). Called only when the gate offered AND cadence allows, so its
+    cost lands only on turns that actually show a box.
+
+    Static output schema (`FreeTextCaption`, no per-call id narrowing) — so
+    `result.output` is already the canonical model (no re-validation round-
+    trip needed, unlike the dynamically-narrowed choice/placement schemas).
+    """
+    user_msg = build_caption_author_user_message(state, bundle.world, prose)
+    result = await bundle.caption_author.run(
+        user_msg,
+        output_type=NativeOutput(FreeTextCaption, strict=True),
+    )
+    return result.output
 
 
 # ───────────────────────── chronicler agent ─────────────────────────

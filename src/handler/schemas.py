@@ -99,14 +99,16 @@ class FreeText(_Strict):
     """Engine-built ProsePart variant: the natural next move is the player
     writing their own move (speech *or* action) rather than picking a
     canned option. Surfaced when the free-text gate (`FreeTextGate`) offers
-    it. The engine builds this with a fixed caption and feeds the typed
-    string into the next turn as the player's pick.
+    AND the engine cadence allows; the engine then builds this per turn
+    from the caption author's output (`prompt`/`suggested`) and feeds the
+    typed string into the next turn as the player's pick.
 
-    The LLM never emits this — the gate emits only a bool; the engine
-    constructs the `FreeText`. `npc_id` is always None (general agency:
-    the typed move is not necessarily addressed to anyone).
+    The LLM never emits this directly — the gate emits a bool and the
+    caption author emits `FreeTextCaption`; the engine constructs the
+    `FreeText`. `npc_id` is always None (general agency: the typed move is
+    not necessarily addressed to anyone).
 
-    `frozen` so the engine's shared `SCENE_FREE_TEXT` singleton can't be
+    `frozen` so the engine's shared `FREE_TEXT_FALLBACK` singleton can't be
     mutated by a downstream consumer.
     """
 
@@ -115,6 +117,10 @@ class FreeText(_Strict):
     type: Literal["free_text"] = "free_text"
     prompt: str
     npc_id: str | None = None
+    # Caption-author suggestion (`FreeTextCaption.suggested`): a first-person
+    # move pre-loaded into the box as a muted, editable backup. None when
+    # the caption author failed and the engine fell back to a fixed caption.
+    suggested: str | None = None
 
 
 ChoiceNext = Annotated[
@@ -139,6 +145,25 @@ class FreeTextGate(_Strict):
     takes precedence — see `scene_loop._assemble_prose_part`)."""
 
     offer: bool
+
+
+class FreeTextCaption(_Strict):
+    """Caption-author output (Phase 2d). Runs only when the gate offered
+    AND the engine cadence allows (see `scene_loop.run_turn`). Pure-prose
+    judgment like the gate — sees only the just-written prose.
+
+    Two short strings:
+      - `caption` — the eyebrow shown above the box, an invitation fitted
+        to *this* moment (e.g. "What do you say to her?", "Your move.").
+      - `suggested` — one suggested first-person move, pre-loaded into the
+        textarea as a muted, editable backup the player can submit, tweak,
+        or clear.
+
+    Lengths are capped to keep both terse — a caption is a line, not a
+    paragraph; the suggestion is a single move."""
+
+    caption: str = Field(min_length=1, max_length=80)
+    suggested: str = Field(min_length=1, max_length=160)
 
 
 # ───────────────────────── engine-composite: ProsePart for downstream dispatch ─────────────────────────

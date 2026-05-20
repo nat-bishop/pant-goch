@@ -17,16 +17,53 @@ by both grammar narrowing (`agents.py`) and prompt rendering
 """
 from __future__ import annotations
 
+import random
+
 from .schemas import FreeText, StateChangeBundle, UnlockBeat
 from .state import State, TurnRecord
 from .world import World
 
 
-# The free-text box surfaced when the gate offers it. General agency: a
-# fixed, neutral caption (the move may be speech or action) and no
-# addressee (`npc_id=None`). Built by the engine, never by the LLM —
-# the gate emits only a bool. See `scene_loop._assemble_prose_part`.
-SCENE_FREE_TEXT = FreeText(prompt="What do you do next?", npc_id=None)
+# Fallback free-text box: a fixed, neutral caption with no suggestion,
+# surfaced when the gate+cadence said "offer" but the caption author
+# failed (retries exhausted). The happy path builds a per-turn FreeText
+# from the caption author's output. See `scene_loop._assemble_prose_part`.
+FREE_TEXT_FALLBACK = FreeText(prompt="What do you do next?", npc_id=None, suggested=None)
+
+
+# ───────────────────────── free-text cadence ─────────────────────────
+#
+# The LLM gate is a stateless per-turn classifier — it sees only the prose
+# and so cannot perceive (or regulate) a global offer *rate*. Frequency is
+# a property of the distribution over many calls, not of any single call,
+# so we own it here: the gate says "this moment *could* take free text",
+# and this engine layer decides whether to actually surface it now.
+
+FREE_TEXT_COOLDOWN = 2     # min completed turns since the last typed move
+FREE_TEXT_OFFER_P = 0.5    # honor an eligible offer only this often
+
+
+def _turns_since_typed(state: State) -> int:
+    """Completed turns since the player last typed their own move this
+    scene. Counts back through `state.dialogue_history` (cleared per
+    scene) for the most recent `player_pick_typed`; returns a large
+    sentinel when there's been none. The turn currently being assembled
+    is not yet in `dialogue_history` (`append_turn_record` runs after
+    `_assemble_prose_part`), so this counts strictly prior turns."""
+    for i, rec in enumerate(reversed(state.dialogue_history)):
+        if rec.player_pick_typed:
+            return i
+    return len(state.dialogue_history) + 1  # effectively "no recent typed move"
+
+
+def free_text_cadence_ok(state: State, rng: random.Random) -> bool:
+    """Engine-side cadence gate, applied on top of the LLM gate's offer.
+    Suppress free text within `FREE_TEXT_COOLDOWN` turns of the last typed
+    move, then honor the offer only with probability `FREE_TEXT_OFFER_P`.
+    Pure and seedable (`rng`) so tests are deterministic."""
+    if _turns_since_typed(state) < FREE_TEXT_COOLDOWN:
+        return False
+    return rng.random() < FREE_TEXT_OFFER_P
 
 
 def apply_state_changes(bundle: StateChangeBundle, state: State) -> None:

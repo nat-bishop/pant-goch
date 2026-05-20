@@ -33,9 +33,15 @@ from handler.schemas import (
     UnlockBeat,
 )
 from handler.scene_loop import play_scene, play_session
+from handler.schemas import FreeText
 from handler.sse import (
+    PACE_CLAUSE_X,
+    PACE_PARAGRAPH_X,
+    PACE_SENTENCE_X,
+    _pause_after,
     _words_from_stream,
     _words_from_text,
+    free_text_request_event,
     paced_word_emitter,
 )
 from handler.state import make_initial_state
@@ -43,6 +49,18 @@ from handler.world import load_world
 
 
 FIXTURE_VALID = Path(__file__).parent / "fixtures" / "world_valid"
+
+
+def test_free_text_request_event_carries_prompt_suggested_npc():
+    """The free-text SSE event serializes caption, suggested backup, and
+    addressee."""
+    ev = free_text_request_event(
+        FreeText(prompt="What do you say?", suggested="I ask about the keys.")
+    )
+    assert ev["event"] == "free_text_request"
+    assert ev["prompt"] == "What do you say?"
+    assert ev["suggested"] == "I ask about the keys."
+    assert ev["npc_id"] is None
 
 
 # ───────────────────────── populator / chronicler no-ops ─────────────────────────
@@ -137,6 +155,44 @@ async def test_paced_word_emitter_throttles_at_min_interval():
     # Earlier events have the actual words.
     assert events[0]["word"] == "one "
     assert events[3]["word"] == "four"
+
+
+def test_pause_after_tiers():
+    """Trailing punctuation selects the pause tier; base=1.0 so the returned
+    value equals the multiplier."""
+    assert _pause_after("word ", 1.0) == 1.0
+    assert _pause_after("end. ", 1.0) == PACE_SENTENCE_X
+    assert _pause_after("clause, ", 1.0) == PACE_CLAUSE_X
+    assert _pause_after("a; ", 1.0) == PACE_CLAUSE_X
+    assert _pause_after("wait…", 1.0) == PACE_SENTENCE_X
+    # Closing quote after the stop still reads as a sentence end.
+    assert _pause_after('"Stop." ', 1.0) == PACE_SENTENCE_X
+    # A blank line in the trailing whitespace is a paragraph break.
+    assert _pause_after("line.\n\n", 1.0) == PACE_PARAGRAPH_X
+    # A single newline is just a plain whitespace boundary on a plain word.
+    assert _pause_after("plain\n", 1.0) == 1.0
+
+
+async def test_paced_emitter_holds_longer_after_sentence():
+    """The gap between a sentence-ending word and the next word is longer
+    than between two plain words."""
+    times: list[float] = []
+
+    async def emit(e: dict) -> None:
+        times.append(time.monotonic())
+
+    base = 0.02
+    # "alpha " (plain) → "beta. " (sentence) → "gamma " (plain) → "delta"
+    await paced_word_emitter(
+        _words_from_text("alpha beta. gamma delta"),
+        emit,
+        event_kind="prose_word",
+        min_interval=base,
+    )
+    # times[0..3] are the four word emissions (times[4] is the sentinel).
+    plain_gap = times[1] - times[0]      # after "alpha " (plain)
+    sentence_gap = times[2] - times[1]   # after "beta. " (sentence)
+    assert sentence_gap > plain_gap * 1.8
 
 
 async def test_paced_word_emitter_passes_extra_payload():
