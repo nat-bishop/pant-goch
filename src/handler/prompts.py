@@ -321,6 +321,12 @@ The register and rhythm to match:
    Atmosphere and small physical detail — a glass turned on the bar,
    a wood pigeon going off — beat exposition.
 
+   In a scene with no one else present, do NOT turn up a brand-new
+   object or clue every turn. After the first one or two finds, let
+   turns sit with what is already there — deepen it, recontextualise
+   it, or let the room quietly give out — so the scene can reach a
+   natural close instead of spawning an endless trail of fresh items.
+
 6. Stay within the established cast and locations. Minor incidental
    details (weather, a dog, a mug on the table) are fine. New named
    people or places are not.
@@ -639,9 +645,9 @@ def _render_stay_here(state: State, world: World) -> str:
 
 
 # Below this many turns: scene needs room to breathe — no Leave nudge.
-PACING_QUIET_TURNS = 4
+PACING_QUIET_TURNS = 3
 # Above this many turns: hard Leave nudge regardless of NPC presence.
-PACING_HARD_NUDGE_TURNS = 7
+PACING_HARD_NUDGE_TURNS = 5
 
 
 def _render_scene_pacing(state: State, *, solo: bool) -> str:
@@ -654,11 +660,12 @@ def _render_scene_pacing(state: State, *, solo: bool) -> str:
         return ""
     if turn_n <= PACING_HARD_NUDGE_TURNS:
         nudge = (
-            "Solo exploration has shallow natural depth. If the latest "
-            "prose just turned up something new — a discovery, a clue, a "
-            "detail the player would want to follow — keep going with "
-            "Continue. Only if the room has truly given up its "
-            "observations and this turn added nothing is Leave the call."
+            "Solo exploration has shallow natural depth. If this turn mostly "
+            "re-examined things the player has already seen — another look at "
+            "the same desk, room, papers — the room is giving diminishing "
+            "returns and Leave is the call. Reserve Continue for a genuinely "
+            "new thread the player would want to pull, not one more variation "
+            "on looking around."
         )
     else:
         nudge = (
@@ -795,20 +802,25 @@ Emit ONE structured output with two fields:
    person the player faces, you may name them in the caption.
 2. The caption is an opening, not a menu — "What do you say to her?",
    "Press him on it.", "Your move." — not a list of options.
-3. The `suggested` move is a plausible, specific move the moment invites — a
+3. Anchor the caption to a concrete noun or person from THIS prose — the
+   map, the letter, the open drawer, Mair. NEVER a content-free opener like
+   "What do you do next", "What is your next move", "How do you proceed",
+   "What do you examine next". Those are banned: they say nothing the box
+   itself doesn't already say. Name the thing the moment is actually about.
+4. The `suggested` move is a plausible, specific move the moment invites — a
    line the journalist might actually say or a concrete action — concrete
    enough to be usable, open enough that the player will want to make it
    their own.
-4. Both are terse. The caption is a line; the suggested move is one sentence.
+5. Both are terse. The caption is a line; the suggested move is one sentence.
 
 ## Examples
 Prose ends on Mair, jaw tight, waiting for the player to respond.
   caption: "What do you say to Mair?"
   suggested: "I ask her why she never reported the noise that night."
 
-Prose leaves the player alone in the unlocked study, papers everywhere.
-  caption: "What do you do?"
-  suggested: "I start with the drawers of the writing desk." """
+Prose leaves the player alone in the study with a pencil-marked OS map.
+  caption: "Which marking do you chase first?"
+  suggested: "I start with the question mark pencilled over Tan-y-coed." """
 
 
 def build_caption_author_user_message(state: State, world: World, prose: str) -> str:
