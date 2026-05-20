@@ -349,3 +349,16 @@ export const useStore = create<Store>((set) => ({
       }
     }),
 }));
+
+/** True only while the live turn is actively revealing words — i.e. the
+ * server-generated prose is pacing out (words present + still streaming).
+ * Gates click-to-complete and the reveal hint: there is nothing to skip
+ * during the pre-word warm-up gap, nor once the turn has closed. */
+export function useRevealing(): boolean {
+  return useStore((s) => {
+    if (s.phase !== "in_scene") return false;
+    const scene = s.scenes[s.scenes.length - 1];
+    const turn = scene?.turns[scene.turns.length - 1];
+    return !!turn && turn.streaming && turn.words.length > 0;
+  });
+}

@@ -8,7 +8,7 @@
 // the live edge. If they have scrolled up to re-read, the scroll is
 // suppressed; PanelScroll shows a "↓ catch up" link instead.
 
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { postFreeText, postPick } from "../api";
 import { useStore, type SceneSnapshot } from "../store";
 import { StreamingProse } from "./StreamingProse";
@@ -21,7 +21,12 @@ function romanize(n: number): string {
   return map[n] ?? String(n);
 }
 
-export function Chapter({
+// memo: PanelScroll re-renders on every prose_word (the scenes array is
+// rebuilt each event), but a closed chapter's props are referentially
+// stable, so memo skips re-rendering the whole history every ~150ms. The
+// live chapter still updates — its `scene` object reference changes each
+// word, and `following` flips are shared by all.
+export const Chapter = memo(function Chapter({
   scene,
   chapterNo,
   isCurrent,
@@ -138,7 +143,16 @@ export function Chapter({
       </div>
     </section>
   );
-}
+});
+
+// Page-turn scroll. The view holds still as words reveal downward; only
+// when the live edge (bottom of the currently-streaming paragraph) nears
+// the bottom of the panel do we jump — instantly, by a large amount —
+// repositioning the live edge high in the viewport so there's a full
+// screen of fresh room below. Line-granular (not paragraph-granular), so
+// even a single long paragraph never runs off the bottom.
+const EDGE_TRIGGER = 0.82; // jump once the live edge passes this fraction
+const EDGE_LANDING = 0.3; // …so it lands here, leaving ~70% room below
 
 function usePageTurn(
   sectionRef: React.RefObject<HTMLElement>,
@@ -156,21 +170,18 @@ function usePageTurn(
     if (!section) return;
     const panel = section.closest(".panel-scroll") as HTMLElement | null;
     if (!panel) return;
-    const paras = section.querySelectorAll<HTMLElement>(".chapter-prose .para");
-    if (paras.length < 2) return;
-    const current = paras[paras.length - 1];
-    if (!current.classList.contains("current")) return;
-    const prior = paras[paras.length - 2];
+    // The live edge is the bottom of the streaming (`.current`) paragraph.
+    const current = section.querySelector<HTMLElement>(
+      ".chapter-prose .para.current",
+    );
+    if (!current) return;
     const panelRect = panel.getBoundingClientRect();
-    const priorRect = prior.getBoundingClientRect();
-    const priorBottomInPanel = priorRect.bottom - panelRect.top;
-    if (priorBottomInPanel > panelRect.height * 0.68) {
-      const padding = 56;
-      const newTop = panel.scrollTop + (priorRect.top - panelRect.top) - padding;
-      // CSS `scroll-behavior: smooth` on `.panel-scroll` handles the
-      // animation (with a @media (prefers-reduced-motion) override to
-      // auto), so we pass behavior:auto here to defer to CSS rather
-      // than stacking a second smooth-scroll on top of it.
+    const edgeBottom = current.getBoundingClientRect().bottom - panelRect.top;
+    if (edgeBottom > panelRect.height * EDGE_TRIGGER) {
+      const newTop =
+        panel.scrollTop + edgeBottom - panelRect.height * EDGE_LANDING;
+      // Instant — `.panel-scroll` is scroll-behavior:auto, and we want the
+      // page-turn to snap, never animate while typing.
       panel.scrollTo({ top: newTop, behavior: "auto" });
     }
   }, [wordCount, active, sectionRef, followingRef]);

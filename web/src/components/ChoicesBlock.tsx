@@ -23,7 +23,6 @@ export function ChoicesBlock({
 
   return (
     <div className="choices-wrap">
-      <div className="choices-eyebrow">— how I went on —</div>
       <ol className="choices">
         {options.map((opt, i) => {
           const state: "default" | "chosen" | "unchosen" = !hasPick
@@ -31,15 +30,19 @@ export function ChoicesBlock({
             : i === pickedIdx
               ? "chosen"
               : "unchosen";
-          const cls = state === "default" ? "choice" : `choice ${state}`;
+          // The <li> is the collapsible track: unchosen options animate
+          // their height to zero so the chosen line rises into place.
+          const itemCls =
+            state === "unchosen" ? "choice-item unchosen" : "choice-item";
+          const btnCls = state === "chosen" ? "choice chosen" : "choice";
           return (
-            <li key={i}>
+            <li key={i} className={itemCls}>
               <button
-                className={cls}
+                className={btnCls}
                 onClick={() => onPick(i)}
                 disabled={busy || hasPick}
               >
-                <span className="choice-num">{i + 1}.</span>
+                <span className="choice-num">{i + 1}</span>
                 <span>{opt.text}</span>
               </button>
             </li>

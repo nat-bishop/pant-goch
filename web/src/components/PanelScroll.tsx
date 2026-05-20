@@ -1,9 +1,9 @@
-// PanelScroll: right-hand vellum panel. Owns the panel-bar (case-file
-// label + restart confirmation + connection banner) and the scrollable
-// region containing either the Frontispiece (pre-start) or the chapters.
+// PanelScroll: right-hand vellum panel. Holds the scrollable region —
+// either the Frontispiece (pre-start) or the running chapters — plus the
+// transient error notice and the bottom click-to-complete reveal hint.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useStore } from "../store";
+import { useStore, useRevealing } from "../store";
 import { Chapter } from "./Chapter";
 import { Frontispiece } from "./Frontispiece";
 import { CatchUpLink } from "./CatchUpLink";
@@ -26,7 +26,7 @@ export function PanelScroll({
   const gameOver = useStore((s) => s.game_over_ending);
   const world = useStore((s) => s.world);
   const setCurrentChapterIdx = useStore((s) => s.setCurrentChapterIdx);
-  const resetForRestart = useStore((s) => s.resetForRestart);
+  const revealing = useRevealing();
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const glossIndex = useMemo(
@@ -34,58 +34,78 @@ export function PanelScroll({
     [world],
   );
 
-  // Follow-the-live-edge state. The sentinel renders as a sibling after
-  // the last Chapter; an IntersectionObserver rooted on `.panel-scroll`
-  // toggles `following`. rootMargin -80px on the bottom keeps us from
-  // flapping at the very edge during smooth page-turns. `followingRef`
-  // mirrors the state for synchronous reads (page-turn gate, auto-scroll
-  // gate) without forcing those effects to re-run on every flip.
+  // Follow-the-live-edge. `following` means "auto-scroll to keep the live
+  // edge in view." It flips off only on a genuine user scroll *gesture*
+  // (wheel / trackpad / scroll keys), NOT on scrollTop deltas: the
+  // page-turn scrolls programmatically and the choices-collapse shrinks
+  // scrollHeight (clamping scrollTop), both of which a delta test misreads
+  // as the reader moving. `followingRef` mirrors state for synchronous
+  // reads in the page-turn gate.
   const [following, setFollowing] = useState(true);
-  const sentinelRef = useRef<HTMLDivElement | null>(null);
   const followingRef = useRef(true);
-  useEffect(() => {
-    const panel = scrollRef.current;
-    const sentinel = sentinelRef.current;
-    if (!panel || !sentinel) return;
-    const io = new IntersectionObserver(
-      (entries) => {
-        const entry = entries[0];
-        if (!entry) return;
-        if (followingRef.current === entry.isIntersecting) return;
-        followingRef.current = entry.isIntersecting;
-        setFollowing(entry.isIntersecting);
-      },
-      { root: panel, rootMargin: "0px 0px -80px 0px", threshold: 0 },
-    );
-    io.observe(sentinel);
-    return () => io.disconnect();
-  }, [phase]);
+  const setFollow = useCallback((v: boolean) => {
+    if (followingRef.current === v) return;
+    followingRef.current = v;
+    setFollowing(v);
+  }, []);
 
   const catchUp = useCallback(() => {
-    // Scroll the panel to its absolute bottom (past the colophon). The
-    // sentinel ends up safely above the panel-bottom-80px deadzone used
-    // by the follow IntersectionObserver, so `following` flips true and
-    // the catch-up link hides.
     const panel = scrollRef.current;
     if (!panel) return;
+    // Explicit smooth overrides the element's scroll-behavior:auto.
     panel.scrollTo({
       top: panel.scrollHeight - panel.clientHeight,
       behavior: "smooth",
     });
-  }, []);
+    setFollow(true);
+  }, [setFollow]);
 
-  // Track which chapter is centred so the world pane swaps backdrops.
-  // Effect re-binds only when a scene is added — scene_id lookup inside
-  // the handler stays current via the store ref each scroll tick, so
-  // depending on `scenes.length` (not `scenes`) avoids rebinding the
-  // listener on every prose_word.
+  // User scroll-intent → disengage on an upward gesture ("I'm re-reading"),
+  // re-engage on a downward one once the live edge is back in view.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const liveEdgeVisible = () => {
+      const ref =
+        el.querySelector<HTMLElement>(".chapter-prose .para.current") ??
+        el.querySelector<HTMLElement>(".choices-wrap, .freetext-wrap");
+      if (!ref) return true;
+      return (
+        ref.getBoundingClientRect().bottom <=
+        el.getBoundingClientRect().bottom + 40
+      );
+    };
+    const onWheel = (e: WheelEvent) => {
+      if (e.deltaY < -2) setFollow(false);
+      else if (e.deltaY > 2 && liveEdgeVisible()) setFollow(true);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "ArrowUp" || e.key === "PageUp" || e.key === "Home") {
+        setFollow(false);
+      } else if (
+        (e.key === "ArrowDown" || e.key === "PageDown" || e.key === "End") &&
+        liveEdgeVisible()
+      ) {
+        setFollow(true);
+      }
+    };
+    el.addEventListener("wheel", onWheel, { passive: true });
+    el.addEventListener("keydown", onKey);
+    return () => {
+      el.removeEventListener("wheel", onWheel);
+      el.removeEventListener("keydown", onKey);
+    };
+  }, [setFollow]);
+
+  // Backdrop centring — which chapter sits at the panel's middle. Rebinds
+  // only when a scene is added; reads the live store each tick, so
+  // depending on scenes.length (not scenes) avoids rebinding per word.
   useEffect(() => {
     const el = scrollRef.current;
     if (!el || scenes.length === 0) return;
     const onScroll = () => {
       const live = useStore.getState().scenes;
-      const panelRect = el.getBoundingClientRect();
-      const center = panelRect.top + panelRect.height * 0.5;
+      const center = el.getBoundingClientRect().top + el.clientHeight * 0.5;
       let best = 0;
       let bestDist = Infinity;
       live.forEach((s, i) => {
@@ -106,34 +126,55 @@ export function PanelScroll({
     return () => el.removeEventListener("scroll", onScroll);
   }, [scenes.length, setCurrentChapterIdx]);
 
-  // Auto-scroll into newest chapter on append. Skip when the player is
-  // scrolled up reading older content — yanking them down would
-  // contradict the page-turn gate; the CatchUpLink covers their return.
+  // Re-engage follow whenever fresh prose is about to stream — the player
+  // just committed a pick / typed input (attachPick sets in_scene) or a new
+  // scene started. They're at the live edge and want to follow the reply.
+  // Fires once per transition into in_scene (prose_word keeps it in_scene
+  // without re-firing). A mid-stream scroll-up still disengages via the
+  // direction detector.
+  useEffect(() => {
+    if (phase === "in_scene") setFollow(true);
+  }, [phase, setFollow]);
+
+  // When prose closes, the choices / free-text block appears below the last
+  // paragraph — which the page-turn (it only tracks the streaming edge) may
+  // have left near the bottom. Nudge down just enough to reveal it.
+  useEffect(() => {
+    if (phase !== "awaiting_pick" && phase !== "awaiting_free_text") return;
+    if (!followingRef.current) return;
+    const panel = scrollRef.current;
+    if (!panel) return;
+    const t = setTimeout(() => {
+      const block = panel.querySelector(".choices-wrap, .freetext-wrap");
+      if (!block) return;
+      const overflowBelow =
+        block.getBoundingClientRect().bottom - panel.getBoundingClientRect().bottom;
+      if (overflowBelow > 0) {
+        panel.scrollTo({ top: panel.scrollTop + overflowBelow + 24, behavior: "auto" });
+      }
+    }, 60);
+    return () => clearTimeout(t);
+  }, [phase]);
+
+  // Position the newest chapter's header at the top on append — instantly
+  // (no animated scroll while reading). A new scene re-engages follow.
   useEffect(() => {
     if (scenes.length === 0) return;
-    if (!followingRef.current) return;
+    setFollow(true);
     const last = scenes[scenes.length - 1];
     const node = document.getElementById(`ch-${last.scene_id}`);
     if (!node) return;
     const t = setTimeout(
-      () => node.scrollIntoView({ behavior: "smooth", block: "start" }),
+      () => node.scrollIntoView({ behavior: "auto", block: "start" }),
       80,
     );
     return () => clearTimeout(t);
-  }, [scenes.length]);
+  }, [scenes.length, setFollow]);
 
   return (
     <div className="panel">
-      <PanelBar
-        starting={starting}
-        onRestart={async () => {
-          resetForRestart();
-          onStart();
-        }}
-        error={error}
-        sceneCount={scenes.length}
-        hasSession={phase !== "idle"}
-      />
+      {/* Idle errors render inside the Frontispiece; avoid showing twice. */}
+      {error && phase !== "idle" && <div className="panel-error">{error}</div>}
       <div
         className="panel-scroll"
         ref={scrollRef}
@@ -161,11 +202,6 @@ export function PanelScroll({
                 />
               );
             })}
-            <div
-              className="live-sentinel"
-              ref={sentinelRef}
-              aria-hidden="true"
-            />
             {phase === "game_over" && (
               <div className="colophon">
                 <div className="colophon-rule" />
@@ -178,71 +214,17 @@ export function PanelScroll({
                 the road ends here
               </div>
             )}
-            {phase !== "game_over" && phase !== "stranded" && (
-              <div className="colophon">
-                <div className="colophon-rule" />
-                in progress
-              </div>
-            )}
             {!following && phase !== "game_over" && phase !== "stranded" && (
               <CatchUpLink onCatchUp={catchUp} />
             )}
           </>
         )}
       </div>
-    </div>
-  );
-}
-
-function PanelBar({
-  starting,
-  onRestart,
-  error,
-  sceneCount,
-  hasSession,
-}: {
-  starting: boolean;
-  onRestart: () => void;
-  error: string | null;
-  sceneCount: number;
-  hasSession: boolean;
-}) {
-  const [confirming, setConfirming] = useState(false);
-  useEffect(() => {
-    if (!confirming) return;
-    const t = setTimeout(() => setConfirming(false), 4000);
-    return () => clearTimeout(t);
-  }, [confirming]);
-
-  const onClick = () => {
-    if (starting) return;
-    if (!confirming && hasSession) {
-      setConfirming(true);
-      return;
-    }
-    setConfirming(false);
-    onRestart();
-  };
-
-  return (
-    <div className="panel-bar">
-      <span>case file · m. pritchard · 2026</span>
-      {error && <span className="panel-bar-banner">{error}</span>}
-      <div className="panel-bar-meta">
-        <span>
-          {hasSession
-            ? `${sceneCount} ${sceneCount === 1 ? "entry" : "entries"}`
-            : "—"}
-        </span>
-        <span className="panel-bar-sep" />
-        <button
-          onClick={onClick}
-          disabled={starting}
-          className={confirming ? "confirming" : ""}
-        >
-          {confirming ? "↺ confirm restart?" : "↺ restart"}
-        </button>
-      </div>
+      {revealing && following && (
+        <div className="reveal-hint" aria-hidden="true">
+          click to complete
+        </div>
+      )}
     </div>
   );
 }
