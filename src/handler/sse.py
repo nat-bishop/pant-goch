@@ -205,6 +205,15 @@ def scene_exit_event() -> dict:
     return {"event": "scene_exit"}
 
 
+def walk_ready_event() -> dict:
+    """Emitted in the EndScene branch once the chronicler + case-file
+    pacing have finished and the engine is about to await `pick_walk`.
+    Tells the frontend the walk pick is now armed — map pins should
+    become clickable. Closes the window where an early POST /walk would
+    hit 409 'no walk awaiting'."""
+    return {"event": "walk_ready"}
+
+
 def location_change_event(from_id: str, to_id: str) -> dict:
     return {"event": "location_change", "from": from_id, "to": to_id}
 

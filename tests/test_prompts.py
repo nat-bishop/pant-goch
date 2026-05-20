@@ -445,32 +445,32 @@ def test_choice_author_user_message_omits_pacing_block_early_turns():
     assert "## Scene Pacing" not in msg
 
 
-def test_choice_author_user_message_nudges_solo_after_turn_three():
-    """Turn 4+ with no NPCs present → render the Scene Pacing nudge."""
+def test_choice_author_user_message_nudges_solo_after_quiet_turns():
+    """Turn 5+ (PACING_QUIET_TURNS=4) with no NPCs present → render the
+    soft solo Scene Pacing nudge."""
     world = load_world(FIXTURE_VALID)
     state = make_initial_state(world)  # vicarage; alone
     state.dialogue_history = [
-        TurnRecord(prose="a", applied_state_changes=[]),
-        TurnRecord(prose="b", applied_state_changes=[]),
-        TurnRecord(prose="c", applied_state_changes=[]),
+        TurnRecord(prose="t", applied_state_changes=[]) for _ in range(4)
     ]
     msg = build_choice_author_user_message(state, world, "Anything.")
     assert "## Scene Pacing" in msg
-    assert "turn 4" in msg
+    assert "turn 5" in msg
     assert "Solo exploration" in msg
 
 
-def test_choice_author_user_message_hard_nudge_at_turn_six():
-    """Turn 6+ → render the hard Leave nudge regardless of NPC presence."""
+def test_choice_author_user_message_hard_nudge_after_hard_turns():
+    """Turn 8+ (PACING_HARD_NUDGE_TURNS=7) → render the hard Leave nudge
+    regardless of NPC presence."""
     world = load_world(FIXTURE_VALID)
     state = make_initial_state(world)
     state.player_location = "the_slaughtered_lamb"  # NPCs present
     state.dialogue_history = [
-        TurnRecord(prose="t", applied_state_changes=[]) for _ in range(5)
+        TurnRecord(prose="t", applied_state_changes=[]) for _ in range(7)
     ]
     msg = build_choice_author_user_message(state, world, "Anything.")
     assert "## Scene Pacing" in msg
-    assert "turn 6" in msg
+    assert "turn 8" in msg
     assert "filler" in msg
 
 

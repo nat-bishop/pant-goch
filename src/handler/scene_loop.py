@@ -77,6 +77,7 @@ from .sse import (
     scene_exit_event,
     scene_start_event,
     state_change_event,
+    walk_ready_event,
 )
 from .state import GameOver, State
 from .world import World
@@ -529,6 +530,11 @@ async def play_session(
             # wants. game_over stays None.
             return terminal
 
+        # The walk pick is now armed (chronicler + case-file pacing done).
+        # Tell the frontend so map pins become clickable — before this,
+        # POST /walk would 409.
+        if emit_event is not None:
+            await emit_event(walk_ready_event())
         to_location = await _maybe_await(pick_walk(state, world))
         assert to_location in location.adjacent_to, (
             f"pick_walk returned {to_location!r}, not in "

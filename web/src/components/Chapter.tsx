@@ -14,6 +14,7 @@ import { useStore, type SceneSnapshot } from "../store";
 import { StreamingProse } from "./StreamingProse";
 import { ChoicesBlock } from "./ChoicesBlock";
 import { FreeTextInput } from "./FreeTextInput";
+import { BetweenScenes } from "./BetweenScenes";
 import type { GlossIndex } from "./glosses";
 
 function romanize(n: number): string {
@@ -59,6 +60,10 @@ export const Chapter = memo(function Chapter({
 
   const liveClosed = isCurrent && !!lastTurn && !lastTurn.streaming;
   const showChoicesBlock = liveClosed && lastTurn.options.length > 0;
+  // A Leave closes the scene with no options — between_scenes with an
+  // empty option list is the dead-screen case the signpost recovers.
+  const showBetweenScenes =
+    liveClosed && phase === "between_scenes" && lastTurn.options.length === 0;
   const freeTextReady =
     liveClosed &&
     phase === "awaiting_free_text" &&
@@ -141,6 +146,7 @@ export const Chapter = memo(function Chapter({
             busy={freeTextBusy}
           />
         )}
+        <BetweenScenes show={showBetweenScenes} />
       </div>
     </section>
   );

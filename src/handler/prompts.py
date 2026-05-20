@@ -639,9 +639,9 @@ def _render_stay_here(state: State, world: World) -> str:
 
 
 # Below this many turns: scene needs room to breathe — no Leave nudge.
-PACING_QUIET_TURNS = 3
+PACING_QUIET_TURNS = 4
 # Above this many turns: hard Leave nudge regardless of NPC presence.
-PACING_HARD_NUDGE_TURNS = 5
+PACING_HARD_NUDGE_TURNS = 7
 
 
 def _render_scene_pacing(state: State, *, solo: bool) -> str:
@@ -654,13 +654,17 @@ def _render_scene_pacing(state: State, *, solo: bool) -> str:
         return ""
     if turn_n <= PACING_HARD_NUDGE_TURNS:
         nudge = (
-            "Solo exploration has shallow natural depth. If the room has "
-            "given up its observations, Leave is the right call now."
+            "Solo exploration has shallow natural depth. If the latest "
+            "prose just turned up something new — a discovery, a clue, a "
+            "detail the player would want to follow — keep going with "
+            "Continue. Only if the room has truly given up its "
+            "observations and this turn added nothing is Leave the call."
         )
     else:
         nudge = (
-            "This scene has run long. Unless the prose just landed a "
-            "genuine new beat or set up an obvious next exchange, emit "
+            "This scene has run long. If the prose just landed a genuine "
+            "new beat, a fresh discovery, or set up an obvious next "
+            "exchange, hold the scene open with Continue. Otherwise emit "
             "Leave — further Continues will feel like filler. The map is "
             "one click away."
         )

@@ -59,6 +59,7 @@ export function MapView({
   const world = useStore((s) => s.world);
   const walking = useStore((s) => s.walking);
   const phase = useStore((s) => s.phase);
+  const walkReady = useStore((s) => s.walkReady);
   const [walkBusy, setWalkBusy] = useState(false);
 
   // Tracer progress driven by walking.phase.
@@ -120,7 +121,7 @@ export function MapView({
   const tracer = from && to ? tracerPath(from, to) : null;
 
   const onPinClick = async (locId: string) => {
-    if (!active || walkBusy) return;
+    if (!active || walkBusy || !walkReady) return;
     if (!adjacent.includes(locId)) return;
     if (phase !== "between_scenes") return;
     setWalkBusy(true);
@@ -160,7 +161,7 @@ export function MapView({
             const isVisited = visitedIds.has(l.id) && !isHere && !isThere;
             const isAdjacent =
               active && !walking && adjacent.includes(l.id) && phase === "between_scenes";
-            const clickable = isAdjacent && !walkBusy;
+            const clickable = isAdjacent && walkReady && !walkBusy;
             const r = isHere || isThere ? 0.9 : isVisited ? 0.6 : 0.45;
             return (
               <g key={l.id} transform={`translate(${xy.x}, ${xy.y})`}>

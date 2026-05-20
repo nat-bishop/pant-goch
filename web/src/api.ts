@@ -118,6 +118,7 @@ export type SseEvent =
       npc_id: string | null;
     }
   | { event: "scene_exit" }
+  | { event: "walk_ready" }
   | { event: "location_change"; from: string; to: string }
   | { event: "npc_moved"; npc_id: string; from: string; to: string }
   | {

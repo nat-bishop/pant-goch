@@ -94,6 +94,11 @@ interface Store {
   worldMode: WorldMode;
   /** Active walking interstitial state; null when not walking. */
   walking: WalkingState | null;
+  /** True once the backend has armed the walk pick (after the chronicler
+   * + case-file pacing finish, on the `walk_ready` event). Gates map-pin
+   * clickability during `between_scenes` so an early POST /walk can't
+   * 409. Cleared on scene_start / location_change. */
+  walkReady: boolean;
   /** The chapter index whose body is centred in the right panel.
    * Drives which backdrop the left pane shows when scrolling back. */
   currentChapterIdx: number;
@@ -131,6 +136,7 @@ export const useStore = create<Store>((set) => ({
   npcLocations: {},
   worldMode: "location",
   walking: null,
+  walkReady: false,
   currentChapterIdx: 0,
   activeGloss: null,
   fastForward: false,
@@ -163,6 +169,7 @@ export const useStore = create<Store>((set) => ({
         npcLocations,
         worldMode: "location",
         walking: null,
+        walkReady: false,
         currentChapterIdx: 0,
         activeGloss: null,
         fastForward: false,
@@ -204,6 +211,7 @@ export const useStore = create<Store>((set) => ({
             phase: "in_scene",
             scenes,
             walking,
+            walkReady: false,
             currentChapterIdx: scenes.length - 1,
             fastForward: false,
           };
@@ -288,11 +296,25 @@ export const useStore = create<Store>((set) => ({
         }
 
         case "scene_exit": {
+          // Scene closed. Swap the (now stale) location backdrop for the
+          // map so the player sees where they can go next; the walk pick
+          // isn't armed yet (walk_ready follows once the case file is
+          // written), so pins stay inert until then.
           const scenes = [...s.scenes];
           const cur = scenes[scenes.length - 1];
           if (!cur) return s;
           scenes[scenes.length - 1] = { ...cur, closed: true };
-          return { scenes, phase: "between_scenes" };
+          return {
+            scenes,
+            phase: "between_scenes",
+            worldMode: "map",
+            walkReady: false,
+          };
+        }
+
+        case "walk_ready": {
+          // Backend is now awaiting pick_walk — map pins go live.
+          return { walkReady: true };
         }
 
         case "location_change": {
@@ -302,6 +324,7 @@ export const useStore = create<Store>((set) => ({
           return {
             walking: { fromId: event.from, toId: event.to, phase: "depart" },
             worldMode: "map",
+            walkReady: false,
           };
         }
 
