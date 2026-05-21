@@ -14,19 +14,31 @@ from typing import Any
 
 import pytest
 from pydantic import ValidationError
-from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart
+from pydantic_ai.messages import (
+    ModelMessage,
+    ModelRequest,
+    ModelResponse,
+    RetryPromptPart,
+    SystemPromptPart,
+    TextPart,
+    UserPromptPart,
+)
 from pydantic_ai.models.test import TestModel
 
 from handler.agents import (
     AgentBundle,
     ChroniclerRuntime,
     _build_chronicle_entry_type,
+    _stub_last_user_request,
     build_chronicler_agent,
     build_scene_runner_bundle,
     emit_chronicle_entry,
     make_chronicler_runtime,
 )
-from handler.prompts import build_chronicler_user_prompt
+from handler.prompts import (
+    build_chronicler_anchor_stub,
+    build_chronicler_user_prompt,
+)
 from handler.schemas import (
     ChronicleEntry,
     NpcMemoryUpdate,
@@ -57,19 +69,29 @@ def _bundle_and_runtime_with_canned_outputs(
 ) -> tuple[AgentBundle, ChroniclerRuntime]:
     """Build a real AgentBundle (whose chronicler agent we monkeypatch)
     and a fresh ChroniclerRuntime. Each `bundle.chronicler.run` call
-    returns the next canned `ChronicleEntry` and appends a single
-    placeholder ModelMessage to `messages` so the runtime's
-    `message_history` grows by one per call (the production code
-    receives all_messages() and overwrites with the result)."""
+    returns the next canned `ChronicleEntry` and produces real
+    `ModelRequest`/`ModelResponse` messages — faithful enough to pydantic-ai
+    that `emit_chronicle_entry`'s transcript compaction is exercised: the
+    incoming `message_history` is carried through, then this call's user
+    prompt (as a `UserPromptPart`) and the entry (as a `TextPart` response)
+    are appended. On the first call (empty history) the request also carries
+    a `SystemPromptPart`, mirroring pydantic-ai's system-prompt injection."""
     bundle = build_scene_runner_bundle(TestModel(), world)
     runtime = make_chronicler_runtime()
     iter_outputs = iter(outputs)
-    history: list[Any] = []
 
-    async def fake_run(*args, **kwargs):  # type: ignore[no-untyped-def]
+    async def fake_run(user_prompt, **kwargs):  # type: ignore[no-untyped-def]
         output = next(iter_outputs)
-        history.append(("call", output))
-        return _FakeRunResult(output=output, messages=list(history))
+        history: list[ModelMessage] = list(kwargs.get("message_history") or [])
+        req_parts: list[Any] = []
+        if not history:
+            req_parts.append(SystemPromptPart("SYSTEM PROMPT"))
+        req_parts.append(UserPromptPart(user_prompt))
+        history.append(ModelRequest(parts=req_parts))
+        history.append(
+            ModelResponse(parts=[TextPart(output.case_file_entry)])
+        )
+        return _FakeRunResult(output=output, messages=history)
 
     bundle.chronicler.run = fake_run  # type: ignore[assignment]
     return bundle, runtime
@@ -233,6 +255,69 @@ async def test_emit_chronicle_entry_grows_message_history():
     await emit_chronicle_entry(bundle, runtime, world, state)
     after_two = len(runtime.message_history)
     assert after_two > after_one
+
+
+@pytest.mark.asyncio
+async def test_emit_chronicle_entry_compacts_past_transcripts():
+    """Once a scene's entry is written, its verbatim transcript is
+    compacted to the anchor stub on the next call, while the most-recent
+    scene keeps its full transcript. The system prompt is preserved."""
+    world = load_world(FIXTURE_VALID)
+    state = _state_with_one_scene()
+    bundle, runtime = _bundle_and_runtime_with_canned_outputs(
+        world,
+        [
+            ChronicleEntry(case_file_entry="First entry.", npc_memory_updates=[]),
+            ChronicleEntry(case_file_entry="Second entry.", npc_memory_updates=[]),
+        ],
+    )
+
+    await emit_chronicle_entry(bundle, runtime, world, state)
+    await emit_chronicle_entry(bundle, runtime, world, state)
+
+    requests = [m for m in runtime.message_history if isinstance(m, ModelRequest)]
+    assert len(requests) == 2
+    first_user = next(
+        p for p in requests[0].parts if isinstance(p, UserPromptPart)
+    )
+    last_user = next(
+        p for p in requests[-1].parts if isinstance(p, UserPromptPart)
+    )
+    full = build_chronicler_user_prompt(state, world)
+    stub = build_chronicler_anchor_stub(state, world)
+    # Past scene: transcript collapsed to the stub; current scene: still full.
+    assert first_user.content == stub
+    assert last_user.content == full
+    assert len(stub) < len(full)
+    # System prompt survived the rewrite of the first request.
+    assert any(isinstance(p, SystemPromptPart) for p in requests[0].parts)
+
+
+def test_stub_last_user_request_skips_retry_requests():
+    """A failed output validation appends a RetryPromptPart-only request
+    AFTER the transcript request. Compaction must target the transcript
+    request (last one carrying a UserPromptPart), not the retry."""
+    messages: list[ModelMessage] = [
+        ModelRequest(parts=[
+            SystemPromptPart("sys"), UserPromptPart("FULL TRANSCRIPT"),
+        ]),
+        ModelResponse(parts=[TextPart("entry")]),
+        ModelRequest(parts=[RetryPromptPart("invalid output, try again")]),
+    ]
+    out = _stub_last_user_request(messages, "STUB")
+
+    user_parts = [
+        p
+        for m in out if isinstance(m, ModelRequest)
+        for p in m.parts if isinstance(p, UserPromptPart)
+    ]
+    assert [p.content for p in user_parts] == ["STUB"]
+    # The retry request is left untouched.
+    assert any(
+        isinstance(p, RetryPromptPart)
+        for m in out if isinstance(m, ModelRequest)
+        for p in m.parts
+    )
 
 
 # ───────────────────────── dynamic schema ─────────────────────────

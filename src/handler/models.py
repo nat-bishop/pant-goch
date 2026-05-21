@@ -96,12 +96,20 @@ class Beat(_Frozen):
     # Bend) that `notes_to_llm` alone could not enforce against a 4B model.
     # Validated against the locations at load.
     requires_location: list[str] = Field(default_factory=list)
-    # Explicit opt-out of Invariant 14 (every beat carries ≥1 hard gate).
-    # Set only on a beat that is *intentionally* ungated — the player's
-    # always-available "I'm walking away" commitment. Self-documenting so the
-    # ungated beat is a deliberate, greppable exception rather than an
-    # oversight the loader would otherwise reject.
-    always_available: bool = False
+    # Threshold gate: when `requires_count` > 0, the beat is only fireable once at
+    # least that many of `requires_count_beats` are unlocked — "enough of these
+    # have happened", between the ANY of requires_any_beats and the ALL of
+    # requires_beats. Used so `village_runs_you_out` needs ~3 accumulated
+    # negatives rather than firing on the first one. Validated/cycle-checked at
+    # load alongside the other beat-ref fields.
+    requires_count_beats: list[str] = Field(default_factory=list)
+    requires_count: int = Field(default=0, ge=0)
+    # Pacing gate: when > 0, every NPC in `requires_npcs_present` must have been
+    # present in at least this many PRIOR scenes (their `npc_memory` length)
+    # before the beat may fire. Stops first-visit info-dumps and whole-ladder-
+    # in-one-scene runs that `notes_to_llm` alone could not hold against a 4B
+    # model. Only meaningful with `requires_npcs_present` set.
+    min_scenes_with_npc: int = Field(default=0, ge=0)
     prerequisites: str = ""  # soft prereqs the LLM judges, beyond requires/blocks
     notes_to_llm: str
 
@@ -118,6 +126,21 @@ class Beat(_Frozen):
         if len(words) > 8:
             raise ValueError(
                 f"Beat.name must be ≤8 words (got {len(words)}): {v!r}"
+            )
+        return v
+
+    @field_validator("requires_count")
+    @classmethod
+    def _count_consistent(cls, v: int, info) -> int:
+        pool = info.data.get("requires_count_beats", [])
+        if v > 0 and v > len(pool):
+            raise ValueError(
+                f"requires_count={v} exceeds requires_count_beats "
+                f"({len(pool)} ids)"
+            )
+        if v == 0 and pool:
+            raise ValueError(
+                "requires_count_beats set but requires_count is 0 (no threshold)"
             )
         return v
 

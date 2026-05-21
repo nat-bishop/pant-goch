@@ -16,14 +16,22 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import json
+import contextlib
 import os
+import sys
 import time
 from pathlib import Path
 
 # Tag eval spans env:eval before importing handler.main (which configures
 # Logfire at import time), so harness runs are filterable out of real plays.
 os.environ.setdefault("HANDLER_ENV", "eval")
+
+# pydantic_evals' rich summary table prints ✔/✗ glyphs; a Windows console
+# defaults to cp1252 and aborts the whole report with UnicodeEncodeError. Force
+# UTF-8 on our streams so the report (and coverage JSON) always renders.
+for _stream in (sys.stdout, sys.stderr):
+    with contextlib.suppress(Exception):
+        _stream.reconfigure(encoding="utf-8")
 
 import yaml
 from pydantic_evals import Case, Dataset
@@ -33,7 +41,10 @@ from handler.main import build_model
 from handler.world import load_world
 from handler.agents import build_scene_runner_bundle
 
-from .evaluators import coverage_report, invariant_evaluators
+from . import report as run_report
+from .evaluators import invariant_evaluators
+from .metrics import corpus_metrics
+from .retry_model import RetryModel
 from .session import SessionArtifact, run_session
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -91,7 +102,9 @@ async def main() -> None:
 
     api_url = resolve_api_url(settings)
     world = load_world(args.world)
-    model = build_model(api_url)
+    # RetryModel absorbs transient engine 500s (KV/VRAM pressure under concurrent
+    # load) so a single blip doesn't drop a whole multi-scene session — eval-only.
+    model = RetryModel(build_model(api_url))
     bundle = build_scene_runner_bundle(model, world)  # immutable, shared across sessions
 
     print(f"playtest: {len(personas)} personas x {args.runs_per_persona} runs "
@@ -115,17 +128,38 @@ async def main() -> None:
         cases=[Case(name=p, inputs=p) for p in personas],
         evaluators=invariant_evaluators(world),
     )
-    report = await dataset.evaluate(
+    invariant_report = await dataset.evaluate(
         task, max_concurrency=parallel, repeat=args.runs_per_persona,
     )
-    report.print(include_input=False, include_output=False)
+    invariant_report.print(include_input=False, include_output=False)
 
-    # Corpus reachability sweep from the dumped artifacts (decoupled from the
-    # pydantic-evals report internals).
+    # Corpus distributional metrics from the dumped artifacts (decoupled from
+    # the pydantic-evals report internals), then the diffed run report +
+    # summary.json — the iteration loop.
     artifacts = [SessionArtifact.load(p) for p in sorted(out_dir.glob("*.json"))]
-    coverage = coverage_report(artifacts, world)
-    print("\ncoverage:")
-    print(json.dumps(coverage, indent=2))
+
+    # Corpus-integrity guard: a session that hits an unhandled engine error
+    # (e.g. a transient gemma 500 under load) is dropped by pydantic-evals and
+    # never dumped, so the metrics quietly compute over the survivors. A run
+    # that lost a chunk of its sessions is NOT a corpus — flag it loudly so its
+    # numbers aren't mistaken for signal (one run silently shrank to 6/16 and
+    # 2/16 this way). Below the floor we still write the report (for forensics)
+    # but exit non-zero so `make playtest` surfaces the failure.
+    expected = len(personas) * args.runs_per_persona
+    survivors = len(artifacts)
+    if survivors < expected:
+        print(f"\n⚠️  {survivors}/{expected} sessions survived — "
+              f"{expected - survivors} dropped (unhandled engine/player error). "
+              f"Lower --parallel or check the engine.")
+
+    metrics = corpus_metrics(artifacts, world)
+    run_report.emit(out_dir, metrics, invariant_report)
+
+    if survivors < 0.8 * expected:
+        raise SystemExit(
+            f"corpus too small to trust: {survivors}/{expected} sessions "
+            f"(<80%). Metrics above are over survivors only."
+        )
 
 
 if __name__ == "__main__":

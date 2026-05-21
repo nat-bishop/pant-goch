@@ -131,6 +131,18 @@ def reachable_beat_ids(world: World, state: State) -> set[str]:
             if not any_ok:
                 cache[beat_id] = False
                 return False
+        if beat.requires_count:
+            # Count beats that are unlocked OR themselves reachable — the
+            # "could the threshold ever be met" horizon view (mirrors the
+            # requires_any treatment above). `min_scenes_with_npc` is a timing
+            # gate, not a reachability one, so it is intentionally ignored here.
+            satisfiable = sum(
+                r in state.unlocked_beats or is_reachable(r)
+                for r in beat.requires_count_beats
+            )
+            if satisfiable < beat.requires_count:
+                cache[beat_id] = False
+                return False
         cache[beat_id] = True
         return True
 
@@ -180,9 +192,18 @@ def fireable_beat_ids(world: World, state: State) -> set[str]:
             b in unlocked for b in beat.requires_any_beats
         ):
             continue
+        if beat.requires_count and sum(
+            b in unlocked for b in beat.requires_count_beats
+        ) < beat.requires_count:
+            continue
         if not set(beat.requires_npcs_present).issubset(present):
             continue
         if beat.requires_location and here not in beat.requires_location:
+            continue
+        if beat.min_scenes_with_npc and any(
+            len(state.npc_memory.get(n, [])) < beat.min_scenes_with_npc
+            for n in beat.requires_npcs_present
+        ):
             continue
         out.add(bid)
     return out

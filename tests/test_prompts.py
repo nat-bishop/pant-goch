@@ -649,25 +649,28 @@ def test_chronicler_system_prompt_byte_stable():
 def test_chronicler_system_prompt_describes_dual_output():
     """The dual-output instruction (case_file_entry + npc_memory_updates)
     must surface in the system prompt; the chronicler needs to know about
-    both fields."""
+    both fields. A worked case-file example anchors the terse voice."""
     world = load_world(FIXTURE_VALID)
     prompt = build_chronicler_system_prompt(world)
     assert "case_file_entry" in prompt
     assert "npc_memory_updates" in prompt
+    assert "## Case File Example" in prompt
 
 
-def test_chronicler_system_prompt_carries_compact_beats_only():
-    """Chronicler reasons about story shape — names + descriptions are
-    enough. Firing guidance and endings are not."""
+def test_chronicler_system_prompt_withholds_the_hidden_truth():
+    """The chronicler writes only what the journalist witnessed, so it must
+    NOT receive the solution: no crime narrative, no NPC knowledge, no beat
+    catalog. Cast names stay (it renders NPC voice); knowledge does not."""
     world = load_world(FIXTURE_VALID)
     prompt = build_chronicler_system_prompt(world)
-    assert "## Story Beats" in prompt
-    assert "## What Happened" in prompt
+    assert "## What Happened" not in prompt
+    assert "## Story Beats" not in prompt
+    assert world.crime.strip() not in prompt
+    for npc in world.npcs.values():
+        assert npc.name in prompt  # cast names still present
+        assert npc.knowledge.strip() not in prompt  # knowledge withheld
     for beat in world.beats.values():
-        assert beat.name in prompt
-        assert beat.notes_to_llm.strip() not in prompt
-    for ending in world.endings.values():
-        assert ending.id not in prompt
+        assert beat.description.strip() not in prompt
 
 
 def test_prose_writer_system_prompt_uses_compact_locations():

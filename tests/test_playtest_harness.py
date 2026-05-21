@@ -16,8 +16,10 @@ from handler.agents import build_scene_runner_bundle
 from handler.schemas import (
     ChoiceBundle,
     ChronicleEntry,
+    Continue,
     Leave,
     NpcPlacementBundle,
+    Option,
     StateChangeBundle,
     UnlockBeat,
 )
@@ -104,8 +106,12 @@ def _evidence_world() -> World:
                          requires_location=["village"]),
         "decided_file": Beat(id="decided_file", name="Decided file", description="x",
                              notes_to_llm="y", requires_any_beats=["evidence"]),
+        # Walk-away gates on engagement but carries no evidence (requires_any
+        # here points at a non-evidence beat) → "not substantive" for EndingEarned.
         "decided_quit": Beat(id="decided_quit", name="Decided quit", description="x",
-                             notes_to_llm="y", always_available=True),
+                             notes_to_llm="y", requires_beats=["engaged"]),
+        "engaged": Beat(id="engaged", name="Engaged", description="x", notes_to_llm="y",
+                        requires_location=["village"]),
     }
     endings = {
         "published": Ending(id="published", requires_beats=["decided_file"],
@@ -142,8 +148,9 @@ def test_ending_earned_flags_unearned_ending():
 
 
 def test_explored_beyond_start_flags_prologue_only_session():
-    """A substantive ending reached without leaving the start location fails;
-    visiting the village passes; a walk-away ending is exempt."""
+    """ANY committed ending without leaving the start location fails —
+    including walk-away, which now gates on village engagement. Visiting the
+    village passes; truncated sessions are exempt."""
     world = _evidence_world()
     explored = ExploredBeyondStart(world)
     confined = [{"kind": "turn", "location": "start"}]
@@ -156,9 +163,15 @@ def test_explored_beyond_start_flags_prologue_only_session():
         ending_id="published", transcript=confined))) is False
     assert explored.evaluate(_ctx(_artifact(
         ending_id="published", transcript=walked))) is True
-    # walk-away ending at the start is legitimate
+    # Walk-away confined to the prologue is now a regression too (it can only
+    # be earned after engaging the village).
     assert explored.evaluate(_ctx(_artifact(
-        ending_id="quit", transcript=confined))) is True
+        ending_id="quit", transcript=confined))) is False
+    assert explored.evaluate(_ctx(_artifact(
+        ending_id="quit", transcript=walked))) is True
+    # truncated sessions are exempt
+    assert explored.evaluate(_ctx(_artifact(
+        ending_id=None, truncated=True, transcript=confined))) is True
 
 
 # ───────────────────────── coverage_report ─────────────────────────
@@ -183,7 +196,7 @@ def test_coverage_report():
 
 
 class _StubPlayer:
-    async def pick_option(self, prose_part) -> int:
+    async def pick_option(self, prose_part, *, can_leave: bool = False) -> int:
         return 0
 
     async def pick_free_text(self, req) -> str:
@@ -245,6 +258,42 @@ async def test_run_session_smoke_produces_artifact(monkeypatch, tmp_path):
     path = tmp_path / f"diligent_journalist-{artifact.session_id}.json"
     assert path.exists()
     assert SessionArtifact.load(path).ending_id == "published_story"
+
+
+async def test_run_session_records_per_turn_beats(monkeypatch, tmp_path):
+    """A Continue turn records `applied_beats` (beats that fired on the prose the
+    player saw) and `fireable` (the set eligible that turn) — the per-transition
+    signal the single-transition judges consume."""
+    world = load_world(FIXTURE_VALID)
+    bundle = build_scene_runner_bundle(TestModel(), world)
+    decision_beats = world.endings["published_story"].requires_beats
+    _patch_engine_for_endgame(monkeypatch, decision_beats)
+
+    # Override choices: a Continue first (so a real turn entry is recorded),
+    # then Leave (so the satisfied ending closes the game on turn 2).
+    calls = {"n": 0}
+
+    async def _choices(*a, **k):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return ChoiceBundle(next=Continue(options=[Option(text="A"), Option(text="B")]))
+        return ChoiceBundle(next=Leave())
+
+    monkeypatch.setattr("handler.scene_loop.emit_choices", _choices)
+
+    artifact = await run_session(
+        bundle, world,
+        persona="diligent_journalist", persona_prompt="be thorough",
+        max_scenes=30, out_dir=tmp_path, player=_StubPlayer(),
+    )
+
+    turns = [e for e in artifact.transcript if e["kind"] == "turn"]
+    assert turns, "expected at least one Continue turn entry"
+    first = turns[0]
+    assert isinstance(first["applied_beats"], list)
+    assert isinstance(first["fireable"], list)
+    # phase1 fired the decision beats on turn 1, so they show as applied.
+    assert set(decision_beats).issubset(set(first["applied_beats"]))
 
 
 async def test_run_session_truncates_when_budget_hit(monkeypatch, tmp_path):

@@ -144,6 +144,40 @@ def test_fireable_requires_all_listed_npcs_present():
     assert "confrontation" in fireable_beat_ids(world, state)
 
 
+def test_fireable_requires_count_threshold():
+    """A beat with requires_count fires only once at least that many of its
+    requires_count_beats are unlocked — the village_runs_you_out '~3 negatives'
+    gate, between ANY (requires_any) and ALL (requires_beats)."""
+    world = _make_world(beats=[
+        _beat("neg_a", requires_npcs_present=[]),
+        _beat("neg_b", requires_npcs_present=[]),
+        _beat("neg_c", requires_npcs_present=[]),
+        _beat("run_out", requires_count_beats=["neg_a", "neg_b", "neg_c"],
+              requires_count=2),
+    ])
+    state = State(player_location="loc_a", unlocked_beats={"neg_a"})
+    assert "run_out" not in fireable_beat_ids(world, state)  # 1 < 2
+    state.unlocked_beats.add("neg_b")
+    assert "run_out" in fireable_beat_ids(world, state)  # 2 >= 2
+
+
+def test_fireable_min_scenes_with_npc_gate():
+    """A beat with min_scenes_with_npc fires only after the required NPC has
+    been present in that many prior scenes (npc_memory length) — the Maud
+    first-visit / one-scene-ladder pacing gate."""
+    world = _make_world(
+        npcs=[_npc("maud", "loc_a")],
+        beats=[_beat("maud_dump", requires_npcs_present=["maud"],
+                     min_scenes_with_npc=1)],
+    )
+    # First Maud scene: no prior memory → blocked despite presence.
+    state = State(player_location="loc_a", npc_memory={"maud": []})
+    assert "maud_dump" not in fireable_beat_ids(world, state)
+    # After one prior scene with Maud → fireable.
+    state.npc_memory["maud"] = ["met once"]
+    assert "maud_dump" in fireable_beat_ids(world, state)
+
+
 def test_fireable_respects_npc_location_override():
     """Presence honours the live npc_locations override (populator moves),
     not just default_location."""

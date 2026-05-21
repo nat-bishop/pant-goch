@@ -6,7 +6,8 @@ hollow/off-voice NPCs, choices without consequence, prompt-craft burden on the
 player) plus the general qualities of good narrative games (pacing, mystery
 payoff, prose, earned endings).
 
-Authoritative engine design is `SPEC.md`. This doc is the eval companion.
+Authoritative engine orientation is `CLAUDE.md` (the v2 `SPEC.md` was retired).
+This doc is the eval companion.
 
 ---
 
@@ -197,3 +198,48 @@ shared bundle and one shared llama endpoint.
 Reproducibility note: Gemma runs at temp=1.0, so runs aren't bit-reproducible.
 Rely on the *corpus* of artifacts for trend signal, not exact replay; pass a
 per-request seed only if a specific case needs pinning.
+
+---
+
+## What's built (and where)
+
+Three lanes, scoped by where a property is decidable. The discipline: structural
+facts are gates/metrics (pure-python, every run); behavioural judgments are LLM
+judges (one thing each, run on demand).
+
+| Lane | Scope | Module | Surface |
+|---|---|---|---|
+| **Gates** (must hold) | per session | `evals/evaluators.py` | `make playtest` |
+| **Metrics** (trend) | corpus | `evals/metrics.py` → `report.py` | `make playtest` → `summary.json` + diffed report |
+| **Judges** (score one thing) | transition / session | `evals/judges/` | `make judge RUN=<dir>` |
+
+- **Gates** — `NoPrematureEnding` is the live depth gate (an ending must follow ≥3
+  scenes / ≥3 locations); `EndingEarned`/`ExploredBeyondStart` are superseded but
+  kept for their evidence/prologue regressions.
+- **Metrics** — five north-star numbers (`report.NORTH_STAR_KEYS`: ending entropy,
+  beats fired, filler-turn ratio, beat-set Jaccard distance, persona→outcome
+  separation) plus coverage, beats-per-location, depth, longest-common-beat-prefix,
+  and ladder-compression. Each run writes `summary.json`; the report diffs it
+  against the previous run — that diff is the iteration loop.
+- **Judges** (`make judge RUN=<artifact dir>`) — default to local Qwen via inferno
+  (no key; warmed once; fired concurrently). **Single-transition** (before→after one
+  turn): `beat_fired_appropriately` (the walk-away/Maud-dump/helen-without-meeting
+  detector — *not* a regex), `prose_depicts_beat` (phoned-Iwan hallucination),
+  `prose_matches_location`, `npc_voice_adherence`, `choice_meaningfulness` (the
+  "look closer at the box" agency judge), `false_premise_accepted`.
+  **Whole-session**: `ending_earned_narratively`, `emergent_event_honored`
+  (freedom vs. hallucination), `choice_consequence_felt`. Freeze a real failing
+  case under `evals/cases/` to grow the regression set (`evals/cases/README.md`).
+
+### Scope rule of thumb
+Engine correctness ("did the model do the right thing on *this* input?") →
+single-transition. Authoring/pacing structure (counts, coverage, linearity) →
+corpus metrics. Arc properties (earned ending, consequence, emergent continuity)
+→ whole-session. Consequence-across-runs → persona→outcome separation (no forking).
+
+### Engine affordances added for pacing
+Two optional `Beat` fields close the gap the prompt alone couldn't hold against a
+4B model: `requires_count` / `requires_count_beats` (a threshold gate — e.g.
+`village_runs_you_out` needs ~3 negatives; `decided_to_walk_away` needs ≥2 engaged
+threads) and `min_scenes_with_npc` (a pacing gate so reveals can't dump on the
+first encounter / a whole ladder can't fire in one scene).

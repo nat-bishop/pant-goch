@@ -133,6 +133,13 @@ beats:
   - id: tom_alludes_to_being_on_the_road
     name: Tom alludes to being on the road
     requires_npcs_present: [tom]
+    # No scene gate: rungs 1–2 may both land in the opening Slaughtered Lamb
+    # scene so first contact actually progresses. The later rungs carry the
+    # pacing (named/admits need a prior scene, decides needs two), capping the
+    # ladder at ~2 rungs/scene — enough to break the 4.7-rung dump of the
+    # 20260520-194311 run without the 1-rung-per-scene gating of 235454, which
+    # left a pressing player with nothing to advance so they pushed Tom into
+    # tom_closes_off on the very first scene (his whole ladder then dead).
     description: |
       Tom mentions, obliquely, that he was driving the B4368 the night
       Megan died — coming back from a friend's farm. He does not yet
@@ -154,6 +161,14 @@ beats:
   - id: tom_named_a_vehicle
     name: Tom named a vehicle
     requires_npcs_present: [tom]
+    # NO scene gate. This is the EVIDENCE beat — it gates decided_to_file /
+    # _confront / _tell_iwan (three of six endings). Gating it behind a return
+    # visit (min 1 in the 20260521-023120 run) starved it: the player rarely
+    # returns to Tom, so it never fired, no evidence existed, and EVERY session
+    # collapsed to the walk-away ending (entropy 0). Evidence must be reachable
+    # in a single good Tom scene; only the terminal responsibility rungs below
+    # (admits → decides) carry the return-visit pacing, which is enough to keep
+    # the game from ENDING in one bar conversation (the original 194311 bug).
     description: |
       Tom Bevan tells the player he saw a Land Rover speeding away from
       the Black Dog Bend the night Megan died, and that he recognised
@@ -180,6 +195,9 @@ beats:
   - id: tom_admits_full_silence
     name: Tom admits full silence
     requires_npcs_present: [tom]
+    # Same scene as tom_named_a_vehicle is allowed (a natural follow-on), but
+    # not before the player has built one prior scene with Tom.
+    min_scenes_with_npc: 1
     description: |
       Tom tells the player, in his own words, that he never said whose
       vehicle it was, and why — that he convinced himself the Vaughns
@@ -196,6 +214,9 @@ beats:
   - id: maud_confirms_the_affair
     name: Maud confirms the affair
     requires_npcs_present: [maud]
+    # "Will not volunteer this on the first or second visit" — pacing gate so it
+    # cannot dump on the first Maud scene (15/15 in the 20260520 run).
+    min_scenes_with_npc: 1
     description: |
       Maud Pryce, in the post office or as an aside elsewhere in the
       village, confirms that Megan and Dylan were sleeping together
@@ -211,10 +232,19 @@ beats:
   # Dylan Vaughn's ladder — four rungs. He cannot speak at Tan-y-coed;
   # the populator may relocate him to the wood or the lane after a tense
   # encounter, which is when these beats become reachable.
+  #
+  # requires_location (engine-enforced) on every positive rung pins the
+  # authored "somewhere private — the wood, the lane, the churchyard" to the
+  # grammar: at Tan-y-coed Dylan's rungs are simply not on the table, so the
+  # ladder can't fire there. In 20260521-005657 the whole ladder dumped at
+  # tan_y_coed in one scene — with the prose sometimes about Eluned, not Dylan
+  # — which is what tanked beat_fired_appropriately. (dylan_refuses stays
+  # location-free: he CAN shut down if pressed in front of Eluned at the farm.)
 
   - id: dylan_acknowledges_the_player
     name: Dylan acknowledges the player
     requires_npcs_present: [dylan]
+    requires_location: [bryn_iago_wood, the_lane, st_caradocs]
     description: |
       Dylan Vaughn, in a private setting away from Tan-y-coed, agrees
       to speak with the player at all. He does not admit anything yet —
@@ -237,6 +267,7 @@ beats:
   - id: dylan_admits_the_relationship
     name: Dylan admits the relationship
     requires_npcs_present: [dylan]
+    requires_location: [bryn_iago_wood, the_lane, st_caradocs]
     description: |
       Dylan Vaughn admits to the player that he and Megan were
       together. He does not (yet) admit knowing what his mother did.
@@ -258,6 +289,14 @@ beats:
   - id: dylan_speaks_of_megan
     name: Dylan speaks of Megan
     requires_npcs_present: [dylan]
+    requires_location: [bryn_iago_wood, the_lane, st_caradocs]
+    # NO scene gate. Dylan's authored attitude is that "once he begins he is
+    # unable to stop" — a single private unburdening is in character, unlike
+    # Tom's patient-across-visits arc. Gating the back half behind a return
+    # (20260521-023120) left dylan_admits_he_knows — Dylan's EVIDENCE beat —
+    # never firing, contributing to the entropy-0 collapse. The real Dylan bug
+    # (the ladder firing at Tan-y-coed) is handled by requires_location, not by
+    # scene pacing.
     description: |
       Dylan talks about Megan as a person — what she was like, what
       they did together, what he misses. Not as evidence. The
@@ -280,6 +319,10 @@ beats:
   - id: dylan_admits_he_knows
     name: Dylan admits he knows
     requires_npcs_present: [dylan]
+    requires_location: [bryn_iago_wood, the_lane, st_caradocs]
+    # NO scene gate — Dylan's evidence beat, reachable in the one private scene
+    # where he opens up (see dylan_speaks_of_megan). requires_beats already
+    # forces the full ladder order within that scene.
     description: |
       Dylan tells the player he has known since April 2019 what his
       mother did on the road that night.
@@ -408,6 +451,11 @@ beats:
   - id: tom_decides_to_speak_to_police
     name: Tom decides to speak to police
     requires_npcs_present: [tom]
+    # The ending gate for tom_takes_responsibility. Needs two prior Tom scenes
+    # so the responsibility ending is earned across return visits rather than
+    # the same scene Tom first opens up (it dominated 8/13 endings and capped
+    # the game at 3 scenes), while staying reachable inside ~3 Tom scenes.
+    min_scenes_with_npc: 2
     description: |
       Tom Bevan, having unburdened himself to the player across two
       conversations and feeling steadier than he has in seven years,
@@ -498,6 +546,9 @@ beats:
   - id: maud_lets_a_name_slip
     name: Maud lets a name slip
     requires_npcs_present: [maud]
+    # "Will not name Helen unprompted on a first visit" — pacing gate so it
+    # cannot fire on the first Maud scene.
+    min_scenes_with_npc: 1
     description: |
       Maud Pryce, gossiping about the case in her postmistress way,
       mentions that DC Helen Mortimer "wasn't happy" about how the
@@ -550,6 +601,12 @@ beats:
   - id: tom_closes_off
     name: Tom closes off
     requires_npcs_present: [tom]
+    # A permanent rupture needs a prior scene with Tom: one pushy first
+    # conversation makes him guarded, not silent for good. Without this gate a
+    # pressing player tripped it on the FIRST Tom scene (it sat in the >50%
+    # common-beat prefix of 20260521-005657), killing the entire ladder before
+    # it began and routing the session to a give-up ending.
+    min_scenes_with_npc: 1
     description: |
       Tom has decided he will not speak to the player again about
       anything that matters. He may be civil in passing but he will
@@ -568,6 +625,9 @@ beats:
   - id: dylan_refuses_to_speak_again
     name: Dylan refuses to speak again
     requires_npcs_present: [dylan]
+    # As with tom_closes_off: a permanent refusal needs a prior Dylan scene, so
+    # one pushy first encounter doesn't end his ladder outright.
+    min_scenes_with_npc: 1
     description: |
       Dylan has decided the player is dangerous to him and will not
       engage further on any topic that matters.
@@ -580,17 +640,21 @@ beats:
 
   - id: helen_wont_take_your_call
     name: Helen won't take your call
-    requires_any_beats: [maud_lets_a_name_slip, helen_will_meet_off_record]
+    # Gate on having actually engaged Helen — a village name-slip about her must
+    # NOT make her refuse a player who never approached her (the 14/15 false-fire
+    # in the 20260520 run). She can only withdraw once contact has begun.
+    requires_any_beats: [helen_will_meet_off_record]
     description: |
       DC Helen Mortimer has decided the player is a professional risk
       and will not meet again. She will not return calls.
     notes_to_llm: |
-      Fire when the player has been indiscreet — has named Helen at
-      Tan-y-coed, has cited her in earshot of others, has talked about
-      her unofficial cooperation. After this fires, Helen is
-      unavailable for the rest of the game; the entire Helen ladder
-      (helen_will_meet_off_record → helen_confirms_she_suspected →
-      helen_hands_over_notes) is permanently blocked.
+      Fire only after the player has engaged Helen (helen_will_meet_off_record)
+      and THEN been indiscreet — named Helen at Tan-y-coed, cited her in earshot
+      of others, talked about her unofficial cooperation. Do NOT fire because
+      someone in the village merely mentioned her name; the player must have made
+      contact first. After this fires, Helen is unavailable for the rest of the
+      game; the entire Helen ladder (helen_will_meet_off_record →
+      helen_confirms_she_suspected → helen_hands_over_notes) is permanently blocked.
 
   - id: eluned_throws_you_out
     name: Eluned throws you out
@@ -607,25 +671,27 @@ beats:
 
   - id: village_runs_you_out
     name: Village runs you out
-    requires_any_beats:
+    # Structural threshold (engine-enforced): at least THREE of the four negative
+    # beats must have accumulated. The old `requires_any_beats` let it fire on a
+    # single negative — which, paired with the helen false-fire, ran the player
+    # out after one Maud conversation (11/15 in the 20260520 run). The "roughly
+    # three" of the authoring is now the hard gate, not just a prompt hope.
+    requires_count_beats:
       - tom_closes_off
       - dylan_refuses_to_speak_again
       - eluned_throws_you_out
       - helen_wont_take_your_call
+    requires_count: 3
     description: |
       The village has collectively decided the player is unwelcome.
       The pub falls silent on entry; Maud is "out" whenever the player
       visits; Wendy has stopped answering the door. The investigation
       cannot continue here.
     notes_to_llm: |
-      Fire only when multiple negative beats have accumulated and the
-      player has continued to press regardless. The natural threshold
-      is roughly three negative beats — e.g. tom_closes_off plus
-      eluned_throws_you_out plus dylan_refuses_to_speak_again — or
-      one negative plus an additional egregious incident (e.g.
-      doorstepping a grieving Wendy at Lower Hafod). Once this fires,
-      almost every location plays cold; only the run_out_of_the_village
-      ending is reachable.
+      Fire only when the player has earned at least three of the four negative
+      beats and has continued to press regardless (the engine will not let this
+      fire below that threshold). Once this fires, almost every location plays
+      cold; only the run_out_of_the_village ending is reachable.
 
   # ─────────────────────── Decision beats ───────────────────────
   # Each is mutually exclusive with the others. The LLM may fire AT MOST ONE
@@ -667,7 +733,24 @@ beats:
 
   - id: decided_to_walk_away
     name: Decided to walk away
-    always_available: true
+    # A large barrier: you cannot "give up" on an investigation you have not
+    # begun. Gated structurally on having made real investigative traction on at
+    # least THREE substantive threads (requires_count below). The earlier count:2
+    # over a list that included atmosphere (Owain's folklore) and finger-pointing
+    # (Gareth) let two casual Owain beats in one post-office scene satisfy it —
+    # walk-away fired at scene 2 in 9/13 of the 20260520-182020 run and collapsed
+    # ending entropy to 0. Only beats that mean the player actually got somewhere
+    # count here; folklore/pointers are excluded.
+    requires_count_beats:
+      - tom_speaks_of_megan_as_a_person
+      - maud_confirms_the_affair
+      - maud_lets_a_name_slip
+      - dylan_acknowledges_the_player
+      - helen_will_meet_off_record
+      - iwan_grants_you_intimacy
+      - wendy_asks_you_to_stop
+      - examined_the_crash_site
+    requires_count: 3
     description: |
       The player has explicitly chosen to abandon the investigation
       and go home.
@@ -677,10 +760,13 @@ beats:
       - decided_to_tell_iwan_privately
     notes_to_llm: |
       Fire only when the player explicitly says, in their option pick
-      or the equivalent, that they are leaving without filing — "I'm
-      packing up", "this is not a story I can write", "I'm going back
-      to London." Do not fire this on inferred weariness; the player
-      has to say it.
+      or the equivalent, that they are leaving the case without filing —
+      "I'm packing up", "this is not a story I can write", "I'm going
+      back to London." Walking from one location to another to keep
+      investigating is travel, NOT walking away — never fire this when
+      the player is simply moving on to look elsewhere, leaving a room,
+      or heading out the door toward the village. Do not fire on inferred
+      weariness; the player has to say they are giving up.
 
   - id: decided_to_confront_eluned
     name: Decided to confront Eluned

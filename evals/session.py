@@ -11,7 +11,6 @@ world-free and trivially serializable.
 from __future__ import annotations
 
 import json
-import random
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -30,7 +29,9 @@ from handler.schemas import (
     FreeText,
     ProsePart,
 )
+from handler.engine import fireable_beat_ids
 from handler.scene_loop import (
+    LEAVE_OPTION_MIN_HISTORY,
     PickOption,
     PlayerAction,
     TypeText,
@@ -46,18 +47,19 @@ class SessionBudgetExceeded(Exception):
     whose player never commits to an ending."""
 
 
-# Coverage: the simulated player normally leaves ONLY at a soft-close, so the
-# engine's mid-scene map walk (a WalkTo that ends a Continue turn — the live
-# "Step outside" / map exit in the real UI) would never be exercised by the
-# harness. Give it a small, seeded chance to walk out mid-scene once a scene
-# has some content behind it, so the eval covers that path too. Seeded per
-# session for reproducibility within a run.
-MID_SCENE_WALK_P = 0.12
-MID_SCENE_WALK_MIN_TURNS = 3
+# Faithfulness: in the real UI the map exit ("Step outside") is live on every
+# turn once a scene has a couple of turns behind it, so a player who feels a
+# scene has stopped paying off just leaves. The harness mirrors that by offering
+# the player a Leave choice on every eligible Continue turn (see
+# request_player_input). Previously the player could ONLY leave at a choice-
+# author soft-close or on a rare seeded coin flip, so it milled fruitlessly —
+# inflating filler_turn_ratio and starving exploration (a single post-office
+# scene ran 43 straight filler turns in the 20260520-194311 run). The leave
+# affordance unlocks after the same LEAVE_OPTION_MIN_HISTORY the UI uses.
 
 
 class Player(Protocol):
-    async def pick_option(self, prose_part: ProsePart) -> int: ...
+    async def pick_option(self, prose_part: ProsePart, *, can_leave: bool = False) -> int: ...
     async def pick_free_text(self, req: FreeText) -> str: ...
     async def pick_walk(self, state: State, world: World) -> str: ...
 
@@ -160,7 +162,6 @@ async def run_session(
     started_at = time.strftime("%Y-%m-%dT%H:%M:%S")
     t0 = time.monotonic()
     truncated = False
-    walk_rng = random.Random(session_id)
 
     async def walk_out(s: State, w: World, *, mid_scene: bool) -> WalkTo:
         """Player leaves via the map. The scene budget trips here (only ever on
@@ -178,19 +179,32 @@ async def run_session(
     async def request_player_input(
         prose_part: ProsePart, s: State, w: World
     ) -> PlayerAction:
-        # Map the awaited input back onto the Player protocol's three
-        # methods. The simulated player acts inside the scene (pick /
-        # free-text) and leaves at a soft-close — plus a small seeded chance of
-        # a mid-scene map walk so the eval covers the engine's any-turn WalkTo.
+        # Map the awaited input back onto the Player protocol's three methods.
+        # The simulated player acts inside the scene (pick / free-text), and on
+        # any Continue turn with a couple of turns behind it may instead elect to
+        # Leave via the map — exactly the always-on UI exit — ending the turn
+        # with a WalkTo. That is how a real player escapes a scene that has
+        # stopped paying off.
+        #
+        # Per-turn eval signal: run_turn appended this turn's record (with its
+        # applied beats) BEFORE this callback was awaited, so dialogue_history[-1]
+        # is the prose the player now sees. `fireable` is the set that was
+        # eligible to fire — together they let the single-transition judges ask
+        # "did the beat that fired deserve to, given what was on the table?".
+        applied_beats = (
+            [c.beat_id for c in state.dialogue_history[-1].applied_state_changes]
+            if state.dialogue_history else []
+        )
+        fireable = sorted(fireable_beat_ids(w, s))
         nxt = prose_part.next
         if isinstance(nxt, Continue):
-            if (
-                len(state.dialogue_history) >= MID_SCENE_WALK_MIN_TURNS
-                and walk_rng.random() < MID_SCENE_WALK_P
-            ):
-                return await walk_out(s, w, mid_scene=True)
-            idx = await player.pick_option(prose_part)
             options = nxt.options
+            can_leave = len(state.dialogue_history) >= LEAVE_OPTION_MIN_HISTORY
+            idx = await player.pick_option(prose_part, can_leave=can_leave)
+            if can_leave and idx >= len(options):
+                # Player chose the appended Leave entry over any in-scene option.
+                return await walk_out(s, w, mid_scene=True)
+            idx = min(idx, len(options) - 1)
             rec.transcript.append({
                 "kind": "turn",
                 "scene_id": state.scene_id,
@@ -199,6 +213,8 @@ async def run_session(
                 "options": [o.text for o in options],
                 "pick_index": idx,
                 "pick_text": options[idx].text,
+                "applied_beats": applied_beats,
+                "fireable": fireable,
             })
             return PickOption(index=idx)
         if isinstance(nxt, FreeText):
@@ -207,8 +223,11 @@ async def run_session(
                 "kind": "free_text",
                 "scene_id": state.scene_id,
                 "location": state.player_location,
+                "prose": prose_part.prose,
                 "prompt": nxt.prompt,
                 "typed": typed,
+                "applied_beats": applied_beats,
+                "fireable": fireable,
             })
             return TypeText(text=typed)
         # Soft-close (EndScene): the scene is spent — the player walks.

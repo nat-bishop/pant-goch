@@ -11,14 +11,31 @@ trusted.
 """
 from __future__ import annotations
 
+import asyncio
+import random
+
 from pydantic import BaseModel
 from pydantic_ai import Agent
+from pydantic_ai.exceptions import ModelHTTPError
 from pydantic_ai.models.google import GoogleModel
 from pydantic_ai.providers.google import GoogleProvider
 
 from handler.schemas import FreeText, ProsePart
 from handler.state import State
 from handler.world import World
+
+# The cloud player rides a shared Gemini endpoint that intermittently returns
+# 5xx / 429 under load. Without a retry these transient blips raise out of
+# run_session and the WHOLE session is dropped from the run — a Gemini hiccup
+# silently shrank a 16-session playtest to 2 surviving artifacts, and the report
+# presented those 2 as the corpus. Retry with backoff so a transient provider
+# error costs a few seconds, not a session.
+_RETRYABLE_STATUS = {408, 409, 425, 429, 500, 502, 503, 504}
+_MAX_ATTEMPTS = 6
+_TRANSIENT_HINTS = (
+    "overloaded", "temporarily", "unavailable", "timeout", "timed out",
+    "connection", "reset", "502", "503", "500", "504", "429",
+)
 
 
 _BASE_INSTRUCTIONS = (
@@ -44,10 +61,21 @@ def _clamp(value: int, low: int, high: int) -> int:
     return max(low, min(high, value))
 
 
-def render_scene(prose: str, options: list) -> str:
+# The always-available map exit, mirroring the real UI's "Step outside" entry
+# (engine appends it to the options after LEAVE_OPTION_MIN_HISTORY turns). The
+# eval player picks this when a scene has stopped being productive — the agency
+# a human has and the harness previously denied (it could only keep picking
+# options or leave on a rare coin flip).
+LEAVE_CHOICE_LABEL = (
+    "Leave — you've got what there is to get here for now; step out and move on "
+    "elsewhere in the village."
+)
+
+
+def render_scene(prose: str, labels: list[str]) -> str:
     lines = [prose.strip(), "", "Your options:"]
-    for i, opt in enumerate(options, start=1):
-        lines.append(f"  {i}. {opt.text}")
+    for i, label in enumerate(labels, start=1):
+        lines.append(f"  {i}. {label}")
     lines.append("")
     lines.append(
         "Reply with the number of the option your character chooses, and a one-"
@@ -68,9 +96,17 @@ def render_walk(state: State, world: World, adjacents: list[str]) -> str:
     here = world.locations[state.player_location].name
     lines = [f"You are leaving {here}. Where do you go next?", "", "You can walk to:"]
     for i, loc_id in enumerate(adjacents, start=1):
-        lines.append(f"  {i}. {world.locations[loc_id].name}")
+        loc = world.locations[loc_id]
+        # First sentence of the authored description — the same place-character
+        # a human reads off the map — so the player navigates with intent
+        # rather than picking a bare name blind.
+        gist = loc.description.strip().split(". ")[0].replace("\n", " ").strip()
+        lines.append(f"  {i}. {loc.name} — {gist}.")
     lines.append("")
-    lines.append("Reply with the number of the place your character heads to.")
+    lines.append(
+        "Reply with the number of the place your character heads to. As a "
+        "journalist, favour leads and places you have not yet followed up."
+    )
     return "\n".join(lines)
 
 
@@ -92,24 +128,48 @@ class GeminiPlayer:
         )
         self.history: list = []
 
+    async def _run(self, prompt: str, **kwargs):
+        """Run the agent with retry+backoff on transient provider errors,
+        advancing `self.history` only on success."""
+        delay = 1.0
+        for attempt in range(1, _MAX_ATTEMPTS + 1):
+            try:
+                result = await self.agent.run(
+                    prompt, message_history=self.history, **kwargs
+                )
+                self.history = result.all_messages()
+                return result
+            except Exception as e:  # noqa: BLE001 — narrow to transient below
+                status = getattr(e, "status_code", None)
+                transient = (
+                    (isinstance(e, ModelHTTPError) and status in _RETRYABLE_STATUS)
+                    or (status in _RETRYABLE_STATUS)
+                    or any(h in str(e).lower() for h in _TRANSIENT_HINTS)
+                )
+                if not transient or attempt == _MAX_ATTEMPTS:
+                    raise
+                await asyncio.sleep(delay + random.uniform(0, 0.75))
+                delay = min(delay * 2, 30.0)
+
     async def _pick_index(self, prompt: str, n: int) -> int:
-        result = await self.agent.run(
-            prompt, output_type=PlayerChoice, message_history=self.history,
-        )
-        self.history = result.all_messages()
+        result = await self._run(prompt, output_type=PlayerChoice)
         return _clamp(result.output.choice - 1, 0, n - 1)
 
-    async def pick_option(self, prose_part: ProsePart) -> int:
+    async def pick_option(self, prose_part: ProsePart, *, can_leave: bool = False) -> int:
+        """Choose among the offered options. When `can_leave` is True, a final
+        Leave entry is appended (index == len(options)); the caller routes that
+        index to a map walk. Mirrors the real UI, where the map exit is live on
+        every turn once a scene has a couple of turns behind it."""
         options = prose_part.next.options  # type: ignore[union-attr]
+        labels = [o.text for o in options]
+        if can_leave:
+            labels.append(LEAVE_CHOICE_LABEL)
         return await self._pick_index(
-            render_scene(prose_part.prose, options), len(options),
+            render_scene(prose_part.prose, labels), len(labels),
         )
 
     async def pick_free_text(self, req: FreeText) -> str:
-        result = await self.agent.run(
-            render_free_text(req.prompt), output_type=str, message_history=self.history,
-        )
-        self.history = result.all_messages()
+        result = await self._run(render_free_text(req.prompt), output_type=str)
         return result.output.strip() or "I take a moment to look around."
 
     async def pick_walk(self, state: State, world: World) -> str:

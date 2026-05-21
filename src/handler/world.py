@@ -194,7 +194,10 @@ def _check_beat_refs(beats: dict[str, Beat]) -> None:
     """Invariant 8 — every requires_beats / requires_any_beats / blocked_by_beats
     reference resolves to a defined beat id; no self-reference."""
     for beat in beats.values():
-        for field_name in ("requires_beats", "requires_any_beats", "blocked_by_beats"):
+        for field_name in (
+            "requires_beats", "requires_any_beats", "blocked_by_beats",
+            "requires_count_beats",
+        ):
             for ref in getattr(beat, field_name):
                 if ref == beat.id:
                     raise WorldLoadError(
@@ -236,27 +239,27 @@ def _check_beat_location_refs(
 
 
 def _check_beats_gated(beats: dict[str, Beat]) -> None:
-    """Invariant 14 — every beat carries ≥1 hard gate (requires_beats,
-    requires_any_beats, requires_npcs_present, or requires_location) OR is
-    explicitly marked `always_available`. An ungated, unmarked beat is
-    globally fireable from turn 1 regardless of place or progress — the
+    """Invariant 14 — every beat carries ≥1 hard gate: requires_beats,
+    requires_any_beats, requires_npcs_present, or requires_location. An ungated
+    beat is globally fireable from turn 1 regardless of place or progress — the
     failure mode that let `examined_the_crash_site` / `village_runs_you_out`
-    fire in the empty prologue. The only legitimate ungated beat is the
-    player's always-available "I'm walking away" commitment, which opts in
-    via `always_available`."""
+    fire in the empty prologue (and, once those were gated, let
+    `decided_to_walk_away` fire the instant the player stepped toward the door).
+    No exceptions: even the player's "I'm walking away" commitment gates on
+    having actually engaged with the village (requires_any_beats)."""
     for beat in beats.values():
         has_gate = (
             beat.requires_beats
             or beat.requires_any_beats
             or beat.requires_npcs_present
             or beat.requires_location
+            or beat.requires_count
         )
-        if not has_gate and not beat.always_available:
+        if not has_gate:
             raise WorldLoadError(
                 f"beat {beat.id!r}: no hard gate (requires_beats / "
                 f"requires_any_beats / requires_npcs_present / "
-                f"requires_location) and not marked always_available — it "
-                f"would be globally fireable from turn 1"
+                f"requires_location) — it would be globally fireable from turn 1"
             )
 
 
@@ -270,7 +273,11 @@ def _check_no_requires_cycles(beats: dict[str, Beat]) -> None:
 
     def visit(bid: str, path: list[str]) -> None:
         colour[bid] = GREY
-        deps = list(beats[bid].requires_beats) + list(beats[bid].requires_any_beats)
+        deps = (
+            list(beats[bid].requires_beats)
+            + list(beats[bid].requires_any_beats)
+            + list(beats[bid].requires_count_beats)
+        )
         for dep in deps:
             if colour[dep] == GREY:
                 cycle = path[path.index(dep):] + [dep]

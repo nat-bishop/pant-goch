@@ -77,6 +77,13 @@ test-integration:
 playtest:
 	SMALLVILLE_USE_INFERNO=1 uv run python -m evals.run
 
+# LLM-as-judge pass over a recorded run. Reads dumped artifacts only (no llama
+# session); defaults to local Qwen via inferno. RUN=<artifact dir> required.
+# e.g. make judge RUN=evals/artifacts/20260520-161349
+.PHONY: judge
+judge:
+	SMALLVILLE_USE_INFERNO=1 uv run python -m evals.judge_run --run $(RUN)
+
 .PHONY: typecheck
 typecheck:
 	cd web && npm run typecheck

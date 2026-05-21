@@ -51,7 +51,11 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field, create_model, model_validator
 from pydantic_ai import Agent, NativeOutput
-from pydantic_ai.messages import ModelMessage
+from pydantic_ai.messages import (
+    ModelMessage,
+    ModelRequest,
+    UserPromptPart,
+)
 from pydantic_ai.models.openai import OpenAIChatModel
 
 from .engine import fireable_beat_ids, present_npc_ids
@@ -61,6 +65,7 @@ from .prompts import (
     build_choice_author_system_prompt,
     build_choice_author_user_message,
     build_closing_prose_user_message,
+    build_chronicler_anchor_stub,
     build_chronicler_system_prompt,
     build_chronicler_user_prompt,
     build_free_text_gate_system_prompt,
@@ -583,10 +588,19 @@ class ChroniclerRuntime:
 
     `message_history` accumulates one user + one assistant message per
     scene-end; the conversation IS the case file so far. Replaced on
-    each successful call with `result.all_messages()`.
+    each successful call with `result.all_messages()`. Past scenes' full
+    transcripts are compacted to a tiny anchor stub on the following call
+    (see `emit_chronicle_entry`), so history stays bounded.
+
+    `_pending_stub` carries the anchor stub for the most-recently-emitted
+    scene. Its full transcript is still live in `message_history` (it was
+    needed to write that scene's entry); on the NEXT call it becomes
+    "past" and gets rewritten down to this stub. None before the first
+    scene.
     """
 
     message_history: list[ModelMessage] = field(default_factory=list)
+    _pending_stub: str | None = field(default=None)
 
 
 def build_chronicler_agent(
@@ -629,6 +643,39 @@ def make_chronicler_runtime() -> ChroniclerRuntime:
     return ChroniclerRuntime()
 
 
+def _stub_last_user_request(
+    messages: list[ModelMessage], stub: str
+) -> list[ModelMessage]:
+    """Rewrite the `UserPromptPart` of the LAST `ModelRequest` that carries
+    one down to `stub`, leaving every other part (system prompt) and every
+    `ModelResponse` (the case-file entries) verbatim.
+
+    Keying on "last request that has a UserPromptPart" — rather than the
+    last request outright — is retry-safe: a failed output validation
+    appends a request whose part is a `RetryPromptPart`, not a
+    `UserPromptPart`, so the real transcript request is still the one we
+    compact. No-op if there is no such request (empty history)."""
+    target_idx = next(
+        (
+            i
+            for i in reversed(range(len(messages)))
+            if isinstance(messages[i], ModelRequest)
+            and any(isinstance(p, UserPromptPart) for p in messages[i].parts)
+        ),
+        None,
+    )
+    if target_idx is None:
+        return messages
+    target = messages[target_idx]
+    new_parts = [
+        UserPromptPart(stub) if isinstance(p, UserPromptPart) else p
+        for p in target.parts
+    ]
+    out = list(messages)
+    out[target_idx] = ModelRequest(parts=new_parts, instructions=target.instructions)
+    return out
+
+
 async def emit_chronicle_entry(
     bundle: AgentBundle,
     runtime: ChroniclerRuntime,
@@ -647,15 +694,22 @@ async def emit_chronicle_entry(
     at the scene's location.
 
     Side effects:
-      - Mutates `runtime.message_history` with the just-rendered
+      - Mutates `runtime.message_history`: compacts the PREVIOUS scene's
+        full transcript to its anchor stub, then appends this scene's
         user+assistant pair. Subsequent calls see this scene's entry in
-        their conversation context.
+        their conversation context; past transcripts are gone, so history
+        stays bounded and the stub prefix stays cache-stable.
+      - Sets `runtime._pending_stub` for the next call to demote.
       - Does NOT mutate `state` — caller merges fields explicitly.
     """
     assert state.dialogue_history, "emit_chronicle_entry: empty dialogue_history"
-    # The populator only runs at scene entry, so the live state matches
-    # who was there for the whole scene.
+    # The previous scene's transcript is now "past" — collapse it to its stub.
+    if runtime._pending_stub is not None:
+        runtime.message_history = _stub_last_user_request(
+            runtime.message_history, runtime._pending_stub
+        )
     user_prompt = build_chronicler_user_prompt(state, world)
+    this_stub = build_chronicler_anchor_stub(state, world)
     DynamicChronicleEntry = _build_chronicle_entry_type(
         present_npc_ids(world, state)
     )
@@ -665,6 +719,7 @@ async def emit_chronicle_entry(
         output_type=NativeOutput(DynamicChronicleEntry, strict=True),
     )
     runtime.message_history = result.all_messages()
+    runtime._pending_stub = this_stub
     # Single canonical construction: fires _no_duplicate_npc_ids and applies
     # the engine-side whitespace filter (the one rule grammar can't enforce)
     # in one pass.

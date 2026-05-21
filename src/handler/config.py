@@ -106,6 +106,20 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("GEMINI_API_KEY", "GOOGLE_API_KEY"),
     )
 
+    # ───────── eval LLM judges ─────────
+    # The judges (evals/judges/) score recorded artifacts. Default to local Qwen
+    # served by inferno on its OpenAI-compatible endpoint — no API key needed,
+    # independent of the Gemma-under-test, and inferno's continuous batching
+    # absorbs the whole batch fired at once. Override with a `gemini:`/`claude:`
+    # prefix to A/B against a cloud judge. `judge_base_url` defaults to inferno's
+    # /v1; only consulted for the local (OpenAI-compatible) path.
+    judge_model: str = "qwen-3.6-35b-a3b"
+    judge_base_url: str | None = None  # None → f"{inferno_url}/v1"
+
+    @property
+    def resolved_judge_base_url(self) -> str:
+        return self.judge_base_url or f"{self.inferno_url.rstrip('/')}/v1"
+
     # ───────── world directory ─────────
     # Path to the world bible (locations + cast + truth + brief). None →
     # fall back to world/ relative to the project root. Tests point at

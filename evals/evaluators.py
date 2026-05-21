@@ -1,12 +1,13 @@
-"""Deterministic invariant evaluators (Bucket 1) + the corpus reachability
-aggregate.
+"""Deterministic invariant gates (Tier 0) — pure functions of a `SessionArtifact`.
 
-Each evaluator is a pure function of the `SessionArtifact`, scoring signal the
-engine does not already guarantee (an ending was reached; the session wasn't
-truncated; the chronicler's unconstrained prose didn't repeat a case-file
-entry). The reachability sweep is a corpus-level function (not a per-case
-evaluator) because dead-content detection is only meaningful across the whole
-run.
+Each gate scores signal the engine does not already guarantee and that must
+*hold* on every run (an ending was reached; the session wasn't truncated; no
+duplicate case-file entries; an ending wasn't committed prematurely). Graded
+distributional signal — variety, coverage, agency — lives in `metrics.py`; LLM
+behavioural judgments — was a beat's firing warranted — live in `judges/`.
+
+The reachability sweep (`coverage_report`) is corpus-level, not a per-case gate,
+so it is re-exported from `metrics.py`.
 """
 from __future__ import annotations
 
@@ -17,7 +18,25 @@ from pydantic_evals.evaluators import Evaluator, EvaluatorContext
 from handler.models import Beat, Ending
 from handler.world import World
 
+from .metrics import coverage_report, distinct_locations
 from .session import SessionArtifact
+
+__all__ = [
+    "EndingReached",
+    "NotTruncated",
+    "NoDuplicateCaseFiles",
+    "EndingEarned",
+    "ExploredBeyondStart",
+    "NoPrematureEnding",
+    "invariant_evaluators",
+    "coverage_report",
+]
+
+# A committed ending should follow real investigation, not a scene-2 collapse.
+# Tuned to the 20260520 failure (median 2 scenes / ~2 locations): any ending
+# below these floors is premature regardless of which beat fired.
+MIN_SCENES_FOR_ENDING = 3
+MIN_LOCATIONS_FOR_ENDING = 3
 
 
 @dataclass
@@ -48,19 +67,6 @@ class NoDuplicateCaseFiles(Evaluator):
         return len(entries) == len(set(entries))
 
 
-def _distinct_locations(art: SessionArtifact) -> set[str]:
-    """Every location the session touched, read from the transcript (turn /
-    free_text / scene_close carry `location`; walk carries `from`/`to`)."""
-    locs: set[str] = set()
-    for e in art.transcript:
-        if "location" in e:
-            locs.add(e["location"])
-        if e.get("kind") == "walk":
-            locs.add(e["from"])
-            locs.add(e["to"])
-    return locs
-
-
 def _committed_ending(art: SessionArtifact, world: World) -> Ending | None:
     """The Ending the session committed to, or None when there is nothing to
     judge (truncated, no ending fired, or an id the world doesn't define)."""
@@ -87,6 +93,11 @@ class EndingEarned(Evaluator):
     beat was emitted prematurely — exactly the regression that let
     `iwan_finds_peace` / `eluned_arrested…` fire in the empty prologue. The
     walk-away ending (no evidence-bearing decision beat) passes vacuously.
+
+    NOTE: largely SUPERSEDED by `NoPrematureEnding` — this passes vacuously on
+    the dominant failure (walk-away firing at scene 2), since `decided_to_walk_away`
+    gates on engagement beats, not evidence. Kept for the evidence-specific
+    regression it was born from; `NoPrematureEnding` is the live depth gate.
     """
 
     world: World
@@ -104,10 +115,11 @@ class EndingEarned(Evaluator):
 
 @dataclass
 class ExploredBeyondStart(Evaluator):
-    """A session that reached an evidence-bearing ending must have left the
-    starting location. Catches the 'whole game collapses into the prologue'
-    failure: no investigation can be earned without visiting the village. A
-    deliberate walk-away (no evidence-bearing decision beat) is exempt.
+    """Any committed ending must have come after the player left the starting
+    location. Catches the 'whole game collapses into the prologue' failure: no
+    ending — not even walking away — is reachable without engaging the village,
+    so a session that commits to one while confined to the start location is a
+    regression (a beat fired where it should not have).
     """
 
     world: World
@@ -116,17 +128,37 @@ class ExploredBeyondStart(Evaluator):
         ending = _committed_ending(ctx.output, self.world)
         if ending is None:
             return True
-        if not _evidence_decision_beats(ending, self.world):
-            return True  # walk-away / trivial ending — quitting at the start is legal
-        return len(_distinct_locations(ctx.output)) > 1
+        return len(distinct_locations(ctx.output)) > 1
+
+
+@dataclass
+class NoPrematureEnding(Evaluator):
+    """ANY committed ending must follow real investigation: at least
+    `MIN_SCENES_FOR_ENDING` scenes AND `MIN_LOCATIONS_FOR_ENDING` distinct
+    locations. This is the live gate the prologue-era checks miss — it fires on
+    the scene-2 collapse (walk-away / run-out firing after one Maud conversation)
+    regardless of which beat ended the game. Truncated / no-ending runs are
+    exempt (reported by NotTruncated / EndingReached)."""
+
+    world: World
+
+    def evaluate(self, ctx: EvaluatorContext) -> bool:
+        art = ctx.output
+        if _committed_ending(art, self.world) is None:
+            return True
+        return (
+            art.scene_count >= MIN_SCENES_FOR_ENDING
+            and len(distinct_locations(art)) >= MIN_LOCATIONS_FOR_ENDING
+        )
 
 
 def invariant_evaluators(world: World) -> list[Evaluator]:
     """The full per-session invariant set, ready to attach to a Dataset.
 
-    `world`-aware so `EndingEarned` / `ExploredBeyondStart` can judge whether a
-    reached ending was actually earned (its evidence unlocked, the village
-    visited) rather than fired prematurely in the prologue.
+    `world`-aware so the depth/evidence gates can judge whether a reached ending
+    was earned (its evidence unlocked, enough scenes/locations behind it) rather
+    than fired prematurely. `NoPrematureEnding` is the live depth gate;
+    `EndingEarned`/`ExploredBeyondStart` cover the older evidence/prologue cases.
     """
     return [
         EndingReached(),
@@ -134,24 +166,5 @@ def invariant_evaluators(world: World) -> list[Evaluator]:
         NoDuplicateCaseFiles(),
         EndingEarned(world),
         ExploredBeyondStart(world),
+        NoPrematureEnding(world),
     ]
-
-
-def coverage_report(artifacts: list[SessionArtifact], world: World) -> dict:
-    """Corpus-level reachability sweep: which authored beats / endings never
-    fired across the whole run. The dead-content detector."""
-    fired_beats: set[str] = set()
-    reached_endings: set[str] = set()
-    for art in artifacts:
-        fired_beats.update(art.unlocked_beats)
-        if art.ending_id:
-            reached_endings.add(art.ending_id)
-    return {
-        "sessions": len(artifacts),
-        "beats_total": len(world.beats),
-        "beats_fired": len(fired_beats & set(world.beats)),
-        "beats_never_fired": sorted(set(world.beats) - fired_beats),
-        "endings_total": len(world.endings),
-        "endings_reached": sorted(reached_endings),
-        "endings_never_reached": sorted(set(world.endings) - reached_endings),
-    }

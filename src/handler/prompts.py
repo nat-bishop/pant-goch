@@ -244,18 +244,35 @@ The engine validates and applies your bundle, then a separate prose agent
 writes the prose conditioned on what fired. You do not write prose.
 
 ## Rules
-1. Unlock beats when their notes_to_llm describes the moment that just
-   happened in the conversation. Re-read the prereqs. Don't unlock
-   prematurely — a beat earns its moment, it does not skip ahead.
+1. **A beat fires in response to the PLAYER'S most recent action.** Look at
+   what the player just did or said this turn (the last line of ## This
+   Scene So Far). A beat fires only if THAT action is the earning moment its
+   notes_to_llm describes — not if the action is merely adjacent, preparatory,
+   or in the vicinity. The player examining the envelope is NOT reading the
+   letter; waiting by the phone is NOT making the call; pressing about the
+   road is NOT showing they care about Megan as a person. Re-read the
+   beat's notes and prerequisites and hold the action to them.
 
-2. Decision beats (Decided to ...) fire only when the player explicitly
+2. **The first turn of a scene fires NOTHING.** If ## This Scene So Far says
+   it is the first turn (the player has not acted yet — the narrator is only
+   setting the scene), emit zero beats. Nothing has been earned until the
+   player does something. Beats begin firing on the next turn, in response
+   to a player action.
+
+3. **When in doubt, emit zero.** A spurious beat corrupts the rest of the
+   session — it cannot be taken back, and the narrator will be told to depict
+   a moment that did not happen. A missed beat costs nothing: it is still on
+   the table next turn. Most turns emit zero. Never fire a beat to "move
+   things along."
+
+4. Decision beats (Decided to ...) fire only when the player explicitly
    commits — "I'm filing it", "I'm walking away", "I'm going up to
    Tan-y-coed". A decision beat only appears in ## Reachable Beats once
    the evidence it rests on is already unlocked; if you don't see it, the
    player has not earned that choice yet. Endings are engine-decided once
    the right decision beat is in state; you do not emit them.
 
-3. Stay within the established cast and locations. The bible above is
+5. Stay within the established cast and locations. The bible above is
    complete.
 """
 
@@ -327,9 +344,30 @@ The register and rhythm to match:
 4. NPC dialogue is in quotation marks, registered to each NPC's
    voice_sample above. Match the register, don't imitate verbatim.
    NPCs speak like people in a Welsh Marches village, not like
-   characters announcing what they know.
+   characters announcing what they know. **Hold the register even when
+   the player pushes hard.** Pressure does not turn a character into
+   someone else: Maud stays warm and deflecting (she gossips and lies by
+   omission, she does not deliver cold noir speeches about "the truth");
+   a guarded man like Tom goes quieter and shorter, not louder or more
+   theatrical. Match the attitude in the cast notes, not a generic
+   "hostile NPC."
 
-5. Stay inside what the player has observed. Write only what NPCs
+5. **If ## State Changes Just Applied lists a beat, your prose this turn
+   MUST depict that beat's specific event** — the actual words said, the
+   thing handed over, the memory shared — not a vague gesture toward it.
+   "Tom speaks of Megan" means Tom names a real, particular memory (a
+   song, a sports day); it is not Tom muttering "lovely girl" and
+   changing the subject. If no beat is listed, nothing of investigative
+   weight has shifted: write the smaller moment honestly and do not
+   invent a reveal.
+
+6. The player may say untrue things — assert events that did not happen,
+   put words in a character's mouth, name a motive that is wrong. Do NOT
+   adopt the false premise or invent detail that confirms it. The NPC
+   deflects, corrects, goes blank, or simply doesn't follow — the world's
+   truth (above) does not bend to a confident question.
+
+7. Stay inside what the player has observed. Write only what NPCs
    visibly choose to reveal; their hidden thoughts stay hidden.
    Atmosphere and small physical detail — a glass turned on the bar,
    a wood pigeon going off — beat exposition.
@@ -340,11 +378,11 @@ The register and rhythm to match:
    it, or let the room quietly give out — so the scene can reach a
    natural close instead of spawning an endless trail of fresh items.
 
-6. Stay within the established cast and locations. Minor incidental
+8. Stay within the established cast and locations. Minor incidental
    details (weather, a dog, a mug on the table) are fine. New named
    people or places are not.
 
-7. The player stays inside the building / yard / room the scene began
+9. The player stays inside the building / yard / room the scene began
    in for the entire scene. You may reference what is visible from a
    window, beyond a hedge, or further down a track as atmosphere —
    but the player's body does NOT cross the threshold of the scene's
@@ -418,6 +456,13 @@ emit Continue or Leave.)
    track", "Step into the lane", "Head to the wood", "Move toward
    the kitchen and out the back door"). Departure is what Leave is
    for; the engine and map handle travel, not the prose.
+6. Make the options MATTER. Each should be a distinct intent that could
+   steer the investigation or carry a social cost — press vs. soften,
+   pursue one thread vs. another, reveal what you know vs. hold it back.
+   Avoid cosmetic busywork that changes nothing: re-examining scenery,
+   "look closer at the X", "inspect the Y", inventory-poking. A turn
+   should feel like a decision, not a click. If the only honest options
+   left are cosmetic, the scene has run its course — emit Leave instead.
 """
 
 
@@ -651,7 +696,8 @@ def build_prose_writer_user_message(
         f"## State Changes Just Applied\n{_render_applied_changes(applied, world)}"
     )
 
-    # Per-turn anchor for system rule 7 — Gemma 4 needs the reminder.
+    # Per-turn anchor for the "stay inside this location" voice rule — Gemma 4
+    # needs the reminder.
     parts.append(_render_stay_here(state, world))
 
     parts.append("## Write\nWrite the prose for what just happened.")
@@ -891,10 +937,15 @@ def build_caption_author_user_message(state: State, world: World, prose: str) ->
 
 def build_chronicler_system_prompt(world: World) -> str:
     """Stable system prompt for the chronicler. Baked once at bundle
-    construction. Carries locations + cast (with knowledge) + the slim crime
-    narrative + a compact beat catalog (names + descriptions only, no firing
-    guidance — the chronicler doesn't fire beats). Endings are omitted; they
-    are pure engine data.
+    construction. Carries locations + cast (voice only, NO knowledge).
+
+    Deliberately withholds the hidden truth: the crime narrative, NPC
+    `knowledge` fields, and the beat catalog are all OMITTED. The
+    chronicler writes only what the journalist witnessed in the scene
+    transcript she is handed — so she cannot leak a conclusion the player
+    has not yet earned. (Earlier versions fed her the full solution and
+    she leaked it into entries.) Voice Rule 3 is now self-enforcing; it
+    stays as defense-in-depth.
 
     Dual output per call: `case_file_entry` (UI prose, sidebar) AND
     `npc_memory_updates` (structured per-NPC notes surfaced to Phase 2
@@ -907,19 +958,14 @@ def build_chronicler_system_prompt(world: World) -> str:
 You are the player's own voice writing up their field notes after a
 scene ends. You are not a narrator — you are the journalist herself,
 sitting at the desk in the Old Vicarage that evening, recording what
-just happened so it does not slip away.
+just happened so it does not slip away. You know only what you have seen
+and been told — write nothing you have not earned in the room.
 
 ## The World
 {_render_locations_block(world)}
 
 ## The Cast
-{_render_cast_block(world, voice_only=False)}
-
-## What Happened
-{world.crime.strip()}
-
-## Story Beats
-{_render_beats_compact(world)}
+{_render_cast_block(world, voice_only=True)}
 
 ## Your Job
 After every scene the player walks out of, you emit ONE structured
@@ -964,14 +1010,27 @@ For a scene at the post office on a second visit where Maud closed up:
 ## Voice Rules
 1. First person, past tense, in BOTH fields. "I sat down at the bar
    next to Tom Bevan." Not "the player did X." Not omniscient.
-2. Terse. Short sentences are stronger than long ones. Editorialise
-   only on your own reactions, not the scene.
-3. Stay inside what the player has seen and heard. The bible tells you
-   the truth; the journalist writes only what she has been told.
+2. Terse. Report, don't lacquer. Short declaratives beat long ones; one
+   plain image lands harder than three stacked metaphors. Editorialise
+   only on your own reactions, not the scene. Avoid "like a…", "less a…
+   than a…", and grand abstractions ("a demarcation line between the
+   town and its secrets") — say what you saw.
+3. Stay inside what the player has seen and heard. Write only what you
+   were told or shown this scene; never state a conclusion you have not
+   earned in the room.
 4. Write the case file entry as a single paragraph — no numbers, no
    titles.
 5. Sound like the same person across entries. You are writing a
    notebook, not separate articles.
+
+## Case File Example
+For a first, wary conversation with Tom at the pub:
+  case_file_entry: "I found Tom Bevan at the bar, a pint going warm in
+  front of him. He let me sit. He'd known Megan since she was small, he
+  said, and not much more — every question slid off him. When I asked
+  about the night she died he looked at the bottles behind the bar and
+  said the road was bad in the wet. Then he was done talking. I left
+  before he asked me to."
 
 ## Output
 Structured JSON matching the schema. `case_file_entry` is plain text
@@ -980,11 +1039,52 @@ Structured JSON matching the schema. `case_file_entry` is plain text
 """
 
 
+def _chronicler_anchor_lines(state: State, world: World) -> str:
+    """The three scene-anchor lines (location, who was present, beats
+    unlocked) shared by the full per-scene user prompt and the compacted
+    anchor stub. Building them in one place keeps the live prompt and the
+    stored stub byte-identical, so compacting a past transcript never
+    drifts from what was originally sent (see `build_chronicler_anchor_stub`).
+    """
+    loc = world.locations[state.player_location]
+    present_ids = present_npc_ids(world, state)
+    if present_ids:
+        npcs_line = ", ".join(world.npcs[n].name for n in present_ids)
+    else:
+        npcs_line = "no one (you were alone there)"
+    all_scene_changes = [
+        c for turn in state.dialogue_history for c in turn.applied_state_changes
+    ]
+    beats_line = _applied_beat_names(world, all_scene_changes, empty="(none)")
+    return (
+        f"The scene that just ended took place at {loc.id} ({loc.name}).\n"
+        f"Present: {npcs_line}.\n"
+        f"Beats unlocked in this scene: {beats_line}."
+    )
+
+
+def build_chronicler_anchor_stub(state: State, world: World) -> str:
+    """Compacted stand-in for a past scene's full transcript in the
+    chronicler's `message_history`. Once a scene has been distilled into
+    its case-file entry (the assistant reply), the verbatim turn-by-turn
+    transcript is dead weight — the chronicler only needs its own prior
+    entries plus the CURRENT scene's transcript. So on the next call we
+    replace the spent transcript with this stub: the scene anchor plus a
+    sentinel pointing at the entry as the record. See
+    `agents._stub_last_user_request` / `emit_chronicle_entry`.
+    """
+    return (
+        f"{_chronicler_anchor_lines(state, world)}\n"
+        "(Transcript compacted — the case-file entry below is the record.)"
+    )
+
+
 def build_chronicler_user_prompt(state: State, world: World) -> str:
     """The per-scene-end user message: a structured summary of the
     just-completed scene that the chronicler turns into prose. The user
     message accumulates as the user side of a long conversation; each
-    assistant reply is one case-file entry.
+    assistant reply is one case-file entry. On subsequent calls this full
+    transcript is compacted to `build_chronicler_anchor_stub`.
 
     Callers (emit_chronicle_entry) only fire this after a completed
     scene, so dialogue_history is always non-empty by the time we get
@@ -993,18 +1093,7 @@ def build_chronicler_user_prompt(state: State, world: World) -> str:
     live state reflects the whole-scene composition.
     """
     assert state.dialogue_history, "build_chronicler_user_prompt: empty dialogue"
-    loc = world.locations[state.player_location]
     present_ids = present_npc_ids(world, state)
-    if present_ids:
-        npc_names = [world.npcs[n].name for n in present_ids]
-        npcs_line = ", ".join(npc_names)
-    else:
-        npcs_line = "no one (you were alone there)"
-
-    all_scene_changes = [
-        c for turn in state.dialogue_history for c in turn.applied_state_changes
-    ]
-    beats_line = _applied_beat_names(world, all_scene_changes, empty="(none)")
 
     turn_parts: list[str] = []
     for i, turn in enumerate(state.dialogue_history, start=1):
@@ -1043,9 +1132,7 @@ def build_chronicler_user_prompt(state: State, world: World) -> str:
         )
 
     return f"""\
-The scene that just ended took place at {loc.id} ({loc.name}).
-Present: {npcs_line}.
-Beats unlocked in this scene: {beats_line}.
+{_chronicler_anchor_lines(state, world)}
 
 Turn-by-turn:
 {turns_block}
