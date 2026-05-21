@@ -49,15 +49,15 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Annotated, Any, Literal
 
+import logfire
 from pydantic import BaseModel, Field, create_model, model_validator
 from pydantic_ai import Agent, NativeOutput
-from pydantic_ai.messages import (
-    ModelMessage,
-    ModelRequest,
-    UserPromptPart,
-)
+from pydantic_ai.exceptions import UnexpectedModelBehavior
+from pydantic_ai.messages import ModelMessage
 from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.settings import ModelSettings
 
+from .config import THINKING_OFF_EXTRA_BODY
 from .engine import fireable_beat_ids, present_npc_ids
 from .prompts import (
     build_caption_author_system_prompt,
@@ -65,7 +65,6 @@ from .prompts import (
     build_choice_author_system_prompt,
     build_choice_author_user_message,
     build_closing_prose_user_message,
-    build_chronicler_anchor_stub,
     build_chronicler_system_prompt,
     build_chronicler_user_prompt,
     build_free_text_gate_system_prompt,
@@ -150,9 +149,9 @@ class SceneRunnerRuntime:
 
 
 def make_scene_runner_runtime(seed: int | None = None) -> SceneRunnerRuntime:
-    """Construct a fresh scene-runner runtime. Call once per session
-    (mirrors make_chronicler_runtime). `seed` makes the free-text cadence
-    RNG deterministic (default: system entropy)."""
+    """Construct a fresh scene-runner runtime. Call once per session.
+    `seed` makes the free-text cadence RNG deterministic (default: system
+    entropy)."""
     return SceneRunnerRuntime(rng=random.Random(seed))
 
 
@@ -308,14 +307,32 @@ def _build_chronicle_entry_type(
 
 
 def build_scene_runner_bundle(
-    model: OpenAIChatModel, world: World
+    model: OpenAIChatModel, world: World, *, decision_max_tokens: int = 500
 ) -> AgentBundle:
     """Construct the agent bundle for `world`. Bakes seven system prompts
     (Phase 1 classifier, prose writer, choice author, free-text gate,
     caption author, populator, chronicler) and builds one agent per role.
     Per-call dynamic output_type is passed at agent.run() time via
     NativeOutput, except the prose writer which uses `output_type=str`.
+
+    `decision_max_tokens` caps the output of the two empty-list "decision"
+    agents (phase1, populator) — see `decision_settings` below. Defaulted so
+    tests constructing the bundle with `TestModel()` need not thread config;
+    production passes `Settings.decision_agent_max_tokens`.
     """
+    # The two "decide whether to act" agents (phase1, populator) intermittently
+    # open Gemma 4's ungrammared reasoning channel and loop to the provider
+    # token ceiling without ever emitting answer JSON. Capping their output
+    # converts that runaway into a fast `length` finish (→ UnexpectedModelBehavior
+    # → retried by `_run_decision_agent`). MUST re-include THINKING_OFF_EXTRA_BODY:
+    # a per-agent extra_body REPLACES the model-level one (pydantic-ai merges
+    # ModelSettings shallowly per key), so omitting it would re-enable thinking
+    # on the very agents that leak. The content agents keep the model default
+    # (no cap) — prose/chronicle legitimately need long output.
+    decision_settings = ModelSettings(
+        max_tokens=decision_max_tokens,
+        extra_body=THINKING_OFF_EXTRA_BODY,
+    )
     # `name=` is the suffix in the per-agent span name
     # (`invoke_agent {name}` under instrumentation version 3 — set in
     # main.py's `instrument_pydantic_ai` call). Without it, all five
@@ -325,6 +342,7 @@ def build_scene_runner_bundle(
         name="phase1",
         system_prompt=build_phase1_system_prompt(world),
         output_retries=3,
+        model_settings=decision_settings,
     )
     prose_writer = Agent[None, str](
         model=model,
@@ -355,6 +373,7 @@ def build_scene_runner_bundle(
         name="populator",
         system_prompt=build_populator_system_prompt(world),
         output_retries=3,
+        model_settings=decision_settings,
     )
     chronicler = build_chronicler_agent(model, world)
     return AgentBundle(
@@ -370,6 +389,44 @@ def build_scene_runner_bundle(
 
 
 # ───────────────────────── per-call run wrappers ─────────────────────────
+
+
+# Attempts for the two capped decision agents (phase1, populator). Their cap
+# turns a runaway reasoning loop into a fast `length` finish that pydantic-ai
+# raises as UnexpectedModelBehavior; since the leak is intermittent (~6-18% per
+# call), re-rolling recovers the overwhelming majority before the scene_loop
+# falls back to an empty bundle. `output_retries` does NOT cover this — it
+# retries output *validation*, not a token-limit UnexpectedModelBehavior.
+_DECISION_ATTEMPTS = 3
+
+
+async def _run_decision_agent(
+    agent: Agent[None, Any],
+    prompt: str,
+    output_type: NativeOutput,
+    *,
+    attempts: int = _DECISION_ATTEMPTS,
+):
+    """Run a capped decision agent, re-rolling on a runaway (the model opened
+    its reasoning channel and hit the token cap before emitting JSON). Returns
+    the AgentRunResult on success; re-raises the last UnexpectedModelBehavior
+    once attempts are exhausted, so the caller's existing fallback still fires.
+    """
+    last_exc: UnexpectedModelBehavior | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return await agent.run(prompt, output_type=output_type)
+        except UnexpectedModelBehavior as e:
+            last_exc = e
+            logfire.warn(
+                "decision agent runaway; re-rolling",
+                agent=agent.name,
+                attempt=attempt,
+                attempts=attempts,
+                error=str(e),
+            )
+    assert last_exc is not None  # loop ran ≥1 time, so a failure was recorded
+    raise last_exc
 
 
 async def emit_state_changes(
@@ -389,9 +446,10 @@ async def emit_state_changes(
     """
     prompt = build_phase1_user_prompt(state, bundle.world)
     DynamicBundle = _build_state_change_bundle_type(bundle.world, state)
-    result = await bundle.phase1.run(
+    result = await _run_decision_agent(
+        bundle.phase1,
         prompt,
-        output_type=NativeOutput(DynamicBundle, strict=True),
+        NativeOutput(DynamicBundle, strict=True),
     )
     raw = result.output
     canonical_changes = [
@@ -421,9 +479,10 @@ async def emit_placements(
     """
     prompt = build_populator_user_prompt(state, bundle.world)
     DynamicBundle = _build_npc_placement_bundle_type(bundle.world)
-    result = await bundle.populator.run(
+    result = await _run_decision_agent(
+        bundle.populator,
         prompt,
-        output_type=NativeOutput(DynamicBundle, strict=True),
+        NativeOutput(DynamicBundle, strict=True),
     )
     return NpcPlacementBundle.model_validate(result.output.model_dump())
 
@@ -578,39 +637,15 @@ async def emit_caption(
 # ───────────────────────── chronicler agent ─────────────────────────
 
 
-@dataclass
-class ChroniclerRuntime:
-    """Session-scoped state for the conversation-based chronicler.
-    Symmetric with `SceneRunnerRuntime` — both are thin holders for the
-    accumulating `message_history`. The chronicler agent lives on the
-    world-scoped `AgentBundle` (its system prompt is baked from the
-    world bible).
-
-    `message_history` accumulates one user + one assistant message per
-    scene-end; the conversation IS the case file so far. Replaced on
-    each successful call with `result.all_messages()`. Past scenes' full
-    transcripts are compacted to a tiny anchor stub on the following call
-    (see `emit_chronicle_entry`), so history stays bounded.
-
-    `_pending_stub` carries the anchor stub for the most-recently-emitted
-    scene. Its full transcript is still live in `message_history` (it was
-    needed to write that scene's entry); on the NEXT call it becomes
-    "past" and gets rewritten down to this stub. None before the first
-    scene.
-    """
-
-    message_history: list[ModelMessage] = field(default_factory=list)
-    _pending_stub: str | None = field(default=None)
-
-
 def build_chronicler_agent(
     model: OpenAIChatModel, world: World
 ) -> Agent[None, ChronicleEntry]:
-    """Conversation-based chronicler agent. System prompt is baked once
-    (full bible + voice rules); each call appends one user message (scene
-    summary) and gets one assistant message back. Output is structured
-    `ChronicleEntry` = case_file_entry (UI prose) + npc_memory_updates
-    (per-NPC notes surfaced to Phase 2).
+    """Stateless chronicler agent. System prompt is baked once (full bible +
+    voice rules); each call is independent — the per-call user prompt opens
+    with a `## Case File So Far` block (all prior entries) and then this
+    scene's transcript, so no `message_history` is threaded. Output is
+    structured `ChronicleEntry` = case_file_entry (UI prose) +
+    npc_memory_updates (per-NPC notes surfaced to Phase 2).
 
     Output spec is passed at `agent.run()` time (in `emit_chronicle_entry`)
     via `NativeOutput(ChronicleEntry, strict=True)` — same pattern as
@@ -618,12 +653,6 @@ def build_chronicler_agent(
     lets TestModel-based unit tests bypass the native-output profile
     check by monkeypatching `emit_chronicle_entry` or supplying
     `custom_output_args`.
-
-    The OpenAIModelProfile(openai_chat_send_back_thinking_parts=False)
-    flag is set on the model in lifespan / _build_model — load-bearing
-    for this agent. Without it, pydantic-ai's default 'auto' round-trips
-    `ThinkingPart`s into prior assistant content as <think>...</think>
-    blocks, which Gemma 4 cannot tolerate in multi-turn.
     """
     return Agent[None, ChronicleEntry](
         model=model,
@@ -636,49 +665,8 @@ def build_chronicler_agent(
     )
 
 
-def make_chronicler_runtime() -> ChroniclerRuntime:
-    """Construct a fresh ChroniclerRuntime. Call once per session.
-    Mirrors `make_scene_runner_runtime` — the agent itself lives on
-    `AgentBundle.chronicler`."""
-    return ChroniclerRuntime()
-
-
-def _stub_last_user_request(
-    messages: list[ModelMessage], stub: str
-) -> list[ModelMessage]:
-    """Rewrite the `UserPromptPart` of the LAST `ModelRequest` that carries
-    one down to `stub`, leaving every other part (system prompt) and every
-    `ModelResponse` (the case-file entries) verbatim.
-
-    Keying on "last request that has a UserPromptPart" — rather than the
-    last request outright — is retry-safe: a failed output validation
-    appends a request whose part is a `RetryPromptPart`, not a
-    `UserPromptPart`, so the real transcript request is still the one we
-    compact. No-op if there is no such request (empty history)."""
-    target_idx = next(
-        (
-            i
-            for i in reversed(range(len(messages)))
-            if isinstance(messages[i], ModelRequest)
-            and any(isinstance(p, UserPromptPart) for p in messages[i].parts)
-        ),
-        None,
-    )
-    if target_idx is None:
-        return messages
-    target = messages[target_idx]
-    new_parts = [
-        UserPromptPart(stub) if isinstance(p, UserPromptPart) else p
-        for p in target.parts
-    ]
-    out = list(messages)
-    out[target_idx] = ModelRequest(parts=new_parts, instructions=target.instructions)
-    return out
-
-
 async def emit_chronicle_entry(
     bundle: AgentBundle,
-    runtime: ChroniclerRuntime,
     world: World,
     state: State,
 ) -> ChronicleEntry:
@@ -693,33 +681,24 @@ async def emit_chronicle_entry(
     `state.dialogue_history` and `state.player_location` still points
     at the scene's location.
 
-    Side effects:
-      - Mutates `runtime.message_history`: compacts the PREVIOUS scene's
-        full transcript to its anchor stub, then appends this scene's
-        user+assistant pair. Subsequent calls see this scene's entry in
-        their conversation context; past transcripts are gone, so history
-        stays bounded and the stub prefix stays cache-stable.
-      - Sets `runtime._pending_stub` for the next call to demote.
-      - Does NOT mutate `state` — caller merges fields explicitly.
+    Stateless per call: the user prompt opens with a `## Case File So Far`
+    block (all prior entries, append-only) and then this scene's transcript,
+    so the chronicler sees its accumulating record without a conversation
+    history. The append-only framing keeps the prompt prefix cache-stable
+    across scenes — the previous design rewrote a past message down to an
+    anchor stub on every call, which shifted every following token and
+    invalidated the chronicler's whole KV prefix each time. Does NOT mutate
+    `state` — caller merges fields explicitly.
     """
     assert state.dialogue_history, "emit_chronicle_entry: empty dialogue_history"
-    # The previous scene's transcript is now "past" — collapse it to its stub.
-    if runtime._pending_stub is not None:
-        runtime.message_history = _stub_last_user_request(
-            runtime.message_history, runtime._pending_stub
-        )
     user_prompt = build_chronicler_user_prompt(state, world)
-    this_stub = build_chronicler_anchor_stub(state, world)
     DynamicChronicleEntry = _build_chronicle_entry_type(
         present_npc_ids(world, state)
     )
     result = await bundle.chronicler.run(
         user_prompt,
-        message_history=runtime.message_history,
         output_type=NativeOutput(DynamicChronicleEntry, strict=True),
     )
-    runtime.message_history = result.all_messages()
-    runtime._pending_stub = this_stub
     # Single canonical construction: fires _no_duplicate_npc_ids and applies
     # the engine-side whitespace filter (the one rule grammar can't enforce)
     # in one pass.

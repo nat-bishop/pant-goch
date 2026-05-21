@@ -19,7 +19,6 @@ from pydantic_ai.models.test import TestModel
 
 from handler.agents import (
     build_scene_runner_bundle,
-    make_chronicler_runtime,
     make_scene_runner_runtime,
 )
 from handler.schemas import (
@@ -480,7 +479,6 @@ async def test_play_session_emits_location_change_and_log_entry_words(
     """Cross-scene events: location_change fires between scenes;
     log_entry_word events stream the case file entry."""
     world, bundle = world_and_bundle
-    chronicler = make_chronicler_runtime()
     state = make_initial_state(world)
 
     # First scene at pub: Leave with no satisfied ending → EndScene.
@@ -531,7 +529,7 @@ async def test_play_session_emits_location_change_and_log_entry_words(
     state.player_location = "the_slaughtered_lamb"
 
     await play_session(
-        bundle, make_scene_runner_runtime(), chronicler, state, world,
+        bundle, make_scene_runner_runtime(), state, world,
         request_player_input=request,
         emit_event=emit,
     )

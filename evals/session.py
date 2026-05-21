@@ -19,7 +19,6 @@ from typing import Protocol
 
 from handler.agents import (
     AgentBundle,
-    make_chronicler_runtime,
     make_scene_runner_runtime,
 )
 from handler.schemas import (
@@ -155,7 +154,6 @@ async def run_session(
 
     state = make_initial_state(world)
     runtime = make_scene_runner_runtime()
-    chronicler = make_chronicler_runtime()
     rec = _Recorder()
 
     session_id = uuid.uuid4().hex[:8]
@@ -247,7 +245,7 @@ async def run_session(
 
     try:
         await play_session(
-            bundle, runtime, chronicler, state, world,
+            bundle, runtime, state, world,
             request_player_input=request_player_input,
             on_scene_close=on_scene_close,
             on_chronicle_entry=on_chronicle_entry,

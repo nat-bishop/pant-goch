@@ -25,6 +25,17 @@ LLAMA_PORT = 8080
 LLAMA_BASE_URL = f"http://{LLAMA_HOST}:{LLAMA_PORT}/v1"
 
 
+# Per-request body forwarded by the OpenAI SDK to llama-server/inferno. Gemma 4's
+# Jinja template gates its reasoning preamble on `enable_thinking`; setting it
+# False is the only thinking-suppression lever that survives the inferno gateway
+# (where `--reasoning off` is bypassed). Lives here so both `main.py`'s global
+# model settings and `agents.py`'s per-agent decision settings reference ONE
+# payload — a per-agent ModelSettings.extra_body REPLACES the model's (pydantic-ai
+# merges settings shallowly), so the decision agents must re-include this exact
+# dict or they silently lose suppression. See main.py build_model.
+THINKING_OFF_EXTRA_BODY: dict = {"chat_template_kwargs": {"enable_thinking": False}}
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=_PROJECT_ROOT / ".env",
@@ -65,6 +76,17 @@ class Settings(BaseSettings):
     # `OpenAIModelProfile(openai_chat_send_back_thinking_parts=False)` in
     # main.py's lifespan.
     llama_reasoning_mode: Literal["on", "off", "auto"] = "off"
+    # Output ceiling for the two empty-list "decision" agents (populator,
+    # phase1). A clean direct answer is <200 tokens; runaways floor at ~17.8k.
+    # Gemma 4 occasionally opens its (ungrammared) reasoning channel on these
+    # "decide whether to act" agents and loops to the provider ceiling without
+    # ever emitting the answer JSON. 500 forces a direct answer: long reasoning
+    # / runaways are aborted (length finish → UnexpectedModelBehavior) and
+    # re-rolled by the agents.py retry layer. Deliberately tighter than the
+    # ~2.3k max reasoned-then-succeeded output, since a reasoned answer is a
+    # degraded answer for these agents. Does NOT apply to the content agents
+    # (prose/chronicle legitimately need long output).
+    decision_agent_max_tokens: int = 500
     # Per-slot KV allocation. v1's measurement: --no-kv-unified is ~2.7×
     # faster than --kv-unified at 64-concurrent on Gemma 4 E4B Q8 (no shared
     # prefix to amortise). v2 is single-session so the win is even clearer.

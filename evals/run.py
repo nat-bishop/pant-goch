@@ -105,7 +105,9 @@ async def main() -> None:
     # RetryModel absorbs transient engine 500s (KV/VRAM pressure under concurrent
     # load) so a single blip doesn't drop a whole multi-scene session — eval-only.
     model = RetryModel(build_model(api_url))
-    bundle = build_scene_runner_bundle(model, world)  # immutable, shared across sessions
+    bundle = build_scene_runner_bundle(  # immutable, shared across sessions
+        model, world, decision_max_tokens=settings.decision_agent_max_tokens
+    )
 
     print(f"playtest: {len(personas)} personas x {args.runs_per_persona} runs "
           f"@ parallel={parallel}; engine={api_url}; player={settings.playtest_player_model}")

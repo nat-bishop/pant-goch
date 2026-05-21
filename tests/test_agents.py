@@ -178,3 +178,87 @@ def test_phase1_prose_writer_choice_author_system_prompts_diverge():
     assert "## Style Examples" in pw
     assert "## Style Examples" not in p1
     assert "## Style Examples" not in ca
+
+
+# ───────────────────────── decision-agent cap + retry ─────────────────────────
+
+
+def test_decision_agents_carry_max_tokens_cap():
+    """The two empty-list decision agents (phase1, populator) get a per-agent
+    output cap so a runaway reasoning loop fails fast; the content agents keep
+    the model default (no cap) — prose/chronicle legitimately need long output."""
+    world = load_world(FIXTURE_VALID)
+    bundle = build_scene_runner_bundle(TestModel(), world, decision_max_tokens=500)
+
+    for agent in (bundle.phase1, bundle.populator):
+        assert agent.model_settings is not None
+        assert agent.model_settings.get("max_tokens") == 500
+
+    for agent in (
+        bundle.prose_writer,
+        bundle.choice_author,
+        bundle.free_text_gate,
+        bundle.caption_author,
+        bundle.chronicler,
+    ):
+        settings = agent.model_settings or {}
+        assert "max_tokens" not in settings
+
+
+def test_decision_agents_keep_thinking_suppression():
+    """Regression guard: a per-agent extra_body REPLACES the model-level one
+    (pydantic-ai merges ModelSettings shallowly), so the capped agents must
+    re-include the enable_thinking=False payload or they silently re-enable
+    the reasoning channel — the very leak the cap exists to contain."""
+    world = load_world(FIXTURE_VALID)
+    bundle = build_scene_runner_bundle(TestModel(), world, decision_max_tokens=500)
+
+    for agent in (bundle.phase1, bundle.populator):
+        extra_body = (agent.model_settings or {}).get("extra_body", {})
+        assert extra_body["chat_template_kwargs"]["enable_thinking"] is False
+
+
+async def test_run_decision_agent_retries_then_succeeds():
+    """_run_decision_agent re-rolls on UnexpectedModelBehavior (a capped
+    runaway) and returns the first clean result."""
+    from pydantic_ai.exceptions import UnexpectedModelBehavior
+    from handler.agents import _run_decision_agent
+
+    class _FlakyAgent:
+        name = "populator"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def run(self, prompt, *, output_type):
+            self.calls += 1
+            if self.calls < 3:
+                raise UnexpectedModelBehavior("token limit exceeded")
+            return "ok"
+
+    agent = _FlakyAgent()
+    result = await _run_decision_agent(agent, "prompt", object(), attempts=3)
+    assert result == "ok"
+    assert agent.calls == 3
+
+
+async def test_run_decision_agent_reraises_after_exhaustion():
+    """Once attempts are spent the last UnexpectedModelBehavior propagates, so
+    the scene_loop's empty-bundle fallback still fires."""
+    from pydantic_ai.exceptions import UnexpectedModelBehavior
+    from handler.agents import _run_decision_agent
+
+    class _AlwaysFails:
+        name = "phase1"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def run(self, prompt, *, output_type):
+            self.calls += 1
+            raise UnexpectedModelBehavior("token limit exceeded")
+
+    agent = _AlwaysFails()
+    with pytest.raises(UnexpectedModelBehavior):
+        await _run_decision_agent(agent, "prompt", object(), attempts=2)
+    assert agent.calls == 2

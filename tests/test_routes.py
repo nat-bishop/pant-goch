@@ -17,7 +17,6 @@ from pydantic_ai.models.test import TestModel
 import handler.main as main
 from handler.agents import (
     build_scene_runner_bundle,
-    make_chronicler_runtime,
     make_scene_runner_runtime,
 )
 from handler.main import FreeTextBody, PickBody, SessionRuntime, WalkBody
@@ -43,7 +42,6 @@ def _session(awaiting_next, *, location: str = "the_old_vicarage") -> SessionRun
     rt = SessionRuntime(
         bundle=bundle,
         scene_runner=make_scene_runner_runtime(),
-        chronicler=make_chronicler_runtime(),
         state=state,
         world=world,
     )

@@ -17,7 +17,6 @@ from pydantic_ai.models.test import TestModel
 
 from handler.agents import (
     build_scene_runner_bundle,
-    make_chronicler_runtime,
     make_scene_runner_runtime,
 )
 from handler.engine import FREE_TEXT_FALLBACK, enter_scene
@@ -615,16 +614,15 @@ def _make_session_fixtures():
     world = load_world(FIXTURE_VALID)
     bundle = build_scene_runner_bundle(TestModel(), world)
     runtime = make_scene_runner_runtime()
-    chronicler = make_chronicler_runtime()
     state = make_initial_state(world)
-    return world, bundle, runtime, chronicler, state
+    return world, bundle, runtime, state
 
 
 async def test_play_session_calls_both_callbacks_and_terminates_on_end_game(monkeypatch):
     """Two scenes. Scene 2's third turn fires the decision beat via
     Phase 1, then the choice author emits Leave → engine resolves
     EndGame."""
-    world, bundle, runtime, chronicler, state = _make_session_fixtures()
+    world, bundle, runtime, state = _make_session_fixtures()
     decision_beats = world.endings["published_story"].requires_beats
 
     _patch_populator(monkeypatch)
@@ -659,7 +657,7 @@ async def test_play_session_calls_both_callbacks_and_terminates_on_end_game(monk
         log_entries.append((s, o))
 
     terminal = await play_session(
-        bundle, runtime, chronicler, state, world,
+        bundle, runtime, state, world,
         request_player_input=_walk_first_adjacent,
         on_chronicle_entry=record_log,
         on_scene_close=closes.append,
@@ -679,7 +677,7 @@ async def test_play_session_no_input_when_first_turn_ends_game(monkeypatch):
     """If the session ends in EndGame on the first scene's first turn (the
     decision beat fires, Leave resolves straight to EndGame), the player is
     never asked for input — request_player_input is not called."""
-    world, bundle, runtime, chronicler, state = _make_session_fixtures()
+    world, bundle, runtime, state = _make_session_fixtures()
     decision_beats = world.endings["published_story"].requires_beats
 
     _patch_populator(monkeypatch)
@@ -697,7 +695,7 @@ async def test_play_session_no_input_when_first_turn_ends_game(monkeypatch):
         return _walk_first_adjacent(prose_part, s, w)
 
     terminal = await play_session(
-        bundle, runtime, chronicler, state, world,
+        bundle, runtime, state, world,
         request_player_input=request,
     )
     assert isinstance(terminal.next, EndGame)
@@ -705,7 +703,7 @@ async def test_play_session_no_input_when_first_turn_ends_game(monkeypatch):
 
 
 async def test_play_session_case_file_entries_accumulate_on_state(monkeypatch):
-    world, bundle, runtime, chronicler, state = _make_session_fixtures()
+    world, bundle, runtime, state = _make_session_fixtures()
     decision_beats = world.endings["published_story"].requires_beats
 
     _patch_populator(monkeypatch)
@@ -717,7 +715,7 @@ async def test_play_session_case_file_entries_accumulate_on_state(monkeypatch):
     _patch_choice_author(monkeypatch, [ChoiceBundle(next=Leave())])
 
     await play_session(
-        bundle, runtime, chronicler, state, world,
+        bundle, runtime, state, world,
         request_player_input=_walk_first_adjacent,
     )
     assert len(state.case_file_entries) == 1

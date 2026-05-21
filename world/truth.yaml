@@ -659,39 +659,52 @@ beats:
   - id: eluned_throws_you_out
     name: Eluned throws you out
     requires_npcs_present: [eluned]
+    # As with tom_closes_off / dylan_refuses: a permanent ejection needs a
+    # prior Eluned scene. Without this it fired in 12/12 sessions of the
+    # 20260521-113238 run — even on a diligent player's polite "what are you
+    # worried about?" — making run_out_of_the_village the default ending.
+    # First contact with Eluned is frosty but recoverable; she only bars the
+    # gate for good after the player has been given a real chance and abused it.
+    min_scenes_with_npc: 1
     description: |
       Eluned has decided the player will not be on Tan-y-coed land
       again. The next attempt to visit will be met at the gate.
     notes_to_llm: |
-      Fire when the player has accused, threatened, recorded without
-      permission, or even simply pushed too far on a first visit.
-      After this fires, the player cannot use the Tan-y-coed location
-      for any conversation with Eluned; eluned_breaks is permanently
+      Fire ONLY when the player has clearly disqualified themselves — accused
+      her, threatened, recorded without permission, or pushed aggressively
+      after she has already asked them to leave. A polite or neutral question
+      ("what are you worried about?", "can you tell me about that night?") does
+      NOT fire this — Eluned can be cold and guarded in the prose without
+      barring the gate. After this fires, the player cannot use the Tan-y-coed
+      location for any conversation with Eluned; eluned_breaks is permanently
       blocked.
 
   - id: village_runs_you_out
     name: Village runs you out
-    # Structural threshold (engine-enforced): at least THREE of the four negative
-    # beats must have accumulated. The old `requires_any_beats` let it fire on a
-    # single negative — which, paired with the helen false-fire, ran the player
-    # out after one Maud conversation (11/15 in the 20260520 run). The "roughly
-    # three" of the authoring is now the hard gate, not just a prompt hope.
+    # Structural threshold (engine-enforced): ALL FOUR negative beats must have
+    # accumulated. At 3/4 this fired in 11/12 sessions of the 20260521-113238
+    # run — once full exploration was reachable, the player tripped 3 of the
+    # negatives in any long session and run_out collapsed every persona to the
+    # same ending (entropy 0). run_out is the TOTAL-failure ending — losing the
+    # whole village — so it should require losing the whole village, not three
+    # quarters of it. Paired with the per-NPC min_scenes gates on the negatives
+    # (so none fire on first contact), this makes run_out a rare earned failure.
     requires_count_beats:
       - tom_closes_off
       - dylan_refuses_to_speak_again
       - eluned_throws_you_out
       - helen_wont_take_your_call
-    requires_count: 3
+    requires_count: 4
     description: |
       The village has collectively decided the player is unwelcome.
       The pub falls silent on entry; Maud is "out" whenever the player
       visits; Wendy has stopped answering the door. The investigation
       cannot continue here.
     notes_to_llm: |
-      Fire only when the player has earned at least three of the four negative
-      beats and has continued to press regardless (the engine will not let this
-      fire below that threshold). Once this fires, almost every location plays
-      cold; only the run_out_of_the_village ending is reachable.
+      Fire only when the player has earned ALL FOUR negative beats and has
+      continued to press regardless (the engine will not let this fire below
+      that threshold). Once this fires, almost every location plays cold; only
+      the run_out_of_the_village ending is reachable.
 
   # ─────────────────────── Decision beats ───────────────────────
   # Each is mutually exclusive with the others. The LLM may fire AT MOST ONE

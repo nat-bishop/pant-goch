@@ -23,7 +23,6 @@ from pydantic_ai.models.openai import OpenAIChatModel
 
 from .agents import (
     build_scene_runner_bundle,
-    make_chronicler_runtime,
     make_scene_runner_runtime,
 )
 from .config import Settings
@@ -169,14 +168,15 @@ async def _amain() -> int:
     print("Booting llama subsystem...")
     model, llama_proc = await _build_model(settings)
     try:
-        bundle = build_scene_runner_bundle(model, world)
+        bundle = build_scene_runner_bundle(
+            model, world, decision_max_tokens=settings.decision_agent_max_tokens
+        )
         scene_runner = make_scene_runner_runtime()
-        chronicler = make_chronicler_runtime()
         state = make_initial_state(world)
 
         print(f"\n=== Scene at {state.player_location} ===")
         terminal = await play_session(
-            bundle, scene_runner, chronicler, state, world,
+            bundle, scene_runner, state, world,
             request_player_input=_request_input,
             on_scene_close=_print_prose_part,
             on_chronicle_entry=_print_chronicle_entry,

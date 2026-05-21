@@ -1,44 +1,29 @@
 """M6 — chronicler agent + emit_chronicle_entry.
 
-The chronicler is conversation-based: one user+assistant pair per scene
-end, accumulating in `runtime.message_history`. Tests stub the agent's
-`run` method directly so the structured output (ChronicleEntry) can be
-returned without a live llama and without TestModel's native-output
-profile check kicking in.
+The chronicler is stateless per scene end: each call builds a fresh user
+prompt (a `## Case File So Far` block of all prior entries, then the
+just-ended scene's transcript) and returns one structured `ChronicleEntry`.
+Tests stub the agent's `run` method directly so the structured output can be
+returned without a live llama and without TestModel's native-output profile
+check kicking in.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 import pytest
 from pydantic import ValidationError
-from pydantic_ai.messages import (
-    ModelMessage,
-    ModelRequest,
-    ModelResponse,
-    RetryPromptPart,
-    SystemPromptPart,
-    TextPart,
-    UserPromptPart,
-)
 from pydantic_ai.models.test import TestModel
 
 from handler.agents import (
     AgentBundle,
-    ChroniclerRuntime,
     _build_chronicle_entry_type,
-    _stub_last_user_request,
     build_chronicler_agent,
     build_scene_runner_bundle,
     emit_chronicle_entry,
-    make_chronicler_runtime,
 )
-from handler.prompts import (
-    build_chronicler_anchor_stub,
-    build_chronicler_user_prompt,
-)
+from handler.prompts import build_chronicler_user_prompt
 from handler.schemas import (
     ChronicleEntry,
     NpcMemoryUpdate,
@@ -54,47 +39,26 @@ from handler.world import load_world
 
 @dataclass
 class _FakeRunResult:
-    """Minimal stand-in for pydantic_ai's RunResult. `emit_chronicle_entry`
-    accesses `.output` and `.all_messages()` only."""
+    """Minimal stand-in for pydantic_ai's RunResult — `emit_chronicle_entry`
+    reads `.output` only (the chronicler is stateless, no message_history)."""
 
     output: ChronicleEntry
-    messages: list[Any] = field(default_factory=list)
-
-    def all_messages(self) -> list[Any]:
-        return list(self.messages)
 
 
-def _bundle_and_runtime_with_canned_outputs(
+def _bundle_with_canned_outputs(
     world, outputs: list[ChronicleEntry]
-) -> tuple[AgentBundle, ChroniclerRuntime]:
-    """Build a real AgentBundle (whose chronicler agent we monkeypatch)
-    and a fresh ChroniclerRuntime. Each `bundle.chronicler.run` call
-    returns the next canned `ChronicleEntry` and produces real
-    `ModelRequest`/`ModelResponse` messages — faithful enough to pydantic-ai
-    that `emit_chronicle_entry`'s transcript compaction is exercised: the
-    incoming `message_history` is carried through, then this call's user
-    prompt (as a `UserPromptPart`) and the entry (as a `TextPart` response)
-    are appended. On the first call (empty history) the request also carries
-    a `SystemPromptPart`, mirroring pydantic-ai's system-prompt injection."""
+) -> AgentBundle:
+    """Build a real AgentBundle whose chronicler agent's `run` is monkeypatched
+    to return the next canned `ChronicleEntry`. No message_history is threaded —
+    each call is independent, mirroring the stateless agent."""
     bundle = build_scene_runner_bundle(TestModel(), world)
-    runtime = make_chronicler_runtime()
     iter_outputs = iter(outputs)
 
     async def fake_run(user_prompt, **kwargs):  # type: ignore[no-untyped-def]
-        output = next(iter_outputs)
-        history: list[ModelMessage] = list(kwargs.get("message_history") or [])
-        req_parts: list[Any] = []
-        if not history:
-            req_parts.append(SystemPromptPart("SYSTEM PROMPT"))
-        req_parts.append(UserPromptPart(user_prompt))
-        history.append(ModelRequest(parts=req_parts))
-        history.append(
-            ModelResponse(parts=[TextPart(output.case_file_entry)])
-        )
-        return _FakeRunResult(output=output, messages=history)
+        return _FakeRunResult(output=next(iter_outputs))
 
     bundle.chronicler.run = fake_run  # type: ignore[assignment]
-    return bundle, runtime
+    return bundle
 
 
 FIXTURE_VALID = Path(__file__).parent / "fixtures" / "world_valid"
@@ -134,6 +98,8 @@ def test_chronicler_user_prompt_includes_scene_anchors():
     world = load_world(FIXTURE_VALID)
     state = _state_with_one_scene()
     prompt = build_chronicler_user_prompt(state, world)
+    # The just-ended scene block is present and labelled.
+    assert "## This Scene" in prompt
     # Location anchor surfaces
     assert "the_slaughtered_lamb" in prompt
     # NPC anchor surfaces (rendered by name, not id)
@@ -149,17 +115,28 @@ def test_chronicler_user_prompt_includes_scene_anchors():
     assert "Emit the structured output" in prompt
 
 
-# ───────────────────────── runtime construction ─────────────────────────
+def test_chronicler_user_prompt_lists_prior_entries_before_transcript():
+    """The append-only `## Case File So Far` block (all prior entries) heads
+    the prompt, BEFORE the volatile current-scene transcript — that ordering
+    is what keeps the chronicler's prompt prefix cache-stable across scenes."""
+    world = load_world(FIXTURE_VALID)
+    state = _state_with_one_scene()
+    state.case_file_entries = [
+        "A prior scene at the post office.",
+        "A walk down the lane.",
+    ]
+    prompt = build_chronicler_user_prompt(state, world)
+    assert "## Case File So Far" in prompt
+    assert "A prior scene at the post office." in prompt
+    assert "A walk down the lane." in prompt
+    assert prompt.index("## Case File So Far") < prompt.index("## This Scene")
 
 
-def test_make_chronicler_runtime_starts_with_empty_history():
-    runtime = make_chronicler_runtime()
-    assert isinstance(runtime, ChroniclerRuntime)
-    assert runtime.message_history == []
+# ───────────────────────── agent construction ─────────────────────────
 
 
 def test_build_chronicler_agent_constructs_cleanly():
-    """No schema-construction errors; the agent is freeform str output."""
+    """No schema-construction errors; the system prompt carries the bible."""
     world = load_world(FIXTURE_VALID)
     agent = build_chronicler_agent(TestModel(), world)
     # System prompt should carry the bible — cast names surface.
@@ -187,7 +164,7 @@ async def test_emit_chronicle_entry_returns_chronicle_entry_with_case_file_and_m
         "eventually, and looked relieved when he did. I did not buy him a "
         "drink."
     )
-    bundle, runtime = _bundle_and_runtime_with_canned_outputs(world, [ChronicleEntry(
+    bundle = _bundle_with_canned_outputs(world, [ChronicleEntry(
         case_file_entry=custom_text,
         npc_memory_updates=[
             NpcMemoryUpdate(
@@ -196,7 +173,7 @@ async def test_emit_chronicle_entry_returns_chronicle_entry_with_case_file_and_m
             ),
         ],
     )])
-    output = await emit_chronicle_entry(bundle, runtime, world, state)
+    output = await emit_chronicle_entry(bundle, world, state)
 
     assert isinstance(output, ChronicleEntry)
     assert output.case_file_entry == custom_text.strip()
@@ -213,111 +190,12 @@ async def test_emit_chronicle_entry_drops_empty_string_memory_updates():
     enforce; the engine-side strip is belt-and-braces."""
     world = load_world(FIXTURE_VALID)
     state = _state_with_one_scene()
-    bundle, runtime = _bundle_and_runtime_with_canned_outputs(world, [ChronicleEntry(
+    bundle = _bundle_with_canned_outputs(world, [ChronicleEntry(
         case_file_entry="Scene.",
         npc_memory_updates=[NpcMemoryUpdate(npc_id="tom", note="   ")],
     )])
-    output = await emit_chronicle_entry(bundle, runtime, world, state)
+    output = await emit_chronicle_entry(bundle, world, state)
     assert output.npc_memory_updates == []
-
-
-@pytest.mark.asyncio
-async def test_emit_chronicle_entry_grows_message_history():
-    """After the first call, message_history holds the runtime-captured
-    messages. After the second call, it holds more — the conversation IS
-    the case file."""
-    world = load_world(FIXTURE_VALID)
-    state = _state_with_one_scene()
-    bundle, runtime = _bundle_and_runtime_with_canned_outputs(
-        world,
-        [
-            ChronicleEntry(
-                case_file_entry="An entry.",
-                npc_memory_updates=[
-                    NpcMemoryUpdate(npc_id="tom", note="Tom note one."),
-                ],
-            ),
-            ChronicleEntry(
-                case_file_entry="Another entry.",
-                npc_memory_updates=[
-                    NpcMemoryUpdate(npc_id="tom", note="Tom note two."),
-                ],
-            ),
-        ],
-    )
-
-    assert len(runtime.message_history) == 0
-    await emit_chronicle_entry(bundle, runtime, world, state)
-    after_one = len(runtime.message_history)
-    assert after_one > 0
-
-    # Second scene-end — history grows but the existing entries stay.
-    await emit_chronicle_entry(bundle, runtime, world, state)
-    after_two = len(runtime.message_history)
-    assert after_two > after_one
-
-
-@pytest.mark.asyncio
-async def test_emit_chronicle_entry_compacts_past_transcripts():
-    """Once a scene's entry is written, its verbatim transcript is
-    compacted to the anchor stub on the next call, while the most-recent
-    scene keeps its full transcript. The system prompt is preserved."""
-    world = load_world(FIXTURE_VALID)
-    state = _state_with_one_scene()
-    bundle, runtime = _bundle_and_runtime_with_canned_outputs(
-        world,
-        [
-            ChronicleEntry(case_file_entry="First entry.", npc_memory_updates=[]),
-            ChronicleEntry(case_file_entry="Second entry.", npc_memory_updates=[]),
-        ],
-    )
-
-    await emit_chronicle_entry(bundle, runtime, world, state)
-    await emit_chronicle_entry(bundle, runtime, world, state)
-
-    requests = [m for m in runtime.message_history if isinstance(m, ModelRequest)]
-    assert len(requests) == 2
-    first_user = next(
-        p for p in requests[0].parts if isinstance(p, UserPromptPart)
-    )
-    last_user = next(
-        p for p in requests[-1].parts if isinstance(p, UserPromptPart)
-    )
-    full = build_chronicler_user_prompt(state, world)
-    stub = build_chronicler_anchor_stub(state, world)
-    # Past scene: transcript collapsed to the stub; current scene: still full.
-    assert first_user.content == stub
-    assert last_user.content == full
-    assert len(stub) < len(full)
-    # System prompt survived the rewrite of the first request.
-    assert any(isinstance(p, SystemPromptPart) for p in requests[0].parts)
-
-
-def test_stub_last_user_request_skips_retry_requests():
-    """A failed output validation appends a RetryPromptPart-only request
-    AFTER the transcript request. Compaction must target the transcript
-    request (last one carrying a UserPromptPart), not the retry."""
-    messages: list[ModelMessage] = [
-        ModelRequest(parts=[
-            SystemPromptPart("sys"), UserPromptPart("FULL TRANSCRIPT"),
-        ]),
-        ModelResponse(parts=[TextPart("entry")]),
-        ModelRequest(parts=[RetryPromptPart("invalid output, try again")]),
-    ]
-    out = _stub_last_user_request(messages, "STUB")
-
-    user_parts = [
-        p
-        for m in out if isinstance(m, ModelRequest)
-        for p in m.parts if isinstance(p, UserPromptPart)
-    ]
-    assert [p.content for p in user_parts] == ["STUB"]
-    # The retry request is left untouched.
-    assert any(
-        isinstance(p, RetryPromptPart)
-        for m in out if isinstance(m, ModelRequest)
-        for p in m.parts
-    )
 
 
 # ───────────────────────── dynamic schema ─────────────────────────

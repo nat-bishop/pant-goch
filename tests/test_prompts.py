@@ -344,7 +344,7 @@ def test_phase1_present_block_lists_npcs_at_current_location():
     state = make_initial_state(world)
     state.player_location = "the_slaughtered_lamb"
     prompt = build_phase1_user_prompt(state, world)
-    present_block = prompt.split("## Present")[1].split("## State")[0]
+    present_block = prompt.split("## Present")[1].split("## Case File")[0]
     assert "tom" in present_block
     assert "maud" not in present_block
 
@@ -353,7 +353,7 @@ def test_phase1_present_block_says_alone_at_npc_free_location():
     world = load_world(FIXTURE_VALID)
     state = make_initial_state(world)  # vicarage, no NPCs
     prompt = build_phase1_user_prompt(state, world)
-    present_block = prompt.split("## Present")[1].split("## State")[0]
+    present_block = prompt.split("## Present")[1].split("## Case File")[0]
     assert "alone" in present_block.lower()
 
 

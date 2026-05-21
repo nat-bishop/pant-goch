@@ -35,7 +35,6 @@ from pydantic_ai.exceptions import UnexpectedModelBehavior
 
 from .agents import (
     AgentBundle,
-    ChroniclerRuntime,
     SceneRunnerRuntime,
     emit_caption,
     emit_chronicle_entry,
@@ -648,7 +647,6 @@ async def play_scene(
 async def play_session(
     bundle: AgentBundle,
     runtime: SceneRunnerRuntime,
-    chronicler: ChroniclerRuntime,
     state: State,
     world: World,
     *,
@@ -681,7 +679,6 @@ async def play_session(
         - Mutates `state` (location, scene_id, dialogue_history,
           unlocked_beats, npc_locations, npc_memory, case_file_entries,
           game_over).
-        - Mutates `chronicler.message_history`.
     """
     while state.game_over is None:
         terminal = await play_scene(
@@ -702,7 +699,7 @@ async def play_session(
         # just closed, so present_npc_ids is correct. The completed scene
         # is still in dialogue_history; the next enter_scene clears it.
         with _root_span("chronicler_call", session_id=session_id, scene_id=state.scene_id):
-            output = await emit_chronicle_entry(bundle, chronicler, world, state)
+            output = await emit_chronicle_entry(bundle, world, state)
         state.case_file_entries.append(output.case_file_entry)
         for upd in output.npc_memory_updates:
             state.npc_memory[upd.npc_id].append(upd.note)

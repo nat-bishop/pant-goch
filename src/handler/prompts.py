@@ -263,16 +263,31 @@ writes the prose conditioned on what fired. You do not write prose.
    session — it cannot be taken back, and the narrator will be told to depict
    a moment that did not happen. A missed beat costs nothing: it is still on
    the table next turn. Most turns emit zero. Never fire a beat to "move
-   things along."
+   things along." When no beat's earning moment clearly landed, emit
+   `{{"state_changes": []}}` directly and stop — the empty list is the normal,
+   complete answer. Do not narrate or reason out why nothing fired.
 
-4. Decision beats (Decided to ...) fire only when the player explicitly
+4. **Negative / withdrawal beats need a CLEAR provocation this turn** —
+   a character closing off, throwing the player out, refusing to speak
+   again, or declining further contact. These fire ONLY when the player's
+   action this turn is genuinely disqualifying: a lie (claiming to be
+   police or family), a threat, recording without consent, a hostile
+   accusation, or aggressive pressing AFTER the character has already asked
+   them to stop. A polite, neutral, or merely curious question NEVER fires
+   one — "what are you worried about?", "can you tell me about that night?",
+   buying a drink, or sitting in silence are not provocations. When unsure
+   whether the action crossed that line, do NOT fire the negative: a guarded
+   character can stay guarded in the prose without the relationship
+   permanently rupturing.
+
+5. Decision beats (Decided to ...) fire only when the player explicitly
    commits — "I'm filing it", "I'm walking away", "I'm going up to
    Tan-y-coed". A decision beat only appears in ## Reachable Beats once
    the evidence it rests on is already unlocked; if you don't see it, the
    player has not earned that choice yet. Endings are engine-decided once
    the right decision beat is in state; you do not emit them.
 
-5. Stay within the established cast and locations. The bible above is
+6. Stay within the established cast and locations. The bible above is
    complete.
 """
 
@@ -544,12 +559,42 @@ def _render_reachable_beats(state: State, world: World) -> str:
     return "\n".join(parts)
 
 
-def _render_case_file(state: State) -> str:
-    if not state.case_file_entries:
-        return "## Case File\n(empty — no scenes have ended yet.)"
-    parts = ["## Case File"]
-    for i, entry in enumerate(state.case_file_entries, start=1):
-        parts.append(f"--- Entry {i} ---\n{entry.strip()}")
+# How many of the most-recent case-file entries to render into the per-call
+# LLM prompts (phase1 + populator). The full history always lives in
+# state.case_file_entries — the UI sidebar, SSE stream, and evals all read the
+# complete list; this only bounds what the model re-reads each turn, so the
+# prompt stops growing without limit over a long session. Mirrors the
+# `history_limit` clamp on npc_memory in `_render_npc_card`. The chronicler
+# passes limit=None (it wants every prior entry for voice continuity; entries
+# are short, so the accumulation stays bounded).
+CASE_FILE_RECENT_ENTRIES = 12
+
+
+def _render_case_file(
+    state: State, *, limit: int | None = None, heading: str = "## Case File"
+) -> str:
+    """Render the case file as a `{heading}` block.
+
+    `limit` (when set) renders only the most-recent `limit` entries, keeping
+    each entry's ABSOLUTE number and noting how many earlier ones are elided;
+    `None` renders every entry. `heading` lets the chronicler frame the same
+    block as `## Case File So Far` (its own accumulating record)."""
+    entries = state.case_file_entries
+    if not entries:
+        return f"{heading}\n(empty — no scenes have ended yet.)"
+    total = len(entries)
+    if limit is not None and total > limit:
+        start = total - limit
+        parts = [
+            heading,
+            f"(showing the most recent {limit} of {total} entries — "
+            f"earlier scenes live in your memory.)",
+        ]
+    else:
+        start = 0
+        parts = [heading]
+    for offset, entry in enumerate(entries[start:]):
+        parts.append(f"--- Entry {start + offset + 1} ---\n{entry.strip()}")
     return "\n".join(parts)
 
 
@@ -627,12 +672,17 @@ def build_phase1_user_prompt(state: State, world: World) -> str:
     dependency). Endings appear nowhere — they are pure engine data, not
     part of Phase 1's output. Stateless per turn (Phase 1 has no
     message_history)."""
+    # Cache-stable ordering: location + present + case file are constant for
+    # the whole scene, so they sit FIRST and stay in the cached prefix across
+    # every turn. ## State and ## Reachable Beats change the moment a beat
+    # fires mid-scene; ## This Scene So Far changes every turn — both go after
+    # the case file so a mid-scene beat doesn't re-prefill it.
     sections = [
         _render_you_are_at_brief(state, world),
         _render_present_brief(state, world),
+        _render_case_file(state, limit=CASE_FILE_RECENT_ENTRIES),
         _render_state(state, world),
         _render_reachable_beats(state, world),
-        _render_case_file(state),
         _render_this_scene(state, world),
     ]
     suffix = "\n\n".join(sections)
@@ -971,12 +1021,13 @@ and been told — write nothing you have not earned in the room.
 After every scene the player walks out of, you emit ONE structured
 output with two fields:
 
-  1. `case_file_entry` — **80-120 words** of first-person past-tense
-     prose, the player-facing case-file entry for that scene. What
-     happened, who said what, what stayed with you. Each entry stands
-     alone AND accumulates: the messages you have sent before this
-     one ARE the case file so far; you can refer back to earlier
-     moments where it would feel natural.
+  1. `case_file_entry` — **50-80 words** of first-person past-tense
+     prose, the player-facing case-file entry for that scene. Tight:
+     what happened, who said what, the one thing that stayed with you.
+     Cut throat-clearing and scene-setting; lead with the substance.
+     Each entry stands alone AND accumulates: the entries listed under
+     ## Case File So Far in the prompt are your record so far, and you
+     can refer back to earlier moments where it would feel natural.
 
   2. `npc_memory_updates` — a LIST of `{{npc_id, note}}` records, one
      per NPC who was actually present in this scene. The schema
@@ -1024,13 +1075,12 @@ For a scene at the post office on a second visit where Maud closed up:
    notebook, not separate articles.
 
 ## Case File Example
-For a first, wary conversation with Tom at the pub:
+For a first, wary conversation with Tom at the pub (~60 words):
   case_file_entry: "I found Tom Bevan at the bar, a pint going warm in
   front of him. He let me sit. He'd known Megan since she was small, he
-  said, and not much more — every question slid off him. When I asked
-  about the night she died he looked at the bottles behind the bar and
-  said the road was bad in the wet. Then he was done talking. I left
-  before he asked me to."
+  said — nothing more; every question slid off him. When I asked about
+  the night she died, he looked at the bottles and said the road was bad
+  in the wet. Then he was done."
 
 ## Output
 Structured JSON matching the schema. `case_file_entry` is plain text
@@ -1041,11 +1091,8 @@ Structured JSON matching the schema. `case_file_entry` is plain text
 
 def _chronicler_anchor_lines(state: State, world: World) -> str:
     """The three scene-anchor lines (location, who was present, beats
-    unlocked) shared by the full per-scene user prompt and the compacted
-    anchor stub. Building them in one place keeps the live prompt and the
-    stored stub byte-identical, so compacting a past transcript never
-    drifts from what was originally sent (see `build_chronicler_anchor_stub`).
-    """
+    unlocked) that head the just-ended scene's transcript in the
+    chronicler's user prompt."""
     loc = world.locations[state.player_location]
     present_ids = present_npc_ids(world, state)
     if present_ids:
@@ -1063,28 +1110,16 @@ def _chronicler_anchor_lines(state: State, world: World) -> str:
     )
 
 
-def build_chronicler_anchor_stub(state: State, world: World) -> str:
-    """Compacted stand-in for a past scene's full transcript in the
-    chronicler's `message_history`. Once a scene has been distilled into
-    its case-file entry (the assistant reply), the verbatim turn-by-turn
-    transcript is dead weight — the chronicler only needs its own prior
-    entries plus the CURRENT scene's transcript. So on the next call we
-    replace the spent transcript with this stub: the scene anchor plus a
-    sentinel pointing at the entry as the record. See
-    `agents._stub_last_user_request` / `emit_chronicle_entry`.
-    """
-    return (
-        f"{_chronicler_anchor_lines(state, world)}\n"
-        "(Transcript compacted — the case-file entry below is the record.)"
-    )
-
-
 def build_chronicler_user_prompt(state: State, world: World) -> str:
-    """The per-scene-end user message: a structured summary of the
-    just-completed scene that the chronicler turns into prose. The user
-    message accumulates as the user side of a long conversation; each
-    assistant reply is one case-file entry. On subsequent calls this full
-    transcript is compacted to `build_chronicler_anchor_stub`.
+    """The per-scene-end user message the chronicler turns into prose.
+
+    Stateless per call (no conversation history): it opens with a
+    `## Case File So Far` block — every prior entry, append-only — so the
+    chronicler can see its own accumulating record and refer back, then the
+    just-ended scene's anchor + turn-by-turn transcript. Putting the
+    append-only block FIRST and the volatile transcript last keeps the
+    prompt prefix cache-stable across scenes (each scene only appends one
+    entry to the end of the stable block).
 
     Callers (emit_chronicle_entry) only fire this after a completed
     scene, so dialogue_history is always non-empty by the time we get
@@ -1131,7 +1166,15 @@ def build_chronicler_user_prompt(state: State, world: World) -> str:
             "  `npc_memory_updates` MUST be empty [] — no NPCs were present."
         )
 
+    # All prior entries, append-only, FIRST — the cache-stable prefix the
+    # chronicler reads back over. limit=None: entries are short, so keeping
+    # every one stays bounded while giving full continuity.
+    case_file_so_far = _render_case_file(state, heading="## Case File So Far")
+
     return f"""\
+{case_file_so_far}
+
+## This Scene
 {_chronicler_anchor_lines(state, world)}
 
 Turn-by-turn:
@@ -1181,9 +1224,19 @@ emit a structured list of placement overrides (or an empty list).
 
 ## Your Job
 Each scene entry, emit ONE NpcPlacementBundle. **Most scene entries
-should be empty** (defaults stand). Only emit a placement when there
-is a SPECIFIC dramatic reason for an NPC to be somewhere other than
-their default — and authored bible / case file evidence supports it.
+should be empty** (defaults stand) — an empty `placements` list is the
+normal, correct, complete answer, not a non-answer. When no specific
+reason to move anyone jumps out, emit `{{"placements": []}}` directly and
+stop. Do not narrate or reason it out — the absence of a reason IS the
+answer. Only emit a placement when there is a SPECIFIC dramatic reason for
+an NPC to be somewhere other than their default — and authored bible /
+case file evidence supports it.
+
+Example of the common case:
+
+  - The player walks to the_post_office. Nothing in the case file points
+    to anyone being out of place. Emit `{{"placements": []}}`.
+
 Examples of legitimate movements:
 
   - The player walks to bryn_iago_wood. Dylan sometimes walks up here
@@ -1227,7 +1280,7 @@ def build_populator_user_prompt(state: State, world: World) -> str:
         placements_lines.append(f"  - {npc.id}: {current}{marker}")
     current_placements = "\n".join(placements_lines)
 
-    case_file_block = _render_case_file(state)
+    case_file_block = _render_case_file(state, limit=CASE_FILE_RECENT_ENTRIES)
 
     return f"""\
 ## Player Just Entered

@@ -33,13 +33,11 @@ from pydantic_ai.settings import ModelSettings
 
 from .agents import (
     AgentBundle,
-    ChroniclerRuntime,
     SceneRunnerRuntime,
     build_scene_runner_bundle,
-    make_chronicler_runtime,
     make_scene_runner_runtime,
 )
-from .config import Settings
+from .config import Settings, THINKING_OFF_EXTRA_BODY
 from .launcher import (
     LlamaStartupError,
     resolve_config,
@@ -145,7 +143,6 @@ class SessionRuntime:
 
     bundle: AgentBundle
     scene_runner: SceneRunnerRuntime
-    chronicler: ChroniclerRuntime
     state: State
     world: World
     # Short id stamped on every root span (turn / scene_enter / chronicler)
@@ -172,8 +169,8 @@ def build_model(api_url: str, model_name: str = "gemma-4-e4b") -> OpenAIChatMode
     1. `OpenAIModelProfile(openai_chat_send_back_thinking_parts=False)` —
        stops pydantic-ai from echoing past ThinkingParts back into prior
        assistant content as <think>...</think> blocks on subsequent
-       turns. Without it, the chronicler's accumulating message_history
-       drifts every scene (cf. v1 CLAUDE.md).
+       turns. Without it, the prose writer's scene-bounded message_history
+       drifts across turns (cf. v1 CLAUDE.md).
 
     2. `extra_body={"chat_template_kwargs": {"enable_thinking": False}}` —
        per-request body param forwarded by the OpenAI SDK to
@@ -190,9 +187,7 @@ def build_model(api_url: str, model_name: str = "gemma-4-e4b") -> OpenAIChatMode
     base_profile = openai_model_profile(model_name)
     profile = dc_replace(base_profile, openai_chat_send_back_thinking_parts=False)
     provider = OpenAIProvider(base_url=api_url, api_key="local")
-    settings = ModelSettings(
-        extra_body={"chat_template_kwargs": {"enable_thinking": False}},
-    )
+    settings = ModelSettings(extra_body=THINKING_OFF_EXTRA_BODY)
     return OpenAIChatModel(
         model_name, provider=provider, profile=profile, settings=settings,
     )
@@ -278,8 +273,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
         # Load world, build model + agent bundle once. The bundle is
         # world-scoped and reused across sessions. The session-scoped
-        # runtimes (scene_runner, chronicler) are built per-session in
-        # POST /start so message_history starts fresh.
+        # scene_runner runtime is built per-session in POST /start so its
+        # prose-writer message_history starts fresh.
         world_path = settings.world_path or Path(__file__).resolve().parents[2] / "world"
         logfire.info("loading world", path=str(world_path))
         world = load_world(world_path)
@@ -291,7 +286,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             endings=len(world.endings),
         )
         model = build_model(api_url)
-        bundle = build_scene_runner_bundle(model, world)
+        bundle = build_scene_runner_bundle(
+            model, world, decision_max_tokens=settings.decision_agent_max_tokens
+        )
         app.state.world = world
         app.state.bundle = bundle
         # Pre-render the /world response once — the data is static for
@@ -445,13 +442,11 @@ async def start_session() -> dict[str, str]:
     world: World = app.state.world
     bundle: AgentBundle = app.state.bundle
     scene_runner = make_scene_runner_runtime()
-    chronicler = make_chronicler_runtime()
     state = make_initial_state(world)
 
     rt = SessionRuntime(
         bundle=bundle,
         scene_runner=scene_runner,
-        chronicler=chronicler,
         state=state,
         world=world,
         session_id=uuid.uuid4().hex[:8],
@@ -476,7 +471,7 @@ async def start_session() -> dict[str, str]:
     async def run() -> None:
         try:
             await play_session(
-                bundle, scene_runner, chronicler, state, world,
+                bundle, scene_runner, state, world,
                 request_player_input=request_player_input,
                 emit_event=emit,
                 skip_event=rt.skip_event,
