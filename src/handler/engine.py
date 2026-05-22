@@ -126,10 +126,8 @@ def apply_state_changes(
 # Raw clamps. trust/guard are bounded so a runaway LLM emission saturates
 # harmlessly instead of running off the scale (the boolean DAG had no such
 # floor — a mis-fired beat was permanent). TRUST_MAX must clear 3×the widest
-# band so the terminal `at_peace` band is reachable (Tom → police): widest
-# slow band is 3, so the `at_peace` threshold is 9 and TRUST_MAX leaves
-# headroom above it.
-TRUST_MAX = 10
+# band so the terminal `at_peace` band is reachable (Tom → police).
+TRUST_MAX = 8
 GUARD_MAX = 3
 
 # Confession bands, by depth index. Derived from effective warmth
@@ -142,17 +140,10 @@ EVIDENCE_BAND = 2  # BANDS.index("open") — depth at which evidence milestones 
 # Default raw-points-per-band when an NPC has no authored `disposition`. The
 # per-NPC `warms` rate (slow/steady/fast) overrides this in `confession_depth`.
 # Tuned (with TRUST_MAX) so a good single scene of ~3-4 warm turns reaches
-# `open` (evidence) for a steady NPC, while a slow NPC's deepest band is a
-# multi-visit relationship: at width 3 the `at_peace` terminal needs effective
-# warmth 9 (vs. 6 at the original width 2) and `open` (evidence) needs 6. This
-# wider slow band is the divergence lever: it opens a gap between `open`
-# (evidence in hand, the player can now file / confront / tell Iwan) and
-# `at_peace` (Tom resolves it himself), so a single warm scene no longer
-# auto-collapses every persona into `tom_takes_responsibility` before the
-# player gets to choose. (Width 4 / TRUST_MAX 14 was tried first and starved:
-# sessions wandered to the scene cap without resolving — see STATUS.md.)
+# `open` (evidence) for a steady NPC, and a slow NPC earns it over a little
+# longer — the band-width knob replaces the old min_scenes_with_npc gate.
 DEFAULT_BAND_WIDTH = 1
-_BAND_WIDTH_BY_WARMS = {"slow": 3, "steady": 1, "fast": 1}
+_BAND_WIDTH_BY_WARMS = {"slow": 2, "steady": 1, "fast": 1}
 
 # Village attention bands (the global heat). Rises ONLY on conspicuous /
 # aggressive acts, never on gentle repetition; ratchets up. Ejection (the
