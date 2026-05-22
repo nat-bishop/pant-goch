@@ -10,9 +10,11 @@ throughout, and a direct probe shows pressure/coolness is correctly penalised). 
 divergence collapse is **cumulative**, not a per-turn-sign bug — it lived in
 `GUARD_MAX`, a clamp the delta gate can't see. **The fix landed (`fba2252`): raising
 `GUARD_MAX` 3→8 makes sustained pressure hold an NPC cold, so approach now forks
-outcome** — in the validation run the aggressive interrogator keeps Tom cold and gets
-no ending while the diligent journalist warms him to `at_peace` (`tom_takes`); baseline
-had *every* persona → `tom_takes`. Also landed: two harness-resilience fixes that
+outcome** — in the validation run (`guard1`, 8/8 clean) `persona_outcome_separation`
+rose **0.095 → 0.500** and `ending_entropy_normalized` **0.181 → 0.314**: the
+aggressive interrogator keeps Tom cold and gets no ending while the other three
+personas warm him to `at_peace` (`tom_takes`); baseline had *every* persona →
+`tom_takes`. Also landed: two harness-resilience fixes that
 unblocked the playtest from hanging. Reverted: a band-widening pacing experiment (no
 gain). The win is validated on **one** corpus run (an engine streaming stall this
 session blocked a clean 2nd confirm), but the fork is *mechanistically* shown — the
@@ -116,34 +118,40 @@ saturated at 3 while trust climbed to 8 → net effective 5 → every persona cr
 sustained pressure actually suppress the relationship. `eval-deltas` K=24 GREEN
 before/after (the clamp doesn't affect per-turn emission).
 
-Validation run `guard1` (parallel-2, cap-8; Tom's final trust/guard reconstructed
-from per-turn `applied_deltas`, clamped):
+Validation run `guard1` (parallel-2, cap-8, **8/8 sessions resolved cleanly** — no
+truncation noise). North-star metrics vs baseline B0:
 
-| persona | ending | Tom effective warmth |
+| metric | B0 | guard1 (GUARD_MAX=8) |
 |---|---|---|
-| aggressive_interrogator | `None` | **0** (guard +4 / trust 0 — held cold) |
-| aggressive_interrogator | `None` | **1** (barely warmed) |
-| diligent_journalist | `tom_takes_responsibility` | **8** (warmed to `at_peace`) |
-| diligent_journalist | `tom_takes_responsibility` | **8** |
-| distracted_skimmer | `tom_takes_responsibility` | **6** (warm-ish picks still warm) |
+| **persona_outcome_separation** | 0.095 | **0.500** |
+| **ending_entropy_normalized** | 0.181 | **0.314** |
 
-(5 of 8 sessions; the rest — both committed_closer + one distracted — were still
-draining via the session-timeout at write time, so this table is the available subset.)
+Ending distribution (Tom's final effective warmth reconstructed from per-turn
+`applied_deltas`, clamped):
 
-Approach forks outcome: **pressing keeps Tom cold → no reveal → the investigation
-fizzles (`None`)**, while patient/decent/low-effort-but-warm play still warms him
-through to `tom_takes`. The fork is between the *aggressive* persona and the rest;
-baseline B0 had all four → `tom_takes`. (Ideal would be aggressive→`run_out`, but
-attention never fires — see proposal 2 — so the aggressive fork currently lands as a
-no-ending fizzle rather than a distinct ending.)
+| persona | ending (×2 runs) | Tom effective warmth |
+|---|---|---|
+| aggressive_interrogator | `None`, `None` | **0 / 1** (guard held Tom cold) |
+| diligent_journalist | `tom_takes_responsibility` ×2 | 8 (warmed to `at_peace`) |
+| distracted_skimmer | `tom_takes_responsibility` ×2 | 6 / 8 |
+| committed_closer | `tom_takes_responsibility` ×2 | 6 |
 
-**Caveat:** one corpus run; the engine streaming stall blocked a clean 2nd confirm.
-The evidence is *causal* (the reconstructed per-session guard/trust explains each
-ending), not just an aggregate. Before fully trusting it, re-run `make playtest` on a
-healthy engine to (a) confirm replication and (b) check the warm personas aren't
-over-suppressed and that the aggressive fork isn't merely the streaming-stall
-truncating — the eff=0 (guard+4/trust0) reconstruction argues it is genuine guard
-suppression, but a clean run should verify.
+Approach forks outcome: **pressing keeps Tom cold (effective 0) → no reveal → the
+investigation fizzles (`None`)**, while patient/decent/low-effort-but-warm play warms
+him through to `tom_takes`. Baseline B0 had all four personas → `tom_takes`
+(separation 0.095, mostly the one `buried` outlier); GUARD_MAX=8 cleanly separates the
+aggressive persona from the rest (0.500). The aggressive `None` is genuine guard
+suppression, not a stall artifact — its reconstructed state is guard+4/trust0
+(effective 0), and all 8 sessions resolved.
+
+**Caveat:** the fork is currently *aggressive vs the-other-three*; only the
+confrontational persona pushes hard enough to accrue offsetting guard, so the other
+three still converge on `tom_takes`. Bigger divergence needs proposal 2 (attention →
+`run_out`) and the other endings becoming reachable. And the aggressive outcome is a
+no-ending *fizzle* rather than a distinct ending (attention never fires). A 2nd
+confirm run (`guard2`) was launched; **re-run `make playtest` on a healthy engine** to
+confirm replication and that the warm personas aren't over-suppressed (if they are,
+try `GUARD_MAX=5–6`).
 
 ### Harness resilience fixes — KEPT (independently correct, not divergence knobs)
 The playtest kept hanging the whole run (one stuck call blocks `run.py`'s single
