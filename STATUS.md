@@ -148,13 +148,14 @@ suppression, not a stall artifact — its reconstructed state is guard+4/trust0
 confrontational persona pushes hard enough to accrue offsetting guard, so the other
 three still converge on `tom_takes`. Bigger divergence needs proposal 2 (attention →
 `run_out`) and the other endings becoming reachable. And the aggressive outcome is a
-no-ending *fizzle* rather than a distinct ending (attention never fires). A 2nd
-confirm run (`guard2`) only managed 2/8 before the engine streaming stall degraded it
-(diligent → `tom_takes` eff 8; diligent → `None` eff 5 — a warm session truncated at
-`open` before reaching `at_peace`, a cap/stall artifact). The decisive aggressive
-sessions never dumped, so replication of the *fork* is **not confirmed in-session**.
-The win rests on guard1's single clean 8/8 run plus the causal per-session
-reconstruction. **Next step: re-run
+no-ending *fizzle* rather than a distinct ending (attention never fires). A 2nd confirm run (`guard2`, 8/8) **replicated the core fork**: aggressive_interrogator
+→ `None` ×2 with Tom effective warmth **0** (held cold) again — combined guard1+guard2,
+aggressive is 4/4 → cold/`None`. But guard2 was noisier (separation **0.208**, entropy
+0.314): the engine streaming stall also truncated several *warm* sessions to `None`
+(distracted ×2, one diligent, one committed — eff 0/4/5), which depresses the clean
+aggressive-vs-rest separation. Both runs beat baseline (0.095 / 0.181); the aggressive
+cold-fork is the robust, replicated signal, while the exact magnitude is noisy under
+the degraded engine. Re-run on a healthy engine for a clean magnitude. **Next step: re-run
 `make playtest` on a healthy engine** to confirm replication and that the warm personas
 aren't over-suppressed (if they are, try `GUARD_MAX=5–6`).
 
