@@ -47,10 +47,10 @@ from __future__ import annotations
 import random
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from typing import Annotated, Any, Literal, Union
+from typing import Annotated, Any, Literal
 
 import logfire
-from pydantic import BaseModel, Field, create_model
+from pydantic import BaseModel, ConfigDict, Field, create_model
 from pydantic_ai import Agent, NativeOutput
 from pydantic_ai.exceptions import UnexpectedModelBehavior
 from pydantic_ai.messages import ModelMessage
@@ -85,6 +85,7 @@ from .schemas import (
     FreeTextGate,
     GuardDelta,
     NpcMemoryUpdate,
+    NpcPlacement,
     NpcPlacementBundle,
     QualityDelta,
     StateChangeBundle,
@@ -239,33 +240,44 @@ def _build_state_change_bundle_type(world: World, state: State) -> type[BaseMode
 # ───────────────────────── populator dynamic schema ─────────────────────────
 
 
-def _build_npc_placement_bundle_type(world: World) -> type[BaseModel]:
-    """NpcPlacementBundle whose NpcPlacement.npc_id is `Literal[*npc_ids]`
-    and .location_id is `Literal[*location_ids]`. Grammar sampler rejects
-    invalid ids at decode time.
+# Sentinel value for "keep this NPC's current location". A real location whose
+# id equals this would collide in the wire enum, so the builder rejects it.
+_STAY = "stay"
 
-    No reachability-style state narrowing here: any NPC can be moved to
-    any location in principle (the populator's prompt teaches it
-    restraint).
+
+def _build_npc_placement_bundle_type(world: World) -> type[BaseModel]:
+    """Populator output as a FIXED-SHAPE OBJECT — one field PER cast NPC, keyed
+    by `npc_id`, whose value is `Literal[*location_ids, "stay"]` (default
+    `"stay"` = keep current location).
+
+    No array, so llama.cpp's grammar sampler — which enforces object keys and
+    enum values but NOT array length — cannot loop filling a `placements` list
+    to the token ceiling (the multi-minute runaway the old list shape allowed).
+    Keying by id also makes "one placement per NPC" structurally true.
+
+    `emit_placements` reads each field, skips `"stay"`, and builds the canonical
+    list-shaped `NpcPlacementBundle` the engine consumes.
+
+    Empty cast or world → an empty object (no fields); `emit_placements` then
+    yields no placements, mirroring the old `max_length=0` path.
     """
     npc_ids = tuple(world.npcs.keys())
     location_ids = tuple(world.locations.keys())
     if not npc_ids or not location_ids:
-        # Edge: empty cast or world — placements must be empty.
         return create_model(
-            "NpcPlacementBundle",
-            __base__=NpcPlacementBundle,
-            placements=(list[Any], Field(default_factory=list, max_length=0)),
+            "NpcPlacementBundle", __config__=ConfigDict(extra="forbid")
         )
-    DynamicNpcPlacement = create_model(
-        "NpcPlacement",
-        npc_id=(Literal[npc_ids], ...),  # type: ignore[valid-type]
-        location_id=(Literal[location_ids], ...),  # type: ignore[valid-type]
-    )
+    # A location whose id is the keep-current sentinel would be silently
+    # un-targetable (emit_placements treats `_STAY` as "no move"); fail loud.
+    if _STAY in location_ids:
+        raise ValueError(
+            f"a location id is {_STAY!r}, which collides with the populator "
+            "keep-current sentinel"
+        )
+    LocLiteral = Literal[(*location_ids, _STAY)]  # type: ignore[valid-type]
+    fields: dict[str, Any] = {npc_id: (LocLiteral, _STAY) for npc_id in npc_ids}
     return create_model(
-        "NpcPlacementBundle",
-        __base__=NpcPlacementBundle,
-        placements=(list[DynamicNpcPlacement], Field(default_factory=list)),
+        "NpcPlacementBundle", __config__=ConfigDict(extra="forbid"), **fields
     )
 
 
@@ -511,6 +523,11 @@ async def emit_placements(
     Stateless across scenes (no message_history); the case file
     (`state.case_file_entries`) is the cross-scene context the populator
     reads.
+
+    The wire output is a fixed-shape object (one `Literal[*location_ids,
+    "stay"]` field per NPC); this reads each field, skips `"stay"` (the
+    keep-current sentinel), and builds the canonical list-shaped
+    `NpcPlacementBundle` the engine consumes.
     """
     prompt = build_populator_user_prompt(state, bundle.world)
     DynamicBundle = _build_npc_placement_bundle_type(bundle.world)
@@ -519,7 +536,13 @@ async def emit_placements(
         prompt,
         NativeOutput(DynamicBundle, strict=True),
     )
-    return NpcPlacementBundle.model_validate(result.output.model_dump())
+    raw = result.output
+    placements = [
+        NpcPlacement(npc_id=npc_id, location_id=getattr(raw, npc_id))
+        for npc_id in bundle.world.npcs
+        if getattr(raw, npc_id, _STAY) != _STAY
+    ]
+    return NpcPlacementBundle(placements=placements)
 
 
 async def stream_prose_text(
