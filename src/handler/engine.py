@@ -128,7 +128,13 @@ def apply_state_changes(
 # floor — a mis-fired beat was permanent). TRUST_MAX must clear 3×the widest
 # band so the terminal `at_peace` band is reachable (Tom → police).
 TRUST_MAX = 8
-GUARD_MAX = 3
+# Guard must be able to OFFSET trust, not saturate below it: effective warmth is
+# `trust - guard`, so with GUARD_MAX < TRUST_MAX a player who keeps pressing
+# can never hold an NPC cold once trust accrues (the at_peace monopoly — every
+# persona warmed Tom regardless of approach). Raised to match TRUST_MAX so
+# sustained pressure genuinely suppresses the relationship and aggressive play
+# forks away from the warm endings. See STATUS.md (divergence-tuning).
+GUARD_MAX = 8
 
 # Confession bands, by depth index. Derived from effective warmth
 # (trust − guard) divided by a per-NPC band WIDTH; clamped to the top band.
