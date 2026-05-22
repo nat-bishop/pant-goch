@@ -60,6 +60,10 @@ class AgentJudge(Evaluator):
             cached = Agent(
                 self.model, output_type=NativeOutput(self.output_type),
                 instructions=self.system_prompt,
+                # temp=0: a judge should be reproducible run-to-run (the temp=1.0
+                # sampling rule is for the Gemma engine-under-test, NOT the judge).
+                # Also curbs the verbose off-the-rails reasoning seen at default temp.
+                model_settings={"temperature": 0.0},
             )
             self._agent_cache = cached
         return cached

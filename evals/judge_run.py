@@ -13,7 +13,7 @@ Judges are grouped by the scope they score, one `Dataset` each:
   - handler_judge_warrants      — every (turn × fired beat): firing warranted / depicted?
   - handler_judge_transitions   — every turn: prose↔location, choice meaningfulness, voice
   - handler_judge_free_text     — typed turns: did the narrator accept a false premise?
-  - handler_judge_sessions      — whole playthroughs: earned ending, continuity, agency
+  - handler_judge_sessions      — whole playthroughs: earned ending, emergent continuity
 
 The high-volume transition scope (the three Scored quality-gauges) is sampled to
 `--max-cases-per-scope` with a seeded RNG; the small PassFail bug-detector scopes
@@ -47,8 +47,8 @@ from handler.world import load_world
 
 from . import report as run_report
 from .judges.model import build_judge_model, warm_judge
+from .judges.verdicts import PassFail
 from .judges.session_judges import (
-    ChoiceConsequenceFelt,
     EmergentEventHonored,
     EndingEarnedNarratively,
 )
@@ -97,12 +97,17 @@ def _sample(items: list, k: int, rng: random.Random) -> list:
 
 
 def _worst_cases_md(results: list[tuple[str, list, object]], k: int = 5) -> str:
-    """Per-judge headline + the lowest-scoring cases with their reasons — the ones
-    worth reading and freezing as regression cases. Built from the EvaluationReports."""
+    """Per-judge headline + floor + the genuinely failing cases with their reasons —
+    the ones worth reading and freezing as regression cases. Only real lows are shown
+    (PassFail failures, Scored cases ≤3); when a judge has fewer than `k` lows the list
+    is short rather than padded with passing 5-score cases. Built from the reports."""
     rows: dict[str, list[tuple[float, str, str]]] = defaultdict(list)
     errors: dict[str, int] = defaultdict(int)
+    kinds: dict[str, str] = {}
     for _scope, judges, rep in results:
         names = {j.name for j in judges}
+        for j in judges:
+            kinds[j.name] = "passfail" if j.output_type is PassFail else "scored"
         for case in rep.cases:
             present = {**case.assertions, **case.scores}
             for jname, r in present.items():
@@ -115,14 +120,30 @@ def _worst_cases_md(results: list[tuple[str, list, object]], k: int = 5) -> str:
         for jname in names:
             errors[jname] += len(rep.cases) - scored.get(jname, 0)
 
+    def _is_low(kind: str, v: float) -> bool:
+        return v < 1.0 if kind == "passfail" else v <= 3
+
     lines = ["# Judge results", ""]
     for jname in sorted(rows):
+        kind = kinds.get(jname, "scored")
         vals = [v for v, _, _ in rows[jname]]
         head = round(sum(vals) / len(vals), 3) if vals else None
-        flag = "  ⚠️" if head is not None and head < 1.0 else ""
-        lines.append(f"## {jname} — {head} (n={len(vals)}, errors={errors.get(jname, 0)}){flag}")
-        for v, cid, reason in sorted(rows[jname], key=lambda t: t[0])[:k]:
-            lines.append(f"- `{cid}` → {v}: {reason}")
+        if kind == "scored":
+            n_below = sum(1 for v in vals if v <= 3)
+            floor = f", min={min(vals)}, ≤3×{n_below}/{len(vals)}" if vals else ""
+            flag = "  ⚠️" if n_below else ""
+        else:
+            floor = ""
+            flag = "  ⚠️" if head is not None and head < 1.0 else ""
+        lines.append(
+            f"## {jname} — {head} (n={len(vals)}, errors={errors.get(jname, 0)}{floor}){flag}"
+        )
+        lows = [row for row in sorted(rows[jname], key=lambda t: t[0]) if _is_low(kind, row[0])]
+        if lows:
+            for v, cid, reason in lows[:k]:
+                lines.append(f"- `{cid}` → {v}: {reason}")
+        else:
+            lines.append("- (no failures)")
         lines.append("")
     return "\n".join(lines)
 
@@ -165,8 +186,7 @@ async def main() -> None:
         ("handler_judge_free_text", _sample(free_text_items, K, rng),
          [FalsePremiseAccepted(model, world)]),
         ("handler_judge_sessions", _sample(session_items, K, rng),
-         [EndingEarnedNarratively(model, world), EmergentEventHonored(model, world),
-          ChoiceConsequenceFelt(model)]),
+         [EndingEarnedNarratively(model, world), EmergentEventHonored(model, world)]),
     ]
     scopes = [(name, items, judges) for name, items, judges in scopes if items]
     total = sum(len(items) * len(judges) for _, items, judges in scopes)
@@ -187,7 +207,7 @@ async def main() -> None:
         results.append((name, judges, rep))
 
     # Headline numbers → merge into summary.json, diffed against the previous run.
-    merged: dict[str, float] = {}
+    merged: dict[str, dict] = {}
     for _name, _judges, rep in results:
         merged.update(run_report.judge_results(rep))
     summary_path = run_report.write_judges(args.run, merged)

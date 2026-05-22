@@ -144,26 +144,45 @@ def _unlocked_beat_names(state: State, world: World, *, empty: str) -> str:
 
 
 def _render_beat(beat, world: World) -> str:
-    """Beat rendering for every LLM-facing block (full bible in the system
-    prompt AND `## Reachable Beats` per turn). Heading is the name (the
-    string the model will emit); cross-refs to other beats render as names
-    too, so the model sees ONE vocabulary across the whole prompt."""
-    prereq = (
-        f"\n  prerequisites (soft, your judgment): {beat.prerequisites.strip()}"
-        if beat.prerequisites.strip()
-        else ""
+    """Gate-first beat rendering for the classifier's `## Reachable Beats`
+    block (its only consumer). The earning TEST leads; the evocative outcome
+    is demoted to the last line and reframed as "what firing depicts".
+
+    Why: a small model under pressure anchors on a foregrounded reward — show
+    "Tom tells the player he saw a Land Rover" first and it fires the moment
+    the player fishes for that outcome, ignoring a gate buried beneath. Leading
+    with the test (prerequisites + notes_to_llm) and demoting the description
+    keeps the model judging the player's action against the gate, not reaching
+    for the prize. The prose writer still gets the description (via
+    `_render_applied_changes`) when the beat actually fires, so nothing is lost.
+
+    Heading is the name (the string the model emits); cross-refs render as
+    names too, so the model sees ONE vocabulary across the whole prompt. The
+    structural dependencies (requires/blocked) are ALREADY satisfied for every
+    beat in this block, so they ride along only as sequence context — not as
+    the test the model must apply."""
+    gate = beat.prerequisites.strip() or (
+        "no extra prerequisite — judge purely on whether the player's action "
+        "this turn is the moment the notes_to_llm describes"
     )
-    any_line = (
-        f"\n  requires_any_beats (any one of): {_beat_names(world, beat.requires_any_beats)}"
-        if beat.requires_any_beats
-        else ""
+    deps: list[str] = []
+    if beat.requires_beats:
+        deps.append(f"comes after {_beat_names(world, beat.requires_beats)}")
+    if beat.requires_any_beats:
+        deps.append(f"after any of {_beat_names(world, beat.requires_any_beats)}")
+    if beat.blocked_by_beats:
+        deps.append(f"ruled out by {_beat_names(world, beat.blocked_by_beats)}")
+    dep_line = (
+        f"\n  (sequence, already satisfied: {'; '.join(deps)})" if deps else ""
     )
     return (
         f"- {beat.name}:\n"
-        f"  description: {beat.description.strip()}\n"
-        f"  requires_beats: {_beat_names(world, beat.requires_beats)}{any_line}\n"
-        f"  blocked_by_beats: {_beat_names(world, beat.blocked_by_beats)}{prereq}\n"
-        f"  notes_to_llm: {beat.notes_to_llm.strip()}"
+        f"  FIRE ONLY IF the player's action THIS turn earns it by the test "
+        f"below; otherwise leave it unfired.\n"
+        f"  test (when it may fire): {gate}\n"
+        f"  notes_to_llm: {beat.notes_to_llm.strip()}{dep_line}\n"
+        f"  what firing depicts (the resulting moment — NOT a cue to fire): "
+        f"{beat.description.strip()}"
     )
 
 
@@ -438,8 +457,9 @@ Read the prose, then emit ONE structured output: a ChoiceBundle whose
 `next` is one of:
 
   - Continue with 2-4 options. Each option is a short line of what the
-    player can say or do that has no major consequence — dialogue,
-    observation, small action.
+    player says or does next — dialogue, observation, small action, or a
+    declaration of intent. Most are low-stakes; at a charged turning point
+    one may be the player resolving to act (see Rule 7).
 
   - Leave. The conversation has reached a natural close — a goodbye, a
     door, a silence the player would step out of. The engine treats the
@@ -478,6 +498,18 @@ emit Continue or Leave.)
    "look closer at the X", "inspect the Y", inventory-poking. A turn
    should feel like a decision, not a click. If the only honest options
    left are cosmetic, the scene has run its course — emit Leave instead.
+7. At a charged turning point — the player plainly has the measure of
+   something and the scene is poised for them to act — ONE option may be
+   the player resolving to act on it, spoken in their own voice ("Tell Tom
+   you've heard enough", "Say you're done waiting — it's time to face the
+   Vaughns", "Sit down at the desk and start writing it up"). Write it as
+   the character's natural next move, NEVER as a labelled fork or a hint
+   that an ending hangs on it — no "(confront)", no "[file the story]", no
+   signposting which choice is "right". Use this sparingly: most turns are
+   still exploration, and offering a commitment every turn flattens the
+   choice. It is a declaration in the current location — it names no
+   destination and promises no outcome (Rule 1 still holds); the engine and
+   map carry out whatever follows.
 """
 
 
@@ -540,6 +572,35 @@ def _render_present_brief(state: State, world: World) -> str:
     parts = ["## Present"]
     for npc in npcs_here:
         parts.append(f"- {npc.id} ({npc.name})")
+    return "\n".join(parts)
+
+
+def _render_encounters(state: State, world: World) -> str:
+    """Per-present-NPC count of PRIOR scenes with the player — the cross-scene
+    signal several Phase-1 soft prerequisites lean on ("twice before", "not on
+    a first visit", "stayed through one quiet exchange first") but which the
+    scene transcript alone cannot carry. The engine already holds this count
+    (`state.npc_memory` keeps one note per prior scene an NPC was present in —
+    the same source `min_scenes_with_npc` trusts); surfacing it lets the
+    classifier apply those rules instead of guessing them from case-file prose.
+
+    Scene-stable: `npc_memory` only grows at scene close, so the block is
+    identical across every turn of a scene and rides the cached prefix beside
+    ## Present. Within-scene history (who said what so far) lives in
+    ## This Scene So Far, so it is deliberately not repeated here."""
+    npcs_here = world.npcs_at(state.player_location, state=state)
+    if not npcs_here:
+        return "## Encounters\n(no one present — no prior encounters to weigh.)"
+    parts = ["## Encounters"]
+    for npc in npcs_here:
+        prior = len(state.npc_memory.get(npc.id, []))
+        if prior == 0:
+            note = "you have not met them in any prior scene (this is your first)"
+        elif prior == 1:
+            note = "1 prior scene with you"
+        else:
+            note = f"{prior} prior scenes with you"
+        parts.append(f"- {npc.id} ({npc.name}): {note}.")
     return "\n".join(parts)
 
 
@@ -680,6 +741,7 @@ def build_phase1_user_prompt(state: State, world: World) -> str:
     sections = [
         _render_you_are_at_brief(state, world),
         _render_present_brief(state, world),
+        _render_encounters(state, world),
         _render_case_file(state, limit=CASE_FILE_RECENT_ENTRIES),
         _render_state(state, world),
         _render_reachable_beats(state, world),

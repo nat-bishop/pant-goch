@@ -118,7 +118,8 @@ async def test_evaluate_bridges_verdict_to_evaluation_reason():
 
 def test_judge_results_aggregates_passfail_and_scored():
     """`report.judge_results` harvests pass-rate (assertions) and mean score
-    (scores) from an EvaluationReport, keyed by judge name."""
+    (scores) from an EvaluationReport, keyed by judge name, carrying the floor
+    (n_fail / min / n_below_3) so a bimodal mean can't hide a broken tail."""
     def res(v):
         return SimpleNamespace(value=v, reason="")
     cases = [
@@ -127,8 +128,30 @@ def test_judge_results_aggregates_passfail_and_scored():
         SimpleNamespace(assertions={"pf": res(True)}, scores={}),  # judge errored here
     ]
     out = run_report.judge_results(SimpleNamespace(cases=cases))
-    assert out["pf"] == round(2 / 3, 3)
-    assert out["sc"] == 3.0
+    assert out["pf"] == {"kind": "passfail", "value": round(2 / 3, 3), "n": 3, "n_fail": 1}
+    assert out["sc"] == {"kind": "scored", "value": 3.0, "n": 2, "min": 2.0, "n_below_3": 1}
+    # floor breach is flagged even though the scored mean (3.0) looks middling
+    assert run_report._judge_flagged(out["sc"]) is True
+    assert run_report._judge_flagged(out["pf"]) is True
+
+
+def test_judge_results_clean_scored_not_flagged():
+    """A judge with every case ≥4 has no floor breach and is not flagged."""
+    def res(v):
+        return SimpleNamespace(value=v, reason="")
+    cases = [SimpleNamespace(assertions={}, scores={"sc": res(5)}),
+             SimpleNamespace(assertions={}, scores={"sc": res(4)})]
+    out = run_report.judge_results(SimpleNamespace(cases=cases))
+    assert out["sc"]["n_below_3"] == 0
+    assert run_report._judge_flagged(out["sc"]) is False
+
+
+def test_choice_consequence_felt_retired():
+    """The outcome-biased session judge was retired in favour of the deterministic
+    `post_exhaustion_turn_ratio` metric — it must no longer be importable."""
+    import pytest
+    with pytest.raises(ImportError):
+        from evals.judges.session_judges import ChoiceConsequenceFelt  # noqa: F401
 
 
 def test_session_view():

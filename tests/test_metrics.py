@@ -11,6 +11,7 @@ from evals.metrics import (
     _longest_common_beat_prefix,
     _mean_pairwise_beat_jaccard_distance,
     _persona_outcome_separation,
+    _post_exhaustion_turn_ratio,
     corpus_metrics,
 )
 from evals.session import SessionArtifact
@@ -67,6 +68,26 @@ def test_filler_turn_ratio():
     assert _filler_turn_ratio([legacy]) == 0.0
 
 
+def test_post_exhaustion_turn_ratio():
+    # last new beat at turn 1 (index 0); 3 dead turns trail it → 3/4 = 0.75 (the grind)
+    grind = _art(transcript=[
+        _turn(1, "x", ["beat_a"]), _turn(1, "x", []), _turn(1, "x", []), _turn(1, "x", []),
+    ])
+    assert _post_exhaustion_turn_ratio([grind]) == 0.75
+    # tight session: each turn advances, last turn fires a beat → no dead tail
+    tight = _art(transcript=[_turn(1, "x", ["beat_a"]), _turn(2, "y", ["beat_b"])])
+    assert _post_exhaustion_turn_ratio([tight]) == 0.0
+    # a re-fired (not new) beat does not count as progress → still a dead tail
+    refire = _art(transcript=[_turn(1, "x", ["beat_a"]), _turn(1, "x", ["beat_a"])])
+    assert _post_exhaustion_turn_ratio([refire]) == 0.5
+    # never advanced at all → whole session is post-exhaustion
+    dead = _art(transcript=[_turn(1, "x", []), _turn(1, "x", [])])
+    assert _post_exhaustion_turn_ratio([dead]) == 1.0
+    # legacy artifact (no applied_beats) contributes nothing
+    legacy = _art(transcript=[{"kind": "turn", "scene_id": 1, "location": "x"}])
+    assert _post_exhaustion_turn_ratio([legacy]) == 0.0
+
+
 def test_longest_common_beat_prefix_majority():
     # 3 of 5 open with [a, b]; the other 2 diverge immediately.
     shared = [
@@ -110,4 +131,5 @@ def test_corpus_metrics_smoke():
     assert "tom_named_a_vehicle" not in m.beats_never_fired
     assert 0.0 <= m.location_coverage <= 1.0
     # serializes to a flat dict for the report diff
-    assert set(["ending_entropy_normalized", "filler_turn_ratio"]).issubset(m.to_dict())
+    assert {"ending_entropy_normalized", "filler_turn_ratio",
+            "post_exhaustion_turn_ratio"}.issubset(m.to_dict())

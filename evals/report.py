@@ -23,6 +23,7 @@ NORTH_STAR_KEYS = [
     "ending_entropy_normalized",
     "beats_fired",
     "filler_turn_ratio",
+    "post_exhaustion_turn_ratio",
     "mean_pairwise_beat_jaccard_distance",
     "persona_outcome_separation",
 ]
@@ -30,6 +31,7 @@ _HIGHER_IS_BETTER = {
     "ending_entropy_normalized": True,
     "beats_fired": True,
     "filler_turn_ratio": False,
+    "post_exhaustion_turn_ratio": False,
     "mean_pairwise_beat_jaccard_distance": True,
     "persona_outcome_separation": True,
 }
@@ -49,13 +51,17 @@ def invariant_pass_rates(invariant_report) -> dict[str, float]:
     }
 
 
-def judge_results(judge_report) -> dict[str, float]:
-    """Per-judge headline number from a pydantic-evals `EvaluationReport`: the
-    pass-rate for PassFail judges (mean of the boolean assertion) and the mean
-    score for Scored judges (mean of the 1–5 score). Keyed by the judge's name
-    (its `get_default_evaluation_name`). Errored cases (e.g. timeouts) land in
-    `report.failures`, not `report.cases`, so they are excluded — matching the
-    old scorer, which averaged over non-error cases only."""
+def judge_results(judge_report) -> dict[str, dict]:
+    """Per-judge stats from a pydantic-evals `EvaluationReport`. Each judge maps to
+    a dict carrying the headline AND the floor — a mean alone hides a bimodal split
+    (twelve 5s + a tail of {1,2,3} reads as a healthy 4.4 while a quarter of sessions
+    are broken). Keyed by the judge's name (its `get_default_evaluation_name`).
+
+      - PassFail: {"kind","value"=pass-rate,"n","n_fail"}
+      - Scored:   {"kind","value"=mean,"n","min","n_below_3"}
+
+    Errored cases (e.g. timeouts) land in `report.failures`, not `report.cases`, so
+    they are excluded — matching the old scorer, which averaged non-error cases only."""
     bools: dict[str, list[bool]] = {}
     nums: dict[str, list[float]] = {}
     for case in judge_report.cases:
@@ -63,9 +69,33 @@ def judge_results(judge_report) -> dict[str, float]:
             bools.setdefault(name, []).append(bool(r.value))
         for name, r in case.scores.items():
             nums.setdefault(name, []).append(float(r.value))
-    out = {name: round(sum(v) / len(v), 3) for name, v in bools.items() if v}
-    out.update({name: round(sum(v) / len(v), 3) for name, v in nums.items() if v})
+    out: dict[str, dict] = {}
+    for name, v in bools.items():
+        if v:
+            out[name] = {"kind": "passfail", "value": round(sum(v) / len(v), 3),
+                         "n": len(v), "n_fail": sum(1 for x in v if not x)}
+    for name, v in nums.items():
+        if v:
+            out[name] = {"kind": "scored", "value": round(sum(v) / len(v), 3),
+                         "n": len(v), "min": min(v),
+                         "n_below_3": sum(1 for x in v if x <= 3)}
     return out
+
+
+def _judge_value(entry) -> float | None:
+    """The headline number from a judges-summary entry, tolerating the old flat
+    `{name: float}` shape so this run can still diff against an older summary.json."""
+    if isinstance(entry, dict):
+        return entry.get("value")
+    return entry  # legacy float
+
+
+def _judge_flagged(st: dict) -> bool:
+    """A floor breach worth a ⚠️: any PassFail failure, or any Scored case ≤3 —
+    surfaced even when the mean looks healthy."""
+    if st["kind"] == "passfail":
+        return st["value"] < 1.0
+    return st["n_below_3"] > 0
 
 
 def write_judges(out_dir: Path, judges: dict[str, float]) -> Path:
@@ -81,13 +111,22 @@ def write_judges(out_dir: Path, judges: dict[str, float]) -> Path:
     return path
 
 
-def render_judges(judges: dict[str, float], prev: dict[str, float] | None) -> str:
-    """Per-judge headline with a delta vs. the previous run's judges (higher is
-    better for every judge — pass-rate and mean score alike), reusing `_fmt_delta`."""
+def render_judges(judges: dict[str, dict], prev: dict | None) -> str:
+    """Per-judge headline + floor, with a delta vs. the previous run (higher is
+    better for every judge — pass-rate and mean score alike), reusing `_fmt_delta`.
+    A ⚠️ marks a floor breach (a failing PassFail case or a Scored case ≤3) even
+    when the mean reads healthy."""
     pj = prev or {}
     lines = ["## Judges (pass-rate / mean score)"]
-    for name, val in sorted(judges.items()):
-        lines.append(f"- {name}: {val}{_fmt_delta(name, val, pj.get(name))}")
+    for name, st in sorted(judges.items()):
+        val = st["value"]
+        delta = _fmt_delta(name, val, _judge_value(pj.get(name)))
+        if st["kind"] == "scored":
+            floor = f"  [min={st['min']}, ≤3×{st['n_below_3']}/{st['n']}]"
+        else:
+            floor = f"  [fails={st['n_fail']}/{st['n']}]"
+        flag = "  ⚠️" if _judge_flagged(st) else ""
+        lines.append(f"- {name}: {val}{delta}{floor}{flag}")
     return "\n".join(lines)
 
 

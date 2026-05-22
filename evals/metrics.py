@@ -199,6 +199,32 @@ def _filler_turn_ratio(artifacts: list[SessionArtifact]) -> float:
     return filler / total if total else 0.0
 
 
+def _post_exhaustion_turn_ratio(artifacts: list[SessionArtifact]) -> float:
+    """Mean over sessions of the fraction of player turns that fall AFTER the last
+    turn to introduce a *new* beat — the trailing run where the player keeps acting
+    but the investigation has stopped advancing. This is the grind-after-exhaustion
+    that `filler_turn_ratio` blurs: filler counts every beatless turn (including
+    legitimate early exploration), whereas this isolates the dead tail (the 40+
+    Helen/Owain loop a player ground through after the truth was already in hand).
+    ~0 = the session ends promptly once leads run out; high = a long dead tail, or
+    (ratio 1.0) a session that never advanced at all. Legacy artifacts without
+    per-turn capture contribute nothing."""
+    ratios: list[float] = []
+    for art in artifacts:
+        turns = _play_turns(art)
+        if not any("applied_beats" in e for e in turns):
+            continue  # legacy artifact: no per-turn signal
+        seen: set[str] = set()
+        last_productive = -1
+        for i, e in enumerate(turns):
+            new = [b for b in e.get("applied_beats", []) if b not in seen]
+            seen.update(e.get("applied_beats", []))
+            if new:
+                last_productive = i
+        ratios.append((len(turns) - 1 - last_productive) / len(turns))
+    return sum(ratios) / len(ratios) if ratios else 0.0
+
+
 def _ladder_compression(artifacts: list[SessionArtifact]) -> dict[str, float]:
     """Per ladder, the mean (across sessions that touched it) of the most rungs
     that fired within a single scene. ~1.0 = paced one rung per scene (good);
@@ -248,6 +274,7 @@ class CorpusMetrics(BaseModel):
     ending_entropy_normalized: float
     beats_fired: int
     filler_turn_ratio: float
+    post_exhaustion_turn_ratio: float
     mean_pairwise_beat_jaccard_distance: float
     persona_outcome_separation: float
     # coverage
@@ -289,6 +316,7 @@ def corpus_metrics(artifacts: list[SessionArtifact], world: World) -> CorpusMetr
         ),
         beats_fired=len(fired_beats & all_beats),
         filler_turn_ratio=round(_filler_turn_ratio(artifacts), 3),
+        post_exhaustion_turn_ratio=round(_post_exhaustion_turn_ratio(artifacts), 3),
         mean_pairwise_beat_jaccard_distance=round(
             _mean_pairwise_beat_jaccard_distance(artifacts), 3
         ),

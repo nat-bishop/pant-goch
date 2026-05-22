@@ -78,23 +78,11 @@ class EmergentEventHonored(AgentJudge):
         )
 
 
-@dataclass
-class ChoiceConsequenceFelt(AgentJudge):
-    """Across the playthrough, did the player's choices feel like they mattered?"""
-
-    name: ClassVar[str] = "choice_consequence_felt"
-    output_type: ClassVar[type] = Scored
-    system_prompt: ClassVar[str] = (
-        "You review whole playthroughs of a narrative investigation game for player "
-        "agency. Judge ONE thing: across this session, did the player's choices feel "
-        "consequential — did the investigation visibly respond to what the player did, "
-        "with relationships shifting and the story bending to their approach? 5 = "
-        "choices clearly shaped the arc; 3 = somewhat; 1 = the session would have read "
-        "the same regardless of what the player chose."
-    )
-
-    def render(self, s: SessionView) -> str:
-        return (
-            f"{_session_context(s)}\n\n"
-            "Did the player's choices feel consequential across this session?"
-        )
+# NOTE: `choice_consequence_felt` was retired (master, May 2026). It scored "did the
+# player's choices matter" by reading the whole session including the ending, so it
+# halo'd off the outcome — structurally identical grind behaviour scored 5 when the
+# run reached the arrest ending and 1 when it ran out. The objective half of that
+# signal is now the deterministic `metrics.post_exhaustion_turn_ratio` (no ending to
+# bias it); the cross-session half is `metrics.persona_outcome_separation`; and
+# ending coherence is `EndingEarnedNarratively` above. See HANDLER eval doctrine:
+# deterministic/structural facts belong in Tier-1 metrics, not an LLM vibe-judge.
