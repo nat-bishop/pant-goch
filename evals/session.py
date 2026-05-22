@@ -121,6 +121,26 @@ class SessionArtifact:
         return cls(**json.loads(Path(path).read_text(encoding="utf-8")))
 
 
+# Sidecar files a run dir accumulates that are NOT session artifacts. The report
+# writes summary.json; a judge run writes judges.md (and older runs left a
+# judges.json list). Globbing artifacts must skip these or `SessionArtifact.load`
+# chokes on a non-mapping payload.
+_NON_ARTIFACT_JSON = frozenset({"summary.json", "judges.json"})
+
+
+def artifact_paths(run_dir: Path) -> list[Path]:
+    """Session-artifact JSON files in a run dir, sorted, excluding sidecars."""
+    return [
+        p for p in sorted(Path(run_dir).glob("*.json"))
+        if p.name not in _NON_ARTIFACT_JSON
+    ]
+
+
+def load_run(run_dir: Path) -> list[SessionArtifact]:
+    """Load every session artifact in a run dir (skipping summary/judges sidecars)."""
+    return [SessionArtifact.load(p) for p in artifact_paths(run_dir)]
+
+
 @dataclass
 class _Recorder:
     transcript: list[dict] = field(default_factory=list)

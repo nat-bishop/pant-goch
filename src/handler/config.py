@@ -119,6 +119,16 @@ class Settings(BaseSettings):
     # Gemini model the simulated player uses (evals/). Engine model is
     # unaffected — the player is a separate cloud agent.
     playtest_player_model: str = "gemini-3.1-flash-lite"
+    # Max concurrent sessions the harness runs against the engine. Should match
+    # the engine's KV-slot count (inferno serves Gemma at np=16) so demand fills
+    # the slots without oversubscribing. DECOUPLED from runs_per_persona on
+    # purpose: total sessions (personas × runs) may exceed this, and
+    # pydantic-evals queues the surplus, backfilling a fresh session each time one
+    # finishes — so the engine stays saturated instead of decaying as short
+    # sessions drop out. Override with --parallel or SMALLVILLE_PLAYTEST_PARALLEL.
+    playtest_parallel: int = Field(
+        default=16, validation_alias="SMALLVILLE_PLAYTEST_PARALLEL"
+    )
     # API key for the Gemini player. Sourced from the project .env (which
     # `uv run` does NOT export to os.environ), so the harness reads it here
     # and passes it explicitly to GoogleProvider rather than relying on the

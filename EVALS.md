@@ -222,14 +222,23 @@ judges (one thing each, run on demand).
   and ladder-compression. Each run writes `summary.json`; the report diffs it
   against the previous run — that diff is the iteration loop.
 - **Judges** (`make judge RUN=<artifact dir>`) — default to local Qwen via inferno
-  (no key; warmed once; fired concurrently). **Single-transition** (before→after one
-  turn): `beat_fired_appropriately` (the walk-away/Maud-dump/helen-without-meeting
-  detector — *not* a regex), `prose_depicts_beat` (phoned-Iwan hallucination),
-  `prose_matches_location`, `npc_voice_adherence`, `choice_meaningfulness` (the
-  "look closer at the box" agency judge), `false_premise_accepted`.
-  **Whole-session**: `ending_earned_narratively`, `emergent_event_honored`
-  (freedom vs. hallucination), `choice_consequence_felt`. Freeze a real failing
-  case under `evals/cases/` to grow the regression set (`evals/cases/README.md`).
+  (no key; warmed once; fired concurrently). Each judge is a pydantic-evals
+  `Evaluator` (`AgentJudge.evaluate` bridges its PassFail/Scored verdict onto a
+  bool assertion / float score); `judge_run` wraps each scope's items in a `Dataset`
+  over an identity task and calls `Dataset.evaluate`, so the judges report into
+  Logfire experiments (`handler_judge_*`) alongside the invariants, merge their
+  numbers into the run's `summary.json` under a `judges` key (diffed run-over-run
+  like the metrics), and write the worst cases to `judges.md`. The high-volume
+  Scored transition scope is sampled (`--max-cases-per-scope`, default 1000, seeded
+  via `--seed`); the small PassFail bug-detector scopes run in full. **Single-transition**
+  (before→after one turn): `beat_fired_appropriately` (the walk-away/Maud-dump/
+  helen-without-meeting detector — *not* a regex), `prose_depicts_beat` (phoned-Iwan
+  hallucination), `prose_matches_location`, `npc_voice_adherence`,
+  `choice_meaningfulness` (the "look closer at the box" agency judge),
+  `false_premise_accepted`. **Whole-session**: `ending_earned_narratively`,
+  `emergent_event_honored` (freedom vs. hallucination), `choice_consequence_felt`.
+  Freeze a real failing case under `evals/cases/` to grow the regression set
+  (`evals/cases/README.md`).
 
 ### Scope rule of thumb
 Engine correctness ("did the model do the right thing on *this* input?") →

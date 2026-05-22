@@ -49,6 +49,48 @@ def invariant_pass_rates(invariant_report) -> dict[str, float]:
     }
 
 
+def judge_results(judge_report) -> dict[str, float]:
+    """Per-judge headline number from a pydantic-evals `EvaluationReport`: the
+    pass-rate for PassFail judges (mean of the boolean assertion) and the mean
+    score for Scored judges (mean of the 1–5 score). Keyed by the judge's name
+    (its `get_default_evaluation_name`). Errored cases (e.g. timeouts) land in
+    `report.failures`, not `report.cases`, so they are excluded — matching the
+    old scorer, which averaged over non-error cases only."""
+    bools: dict[str, list[bool]] = {}
+    nums: dict[str, list[float]] = {}
+    for case in judge_report.cases:
+        for name, r in case.assertions.items():
+            bools.setdefault(name, []).append(bool(r.value))
+        for name, r in case.scores.items():
+            nums.setdefault(name, []).append(float(r.value))
+    out = {name: round(sum(v) / len(v), 3) for name, v in bools.items() if v}
+    out.update({name: round(sum(v) / len(v), 3) for name, v in nums.items() if v})
+    return out
+
+
+def write_judges(out_dir: Path, judges: dict[str, float]) -> Path:
+    """Merge the per-judge numbers into the run's existing summary.json under a
+    `judges` key. judge_run is a separate pass over a finished run, so summary.json
+    was already written by `make playtest`; merge rather than clobber. Tolerates a
+    missing summary.json (writes a judges-only file)."""
+    path = Path(out_dir) / "summary.json"
+    summary = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    summary["judges"] = judges
+    summary.setdefault("generated_at", time.strftime("%Y-%m-%dT%H:%M:%S"))
+    path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    return path
+
+
+def render_judges(judges: dict[str, float], prev: dict[str, float] | None) -> str:
+    """Per-judge headline with a delta vs. the previous run's judges (higher is
+    better for every judge — pass-rate and mean score alike), reusing `_fmt_delta`."""
+    pj = prev or {}
+    lines = ["## Judges (pass-rate / mean score)"]
+    for name, val in sorted(judges.items()):
+        lines.append(f"- {name}: {val}{_fmt_delta(name, val, pj.get(name))}")
+    return "\n".join(lines)
+
+
 def write_summary(out_dir: Path, metrics: CorpusMetrics, invariant_report) -> Path:
     summary = {
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),

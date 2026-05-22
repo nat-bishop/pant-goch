@@ -8,9 +8,9 @@ a frozen regression case is built from.
 A `SessionView` is one whole playthrough rendered as session-as-text (case file +
 location path + beats-fired log + ending). Whole-session judges score these.
 
-`judge_run` builds the per-scope item lists from these and hands them to the
-scorer; there is no pydantic-evals `Dataset` here (judges score extracted
-turns/sessions, not a task to run).
+`judge_run` builds the per-scope item lists from these and wraps each scope in a
+pydantic-evals `Dataset` (over an identity task) so the judges run as `Evaluator`s
+and report into the same Logfire experiment surface as the deterministic invariants.
 """
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-from .session import SessionArtifact
+from .session import SessionArtifact, artifact_paths
 
 
 class Transition(BaseModel):
@@ -81,9 +81,7 @@ def extract_transitions(artifact: SessionArtifact) -> list[Transition]:
 
 def transitions_from_dir(run_dir: Path) -> list[Transition]:
     out: list[Transition] = []
-    for p in sorted(Path(run_dir).glob("*.json")):
-        if p.name == "summary.json":
-            continue
+    for p in artifact_paths(run_dir):
         out.extend(extract_transitions(SessionArtifact.load(p)))
     return out
 
@@ -111,8 +109,4 @@ def session_view(artifact: SessionArtifact) -> SessionView:
 
 
 def sessions_from_dir(run_dir: Path) -> list[SessionView]:
-    return [
-        session_view(SessionArtifact.load(p))
-        for p in sorted(Path(run_dir).glob("*.json"))
-        if p.name != "summary.json"
-    ]
+    return [session_view(SessionArtifact.load(p)) for p in artifact_paths(run_dir)]

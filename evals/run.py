@@ -74,7 +74,9 @@ def _parse_args() -> argparse.Namespace:
     ap.add_argument("--world", type=Path, default=_REPO_ROOT / "world")
     ap.add_argument("--runs-per-persona", type=int, default=4)
     ap.add_argument("--parallel", type=int, default=None,
-                    help="max concurrent sessions (default: llama_n_parallel)")
+                    help="max concurrent sessions = engine KV slots "
+                         "(default: settings.playtest_parallel, 16 for inferno); "
+                         "total sessions = personas × runs_per_persona may exceed it")
     ap.add_argument("--max-scenes", type=int, default=60,
                     help="scene budget per session before truncation")
     ap.add_argument("--personas", type=str, default=None,
@@ -94,9 +96,13 @@ async def main() -> None:
         )
     subset = args.personas.split(",") if args.personas else None
     personas = load_personas(subset)
-    # Default to running every case at once (personas x repeats); the engine
-    # must have enough KV slots (-np) to serve them without queuing.
-    parallel = args.parallel or (len(personas) * args.runs_per_persona)
+    # Concurrency is the engine's KV-slot count, NOT the total session count.
+    # Total sessions (personas × runs_per_persona) may exceed this; pydantic-evals
+    # queues the surplus and backfills a fresh session as each one finishes, so the
+    # engine stays saturated to the end instead of decaying to a straggler tail as
+    # short sessions drop out. Raise runs_per_persona for a bigger corpus; raise
+    # --parallel / SMALLVILLE_PLAYTEST_PARALLEL only if the engine has more slots.
+    parallel = args.parallel or settings.playtest_parallel
     out_dir = args.out or (_REPO_ROOT / "evals" / "artifacts" / time.strftime("%Y%m%d-%H%M%S"))
     out_dir.mkdir(parents=True, exist_ok=True)
 

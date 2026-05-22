@@ -1,13 +1,18 @@
-"""Judge layer: transition/session extraction, render, and scorer aggregation.
+"""Judge layer: transition/session extraction, render, the Evaluator bridge, and
+report aggregation.
 
 No live model — judges use NativeOutput (which TestModel can't mock), so the
-scorer is exercised with a stub judge returning fixed verdicts.
+verdict→EvaluationReason bridge is exercised with a stub judge whose `judge()`
+returns fixed verdicts, and aggregation is tested directly over a stub report.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
+from types import SimpleNamespace
+from typing import ClassVar
 
-from evals.judges.scorer import run_judge
+from evals import report as run_report
+from evals.judges.base import AgentJudge
 from evals.judges.transition_judges import ChoiceMeaningfulness
 from evals.judges.verdicts import PassFail, Scored
 from evals.session import SessionArtifact
@@ -81,24 +86,49 @@ def test_choice_meaningfulness_render_includes_options():
     assert "look closer at the box" in text and "examine the window" in text
 
 
-async def test_scorer_aggregates_passfail_and_scored():
-    @dataclass
-    class _StubJudge:
-        output_type: type
-        name: str
-        verdicts: list
-        async def judge(self, item):
-            return self.verdicts[item]
+@dataclass
+class _PassFailJudge(AgentJudge):
+    """Stub: maps the item (a bool) straight to a PassFail verdict."""
+    name: ClassVar[str] = "pf"
+    output_type: ClassVar[type] = PassFail
+    async def judge(self, item):
+        return PassFail(reason="r", passed=item)
 
-    pf = _StubJudge(PassFail, "pf", [PassFail(reason="a", passed=True),
-                                     PassFail(reason="b", passed=False),
-                                     PassFail(reason="c", passed=True)])
-    rep = await run_judge(pf, [(f"c{i}", i) for i in range(3)])
-    assert rep.kind == "passfail" and rep.pass_rate == round(2 / 3, 3) and rep.errors == 0
 
-    sc = _StubJudge(Scored, "sc", [Scored(reason="x", score=2), Scored(reason="y", score=4)])
-    rep2 = await run_judge(sc, [(f"c{i}", i) for i in range(2)])
-    assert rep2.kind == "scored" and rep2.mean_score == 3.0
+@dataclass
+class _ScoredJudge(AgentJudge):
+    """Stub: maps the item (an int) straight to a Scored verdict."""
+    name: ClassVar[str] = "sc"
+    output_type: ClassVar[type] = Scored
+    async def judge(self, item):
+        return Scored(reason="r", score=item)
+
+
+async def test_evaluate_bridges_verdict_to_evaluation_reason():
+    pf = _PassFailJudge(model=None)
+    r_true = await pf.evaluate(SimpleNamespace(output=True))
+    r_false = await pf.evaluate(SimpleNamespace(output=False))
+    assert r_true.value is True and r_true.reason == "r"
+    assert r_false.value is False  # bool → assertion
+
+    sc = _ScoredJudge(model=None)
+    r = await sc.evaluate(SimpleNamespace(output=4))
+    assert r.value == 4.0 and isinstance(r.value, float)  # int score → float score
+
+
+def test_judge_results_aggregates_passfail_and_scored():
+    """`report.judge_results` harvests pass-rate (assertions) and mean score
+    (scores) from an EvaluationReport, keyed by judge name."""
+    def res(v):
+        return SimpleNamespace(value=v, reason="")
+    cases = [
+        SimpleNamespace(assertions={"pf": res(True)}, scores={"sc": res(2)}),
+        SimpleNamespace(assertions={"pf": res(False)}, scores={"sc": res(4)}),
+        SimpleNamespace(assertions={"pf": res(True)}, scores={}),  # judge errored here
+    ]
+    out = run_report.judge_results(SimpleNamespace(cases=cases))
+    assert out["pf"] == round(2 / 3, 3)
+    assert out["sc"] == 3.0
 
 
 def test_session_view():
