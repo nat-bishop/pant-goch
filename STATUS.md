@@ -125,16 +125,25 @@ from per-turn `applied_deltas`, clamped):
 | aggressive_interrogator | `None` | **1** (barely warmed) |
 | diligent_journalist | `tom_takes_responsibility` | **8** (warmed to `at_peace`) |
 | diligent_journalist | `tom_takes_responsibility` | **8** |
+| distracted_skimmer | `tom_takes_responsibility` | **6** (warm-ish picks still warm) |
 
-Approach forks outcome: pressing keeps Tom cold → no reveal → the investigation
-fizzles (no ending), while patient/decent play still warms him through. (Ideal would
-be aggressive→`run_out`, but attention never fires — see proposal 2 below — so the
-aggressive fork currently lands as a no-ending fizzle rather than a distinct ending.)
-**Caveat:** one corpus run; the engine streaming stall blocked a clean 2nd confirm
-and the full 8-session set (committed/distracted sessions were still draining via the
-session-timeout at write time). The evidence is causal (per-session state explains the
-fork), not just an aggregate. Re-run `make playtest` on a healthy engine to confirm
-the magnitude and to check the diligent/patient personas aren't over-suppressed.
+(5 of 8 sessions; the rest — both committed_closer + one distracted — were still
+draining via the session-timeout at write time, so this table is the available subset.)
+
+Approach forks outcome: **pressing keeps Tom cold → no reveal → the investigation
+fizzles (`None`)**, while patient/decent/low-effort-but-warm play still warms him
+through to `tom_takes`. The fork is between the *aggressive* persona and the rest;
+baseline B0 had all four → `tom_takes`. (Ideal would be aggressive→`run_out`, but
+attention never fires — see proposal 2 — so the aggressive fork currently lands as a
+no-ending fizzle rather than a distinct ending.)
+
+**Caveat:** one corpus run; the engine streaming stall blocked a clean 2nd confirm.
+The evidence is *causal* (the reconstructed per-session guard/trust explains each
+ending), not just an aggregate. Before fully trusting it, re-run `make playtest` on a
+healthy engine to (a) confirm replication and (b) check the warm personas aren't
+over-suppressed and that the aggressive fork isn't merely the streaming-stall
+truncating — the eff=0 (guard+4/trust0) reconstruction argues it is genuine guard
+suppression, but a clean run should verify.
 
 ### Harness resilience fixes — KEPT (independently correct, not divergence knobs)
 The playtest kept hanging the whole run (one stuck call blocks `run.py`'s single
