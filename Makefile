@@ -18,6 +18,9 @@ help:
 	@echo "  make test                Run pytest (unit suite, skips live-llama integration)"
 	@echo "  make test-integration    Run pytest including the live-llama integration test"
 	@echo "  make playtest            Run simulated Gemini-player playthroughs + invariant report"
+	@echo "  make judge RUN=<dir>     LLM-as-judge pass over a recorded playtest run"
+	@echo "  make eval-deltas         Phase-1 delta isolation eval (fast; deterministic gate)"
+	@echo "  make eval-isolation      All per-agent isolation evals (deltas + prose/choice/chronicler)"
 	@echo "  make typecheck           Run TS typecheck on web/"
 	@echo "  make build               Production build of web/"
 	@echo "  make kill                Force-kill stragglers on :8000/:8080/:5173-5176"
@@ -84,13 +87,20 @@ playtest:
 judge:
 	SMALLVILLE_USE_INFERNO=1 uv run python -m evals.judge_run --run $(RUN)
 
-# Phase-1 delta regression eval — frozen turn contexts run against the live
-# phase1 agent K times each, scored by deterministic assertions on the emitted
-# delta (trust/guard/attention). Fast, focused, no full playthrough. Seeded
-# with the attention-spam regression. Override samples with K=<n>.
+# Isolation-eval lane — frozen turn contexts run against ONE live engine agent K
+# times each (Gemma is temp=1.0), scored as a per-case pass-rate with a CI floor
+# gate. Fast, focused, no full playthrough. Deterministic design rules gate;
+# reused LLM judges trend. See EVALS.md "Isolation" lane.
+#   eval-deltas     — just the Phase-1 delta suite (the attention-spam regression)
+#   eval-isolation  — all suites (deltas + prose voice + choice agency + chronicler)
+# Override samples with K=<n> (default 16, keeps the 0.8 floor stable).
 .PHONY: eval-deltas
 eval-deltas:
-	SMALLVILLE_USE_INFERNO=1 uv run python -m evals.phase1_deltas --k $(or $(K),12)
+	SMALLVILLE_USE_INFERNO=1 uv run python -m evals.isolation --suite deltas --k $(or $(K),16)
+
+.PHONY: eval-isolation
+eval-isolation:
+	SMALLVILLE_USE_INFERNO=1 uv run python -m evals.isolation --k $(or $(K),16)
 
 .PHONY: typecheck
 typecheck:

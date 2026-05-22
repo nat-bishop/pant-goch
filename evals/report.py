@@ -98,17 +98,36 @@ def _judge_flagged(st: dict) -> bool:
     return st["n_below_3"] > 0
 
 
-def write_judges(out_dir: Path, judges: dict[str, float]) -> Path:
-    """Merge the per-judge numbers into the run's existing summary.json under a
-    `judges` key. judge_run is a separate pass over a finished run, so summary.json
-    was already written by `make playtest`; merge rather than clobber. Tolerates a
-    missing summary.json (writes a judges-only file)."""
+def write_summary_block(out_dir: Path, key: str, data: dict) -> Path:
+    """Merge one named block into the run's existing summary.json under `key`,
+    preserving the other top-level blocks (`metrics`, `invariants`, `judges`,
+    isolation suites). A later pass over a finished run (judges, isolation evals)
+    merges rather than clobbers what `make playtest` already wrote. Tolerates a
+    missing summary.json (writes a block-only file)."""
     path = Path(out_dir) / "summary.json"
     summary = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-    summary["judges"] = judges
+    summary[key] = data
     summary.setdefault("generated_at", time.strftime("%Y-%m-%dT%H:%M:%S"))
     path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
     return path
+
+
+def write_judges(out_dir: Path, judges: dict[str, float]) -> Path:
+    """Merge the per-judge numbers into summary.json under `judges`. judge_run is a
+    separate pass over a finished run, so merge rather than clobber."""
+    return write_summary_block(out_dir, "judges", judges)
+
+
+def render_summary_block(title: str, key: str, data: dict[str, float], prev: dict | None) -> str:
+    """Render a flat {name: float} block with a per-key delta vs. the previous
+    run's same-keyed block, reusing `_fmt_delta` (higher-is-better for any key not
+    in `_HIGHER_IS_BETTER` — true for both pass-rates and judge means). Used by the
+    isolation-eval lane to land its numbers in the same diffed report surface."""
+    pb = (prev or {}).get(key, {})
+    lines = [f"## {title}"]
+    for name, val in sorted(data.items()):
+        lines.append(f"- {name}: {val}{_fmt_delta(name, val, pb.get(name))}")
+    return "\n".join(lines)
 
 
 def render_judges(judges: dict[str, dict], prev: dict | None) -> str:

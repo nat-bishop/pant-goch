@@ -128,6 +128,36 @@ breach. pydantic-evals is for *graded* outputs where the score is the signal
 
 ---
 
+## A third category: deterministic rule over a stochastic subject
+
+The pytest-vs-pydantic-evals binary above has no slot for the most useful engine
+regression test: **a deterministic assertion about a single agent that runs at
+temp=1.0.** "Phase 1 must not bump `attention` on a private warm exchange" is a
+*hard rule*, but the agent is stochastic, so a single run is not a build-gateable
+boolean — it is a **pass-rate over K samples**.
+
+This is the **isolation lane** (`evals/isolation/`, `make eval-deltas` /
+`make eval-isolation`). Freeze the input `State`, re-run the real agent K times,
+score each sample, gate on the per-case pass-rate with a floor:
+
+- It re-executes the agent, so unlike a frozen *judge* case (which freezes recorded
+  *output*) it can test an engine-prompt change. It is the only lane that can.
+- The floor catches **collapse, not drift** — set it well below a healthy rate so
+  binomial noise doesn't trip it (the captured attention bug drove its case to ~0;
+  a 0.5–0.8 floor separates "fixed" from "regressed" cleanly). Drift is the
+  `summary.json` diff's job, not the gate's.
+- **Structural rules may be asserted proactively** (no-op-on-first-turn, no dup
+  case-file entry, non-empty prose) → bool assertions → they gate. **Behavioural
+  rubrics stay reactive** — reuse an `evals.judges` class against the *fresh* output
+  → Scored → it trends, it does not gate. Do not pre-write a voice/agency rubric for
+  a failure you have not seen; grow those from real captured failures, same as the
+  recorded-artifact judges.
+
+To add the next agent: write 1–2 `IsoCase`s (a `build(world) -> State` + the `Expect`
+or judge), wrap them in a `Suite`, register it in `evals/isolation/__main__.py`.
+
+---
+
 ## Suggested layout
 
 ```
@@ -212,6 +242,7 @@ judges (one thing each, run on demand).
 | **Gates** (must hold) | per session | `evals/evaluators.py` | `make playtest` |
 | **Metrics** (trend) | corpus | `evals/metrics.py` → `report.py` | `make playtest` → `summary.json` + diffed report |
 | **Judges** (score one thing) | transition / session | `evals/judges/` | `make judge RUN=<dir>` |
+| **Isolation** (re-run one agent K×) | single agent | `evals/isolation/` | `make eval-deltas` / `make eval-isolation` |
 
 - **Gates** — `NoPrematureEnding` is the live depth gate (an ending must follow ≥3
   scenes / ≥3 locations); `EndingEarned`/`ExploredBeyondStart` are superseded but
