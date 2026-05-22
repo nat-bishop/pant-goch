@@ -27,8 +27,7 @@ See SceneRunnerRuntime in agents.py.
 """
 from __future__ import annotations
 
-from .engine import fireable_beat_ids, present_npc_ids
-from .schemas import StateChangeBundle, UnlockBeat
+from .engine import band_name, confession_depth, emittable_beat_ids, present_npc_ids
 from .state import State
 from .world import World
 
@@ -143,49 +142,6 @@ def _unlocked_beat_names(state: State, world: World, *, empty: str) -> str:
     return _beat_names(world, sorted(state.unlocked_beats), empty=empty)
 
 
-def _render_beat(beat, world: World) -> str:
-    """Gate-first beat rendering for the classifier's `## Reachable Beats`
-    block (its only consumer). The earning TEST leads; the evocative outcome
-    is demoted to the last line and reframed as "what firing depicts".
-
-    Why: a small model under pressure anchors on a foregrounded reward — show
-    "Tom tells the player he saw a Land Rover" first and it fires the moment
-    the player fishes for that outcome, ignoring a gate buried beneath. Leading
-    with the test (prerequisites + notes_to_llm) and demoting the description
-    keeps the model judging the player's action against the gate, not reaching
-    for the prize. The prose writer still gets the description (via
-    `_render_applied_changes`) when the beat actually fires, so nothing is lost.
-
-    Heading is the name (the string the model emits); cross-refs render as
-    names too, so the model sees ONE vocabulary across the whole prompt. The
-    structural dependencies (requires/blocked) are ALREADY satisfied for every
-    beat in this block, so they ride along only as sequence context — not as
-    the test the model must apply."""
-    gate = beat.prerequisites.strip() or (
-        "no extra prerequisite — judge purely on whether the player's action "
-        "this turn is the moment the notes_to_llm describes"
-    )
-    deps: list[str] = []
-    if beat.requires_beats:
-        deps.append(f"comes after {_beat_names(world, beat.requires_beats)}")
-    if beat.requires_any_beats:
-        deps.append(f"after any of {_beat_names(world, beat.requires_any_beats)}")
-    if beat.blocked_by_beats:
-        deps.append(f"ruled out by {_beat_names(world, beat.blocked_by_beats)}")
-    dep_line = (
-        f"\n  (sequence, already satisfied: {'; '.join(deps)})" if deps else ""
-    )
-    return (
-        f"- {beat.name}:\n"
-        f"  FIRE ONLY IF the player's action THIS turn earns it by the test "
-        f"below; otherwise leave it unfired.\n"
-        f"  test (when it may fire): {gate}\n"
-        f"  notes_to_llm: {beat.notes_to_llm.strip()}{dep_line}\n"
-        f"  what firing depicts (the resulting moment — NOT a cue to fire): "
-        f"{beat.description.strip()}"
-    )
-
-
 def _render_beats_compact(world: World) -> str:
     """Compact beat catalog — `- {name}: {description}` per beat. Used by the
     populator and chronicler system prompts: both reason about story shape
@@ -218,23 +174,25 @@ def _render_few_shots(world: World) -> str:
 
 
 def build_phase1_system_prompt(world: World) -> str:
-    """Phase 1 system prompt — the state-change classifier. Carries the
-    world surface (locations + cast with knowledge) and a slim crime
-    narrative. The beat catalog and endings are NOT here — beats appear
-    only in the per-turn user prompt's ## Reachable Beats block (narrowed
-    by NPC presence + dependency), and endings are pure engine data (no
-    agent emits EndGame). Byte-stable across the session.
+    """Phase 1 system prompt — the approach reporter. Carries the world
+    surface (locations + cast with knowledge) and the crime narrative.
+    Byte-stable across the session.
 
-    Phase 1 is a classifier dressed as a writer: it reads the conversation
-    so far and decides which (if any) authored beats just fired. Voice
-    instructions are not its job — Phase 2 handles prose.
+    Phase 1 no longer adjudicates discrete beats. It reads the conversation
+    so far and reports how the player's most recent move shifted their
+    STANDING with the people present — small ordinal nudges to trust (warmth)
+    and guard (wariness) — plus, rarely, an explicit commitment the player
+    declared. The engine derives what the player LEARNS (confessions,
+    evidence) from the trust they accumulate, so the reporter never decides
+    that — it only judges tone and direction.
     """
     return f"""\
 ## Role
-You are the state-change classifier for a single-player investigation
-game. The player is a freelance journalist investigating a closed-but-
-suspicious death. Each turn you read the conversation so far and decide
-which authored beats have just fired.
+You are the standing reporter for a single-player investigation game. The
+player is a freelance journalist investigating a closed-but-suspicious
+death. Each turn you read the conversation so far and report how the
+player's most recent action changed where they stand with the people in
+the room. You do not write prose; a separate agent does.
 
 ## The World
 {_render_locations_block(world)}
@@ -245,69 +203,55 @@ which authored beats have just fired.
 ## What Happened
 {world.crime.strip()}
 
-You know this as the classifier. The cast above does not know all of it,
-and most of them are protecting some part of it. Read their conversations
-against this truth when judging which beats have landed.
+You know this as the reporter. The cast above does not know all of it, and
+most of them are protecting some part of it. People open up to patience and
+decency; they close to pressure, lies, and performance.
 
 ## Your Job
-Each turn, emit ONE structured output: StateChangeBundle — **zero, one,
-or at most two UnlockBeat entries**. The user prompt's ## Reachable Beats
-block is the ONLY set you may pick from: it already lists every beat whose
-prerequisites are satisfied, whose required people are in the room, and
-that is valid at the current location. If a beat is not in that block, it
-cannot fire this turn — do not reach for it. Pick one or two only if their
-described moment has genuinely landed in the conversation. Most turns emit
-zero.
+Each turn emit ONE StateChangeBundle with two channels, BOTH usually small:
 
-The engine validates and applies your bundle, then a separate prose agent
-writes the prose conditioned on what fired. You do not write prose.
+1. `deltas` — for each person PRESENT this turn (and only those), how the
+   player's most recent action moved them:
+     - `trust`: "+1" if the player was warm, patient, decent, or shared
+       something real; "-1" if cool or careless; "0" (default) if neutral.
+     - `guard`: "+1" if the player pressed, pried, or made them wary; "-1"
+       if the player put them at ease; "0" (default) for routine talk;
+       "BREACH" ONLY for the genuinely unforgivable (claiming to be police
+       or family, threatening, recording without consent, pushing hard
+       after being told to stop). BREACH is PERMANENT — when unsure, use
+       "+1" guard, never BREACH.
+   You may also emit one `attention` "+1" when the player did something
+   CONSPICUOUS that makes the village close ranks — a public scene, an
+   indiscretion in earshot, naming a confidential source aloud. Never for
+   ordinary, private, gentle conversation.
+
+2. `commitments` — AT MOST ONE, and only from the ## Choices Available
+   block in the user prompt. These are the player's explicit declarations
+   ("I'm filing it", "I'm going up to Tan-y-coed", "I'm telling Iwan") and
+   the two observation milestones (reading the letter, standing at the
+   crash site). If the player did not clearly do one of those THIS turn, or
+   it is not listed as available, emit none.
 
 ## Rules
-1. **A beat fires in response to the PLAYER'S most recent action.** Look at
-   what the player just did or said this turn (the last line of ## This
-   Scene So Far). A beat fires only if THAT action is the earning moment its
-   notes_to_llm describes — not if the action is merely adjacent, preparatory,
-   or in the vicinity. The player examining the envelope is NOT reading the
-   letter; waiting by the phone is NOT making the call; pressing about the
-   road is NOT showing they care about Megan as a person. Re-read the
-   beat's notes and prerequisites and hold the action to them.
-
-2. **The first turn of a scene fires NOTHING.** If ## This Scene So Far says
-   it is the first turn (the player has not acted yet — the narrator is only
-   setting the scene), emit zero beats. Nothing has been earned until the
-   player does something. Beats begin firing on the next turn, in response
-   to a player action.
-
-3. **When in doubt, emit zero.** A spurious beat corrupts the rest of the
-   session — it cannot be taken back, and the narrator will be told to depict
-   a moment that did not happen. A missed beat costs nothing: it is still on
-   the table next turn. Most turns emit zero. Never fire a beat to "move
-   things along." When no beat's earning moment clearly landed, emit
-   `{{"state_changes": []}}` directly and stop — the empty list is the normal,
-   complete answer. Do not narrate or reason out why nothing fired.
-
-4. **Negative / withdrawal beats need a CLEAR provocation this turn** —
-   a character closing off, throwing the player out, refusing to speak
-   again, or declining further contact. These fire ONLY when the player's
-   action this turn is genuinely disqualifying: a lie (claiming to be
-   police or family), a threat, recording without consent, a hostile
-   accusation, or aggressive pressing AFTER the character has already asked
-   them to stop. A polite, neutral, or merely curious question NEVER fires
-   one — "what are you worried about?", "can you tell me about that night?",
-   buying a drink, or sitting in silence are not provocations. When unsure
-   whether the action crossed that line, do NOT fire the negative: a guarded
-   character can stay guarded in the prose without the relationship
-   permanently rupturing.
-
-5. Decision beats (Decided to ...) fire only when the player explicitly
-   commits — "I'm filing it", "I'm walking away", "I'm going up to
-   Tan-y-coed". A decision beat only appears in ## Reachable Beats once
-   the evidence it rests on is already unlocked; if you don't see it, the
-   player has not earned that choice yet. Endings are engine-decided once
-   the right decision beat is in state; you do not emit them.
-
+1. **Report the PLAYER'S most recent action**, the last line of ## This
+   Scene So Far — not the narrator's atmosphere. A move shifts standing only
+   with people actually present.
+2. **Most turns are small.** A neutral question is `0`/`0`. Trust and guard
+   move ONE notch at a time; a single conversation does not go from stranger
+   to confession. Do NOT try to "move things along" — warmth accrues across
+   turns, and the engine turns it into reveals on its own.
+3. **You never report what the player LEARNS.** "Tom names the vehicle",
+   "Dylan admits he knows", "Helen hands over notes" are NOT yours to fire —
+   the engine derives them from trust. Your job is only the nudge that earns
+   them. Reading the standing block tells you how close they already are.
+4. **BREACH and attention are sticky — reserve them.** A breach ends a
+   relationship for good; attention can run the player out of the village.
+   Use them only on a clear, deliberate provocation, never on a guess.
+5. **The first turn of a scene shifts nothing** (the narrator is only
+   setting the scene) — emit empty `deltas` and no commitment.
 6. Stay within the established cast and locations. The bible above is
-   complete.
+   complete. When nothing moved, emit `{{"deltas": [], "commitments": []}}`
+   and stop — the empty bundle is the normal, complete answer.
 """
 
 
@@ -575,48 +519,59 @@ def _render_present_brief(state: State, world: World) -> str:
     return "\n".join(parts)
 
 
-def _render_encounters(state: State, world: World) -> str:
-    """Per-present-NPC count of PRIOR scenes with the player — the cross-scene
-    signal several Phase-1 soft prerequisites lean on ("twice before", "not on
-    a first visit", "stayed through one quiet exchange first") but which the
-    scene transcript alone cannot carry. The engine already holds this count
-    (`state.npc_memory` keeps one note per prior scene an NPC was present in —
-    the same source `min_scenes_with_npc` trusts); surfacing it lets the
-    classifier apply those rules instead of guessing them from case-file prose.
-
-    Scene-stable: `npc_memory` only grows at scene close, so the block is
-    identical across every turn of a scene and rides the cached prefix beside
-    ## Present. Within-scene history (who said what so far) lives in
-    ## This Scene So Far, so it is deliberately not repeated here."""
-    npcs_here = world.npcs_at(state.player_location, state=state)
-    if not npcs_here:
-        return "## Encounters\n(no one present — no prior encounters to weigh.)"
-    parts = ["## Encounters"]
-    for npc in npcs_here:
-        prior = len(state.npc_memory.get(npc.id, []))
-        if prior == 0:
-            note = "you have not met them in any prior scene (this is your first)"
-        elif prior == 1:
-            note = "1 prior scene with you"
-        else:
-            note = f"{prior} prior scenes with you"
-        parts.append(f"- {npc.id} ({npc.name}): {note}.")
-    return "\n".join(parts)
-
-
 def _render_state(state: State, world: World) -> str:
     return f"## State\nunlocked_beats: {_unlocked_beat_names(state, world, empty='(none yet)')}"
 
 
-def _render_reachable_beats(state: State, world: World) -> str:
-    reachable = fireable_beat_ids(world, state)
-    if not reachable:
-        return "## Reachable Beats\n(none — nothing is fireable here right now: every beat has fired, is permanently blocked, or needs an NPC who isn't present.)"
-    parts = ["## Reachable Beats"]
-    # Sort by name so the heading matches the model's emission token.
-    for bid in sorted(reachable, key=lambda b: world.beats[b].name):
+def _render_standing(state: State, world: World) -> str:
+    """## Standing — where the player stands with each person present, as a
+    warmth band (the derived view of trust/guard), plus the global
+    village_attention. This is how the reporter sees 'how close they already
+    are' so its ±1 nudges land in proportion. Banded NPCs only; auxiliary
+    characters carry no tracked standing."""
+    present = present_npc_ids(world, state)
+    parts = ["## Standing"]
+    if not present:
+        parts.append("- (no one present — only attention can move)")
+    for nid in present:
+        npc = world.npcs[nid]
+        if npc.disposition is None:
+            parts.append(
+                f"- {nid} ({npc.name}): a villager you can talk to; no deep arc to earn."
+            )
+            continue
+        depth = confession_depth(world, state, nid)
+        if depth < 0:
+            note = "RELATIONSHIP BROKEN — guard has latched; they will not open up again"
+        else:
+            note = (
+                f"warmth: {band_name(world, state, nid)} "
+                f"(trust {state.trust.get(nid, 0)}, guard {state.guard.get(nid, 0)})"
+            )
+        parts.append(f"- {nid} ({npc.name}): {note}")
+    parts.append(f"village_attention: {state.village_attention} (hostile ejects)")
+    return "\n".join(parts)
+
+
+def _render_choices_available(state: State, world: World) -> str:
+    """## Choices Available — the LLM-emittable commitment beats right now
+    (observation milestones + currently-earned decisions). The reporter may
+    emit ONE as a commitment, and ONLY if the player explicitly did/declared
+    it this turn. Evidence/outcome milestones are never here (engine-derived)."""
+    ids = emittable_beat_ids(world, state)
+    if not ids:
+        return (
+            "## Choices Available\n(none — the player has no explicit "
+            "commitment to make here right now.)"
+        )
+    parts = [
+        "## Choices Available",
+        "(emit ONE in `commitments` ONLY if the player explicitly did/declared "
+        "it THIS turn:)",
+    ]
+    for bid in sorted(ids, key=lambda b: world.beats[b].name):
         beat = world.beats[bid]
-        parts.append(_render_beat(beat, world))
+        parts.append(f"- {beat.name}: {beat.description.strip()}")
     return "\n".join(parts)
 
 
@@ -705,21 +660,21 @@ def _render_this_scene(state: State, world: World) -> str:
     return "\n".join(parts)
 
 
-def _render_applied_changes(applied: StateChangeBundle, world: World) -> str:
-    """Phase 2 sees the beat's name + description (not the slug) when a
-    beat fires. Phase 2's system prompt deliberately omits the beat
-    catalog — surfacing the description here is the load-bearing channel
-    that lets the narrator write the moment with specifics ("a relief he
-    did not know he wanted") rather than inferring from the name alone."""
-    if not applied.state_changes:
+def _render_applied_changes(applied_beats: list[str], world: World) -> str:
+    """Phase 2 sees the name + description of any beat UNLOCKED this turn
+    (LLM commitment or engine-derived milestone). Phase 2's system prompt
+    deliberately omits the beat catalog — surfacing the description here is
+    the load-bearing channel that lets the narrator write the moment with
+    specifics ("a relief he did not know he wanted") rather than inferring
+    from the name alone."""
+    if not applied_beats:
         return "(none — this turn fired no beats.)"
     parts = []
-    for change in applied.state_changes:
-        if isinstance(change, UnlockBeat):
-            beat = world.beats.get(change.beat_id)
-            name = beat.name if beat else "(unknown beat)"
-            description = beat.description.strip() if beat else "(unknown beat)"
-            parts.append(f"- UnlockBeat {name}: {description}")
+    for bid in applied_beats:
+        beat = world.beats.get(bid)
+        name = beat.name if beat else "(unknown beat)"
+        description = beat.description.strip() if beat else "(unknown beat)"
+        parts.append(f"- {name}: {description}")
     return "\n".join(parts)
 
 
@@ -741,17 +696,19 @@ def build_phase1_user_prompt(state: State, world: World) -> str:
     sections = [
         _render_you_are_at_brief(state, world),
         _render_present_brief(state, world),
-        _render_encounters(state, world),
+        _render_standing(state, world),
         _render_case_file(state, limit=CASE_FILE_RECENT_ENTRIES),
         _render_state(state, world),
-        _render_reachable_beats(state, world),
+        _render_choices_available(state, world),
         _render_this_scene(state, world),
     ]
     suffix = "\n\n".join(sections)
     return suffix + """
 
-## Generate State Changes
-Emit a StateChangeBundle.
+## Report Standing
+Emit a StateChangeBundle: `deltas` for the people present (small — mostly 0),
+and AT MOST ONE `commitments` entry only if the player explicitly made one of
+the choices listed above this turn.
 """
 
 
@@ -761,7 +718,7 @@ Emit a StateChangeBundle.
 def build_prose_writer_user_message(
     state: State,
     world: World,
-    applied: StateChangeBundle,
+    applied_beats: list[str],
     *,
     opening_seed: str | None = None,
     is_first_turn: bool,
@@ -805,7 +762,7 @@ def build_prose_writer_user_message(
             parts.append(f"## Player\n{body}")
 
     parts.append(
-        f"## State Changes Just Applied\n{_render_applied_changes(applied, world)}"
+        f"## State Changes Just Applied\n{_render_applied_changes(applied_beats, world)}"
     )
 
     # Per-turn anchor for the "stay inside this location" voice rule — Gemma 4

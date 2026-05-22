@@ -41,6 +41,53 @@ class Location(_Frozen):
         return self.short_name or self.name
 
 
+class Disposition(_Frozen):
+    """Per-NPC quality control surface (the thin spine). Only authored on the
+    handful of NPCs whose opening-up is load-bearing (Tom, Dylan, Helen,
+    Eluned, Iwan); auxiliary characters omit it and stay pure prose.
+
+    - `warms` / `spooks` set how many raw trust/guard points make one band
+      (slow = widest = slowest to open). Replaces the old `min_scenes_with_npc`.
+    - `breach` lists the prose triggers that latch this NPC's guard shut
+      permanently (replaces the per-NPC negative beats). The LLM emits a guard
+      BREACH only for these.
+    - `voice_by_band` is the EXISTING `voice_sample` registers, keyed by band
+      (cold/thawing/open/at_peace + the guard-high `closed`). The engine renders
+      the current band's lines into the prose writer's ## Present card.
+    """
+
+    warms: Literal["slow", "steady", "fast"] = "steady"
+    spooks: Literal["slow", "steady", "fast"] = "steady"
+    breach: list[str] = Field(default_factory=list)
+    voice_by_band: dict[str, list[str]] = Field(default_factory=dict)
+    # Locations where this NPC will WARM (positive trust accrues) — the
+    # mechanical home of "Dylan only opens up somewhere private". Empty = no
+    # restriction. Guard/BREACH still apply anywhere (he can shut down at the
+    # farm); only positive trust is location-pinned.
+    opens_up_only_at: list[str] = Field(default_factory=list)
+
+
+class When(_Frozen):
+    """Quality/milestone gate, evaluated by `engine.when_satisfied`. Replaces
+    the boolean `requires_*` proxy family. All set conditions must hold (AND).
+
+      - `npc` + `trust_at_least`: the named NPC has reached this confession band.
+      - `any_evidence_of`: at least one of these beats is unlocked (the evidence-OR).
+      - `requires_beats`: all of these beats are unlocked (e.g. a decision beat).
+      - `npcs_thawed_at_least`: at least N distinct NPCs have reached `thawing`
+        (the walk-away traction barrier — replaces the old requires_count:3).
+      - `village_attention_at_least` / `_below`: the global heat band.
+    """
+
+    npc: str | None = None
+    trust_at_least: Literal["thawing", "open", "at_peace"] | None = None
+    any_evidence_of: list[str] = Field(default_factory=list)
+    requires_beats: list[str] = Field(default_factory=list)
+    npcs_thawed_at_least: int | None = None
+    village_attention_at_least: Literal["noticed", "talked_about", "hostile"] | None = None
+    village_attention_below: Literal["noticed", "talked_about", "hostile"] | None = None
+
+
 class NPC(_Frozen):
     id: str
     name: str
@@ -53,65 +100,47 @@ class NPC(_Frozen):
     # more dialogue weight than three lines of attitude prose. Defaults to []
     # so older fixtures load; production cast should fill it.
     voice_sample: list[str] = Field(default_factory=list)
+    # Quality control surface — see Disposition. None for auxiliary NPCs
+    # (Gareth, Owain, Wendy, Maud) who stay pure prose and carry no tracked
+    # quality.
+    disposition: Disposition | None = None
 
 
 class Beat(_Frozen):
-    """A unit of investigation progress. Fired by the LLM via UnlockBeat
-    state-change. Once fired, stays in `state.unlocked_beats` permanently.
+    """A milestone in `state.unlocked_beats` (once unlocked, permanent). Two
+    kinds in the quality engine:
 
-    Negative beats (`tom_closes_off`, `dylan_refuses_to_speak_again`,
-    `eluned_throws_you_out`) use `blocked_by_beats` on the corresponding
-    positive beats to make failure paths permanent.
-
-    Decision beats encode irrevocable player choices that gate endings.
-    The ending's `requires_beats` carries only the decision beat (which
-    in turn carries the evidence prereqs); endings never end the game on
-    inferred intent.
+      - engine-derived (`commitment=False`, carries `when`): an evidence /
+        outcome milestone the engine auto-unlocks when its `when` gate is met
+        (e.g. trust reaching a band). The LLM never fires these.
+      - LLM-emitted (`commitment=True`): a player decision (`decided_*`,
+        mutually exclusive) or an observation milestone (gated on
+        `requires_location`). The classifier emits these explicitly.
     """
 
     id: str
     # LLM-facing short name. Phase 1 emits this (not the id) in
-    # UnlockBeat.beat_name; the engine maps name→id at the boundary. Names
-    # also lead every LLM-facing render (reachable beats, applied changes,
-    # chronicler turn list). Hard caps below are dual: max_length caps the
-    # grammar-sample token count; the word check catches "barely-50-chars
-    # sentence" cases. Whitespace check guards the name→id lookup.
+    # UnlockBeat.beat_name for commitments; the engine maps name→id at the
+    # boundary. Names also lead every LLM-facing render (choices available,
+    # applied changes, chronicler turn list). max_length caps the
+    # grammar-sample token count; the word check catches over-long names;
+    # the whitespace check guards the name→id lookup.
     name: str = Field(max_length=50)
     description: str
-    requires_beats: list[str] = Field(default_factory=list)
-    # OR-clause: when non-empty, at least one id here must be unlocked (or
-    # reachable) — in addition to all of `requires_beats`. Empty = no OR.
-    requires_any_beats: list[str] = Field(default_factory=list)
-    blocked_by_beats: list[str] = Field(default_factory=list)
-    # State-dependent fireability: when non-empty, the beat is only emittable
-    # while every listed NPC is present at the player's location (enforced via
-    # engine.fireable_beat_ids → per-call grammar narrowing). Leave empty for
-    # object beats (reading a letter) and decision beats (player commitments)
-    # that fire with no NPC in the room. Validated against the cast at load.
-    requires_npcs_present: list[str] = Field(default_factory=list)
-    # State-dependent fireability: when non-empty, the beat is only emittable
-    # while the player is physically at one of these locations (enforced via
-    # engine.fireable_beat_ids → per-call grammar narrowing). The hard gate
-    # for place-bound beats like `examined_the_crash_site` (the Black Dog
-    # Bend) that `notes_to_llm` alone could not enforce against a 4B model.
-    # Validated against the locations at load.
+    # Observation milestones (reading the letter, standing at the crash site)
+    # gate on the player's LOCATION rather than on a person opening up. Empty
+    # for trust-derived milestones and decisions. Validated against locations
+    # at load (engine.emittable_beat_ids consumes it).
     requires_location: list[str] = Field(default_factory=list)
-    # Threshold gate: when `requires_count` > 0, the beat is only fireable once at
-    # least that many of `requires_count_beats` are unlocked — "enough of these
-    # have happened", between the ANY of requires_any_beats and the ALL of
-    # requires_beats. Used so `village_runs_you_out` needs ~3 accumulated
-    # negatives rather than firing on the first one. Validated/cycle-checked at
-    # load alongside the other beat-ref fields.
-    requires_count_beats: list[str] = Field(default_factory=list)
-    requires_count: int = Field(default=0, ge=0)
-    # Pacing gate: when > 0, every NPC in `requires_npcs_present` must have been
-    # present in at least this many PRIOR scenes (their `npc_memory` length)
-    # before the beat may fire. Stops first-visit info-dumps and whole-ladder-
-    # in-one-scene runs that `notes_to_llm` alone could not hold against a 4B
-    # model. Only meaningful with `requires_npcs_present` set.
-    min_scenes_with_npc: int = Field(default=0, ge=0)
-    prerequisites: str = ""  # soft prereqs the LLM judges, beyond requires/blocks
     notes_to_llm: str
+    # ── quality engine gate ──
+    # `when` is the quality/milestone gate (see When). For a trust-derived
+    # evidence milestone it carries {npc, trust_at_least}; for a commitment it
+    # gates availability (e.g. any_evidence_of). `commitment=True` marks the
+    # LLM-emitted beats (player decisions + observation milestones); everything
+    # else with a `when` is engine-derived (auto-unlocked when the gate is met).
+    when: When | None = None
+    commitment: bool = False
 
     @field_validator("name")
     @classmethod
@@ -129,29 +158,16 @@ class Beat(_Frozen):
             )
         return v
 
-    @field_validator("requires_count")
-    @classmethod
-    def _count_consistent(cls, v: int, info) -> int:
-        pool = info.data.get("requires_count_beats", [])
-        if v > 0 and v > len(pool):
-            raise ValueError(
-                f"requires_count={v} exceeds requires_count_beats "
-                f"({len(pool)} ids)"
-            )
-        if v == 0 and pool:
-            raise ValueError(
-                "requires_count_beats set but requires_count is 0 (no threshold)"
-            )
-        return v
-
 
 class Ending(_Frozen):
     id: str
+    # The decision/milestone beat(s) that must ALL be unlocked.
     requires_beats: list[str] = Field(default_factory=list)
-    # OR-clause mirror of Beat.requires_any_beats — see that docstring.
-    # An ending fires iff ALL of `requires_beats` are unlocked AND (if
-    # `requires_any_beats` is non-empty) AT LEAST ONE of those is unlocked.
-    requires_any_beats: list[str] = Field(default_factory=list)
+    # Quality gate on top of requires_beats — the de-redundification surface.
+    # e.g. iwan_finds_peace carries when={npc: iwan, trust_at_least: open};
+    # run_out_of_the_village carries when={village_attention_at_least: hostile}
+    # and no requires_beats.
+    when: When | None = None
     notes_to_llm: str
     epilogue: str
 

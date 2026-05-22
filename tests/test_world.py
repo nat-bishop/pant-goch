@@ -155,7 +155,7 @@ def test_npc_voice_sample_loaded_when_authored(tmp_path):
     assert npc.voice_sample == ["Aye.", "Not my business, was it."]
     assert set(world.npcs) == {"tom", "maud"}
     assert set(world.beats) == {
-        "tom_named_a_vehicle", "tom_admits_more", "tom_closes_off"
+        "tom_named_a_vehicle", "tom_admits_more", "decided_to_file", "read_the_letter"
     }
     assert set(world.endings) == {"published_story"}
     assert world.brief.player_starts_at == "the_old_vicarage"
@@ -320,92 +320,46 @@ def test_invariant_7_brief_player_starts_at_undefined(tmp_path):
         load_world(target)
 
 
-# ───────────────────────── invariant 8: beat refs (requires/blocked_by + no self) ─────────────────────────
+# ───────────────────────── when refs (quality-engine gate) ─────────────────────────
 
 
-def test_invariant_8_requires_undefined_beat(tmp_path):
-    target = _copy_valid(tmp_path)
-    truth_path = target / "truth.yaml"
-    truth = yaml.safe_load(truth_path.read_text(encoding="utf-8"))
-    # tom_admits_more requires_beats: append a missing id
-    for beat in truth["beats"]:
-        if beat["id"] == "tom_admits_more":
-            beat["requires_beats"].append("ghost_beat")
-    _write_yaml(truth_path, truth)
-    with pytest.raises(WorldLoadError, match="requires_beats references undefined"):
-        load_world(target)
-
-
-def test_invariant_8_blocked_by_undefined_beat(tmp_path):
+def test_when_references_undefined_beat(tmp_path):
+    """A `when.any_evidence_of` / `when.requires_beats` id must resolve."""
     target = _copy_valid(tmp_path)
     truth_path = target / "truth.yaml"
     truth = yaml.safe_load(truth_path.read_text(encoding="utf-8"))
     for beat in truth["beats"]:
-        if beat["id"] == "tom_named_a_vehicle":
-            beat["blocked_by_beats"].append("phantom_beat")
+        if beat["id"] == "decided_to_file":
+            beat["when"] = {"any_evidence_of": ["ghost_beat"]}
     _write_yaml(truth_path, truth)
-    with pytest.raises(WorldLoadError, match="blocked_by_beats references undefined"):
+    with pytest.raises(WorldLoadError, match="references undefined beat"):
         load_world(target)
 
 
-def test_invariant_8_self_reference_in_requires(tmp_path):
+def test_when_references_undefined_npc(tmp_path):
+    """A `when.npc` must resolve to a defined NPC."""
     target = _copy_valid(tmp_path)
     truth_path = target / "truth.yaml"
     truth = yaml.safe_load(truth_path.read_text(encoding="utf-8"))
     for beat in truth["beats"]:
         if beat["id"] == "tom_named_a_vehicle":
-            beat["requires_beats"] = ["tom_named_a_vehicle"]
+            beat["when"] = {"npc": "ghost_npc", "trust_at_least": "open"}
     _write_yaml(truth_path, truth)
-    with pytest.raises(WorldLoadError, match="contains itself"):
+    with pytest.raises(WorldLoadError, match="references undefined npc"):
         load_world(target)
 
 
-def test_invariant_8_requires_any_undefined_beat(tmp_path):
+def test_disposition_opens_up_only_at_undefined_location(tmp_path):
+    """`disposition.opens_up_only_at` must reference defined locations."""
     target = _copy_valid(tmp_path)
-    truth_path = target / "truth.yaml"
-    truth = yaml.safe_load(truth_path.read_text(encoding="utf-8"))
-    for beat in truth["beats"]:
-        if beat["id"] == "tom_named_a_vehicle":
-            beat["requires_any_beats"] = ["ghost_beat"]
-    _write_yaml(truth_path, truth)
-    with pytest.raises(
-        WorldLoadError, match="requires_any_beats references undefined"
-    ):
+    cast = yaml.safe_load((target / "cast.yaml").read_text(encoding="utf-8"))
+    cast[0]["disposition"]["opens_up_only_at"] = ["ghost_loc"]
+    _write_yaml(target / "cast.yaml", cast)
+    with pytest.raises(WorldLoadError, match="opens_up_only_at references"):
         load_world(target)
 
 
-def test_invariant_8_self_reference_in_requires_any(tmp_path):
-    target = _copy_valid(tmp_path)
-    truth_path = target / "truth.yaml"
-    truth = yaml.safe_load(truth_path.read_text(encoding="utf-8"))
-    for beat in truth["beats"]:
-        if beat["id"] == "tom_named_a_vehicle":
-            beat["requires_any_beats"] = ["tom_named_a_vehicle"]
-    _write_yaml(truth_path, truth)
-    with pytest.raises(WorldLoadError, match="contains itself"):
-        load_world(target)
-
-
-# ───────────────────────── invariant 12: requires_npcs_present refs ─────────────────────────
-
-
-def test_invariant_12_requires_npcs_present_undefined_npc(tmp_path):
-    """A beat's requires_npcs_present must reference defined NPC ids — an
-    unknown id would silently make the beat permanently unfireable."""
-    target = _copy_valid(tmp_path)
-    truth_path = target / "truth.yaml"
-    truth = yaml.safe_load(truth_path.read_text(encoding="utf-8"))
-    for beat in truth["beats"]:
-        if beat["id"] == "tom_named_a_vehicle":
-            beat["requires_npcs_present"] = ["ghost_npc"]
-    _write_yaml(truth_path, truth)
-    with pytest.raises(
-        WorldLoadError, match="requires_npcs_present references undefined npc"
-    ):
-        load_world(target)
-
-
-# ───────────────────────── invariant 13: requires_location refs ─────────────────────────
+# ───────────────────────── requires_location refs (observation milestones) ─────────────────────────
 
 
 def test_invariant_13_requires_location_undefined_location(tmp_path):
@@ -439,54 +393,39 @@ def test_invariant_13_requires_location_valid(tmp_path):
     ]
 
 
-# ───────────────────────── invariant 14: every beat is gated ─────────────────────────
+# ───────────────────────── every beat is gated ─────────────────────────
 
 
-def test_invariant_14_ungated_beat_rejected(tmp_path):
-    """A beat with no hard gate (requires_beats / requires_any_beats /
-    requires_npcs_present / requires_location) is globally fireable from turn 1
-    — the loader must reject it. No exceptions: every beat must be gated."""
+def test_ungated_beat_rejected(tmp_path):
+    """A beat with no gate (`when` nor requires_location) would be globally
+    derivable/emittable from turn 1 — the loader must reject it."""
     target = _copy_valid(tmp_path)
     truth_path = target / "truth.yaml"
     truth = yaml.safe_load(truth_path.read_text(encoding="utf-8"))
-    for beat in truth["beats"]:
-        if beat["id"] == "tom_closes_off":
-            beat.pop("requires_npcs_present", None)  # strip its only gate
+    truth["beats"].append({
+        "id": "ungated", "name": "Ungated", "commitment": True,
+        "description": "x", "notes_to_llm": "y",
+    })
     _write_yaml(truth_path, truth)
-    with pytest.raises(WorldLoadError, match="no hard gate"):
+    with pytest.raises(WorldLoadError, match="no gate"):
         load_world(target)
 
 
-def test_invariant_8_self_reference_in_blocked_by(tmp_path):
+def test_derived_beat_without_when_rejected(tmp_path):
+    """A non-commitment beat with no `when` could never be derived."""
     target = _copy_valid(tmp_path)
     truth_path = target / "truth.yaml"
     truth = yaml.safe_load(truth_path.read_text(encoding="utf-8"))
-    for beat in truth["beats"]:
-        if beat["id"] == "tom_closes_off":
-            beat["blocked_by_beats"] = ["tom_closes_off"]
+    truth["beats"].append({
+        "id": "dead_derived", "name": "Dead derived", "requires_location": ["the_post_office"],
+        "description": "x", "notes_to_llm": "y",
+    })
     _write_yaml(truth_path, truth)
-    with pytest.raises(WorldLoadError, match="contains itself"):
+    with pytest.raises(WorldLoadError, match="no `when` gate"):
         load_world(target)
 
 
-# ───────────────────────── invariant 9: no requires_beats cycles ─────────────────────────
-
-
-def test_invariant_9_simple_cycle(tmp_path):
-    target = _copy_valid(tmp_path)
-    truth_path = target / "truth.yaml"
-    truth = yaml.safe_load(truth_path.read_text(encoding="utf-8"))
-    # Create A -> B -> A by making tom_named_a_vehicle require tom_admits_more,
-    # which already requires tom_named_a_vehicle.
-    for beat in truth["beats"]:
-        if beat["id"] == "tom_named_a_vehicle":
-            beat["requires_beats"] = ["tom_admits_more"]
-    _write_yaml(truth_path, truth)
-    with pytest.raises(WorldLoadError, match="cycle"):
-        load_world(target)
-
-
-# ───────────────────────── invariant 10: ending requires_beats ─────────────────────────
+# ───────────────────────── ending requires_beats ─────────────────────────
 
 
 def test_invariant_10_ending_requires_undefined_beat(tmp_path):

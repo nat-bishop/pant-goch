@@ -269,10 +269,10 @@ async def test_play_scene_soft_close_then_walk_emits_scene_spent_and_exit(monkey
     state = make_initial_state(world)
 
     async def fake_phase1(*args, **kwargs):
-        # tom_closes_off is a negative beat — not in any ending's
-        # requires_beats — so the choice author's Leave below resolves
-        # to a soft-close EndScene, not EndGame.
-        return StateChangeBundle(state_changes=[UnlockBeat(beat_id="tom_closes_off")])
+        # An evidence milestone unlocks (→ a state_change event) but is NOT in
+        # any ending's requires_beats, so the choice author's Leave below
+        # resolves to a soft-close EndScene, not EndGame.
+        return StateChangeBundle(commitments=[UnlockBeat(beat_id="tom_named_a_vehicle")])
 
     async def fake_prose(*args, **kwargs):
         yield "Tom shuts down."
@@ -317,7 +317,7 @@ async def test_play_scene_soft_close_then_walk_emits_scene_spent_and_exit(monkey
     # state_change carries the beat_id
     sc = next(e for e in events if e["event"] == "state_change")
     assert sc["kind"] == "unlock_beat"
-    assert sc["payload"]["beat_id"] == "tom_closes_off"
+    assert sc["payload"]["beat_id"] == "tom_named_a_vehicle"
 
 
 async def test_play_scene_emits_options_event_for_continue(monkeypatch, world_and_bundle):
@@ -494,7 +494,7 @@ async def test_play_session_emits_location_change_and_log_entry_words(
     phase1_outputs = iter([
         StateChangeBundle(),  # scene 1 turn 1: nothing
         StateChangeBundle(   # scene 2 turn 1: fire the decision beat
-            state_changes=[UnlockBeat(beat_id=b) for b in decision_beats],
+            commitments=[UnlockBeat(beat_id=b) for b in decision_beats],
         ),
     ])
 

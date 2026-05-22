@@ -7,7 +7,6 @@ from evals.metrics import (
     CorpusMetrics,
     _ending_entropy_normalized,
     _filler_turn_ratio,
-    _ladder_compression,
     _longest_common_beat_prefix,
     _mean_pairwise_beat_jaccard_distance,
     _persona_outcome_separation,
@@ -106,14 +105,17 @@ def test_persona_outcome_separation():
     assert _persona_outcome_separation([_art()]) == 0.0  # single persona
 
 
-def test_ladder_compression():
-    # Two Tom rungs fired in one scene → compression 2.0 for that ladder.
-    compressed = _art(transcript=[
-        _turn(1, "pub", ["tom_speaks_of_megan_as_a_person", "tom_alludes_to_being_on_the_road"]),
-    ])
-    out = _ladder_compression([compressed])
-    assert out["tom"] == 2.0
-    assert out["dylan"] == 0.0  # never touched
+def test_filler_counts_quality_deltas_as_movement():
+    """A turn that moved a disposition (applied_deltas) but fired no beat is
+    NOT filler in the quality engine."""
+    moved = {
+        "kind": "turn", "scene_id": 1, "location": "x", "prose": "",
+        "options": [], "pick_index": 0, "pick_text": "",
+        "applied_beats": [], "applied_deltas": [{"type": "quality_delta", "npc_id": "tom", "trust": "+1"}],
+        "fireable": [],
+    }
+    art = _art(transcript=[moved])
+    assert _filler_turn_ratio([art]) == 0.0
 
 
 def test_corpus_metrics_smoke():

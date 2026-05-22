@@ -23,7 +23,7 @@ from handler.schemas import (
     StateChangeBundle,
     UnlockBeat,
 )
-from handler.models import Beat, Brief, Ending, Location
+from handler.models import Beat, Brief, Ending, Location, When
 from handler.world import World, load_world
 
 from evals.evaluators import (
@@ -102,16 +102,19 @@ def _evidence_world() -> World:
         "village": Location(id="village", name="Village", adjacent_to=["start"], description="y"),
     }
     beats = {
+        # Observation milestone (LLM-emitted, location-gated).
         "evidence": Beat(id="evidence", name="Evidence", description="x", notes_to_llm="y",
-                         requires_location=["village"]),
+                         commitment=True, requires_location=["village"]),
+        # Evidence-bearing decision: gated on the evidence milestone.
         "decided_file": Beat(id="decided_file", name="Decided file", description="x",
-                             notes_to_llm="y", requires_any_beats=["evidence"]),
-        # Walk-away gates on engagement but carries no evidence (requires_any
-        # here points at a non-evidence beat) → "not substantive" for EndingEarned.
+                             notes_to_llm="y", commitment=True,
+                             when=When(any_evidence_of=["evidence"])),
+        # Walk-away gates on engagement, NOT evidence → vacuous for EndingEarned.
         "decided_quit": Beat(id="decided_quit", name="Decided quit", description="x",
-                             notes_to_llm="y", requires_beats=["engaged"]),
+                             notes_to_llm="y", commitment=True,
+                             when=When(requires_beats=["engaged"])),
         "engaged": Beat(id="engaged", name="Engaged", description="x", notes_to_llm="y",
-                        requires_location=["village"]),
+                        commitment=True, requires_location=["village"]),
     }
     endings = {
         "published": Ending(id="published", requires_beats=["decided_file"],
@@ -212,7 +215,7 @@ def _patch_engine_for_endgame(monkeypatch, decision_beats):
 
     async def _phase1(*a, **k):
         return StateChangeBundle(
-            state_changes=[UnlockBeat(beat_id=b) for b in decision_beats],
+            commitments=[UnlockBeat(beat_id=b) for b in decision_beats],
         )
 
     async def _prose(*a, **k):

@@ -1,18 +1,22 @@
 # The truth of Pant Goch. The LLM reads this once at startup and is briefed
 # on what's real. The model never has to "figure out" the mystery; it knows.
-# Beats are unlock units the LLM fires by emitting unlock_beat; endings are
-# terminal states the LLM fires by emitting EndGame { ending_id }.
 #
-# Authoring patterns honoured here (see plan §"Authoring patterns"):
-#   - Every major NPC who can be lost has a negative beat that blocks the
-#     positives (tom_closes_off blocks tom_named_a_vehicle, etc).
-#   - Every ending gates on a decision beat (player commits explicitly) OR
-#     on a conditional-fire beat (village_runs_you_out, tom_decides_to_speak_to_police).
-#   - Decision beats are mutually-exclusive: each blocks the others, so the
-#     LLM can never fire two commitment beats in the same playthrough.
-#   - Ending requires_beats carries ONLY the gating beat; evidence prereqs
-#     live on the decision beat (so the engine never ends the game on
-#     inferred intent).
+# QUALITY ENGINE (see plan: dissolve the beat-DAG into a quality vector):
+#   - Relationship progress is NOT a ladder of beats. It is per-NPC `trust`
+#     and `guard` (engine state). The LLM nudges them ±1/turn; the engine
+#     derives confession DEPTH bands (cold→thawing→open→at_peace) from them.
+#   - Most beats here are EVIDENCE/OUTCOME milestones the ENGINE derives the
+#     moment a `when` gate is met — they cannot be mis-fired, because they
+#     fall out of the trust the player actually earned. They carry `when`.
+#   - A handful are LLM-emitted (`commitment: true`): the player's explicit
+#     choices (decided_*) and two observation milestones (reading the letter,
+#     standing at the crash site) that fire on a location, not on a person
+#     opening up.
+#   - The four `decided_*` beats are mutually exclusive (engine rule: at most
+#     one decision per playthrough).
+#   - Negative beats, ladder rungs, and run_out's count machinery are GONE:
+#     a rupture is `guard` latching (BREACH); the village running you out is
+#     `village_attention` reaching `hostile`.
 
 crime: |
   Megan Pritchard, 19, died on the night of 14 March 2019 on the Black
@@ -56,17 +60,14 @@ crime: |
   not matter to what actually happened.
 
 beats:
-  # ─────────────────────── Opening beats (the Old Vicarage) ───────────────────────
-  # The vicarage is a deliberately short PROLOGUE, not an explorable room.
-  # The letter is the moral hook; phoning Iwan is the optional exit ramp that
-  # points the player out toward the village (Lower Hafod). Neither gates an
-  # ending. Do NOT turn the vicarage into an object hunt — there is nothing to
-  # rummage for here. The OS map in the desk is atmosphere only (see the
-  # location notes), not a beat: mention it in passing if the player looks,
-  # then move them out. After the letter, the scene should wind down quickly.
+  # ─────────────────────── Observation milestones ───────────────────────
+  # LLM-emitted (commitment: true), gated on a LOCATION rather than a person
+  # opening up — the engine cannot derive "the player read the letter" from
+  # trust. The narrator fires these when the action actually happens.
 
   - id: letter_from_iwan_read
     name: Read Iwan's letter
+    commitment: true
     requires_location: [the_old_vicarage]
     description: |
       The player opens the sealed letter from Iwan Pritchard on the hall
@@ -75,763 +76,182 @@ beats:
     notes_to_llm: |
       Fire when the player has actually opened and read the letter — not
       merely noticed it. Narrate the letter's content in the player's
-      reading: factual paragraphs about Megan's death, the police closing
-      it too quickly, and the final line about living with not knowing
-      for seven years. After this beat, subsequent prose may reference
-      the journalist's sense of obligation to Iwan as a quiet
-      throughline; do NOT have characters reference the letter unless the
-      player has shown it. This is the prologue's purpose — once it has
-      fired, there is nothing more to do at the vicarage; steer the player
-      out toward the village rather than deeper into the house.
+      reading: Megan's death, the police closing it too quickly, the final
+      line about living with not knowing for seven years. Once it has fired,
+      there is nothing more to do at the vicarage — steer the player out
+      toward the village.
 
-  - id: phoned_iwan_from_the_vicarage
-    name: Phoned Iwan from the vicarage
+  - id: examined_the_crash_site
+    name: Examined the crash site
+    commitment: true
+    requires_location: [the_black_dog_bend]
     description: |
-      The player uses the corded landline in the hall to phone Iwan
-      Pritchard on the number from his letter. They agree the player
-      will come up to Lower Hafod when convenient. Brief, formal, both
-      sides careful.
-    requires_beats: [letter_from_iwan_read]
-    requires_location: [the_old_vicarage]
+      The player walks the lay-by and verge at the Black Dog Bend — the
+      flowers, the place where the grass grows differently below the
+      embankment, the faint trace where the Mini went over. They stand
+      where Megan died.
     notes_to_llm: |
-      Fire when the player picks up the receiver and dials Iwan, not on
-      a general "I should phone him" intent. The conversation is short
-      — Iwan is reserved on the phone and prefers to talk in person.
-      After this beat, a first visit to Lower Hafod reads as expected
-      rather than cold; Iwan will be at home, having put the kettle on.
+      Fire ONLY when the player is physically at the Black Dog Bend, near
+      enough to touch the flowers — not when they merely look at a map or
+      hear about it. Narrate the place soberly; a quiet beat, not a
+      revelation. A natural place for the player to feel the human weight
+      of what happened (and to think of Iwan's monthly flowers).
 
-  # ─────────────────────── Tom Bevan's ladder ───────────────────────
-  # Five rungs from "stranger at the bar" to "going into Knighton on
-  # Monday". Each rung is one quiet shift in conversation; together they
-  # pace Tom's unburdening across multiple scenes so the player feels
-  # progress rather than a binary reveal.
-
-  - id: tom_speaks_of_megan_as_a_person
-    name: Tom speaks of Megan
-    requires_npcs_present: [tom]
-    description: |
-      Tom shares a memory of Megan Pritchard that has nothing to do with
-      the road — a small, particular thing (a school sports day, a song
-      she liked, the way she said his name). The first time he treats
-      the journalist as a person rather than a threat.
-    blocked_by_beats: [tom_closes_off]
-    prerequisites: |
-      Tom has been in the same room as the player at least once before,
-      OR the player has stayed at the bar through one quiet exchange
-      without pressing. The player has not lied, not claimed to be
-      police or family, not pushed about the road.
-    notes_to_llm: |
-      The lightest of Tom's beats. Fires when the player has shown they
-      care about Megan as a person — asked a gentle question, sat
-      quietly through a pause, accepted a partial answer. Narrate Tom's
-      shift sparingly: a glance, a smaller voice, the memory itself in
-      one or two sentences. After this, subsequent scenes with Tom feel
-      different even before he says anything else. Do not fire on the
-      player's very first turn at the bar; he needs to have seen them
-      stay through a silence first.
-
-  - id: tom_alludes_to_being_on_the_road
-    name: Tom alludes to being on the road
-    requires_npcs_present: [tom]
-    # No scene gate: rungs 1–2 may both land in the opening Slaughtered Lamb
-    # scene so first contact actually progresses. The later rungs carry the
-    # pacing (named/admits need a prior scene, decides needs two), capping the
-    # ladder at ~2 rungs/scene — enough to break the 4.7-rung dump of the
-    # 20260520-194311 run without the 1-rung-per-scene gating of 235454, which
-    # left a pressing player with nothing to advance so they pushed Tom into
-    # tom_closes_off on the very first scene (his whole ladder then dead).
-    description: |
-      Tom mentions, obliquely, that he was driving the B4368 the night
-      Megan died — coming back from a friend's farm. He does not yet
-      say what he saw. He may say "I was out that night" or "I came
-      past the bend" or similar.
-    requires_beats: [tom_speaks_of_megan_as_a_person]
-    blocked_by_beats: [tom_closes_off]
-    prerequisites: |
-      The conversation has reached a point where Tom feels safe enough
-      to put himself in the geography of it. The player has not asked
-      him directly to confess; he is offering this himself.
-    notes_to_llm: |
-      The middle rung of Tom's ladder. Fires when Tom edges toward the
-      road on his own. Narrate plainly — he sets down his pint, looks
-      at the bar in front of him, and says it as a small admission, not
-      as testimony. After this, the player knows Tom was there; what he
-      saw is still ahead.
+  # ─────────────────────── Evidence milestones (engine-derived) ───────────────────────
+  # No requires_*, no notes about WHEN to fire — the engine fires these the
+  # turn the named NPC's trust crosses the `open` band. notes_to_llm is purely
+  # how to NARRATE the moment when it lands.
 
   - id: tom_named_a_vehicle
     name: Tom named a vehicle
-    requires_npcs_present: [tom]
-    # NO scene gate. This is the EVIDENCE beat — it gates decided_to_file /
-    # _confront / _tell_iwan (three of six endings). Gating it behind a return
-    # visit (min 1 in the 20260521-023120 run) starved it: the player rarely
-    # returns to Tom, so it never fired, no evidence existed, and EVERY session
-    # collapsed to the walk-away ending (entropy 0). Evidence must be reachable
-    # in a single good Tom scene; only the terminal responsibility rungs below
-    # (admits → decides) carry the return-visit pacing, which is enough to keep
-    # the game from ENDING in one bar conversation (the original 194311 bug).
+    when: {npc: tom, trust_at_least: open}
     description: |
       Tom Bevan tells the player he saw a Land Rover speeding away from
       the Black Dog Bend the night Megan died, and that he recognised
       it as Eluned Vaughn's.
-    requires_beats: [tom_alludes_to_being_on_the_road]
-    blocked_by_beats: [tom_closes_off]
-    prerequisites: |
-      Tom has been in the same room as the player at least twice before.
-      The player has not lied about being police or family, has not
-      threatened him, and has not pushed too aggressively in any prior
-      conversation. The conversation has reached a moment where Tom feels
-      safe enough — usually after the player has shown they care about
-      Megan as a person, not just a story.
     notes_to_llm: |
-      Tom will not volunteer this. Earn it through patience and the
-      accumulated sense of the player being decent. When this moment
-      lands, narrate Tom's actual words — quiet, finally, a relief he
-      did not know he wanted — and emit unlock_beat with
-      "tom_named_a_vehicle". After this, Tom is a different man in
-      subsequent scenes: tired, lighter, sometimes weepy. Do not fire on
-      a first visit. Do not fire if the player has used pressure tactics
-      this scene. Do not fire on inference — Tom must say it.
-
-  - id: tom_admits_full_silence
-    name: Tom admits full silence
-    requires_npcs_present: [tom]
-    # Same scene as tom_named_a_vehicle is allowed (a natural follow-on), but
-    # not before the player has built one prior scene with Tom.
-    min_scenes_with_npc: 1
-    description: |
-      Tom tells the player, in his own words, that he never said whose
-      vehicle it was, and why — that he convinced himself the Vaughns
-      were good people, and that he has not slept since.
-    requires_beats: [tom_named_a_vehicle]
-    blocked_by_beats: [tom_closes_off]
-    notes_to_llm: |
-      A natural follow-on from tom_named_a_vehicle but not automatic.
-      Requires the player to stay with Tom on the topic — not change
-      the subject, not rush, not interrogate. This is where Tom
-      unburdens himself. After this beat Tom is calmer; he may speak
-      of his own conscience, of what he thinks should happen now.
-
-  - id: maud_confirms_the_affair
-    name: Maud confirms the affair
-    requires_npcs_present: [maud]
-    # "Will not volunteer this on the first or second visit" — pacing gate so it
-    # cannot dump on the first Maud scene (15/15 in the 20260520 run).
-    min_scenes_with_npc: 1
-    description: |
-      Maud Pryce, in the post office or as an aside elsewhere in the
-      village, confirms that Megan and Dylan were sleeping together
-      and that she had known.
-    notes_to_llm: |
-      Maud will not volunteer this on the first or second visit. She
-      needs to feel the player already knows or strongly suspects —
-      either through having pieced it together (a question phrased
-      with knowledge) or because the player has earned her sense of
-      "this is the right thing to say." She will frame it as gossip
-      she should not have repeated.
-
-  # Dylan Vaughn's ladder — four rungs. He cannot speak at Tan-y-coed;
-  # the populator may relocate him to the wood or the lane after a tense
-  # encounter, which is when these beats become reachable.
-  #
-  # requires_location (engine-enforced) on every positive rung pins the
-  # authored "somewhere private — the wood, the lane, the churchyard" to the
-  # grammar: at Tan-y-coed Dylan's rungs are simply not on the table, so the
-  # ladder can't fire there. In 20260521-005657 the whole ladder dumped at
-  # tan_y_coed in one scene — with the prose sometimes about Eluned, not Dylan
-  # — which is what tanked beat_fired_appropriately. (dylan_refuses stays
-  # location-free: he CAN shut down if pressed in front of Eluned at the farm.)
-
-  - id: dylan_acknowledges_the_player
-    name: Dylan acknowledges the player
-    requires_npcs_present: [dylan]
-    requires_location: [bryn_iago_wood, the_lane, st_caradocs]
-    description: |
-      Dylan Vaughn, in a private setting away from Tan-y-coed, agrees
-      to speak with the player at all. He does not admit anything yet —
-      he simply stops walking, or sits down, or otherwise signals that
-      the conversation is allowed to happen.
-    blocked_by_beats: [dylan_refuses_to_speak_again]
-    prerequisites: |
-      The player has found Dylan somewhere private — the wood, the
-      lane, the churchyard, not Tan-y-coed. The player has approached
-      without performance and without threat. Dylan does not have to
-      be alone for this, but he must not feel watched by his mother.
-    notes_to_llm: |
-      The bottom rung of Dylan's ladder. Fires when Dylan signals — by
-      stopping, sitting, or replying with more than two words — that
-      he is willing to be in this conversation. Narrate the moment
-      physically (he stops; he looks at the bark of a tree; he says
-      "yeah"), not as a verbal commitment. Without this beat in state,
-      the further Dylan beats are unreachable.
-
-  - id: dylan_admits_the_relationship
-    name: Dylan admits the relationship
-    requires_npcs_present: [dylan]
-    requires_location: [bryn_iago_wood, the_lane, st_caradocs]
-    description: |
-      Dylan Vaughn admits to the player that he and Megan were
-      together. He does not (yet) admit knowing what his mother did.
-    requires_beats: [dylan_acknowledges_the_player]
-    blocked_by_beats: [dylan_refuses_to_speak_again]
-    prerequisites: |
-      Dylan has already acknowledged the player (the previous beat).
-      The player has demonstrated they already know or suspect,
-      through Maud's leak or directly asking. The setting is still
-      private.
-    notes_to_llm: |
-      Dylan is in his late twenties, quiet, has not been able to put
-      this down for seven years. He will admit the relationship more
-      easily than expected if the player is gentle. He will NOT admit
-      knowing what his mother did at this beat — that is a later beat.
-      If the player is at Tan-y-coed, Dylan will not engage at all;
-      the scene reads as polite stonewalling.
-
-  - id: dylan_speaks_of_megan
-    name: Dylan speaks of Megan
-    requires_npcs_present: [dylan]
-    requires_location: [bryn_iago_wood, the_lane, st_caradocs]
-    # NO scene gate. Dylan's authored attitude is that "once he begins he is
-    # unable to stop" — a single private unburdening is in character, unlike
-    # Tom's patient-across-visits arc. Gating the back half behind a return
-    # (20260521-023120) left dylan_admits_he_knows — Dylan's EVIDENCE beat —
-    # never firing, contributing to the entropy-0 collapse. The real Dylan bug
-    # (the ladder firing at Tan-y-coed) is handled by requires_location, not by
-    # scene pacing.
-    description: |
-      Dylan talks about Megan as a person — what she was like, what
-      they did together, what he misses. Not as evidence. The
-      conversation lifts; for a moment they are two people remembering
-      her, not a journalist and a source.
-    requires_beats: [dylan_admits_the_relationship]
-    blocked_by_beats: [dylan_refuses_to_speak_again]
-    prerequisites: |
-      The relationship is admitted. The player has not immediately
-      pushed for what Dylan's mother did. The setting is still private
-      and the conversation has space in it.
-    notes_to_llm: |
-      The shift between "she and I" and "I know what my mother did."
-      Fires when the player gives Dylan the room to remember her —
-      asks about her, or accepts a silence, or doesn't fill a pause.
-      Narrate the change in him: shoulders down, eyes elsewhere, a
-      small laugh or a small wince at a memory. After this, the
-      hardest beat is reachable; the player has earned the standing.
+      When this lands, narrate Tom's actual words — quiet, finally, a
+      relief he did not know he wanted. Do not fire on inference; Tom must
+      say it. After this, Tom is a different man: tired, lighter,
+      sometimes weepy.
 
   - id: dylan_admits_he_knows
     name: Dylan admits he knows
-    requires_npcs_present: [dylan]
-    requires_location: [bryn_iago_wood, the_lane, st_caradocs]
-    # NO scene gate — Dylan's evidence beat, reachable in the one private scene
-    # where he opens up (see dylan_speaks_of_megan). requires_beats already
-    # forces the full ladder order within that scene.
+    when: {npc: dylan, trust_at_least: open}
     description: |
       Dylan tells the player he has known since April 2019 what his
       mother did on the road that night.
-    requires_beats: [dylan_speaks_of_megan]
-    blocked_by_beats: [dylan_refuses_to_speak_again]
-    prerequisites: |
-      The relationship has been admitted and Dylan has spoken of Megan
-      as a person. The conversation is private. The player has been
-      kind across the encounter — has not pressed, has not bargained,
-      has not promised to publish or to keep quiet. Has let Dylan move
-      at his own pace.
     notes_to_llm: |
-      Hardest beat for Dylan. Even after the previous two rungs he
-      will only break here if the conversation has earned the weight.
-      Narrate the moment quietly — he does not weep, he does not
-      gesture; he simply tells the player, looking elsewhere. After
-      this beat, Dylan is no longer carrying it alone.
-
-  # DC Helen Mortimer's ladder — three rungs from "off-record meeting"
-  # to "manila envelope changes hands". She will not give notes to a
-  # player who hasn't earned it; each rung gates a specific shift.
-
-  - id: helen_will_meet_off_record
-    name: Helen will meet off-record
-    requires_npcs_present: [helen]
-    description: |
-      DC Helen Mortimer agrees to meet the player at the Costa in
-      Knighton (not the station). She makes the off-record framing
-      explicit: nothing she says here can be quoted by name.
-    blocked_by_beats: [helen_wont_take_your_call]
-    prerequisites: |
-      The player has approached Helen with discretion — at the desk
-      politely, not via the press office; or has been pointed to her
-      by Father Gareth or another sympathetic source. The player has
-      not yet been indiscreet anywhere in the village about Helen.
-    notes_to_llm: |
-      The bottom rung. Fires when Helen says — in the station or on a
-      call or by note — that she will meet, but only at the Costa,
-      only off the record. Narrate the agreement plainly; the meeting
-      itself is the next beat.
-
-  - id: helen_confirms_she_suspected
-    name: Helen confirms she suspected
-    requires_npcs_present: [helen]
-    description: |
-      Helen tells the player, in conversation at the Costa, that she
-      always suspected Eluned Vaughn was on the road that night. She
-      does not yet show her notes; she is testing whether the player
-      can be trusted with what comes next.
-    requires_beats: [helen_will_meet_off_record]
-    blocked_by_beats: [helen_wont_take_your_call]
-    prerequisites: |
-      The off-record meeting is happening. The player has demonstrated
-      they are not chasing a quote — has not asked Helen to be named,
-      has not threatened to publish her involvement.
-    notes_to_llm: |
-      The middle rung. Fires when Helen says it aloud — "I knew. I
-      couldn't prove it. That's a different thing." Narrate her
-      professional caution: she does not look at the player; she looks
-      at her coffee, at the window, at the door. After this, the notes
-      are still hers; she has not given them up.
+      Narrate the moment quietly — he does not weep, he does not gesture;
+      he simply tells the player, looking elsewhere. After this beat,
+      Dylan is no longer carrying it alone.
 
   - id: helen_hands_over_notes
     name: Helen hands over notes
-    requires_npcs_present: [helen]
+    when: {npc: helen, trust_at_least: open}
     description: |
-      Helen hands the player a manila envelope containing her
-      unofficial notes from the 2019 investigation. The handover is
-      itself the moment; the conversation around it is brief.
-    requires_beats: [helen_confirms_she_suspected]
-    blocked_by_beats: [helen_wont_take_your_call]
-    prerequisites: |
-      The player has come with at least one piece of independent
-      evidence — Tom's account, or the affair — so that Helen's
-      contribution is not the leak. The player has been discreet about
-      Helen's involvement to this point. The verbal suspicion has
-      already been admitted (previous beat).
+      Helen hands the player a manila envelope containing her unofficial
+      notes from the 2019 investigation. She always suspected Eluned; she
+      could never prove it.
     notes_to_llm: |
-      The top rung of Helen's ladder. Fires when the manila envelope
-      moves across the table. Narrate the handover plainly — a few
-      sheets of A4, the envelope itself unmarked. She will not be
-      quoted; this must be made explicit in the dialogue around the
-      handover, not after.
+      Narrate the handover plainly — a few sheets of A4, the envelope
+      unmarked. She will not be quoted, and this must be explicit in the
+      dialogue around the handover, not after.
 
-  - id: iwan_grants_you_intimacy
-    name: Iwan grants you intimacy
-    requires_npcs_present: [iwan]
-    description: |
-      Iwan Pritchard takes the player into Megan's bedroom at Lower
-      Hafod — preserved largely as she left it — and speaks of her as
-      she was, not as the case. The player understands what was lost.
-    notes_to_llm: |
-      Iwan does not do this on a first visit. He needs the player to
-      have proven they take this seriously — usually by returning, by
-      asking about Megan rather than the case, by accepting a long
-      silence. Narrate the room: the books on the desk, a poster from
-      a 2018 gig in Hereford, a half-finished embroidery on the chair.
-      This beat is what makes the investigation matter humanly to the
-      player; downstream endings read differently with this beat in
-      state.
+  # ─────────────────────── Outcome / terminal-trust milestones (derived) ───────────────────────
 
   - id: eluned_breaks
     name: Eluned breaks
-    requires_npcs_present: [eluned]
+    when:
+      npc: eluned
+      trust_at_least: thawing
+      requires_beats: [decided_to_confront_eluned]
+      any_evidence_of: [tom_named_a_vehicle, dylan_admits_he_knows, helen_hands_over_notes]
     description: |
-      Eluned Vaughn, confronted at Tan-y-coed by a player who has
-      enough, confirms — not in words exactly, but in a moment of
-      collapse — that she was on the road that night. She will go to
-      the police herself in the days following.
-    requires_beats: [tom_named_a_vehicle, dylan_admits_he_knows]
-    blocked_by_beats: [eluned_throws_you_out]
-    prerequisites: |
-      The player has explicitly come to Tan-y-coed to confront Eluned
-      (typically because decided_to_confront_eluned has just fired).
-      The player has laid out what they know quietly, without
-      performance, without bargaining. The conversation is in the
-      kitchen, not the yard.
+      Eluned Vaughn, confronted at Tan-y-coed by a player who has enough
+      and lays it out quietly, confirms — not in words exactly, but in a
+      moment of collapse — that she was on the road that night. She will
+      go to the police herself in the days following.
     notes_to_llm: |
-      A rare beat — most playthroughs will not reach it because the
-      player will either be thrown out or will have chosen to file
-      rather than confront. When it lands, narrate Eluned's collapse
-      sparingly — she does not weep; she sits down. She asks for
-      whisky. She does not deny. This is the moment the case actually
-      closes.
+      A rare beat — most playthroughs will not reach it. Only fires after
+      the player has committed to confronting her AND has not spooked her
+      (if they threatened or performed, her guard has latched and this is
+      out of reach). Narrate her collapse sparingly — she does not weep;
+      she sits down, asks for whisky, does not deny.
 
   - id: tom_decides_to_speak_to_police
     name: Tom decides to speak to police
-    requires_npcs_present: [tom]
-    # The ending gate for tom_takes_responsibility. Needs two prior Tom scenes
-    # so the responsibility ending is earned across return visits rather than
-    # the same scene Tom first opens up (it dominated 8/13 endings and capped
-    # the game at 3 scenes), while staying reachable inside ~3 Tom scenes.
-    min_scenes_with_npc: 2
+    when: {npc: tom, trust_at_least: at_peace}
     description: |
-      Tom Bevan, having unburdened himself to the player across two
-      conversations and feeling steadier than he has in seven years,
-      tells the player he is going to Knighton on Monday to make a
-      new statement.
-    requires_beats: [tom_admits_full_silence]
+      Tom Bevan, having unburdened himself across more than one
+      conversation and feeling steadier than he has in seven years, tells
+      the player he is going to Knighton on Monday to make a new statement.
     notes_to_llm: |
-      This beat fires when the player has been a witness to Tom's
-      slow-coming clarity — has not asked him to do this, has not
-      promised to publish if he does not, has simply been present.
-      Tom decides on his own. Narrate the moment without ceremony; he
-      is a man telling another man he is going into town next week.
-      After this beat, Tom is at peace with himself for the first
-      time in the story. Do not fire this if the player has been
-      lobbying for it; it has to be his.
+      Tom decides on his own — narrate without ceremony, a man telling
+      another man he is going into town next week. After this, Tom is at
+      peace with himself for the first time in the story.
 
-  # ─────────────────────── Auxiliary character beats ───────────────────────
-  # None of these gate endings directly. They add parallel investigative
-  # texture (Gareth pointing, Maud's hint about Helen), atmospheric weight
-  # (Owain's folklore, Iwan's grief at the bend), and moral pressure
-  # (Wendy's request) so locations beyond the three main ladders carry
-  # narrative interest and the player has reasons to visit them.
-
-  - id: gareth_points_to_tom
-    name: Gareth points to Tom
-    requires_npcs_present: [gareth]
-    description: |
-      Father Gareth Hughes, speaking around the seal of confession,
-      tells the player they should speak to Tom Bevan — "properly".
-      He names Tom as someone worth listening to without naming what
-      Tom might say.
-    notes_to_llm: |
-      Fire when Father Gareth, in conversation with the player, steers
-      them toward Tom Bevan. Narrate the priest's careful indirection —
-      he is bound by the seal of confession (Eluned confessed to him in
-      2020) and cannot say more. After this beat, the player has a
-      pastoral hint that Tom is the witness who matters; subsequent Tom
-      scenes can register the player as someone who arrived knowing
-      where to look.
-
-  - id: gareth_acknowledges_the_seal
-    name: Gareth acknowledges the seal
-    requires_npcs_present: [gareth]
-    description: |
-      Father Gareth confirms, without saying what, that there is
-      something he heard in confession that he cannot speak of. The
-      player understands there is a confessional weight on this case.
-    notes_to_llm: |
-      Fire when Gareth, in a quiet moment, acknowledges the seal as a
-      thing he is upholding rather than denying knowledge. He does not
-      hint at the content; he confirms the existence. Use sparingly —
-      it adds moral weight without being load-bearing. Players who
-      never visit St Caradoc's or Knighton can finish the game without
-      this beat.
-
-  - id: owain_tells_of_the_dog
-    name: Owain tells of the dog
-    requires_npcs_present: [owain]
-    description: |
-      Owain Pugh, in his folklore voice, tells the player the
-      black-dog story of the Bend — sightings before deaths, the
-      grass that grows differently below the flowers, the older
-      names. The player cannot tell which parts Owain saw and which
-      he half-remembers.
-    notes_to_llm: |
-      Fire when Owain holds forth on the Black Dog Bend folklore.
-      Narrate his theatricality — leaning in, the storyteller's gear,
-      the small disclaimer about which parts are rubbish. This is
-      atmosphere and red herring; nothing about the dog is true. The
-      beat exists so the Bend feels storied when the player visits.
-
-  - id: owain_lets_slip_about_iwan
-    name: Owain lets slip about Iwan
-    requires_npcs_present: [owain]
-    description: |
-      Owain, loyal but unguarded, mentions Iwan's monthly flowers at
-      the Black Dog Bend — that he goes at dawn on the 14th and
-      "doesn't speak of it, mind." The player learns of Iwan's
-      private grief from someone other than Iwan.
-    notes_to_llm: |
-      Fire when Owain shares this detail in passing, usually after
-      the player has shown they care about Iwan as a person. Narrate
-      Owain's brief loss of his usual filter — he hears himself say
-      it, then changes the subject. After this beat, a visit to the
-      Bend reads differently for the player; Iwan's reserve at Lower
-      Hafod also reads differently.
-
-  - id: maud_lets_a_name_slip
-    name: Maud lets a name slip
-    requires_npcs_present: [maud]
-    # "Will not name Helen unprompted on a first visit" — pacing gate so it
-    # cannot fire on the first Maud scene.
-    min_scenes_with_npc: 1
-    description: |
-      Maud Pryce, gossiping about the case in her postmistress way,
-      mentions that DC Helen Mortimer "wasn't happy" about how the
-      Pritchard case closed. She frames it as something she should
-      not have said.
-    notes_to_llm: |
-      Fire when Maud, in conversation, drops Helen's name as a source
-      worth approaching. Maud will not name Helen unprompted on a
-      first visit; the player needs to have shown they already know
-      a little, or to have stayed through one of Maud's silences.
-      Narrate the moment as a Maud-special: "Now you didn't hear that
-      from me." After this beat, Helen's notes_to_llm may register
-      the player as having arrived via a village hint.
-
-  - id: wendy_asks_you_to_stop
-    name: Wendy asks you to stop
-    requires_npcs_present: [wendy]
-    description: |
-      Wendy Pritchard tells the player, plainly and without anger,
-      that she wants the investigation dropped. She is not throwing
-      them out; she is asking. The player understands there is a real
-      human cost to continuing.
-    notes_to_llm: |
-      Fire when Wendy speaks the request directly. Narrate her composure
-      — civil because of how she was raised, not because she does not
-      mind. She uses the word "please". Distinct from the village
-      running the player out: this is moral pressure, not hostility.
-      After this beat, the option to walk away reads as a real choice
-      with real weight; do not fire `village_runs_you_out` from this
-      alone.
-
-  - id: examined_the_crash_site
-    name: Examined the crash site
-    requires_location: [the_black_dog_bend]
-    description: |
-      The player walks the lay-by and verge at the Black Dog Bend.
-      They see the flowers, the place where the grass grows differently
-      below the embankment, and the faint trace where the Mini went
-      over. They stand where Megan died.
-    notes_to_llm: |
-      Fire ONLY when the player is physically at the Black Dog Bend —
-      standing on the lay-by, walking the verge, near enough to touch
-      the flowers. Do NOT fire when the player merely looks at a map
-      showing the Bend, hears about it, or thinks about it; their
-      body must be there. Narrate the place soberly; this is a quiet
-      beat, not a revelation.
-
-  # ─────────────────────── Negative beats ───────────────────────
-
-  - id: tom_closes_off
-    name: Tom closes off
-    requires_npcs_present: [tom]
-    # A permanent rupture needs a prior scene with Tom: one pushy first
-    # conversation makes him guarded, not silent for good. Without this gate a
-    # pressing player tripped it on the FIRST Tom scene (it sat in the >50%
-    # common-beat prefix of 20260521-005657), killing the entire ladder before
-    # it began and routing the session to a give-up ending.
-    min_scenes_with_npc: 1
-    description: |
-      Tom has decided he will not speak to the player again about
-      anything that matters. He may be civil in passing but he will
-      not engage on Megan, the road, or the Vaughns.
-    notes_to_llm: |
-      Fire this when the player has done something Tom cannot forgive:
-      lied about being police or family, threatened him, mocked his
-      grief, or pushed aggressively after he had asked them to stop.
-      Once this fires, scenes with Tom are short and cold — he drinks,
-      he leaves. He will not be moved. One of the failure paths;
-      it permanently blocks the entire Tom ladder
-      (tom_speaks_of_megan_as_a_person → tom_alludes_to_being_on_the_road
-      → tom_named_a_vehicle → tom_admits_full_silence →
-      tom_decides_to_speak_to_police).
-
-  - id: dylan_refuses_to_speak_again
-    name: Dylan refuses to speak again
-    requires_npcs_present: [dylan]
-    # As with tom_closes_off: a permanent refusal needs a prior Dylan scene, so
-    # one pushy first encounter doesn't end his ladder outright.
-    min_scenes_with_npc: 1
-    description: |
-      Dylan has decided the player is dangerous to him and will not
-      engage further on any topic that matters.
-    notes_to_llm: |
-      Fire when the player has pressed Dylan in front of Eluned, has
-      threatened to publish without his cooperation, or has lied to
-      him. After this fires, Dylan goes silent. He will not be at the
-      wood or the lane; he will be in the farmyard with the dogs. He
-      will not open up to a return visit.
-
-  - id: helen_wont_take_your_call
-    name: Helen won't take your call
-    # Gate on having actually engaged Helen — a village name-slip about her must
-    # NOT make her refuse a player who never approached her (the 14/15 false-fire
-    # in the 20260520 run). She can only withdraw once contact has begun.
-    requires_any_beats: [helen_will_meet_off_record]
-    description: |
-      DC Helen Mortimer has decided the player is a professional risk
-      and will not meet again. She will not return calls.
-    notes_to_llm: |
-      Fire only after the player has engaged Helen (helen_will_meet_off_record)
-      and THEN been indiscreet — named Helen at Tan-y-coed, cited her in earshot
-      of others, talked about her unofficial cooperation. Do NOT fire because
-      someone in the village merely mentioned her name; the player must have made
-      contact first. After this fires, Helen is unavailable for the rest of the
-      game; the entire Helen ladder (helen_will_meet_off_record →
-      helen_confirms_she_suspected → helen_hands_over_notes) is permanently blocked.
-
-  - id: eluned_throws_you_out
-    name: Eluned throws you out
-    requires_npcs_present: [eluned]
-    # As with tom_closes_off / dylan_refuses: a permanent ejection needs a
-    # prior Eluned scene. Without this it fired in 12/12 sessions of the
-    # 20260521-113238 run — even on a diligent player's polite "what are you
-    # worried about?" — making run_out_of_the_village the default ending.
-    # First contact with Eluned is frosty but recoverable; she only bars the
-    # gate for good after the player has been given a real chance and abused it.
-    min_scenes_with_npc: 1
-    description: |
-      Eluned has decided the player will not be on Tan-y-coed land
-      again. The next attempt to visit will be met at the gate.
-    notes_to_llm: |
-      Fire ONLY when the player has clearly disqualified themselves — accused
-      her, threatened, recorded without permission, or pushed aggressively
-      after she has already asked them to leave. A polite or neutral question
-      ("what are you worried about?", "can you tell me about that night?") does
-      NOT fire this — Eluned can be cold and guarded in the prose without
-      barring the gate. After this fires, the player cannot use the Tan-y-coed
-      location for any conversation with Eluned; eluned_breaks is permanently
-      blocked.
-
-  - id: village_runs_you_out
-    name: Village runs you out
-    # Structural threshold (engine-enforced): ALL FOUR negative beats must have
-    # accumulated. At 3/4 this fired in 11/12 sessions of the 20260521-113238
-    # run — once full exploration was reachable, the player tripped 3 of the
-    # negatives in any long session and run_out collapsed every persona to the
-    # same ending (entropy 0). run_out is the TOTAL-failure ending — losing the
-    # whole village — so it should require losing the whole village, not three
-    # quarters of it. Paired with the per-NPC min_scenes gates on the negatives
-    # (so none fire on first contact), this makes run_out a rare earned failure.
-    requires_count_beats:
-      - tom_closes_off
-      - dylan_refuses_to_speak_again
-      - eluned_throws_you_out
-      - helen_wont_take_your_call
-    requires_count: 4
-    description: |
-      The village has collectively decided the player is unwelcome.
-      The pub falls silent on entry; Maud is "out" whenever the player
-      visits; Wendy has stopped answering the door. The investigation
-      cannot continue here.
-    notes_to_llm: |
-      Fire only when the player has earned ALL FOUR negative beats and has
-      continued to press regardless (the engine will not let this fire below
-      that threshold). Once this fires, almost every location plays cold; only
-      the run_out_of_the_village ending is reachable.
-
-  # ─────────────────────── Decision beats ───────────────────────
-  # Each is mutually exclusive with the others. The LLM may fire AT MOST ONE
-  # decision beat per playthrough; once one is in state, the others are
-  # blocked.
-  #
-  # Evidence is encoded via `requires_any_beats` rather than `requires_beats`
-  # so the player can reach a climax via Tom's account OR Dylan's admission
-  # OR (for filing / confronting) Helen's notes. This is what keeps the
-  # story branching: no single character is mandatory infrastructure.
+  # ─────────────────────── Decision beats (LLM-emitted, mutually exclusive) ───────────────────────
+  # The ONLY beats the classifier emits as the player's explicit commitment.
+  # `when` gates AVAILABILITY (the engine won't offer the choice until earned);
+  # the engine enforces at-most-one-decision.
 
   - id: decided_to_file
     name: Decided to file
+    commitment: true
+    when: {any_evidence_of: [tom_named_a_vehicle, dylan_admits_he_knows, helen_hands_over_notes]}
     description: |
-      The player has explicitly chosen to write up the story and file
-      it with the magazine. The point of no return.
-    requires_any_beats:
-      - tom_named_a_vehicle
-      - dylan_admits_he_knows
-      - helen_hands_over_notes
-    blocked_by_beats:
-      - decided_to_walk_away
-      - decided_to_confront_eluned
-      - decided_to_tell_iwan_privately
-      - village_runs_you_out
-    prerequisites: |
-      The player must have at least one credible piece of evidence
-      (engine-enforced via requires_any_beats — any one of Tom's vehicle
-      naming, Dylan's admission, or Helen's notes) AND must say it
-      explicitly: "I'm writing this up", "I'm filing the story", "the
-      editor wants the draft by Friday", or pick an option that means
-      the same.
+      The player has explicitly chosen to write up the story and file it
+      with the magazine. The point of no return.
     notes_to_llm: |
-      Do not pre-empt the player. If they have evidence but have not
-      said they are filing, do not fire this. The ending downstream of
-      this beat is irrevocable. Once this fires the next turn should
-      flow toward EndGame with ending_id "published_story" — the
-      player sits at the desk in the vicarage and writes.
+      Fire only when the player says it explicitly — "I'm filing the
+      story", "the editor wants the draft by Friday", or an option that
+      means the same. Do not pre-empt the player. The ending downstream is
+      irrevocable.
 
   - id: decided_to_walk_away
     name: Decided to walk away
-    # A large barrier: you cannot "give up" on an investigation you have not
-    # begun. Gated structurally on having made real investigative traction on at
-    # least THREE substantive threads (requires_count below). The earlier count:2
-    # over a list that included atmosphere (Owain's folklore) and finger-pointing
-    # (Gareth) let two casual Owain beats in one post-office scene satisfy it —
-    # walk-away fired at scene 2 in 9/13 of the 20260520-182020 run and collapsed
-    # ending entropy to 0. Only beats that mean the player actually got somewhere
-    # count here; folklore/pointers are excluded.
-    requires_count_beats:
-      - tom_speaks_of_megan_as_a_person
-      - maud_confirms_the_affair
-      - maud_lets_a_name_slip
-      - dylan_acknowledges_the_player
-      - helen_will_meet_off_record
-      - iwan_grants_you_intimacy
-      - wendy_asks_you_to_stop
-      - examined_the_crash_site
-    requires_count: 3
+    commitment: true
+    when: {npcs_thawed_at_least: 3}
     description: |
-      The player has explicitly chosen to abandon the investigation
-      and go home.
-    blocked_by_beats:
-      - decided_to_file
-      - decided_to_confront_eluned
-      - decided_to_tell_iwan_privately
+      The player has explicitly chosen to abandon the investigation and
+      go home.
     notes_to_llm: |
-      Fire only when the player explicitly says, in their option pick
-      or the equivalent, that they are leaving the case without filing —
-      "I'm packing up", "this is not a story I can write", "I'm going
-      back to London." Walking from one location to another to keep
-      investigating is travel, NOT walking away — never fire this when
-      the player is simply moving on to look elsewhere, leaving a room,
-      or heading out the door toward the village. Do not fire on inferred
-      weariness; the player has to say they are giving up.
+      Fire only when the player explicitly says they are leaving the case
+      without filing — "I'm packing up", "this is not a story I can
+      write." Moving between locations to keep investigating is travel,
+      NOT walking away. Do not fire on inferred weariness.
 
   - id: decided_to_confront_eluned
     name: Decided to confront Eluned
+    commitment: true
+    when: {any_evidence_of: [tom_named_a_vehicle, dylan_admits_he_knows, helen_hands_over_notes]}
     description: |
-      The player has explicitly chosen to drive up to Tan-y-coed and
-      put what they know to Eluned Vaughn herself.
-    requires_any_beats:
-      - tom_named_a_vehicle
-      - dylan_admits_he_knows
-      - helen_hands_over_notes
-    blocked_by_beats:
-      - decided_to_file
-      - decided_to_walk_away
-      - decided_to_tell_iwan_privately
-      - eluned_throws_you_out
+      The player has explicitly chosen to drive up to Tan-y-coed and put
+      what they know to Eluned Vaughn herself.
     notes_to_llm: |
       Fire when the player picks the option to go to Tan-y-coed with
-      intent to confront. The next scene will play at Tan-y-coed; the
-      outcome (eluned_breaks fires, or eluned_throws_you_out fires) is
-      determined in that scene by the player's approach. If the player
-      bargains, performs, or threatens, eluned_throws_you_out is the
-      likely outcome; if the player lays it out quietly, eluned_breaks
-      is reachable.
+      intent to confront. The outcome in that scene is decided by approach:
+      lay it out quietly and eluned_breaks becomes reachable; threaten,
+      perform, or bargain and her guard latches (no break, the door closes).
 
   - id: decided_to_tell_iwan_privately
     name: Decided to tell Iwan privately
+    commitment: true
+    when: {any_evidence_of: [tom_named_a_vehicle, dylan_admits_he_knows]}
     description: |
-      The player has explicitly chosen to tell Iwan what they have
-      learned, without filing the story.
-    requires_any_beats:
-      - tom_named_a_vehicle
-      - dylan_admits_he_knows
-    blocked_by_beats:
-      - decided_to_file
-      - decided_to_walk_away
-      - decided_to_confront_eluned
+      The player has explicitly chosen to tell Iwan what they have learned,
+      without filing the story.
     notes_to_llm: |
-      Fire when the player explicitly says they will tell Iwan rather
-      than file — "Iwan deserves to know", "I'm not writing it but he
-      should hear it from me", or similar. The scene at Lower Hafod
-      that follows narrates the conversation; the ending epilogue
-      handles what happens after.
+      Fire when the player explicitly says they will tell Iwan rather than
+      file — "Iwan deserves to know", "he should hear it from me." The
+      scene at Lower Hafod that follows narrates the conversation.
 
 endings:
+  # run_out_of_the_village FIRST so ejection takes precedence over any other
+  # satisfied ending (you lost the village; nothing else you did matters).
+  - id: run_out_of_the_village
+    when: {village_attention_at_least: hostile}
+    notes_to_llm: |
+      The failure mode of the investigation — the player has lost everyone
+      and has nothing to show for it. Engine-resolved from village_attention.
+    epilogue: |
+      You drive out on a wet morning. The pub has had a "closed for
+      the day" sign up since you walked in three days ago. Maud's
+      blinds are down. The Vaughns' gate is locked. Mrs Hughes sees
+      you off without meeting your eye.
+
+      The editor reads your apologetic email and replies the same day
+      with a one-line dismissal. You do not work for the magazine
+      again. Iwan writes to you in November. You do not reply, because
+      you do not know what to say.
+
   - id: published_story
     requires_beats: [decided_to_file]
     notes_to_llm: |
-      Fire end_game with "published_story" once decided_to_file has
-      fired. The decision beat carries the evidence prerequisites; this
-      ending is unconditional once that beat is in state. Narrate the
-      epilogue as a stream of consequences over weeks — do not stretch
-      the moment of writing.
+      Fire once decided_to_file is in state. Narrate the epilogue as a
+      stream of consequences over weeks — do not stretch the moment of
+      writing.
     epilogue: |
       The story runs on Friday in the magazine, two thousand words,
       careful and clean. The Vaughns are questioned within the week.
@@ -845,29 +265,31 @@ endings:
       Eira at the pub took Megan's photograph down off the wall on
       the day of the verdict, then put it back up the following week.
 
-  - id: buried_the_story
-    requires_beats: [decided_to_walk_away]
+  - id: iwan_finds_peace
+    requires_beats: [decided_to_tell_iwan_privately]
+    when: {npc: iwan, trust_at_least: open}
     notes_to_llm: |
-      Fire end_game with "buried_the_story" once decided_to_walk_away
-      has fired. The epilogue is plain and short. The investigation
-      simply ends.
+      The gentle ending — reachable only when the player earned Iwan's
+      trust (told him privately AND had built real intimacy with him). A
+      quiet one.
     epilogue: |
-      You pack your car on a Sunday morning. Mrs Hughes does not ask
-      why you are leaving early. The editor sends a single line —
-      "fair enough" — when you tell her there is no story.
+      You sit with Iwan at the kitchen table at Lower Hafod for the
+      better part of an hour. Wendy stays in the polytunnel. The dog
+      sleeps. When you have said what you came to say Iwan thanks you
+      and asks if you would like more tea.
 
-      A year later you read, briefly, that DC Helen Mortimer has
-      taken early retirement. Two years later you read that Iwan
-      Pritchard has died. You do not go to the funeral. You do not
-      write the story even then.
+      The story does not run. Eluned is never charged. Iwan keeps
+      placing flowers at the bend on the 14th of every month, but —
+      according to Maud — he sleeps now. You drive back to London on
+      the Tuesday. The editor takes it better than you had expected.
 
   - id: eluned_arrested_after_confrontation
     requires_beats: [decided_to_confront_eluned, eluned_breaks]
+    when: {village_attention_below: hostile}
     notes_to_llm: |
-      Fire end_game with "eluned_arrested_after_confrontation" only
-      when both decision and outcome beats are in state. The
-      confrontation scene at Tan-y-coed must have played out and
-      Eluned must have broken in it.
+      Fire only when both the confront decision and the break outcome are
+      in state. The confrontation scene at Tan-y-coed must have played out
+      and Eluned must have broken in it.
     epilogue: |
       You leave Tan-y-coed at dusk. You do not see Eluned again. On
       the Wednesday she drives herself to Knighton police station and
@@ -880,47 +302,11 @@ endings:
       mother twice in remand and not after. Iwan writes to thank
       you; he does not invite you back.
 
-  - id: iwan_finds_peace
-    requires_beats: [decided_to_tell_iwan_privately]
-    notes_to_llm: |
-      Fire end_game with "iwan_finds_peace" once
-      decided_to_tell_iwan_privately has fired and the scene at Lower
-      Hafod has played out. The ending is a quiet one.
-    epilogue: |
-      You sit with Iwan at the kitchen table at Lower Hafod for the
-      better part of an hour. Wendy stays in the polytunnel. The dog
-      sleeps. When you have said what you came to say Iwan thanks you
-      and asks if you would like more tea.
-
-      The story does not run. Eluned is never charged. Iwan keeps
-      placing flowers at the bend on the 14th of every month, but —
-      according to Maud — he sleeps now. You drive back to London on
-      the Tuesday. The editor takes it better than you had expected.
-
-  - id: run_out_of_the_village
-    requires_beats: [village_runs_you_out]
-    notes_to_llm: |
-      Fire end_game with "run_out_of_the_village" once
-      village_runs_you_out is in state. This ending is the failure
-      mode of the investigation; the player has lost everyone and has
-      nothing to show for it.
-    epilogue: |
-      You drive out on a wet morning. The pub has had a "closed for
-      the day" sign up since you walked in three days ago. Maud's
-      blinds are down. The Vaughns' gate is locked. Mrs Hughes sees
-      you off without meeting your eye.
-
-      The editor reads your apologetic email and replies the same day
-      with a one-line dismissal. You do not work for the magazine
-      again. Iwan writes to you in November. You do not reply, because
-      you do not know what to say.
-
   - id: tom_takes_responsibility
     requires_beats: [tom_decides_to_speak_to_police]
     notes_to_llm: |
-      Fire end_game with "tom_takes_responsibility" once
-      tom_decides_to_speak_to_police has fired. This ending requires
-      the player to step back — the moment is Tom's, not theirs.
+      Fire once tom_decides_to_speak_to_police is in state. The moment is
+      Tom's, not the player's — they stepped back and let him.
     epilogue: |
       Tom goes into Knighton on the Monday and makes a new statement
       to Helen Mortimer. By Wednesday the case is reopened. By Friday
@@ -931,3 +317,18 @@ endings:
       eventually, a short news piece about the reopening, citing the
       police. You receive a card from Iwan the following Christmas.
       It says only: "Thank you for not making it about you."
+
+  - id: buried_the_story
+    requires_beats: [decided_to_walk_away]
+    notes_to_llm: |
+      Fire once decided_to_walk_away is in state. The epilogue is plain
+      and short. The investigation simply ends.
+    epilogue: |
+      You pack your car on a Sunday morning. Mrs Hughes does not ask
+      why you are leaving early. The editor sends a single line —
+      "fair enough" — when you tell her there is no story.
+
+      A year later you read, briefly, that DC Helen Mortimer has
+      taken early retirement. Two years later you read that Iwan
+      Pritchard has died. You do not go to the funeral. You do not
+      write the story even then.

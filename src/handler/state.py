@@ -11,6 +11,9 @@ The single source of truth for everything session-persistent. A
   - dialogue_history (scene-bounded; cleared on scene start)
   - scene_id (monotonic counter)
   - game_over
+  - trust / guard (per-NPC quality, raw ints; bands derived in engine)
+  - guard_breached (permanent per-NPC rupture ledger)
+  - village_attention (global, ratchets up; gates the run-out ending)
 
 `npc_locations` is the populator agent's output channel — it writes
 overrides at scene entry, e.g. "Dylan is at bryn_iago_wood for this
@@ -33,7 +36,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .schemas import Option, UnlockBeat
+from .schemas import ApproachChange, Option, UnlockBeat
 from .world import World
 
 
@@ -51,7 +54,13 @@ class TurnRecord:
     """
 
     prose: str
+    # Beats UNLOCKED this turn (LLM commitments + engine-derived milestones),
+    # as UnlockBeat records so renderers keep reading `.beat_id`.
     applied_state_changes: list[UnlockBeat]
+    # The quality deltas the classifier emitted this turn (trust/guard/
+    # attention nudges). Drives the "did this turn move standing?" signal for
+    # the eval filler metric; empty on a no-op turn.
+    applied_deltas: list[ApproachChange] = field(default_factory=list)
     player_pick: Option | None = None  # set by engine when player picks
     # True when player_pick is a verbatim free-text line the player typed
     # (vs. a clicked menu option). Lets the next turn's prompts render it
@@ -69,6 +78,17 @@ class State:
     dialogue_history: list[TurnRecord] = field(default_factory=list)
     scene_id: int = 0
     game_over: GameOver | None = None
+    # ── quality vector (the thin spine; see engine.confession_depth) ──
+    # Per-NPC warmth (reversible) and alarm (latches on breach). `trust` and
+    # `guard` are raw integers that move ±1/turn; bands are DERIVED from them
+    # at a per-NPC width (engine.confession_depth). `guard_breached` is the
+    # permanent-rupture ledger — once an npc_id enters, it never leaves, and
+    # that NPC is "lost" for the rest of the run. `village_attention` ratchets
+    # up only and gates the run-out ending.
+    trust: dict[str, int] = field(default_factory=dict)
+    guard: dict[str, int] = field(default_factory=dict)
+    guard_breached: set[str] = field(default_factory=set)
+    village_attention: int = 0
 
     @property
     def turn_n(self) -> int:
@@ -89,4 +109,6 @@ def make_initial_state(world: World) -> State:
         player_location=world.brief.player_starts_at,
         npc_locations={npc.id: npc.default_location for npc in world.npcs.values()},
         npc_memory={npc_id: [] for npc_id in world.npcs},
+        trust={npc_id: 0 for npc_id in world.npcs},
+        guard={npc_id: 0 for npc_id in world.npcs},
     )

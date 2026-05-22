@@ -26,33 +26,6 @@ from handler.world import World
 from .session import SessionArtifact
 
 
-# The authored relationship ladders, longest dependency chains in truth.yaml.
-# Used by `ladder_compression`: a ladder is meant to pace one rung per scene, so
-# many rungs in a single scene_id is the "instant unburdening" regression. Kept
-# explicit (not derived from requires_beats) so the metric reads at a glance; the
-# world is small and fixed.
-BEAT_LADDERS: dict[str, list[str]] = {
-    "tom": [
-        "tom_speaks_of_megan_as_a_person",
-        "tom_alludes_to_being_on_the_road",
-        "tom_named_a_vehicle",
-        "tom_admits_full_silence",
-        "tom_decides_to_speak_to_police",
-    ],
-    "dylan": [
-        "dylan_acknowledges_the_player",
-        "dylan_admits_the_relationship",
-        "dylan_speaks_of_megan",
-        "dylan_admits_he_knows",
-    ],
-    "helen": [
-        "helen_will_meet_off_record",
-        "helen_confirms_she_suspected",
-        "helen_hands_over_notes",
-    ],
-}
-
-
 def distinct_locations(art: SessionArtifact) -> set[str]:
     """Every location the session touched, read from the transcript (turn /
     free_text / scene_close carry `location`; walk carries `from`/`to`)."""
@@ -181,12 +154,11 @@ def _longest_common_beat_prefix(artifacts: list[SessionArtifact]) -> list[str]:
 
 
 def _filler_turn_ratio(artifacts: list[SessionArtifact]) -> float:
-    """Fraction of player turns that fired no beat — the agency proxy for the
-    'look closer at the box' problem. A turn that advances no investigation
-    state is a click, not a decision. (The cosmetic-vs-meaningful distinction
-    among these is left to the ChoiceMeaningfulness LLM judge; this is the
-    cheap volume signal.) Legacy artifacts without per-turn capture contribute
-    nothing."""
+    """Fraction of player turns that moved NO state — neither unlocked a beat
+    nor shifted any disposition (`applied_deltas`). The quality-engine agency
+    proxy: a turn that nudges trust/guard is meaningful even if it fires no
+    milestone, so only a turn that does neither is true filler. Legacy
+    artifacts without per-turn capture contribute nothing."""
     filler = 0
     total = 0
     for art in artifacts:
@@ -194,7 +166,7 @@ def _filler_turn_ratio(artifacts: list[SessionArtifact]) -> float:
             if "applied_beats" not in e:
                 continue  # legacy artifact: no per-turn signal
             total += 1
-            if not e["applied_beats"]:
+            if not e["applied_beats"] and not e.get("applied_deltas"):
                 filler += 1
     return filler / total if total else 0.0
 
@@ -223,27 +195,6 @@ def _post_exhaustion_turn_ratio(artifacts: list[SessionArtifact]) -> float:
                 last_productive = i
         ratios.append((len(turns) - 1 - last_productive) / len(turns))
     return sum(ratios) / len(ratios) if ratios else 0.0
-
-
-def _ladder_compression(artifacts: list[SessionArtifact]) -> dict[str, float]:
-    """Per ladder, the mean (across sessions that touched it) of the most rungs
-    that fired within a single scene. ~1.0 = paced one rung per scene (good);
-    approaching the ladder length = the whole arc collapsed into one scene (the
-    instant-unburdening bug)."""
-    out: dict[str, float] = {}
-    for name, rungs in BEAT_LADDERS.items():
-        rung_set = set(rungs)
-        worst: list[int] = []
-        for art in artifacts:
-            per_scene: Counter = Counter()
-            for e in _play_turns(art):
-                for b in e.get("applied_beats", []):
-                    if b in rung_set:
-                        per_scene[e["scene_id"]] += 1
-            if per_scene:
-                worst.append(max(per_scene.values()))
-        out[name] = round(sum(worst) / len(worst), 3) if worst else 0.0
-    return out
 
 
 def _beats_per_location(artifacts: list[SessionArtifact]) -> dict[str, int]:
@@ -290,7 +241,6 @@ class CorpusMetrics(BaseModel):
     median_scenes_per_session: float
     median_distinct_locations_per_session: float
     longest_common_beat_prefix: list[str]
-    ladder_compression: dict[str, float]
 
     def to_dict(self) -> dict:
         return self.model_dump()
@@ -335,7 +285,6 @@ def corpus_metrics(artifacts: list[SessionArtifact], world: World) -> CorpusMetr
             [len(distinct_locations(art)) for art in artifacts]
         ),
         longest_common_beat_prefix=_longest_common_beat_prefix(artifacts),
-        ladder_compression=_ladder_compression(artifacts),
     )
 
 

@@ -232,7 +232,7 @@ def test_prose_writer_user_message_distinguishes_typed_from_menu_pick():
     """A typed free-text line is rendered as the player's own words; a
     clicked option is rendered as an intent to dramatize. Never 'said'."""
     world = load_world(FIXTURE_VALID)
-    applied = StateChangeBundle()
+    applied: list[str] = []
 
     # Typed (verbatim).
     state = make_initial_state(world)
@@ -276,18 +276,20 @@ def test_prose_writer_system_prompt_forbids_travel():
 # ───────────────────────── phase 1 user prompt ─────────────────────────
 
 
-def test_phase1_user_prompt_includes_reachable_beats_and_no_endings():
-    """Endings are removed from Phase 1 entirely (no agent emits EndGame).
-    Reachable beats are the load-bearing block."""
+def test_phase1_user_prompt_blocks_and_no_endings():
+    """Quality-engine Phase 1: ## Standing (where the player stands with the
+    people present) + ## Choices Available (emittable commitments). Endings
+    appear nowhere (engine-only data)."""
     world = load_world(FIXTURE_VALID)
     state = make_initial_state(world)
     prompt = build_phase1_user_prompt(state, world)
-    assert "## Reachable Beats" in prompt
+    assert "## Standing" in prompt
+    assert "## Choices Available" in prompt
     assert "## All Endings" not in prompt
     assert "## State" in prompt
     assert "## Case File" in prompt
     assert "## This Scene So Far" in prompt
-    assert "## Generate State Changes" in prompt
+    assert "## Report Standing" in prompt
 
 
 def test_phase1_user_prompt_scene_anchor_is_compact():
@@ -308,35 +310,35 @@ def test_phase1_user_prompt_scene_anchor_is_compact():
     assert tom.knowledge.strip() not in prompt
 
 
-def test_phase1_reachable_beats_shows_only_fireable_now():
-    """## Reachable Beats lists only beats fireable RIGHT NOW: prerequisites
-    unlocked (not merely reachable), required NPCs present, valid location.
-    Renders use the LLM-facing beat NAME."""
+def test_phase1_standing_block_shows_present_npc_band():
+    """## Standing shows the warmth band for each banded NPC present, plus the
+    village_attention level. Tom (disposition authored) appears with a band."""
     world = load_world(FIXTURE_VALID)
     state = make_initial_state(world)
     state.player_location = "the_slaughtered_lamb"  # Tom is here
-
     prompt = build_phase1_user_prompt(state, world)
-    # tom_named_a_vehicle fires now (Tom present, no prereq). tom_admits_more
-    # needs tom_named_a_vehicle UNLOCKED first, so it is NOT yet fireable —
-    # the strict gate stops the ladder from skipping ahead.
-    assert world.beats["tom_named_a_vehicle"].name in prompt
-    assert world.beats["tom_closes_off"].name in prompt
-    reachable_block = prompt.split("## Reachable Beats")[1].split("\n\n")[0]
-    assert world.beats["tom_admits_more"].name not in reachable_block
+    standing = prompt.split("## Standing")[1].split("## Case File")[0]
+    assert "tom" in standing
+    assert "warmth: cold" in standing  # trust 0 → cold band
+    assert "village_attention" in standing
 
-    # Once the vehicle is named, the next rung becomes fireable.
+
+def test_phase1_choices_available_lists_emittable_commitments():
+    """## Choices Available lists only emittable commitment beats. With no
+    evidence yet and no location milestone here, the pub has none; once Tom
+    reaches `open`, the file decision appears."""
+    world = load_world(FIXTURE_VALID)
+    state = make_initial_state(world)
+    state.player_location = "the_slaughtered_lamb"
+    prompt = build_phase1_user_prompt(state, world)
+    choices = prompt.split("## Choices Available")[1].split("## This Scene So Far")[0]
+    assert "(none" in choices
+
+    state.trust["tom"] = 2  # open → evidence derives when applied; here just unlock it
     state.unlocked_beats.add("tom_named_a_vehicle")
     prompt = build_phase1_user_prompt(state, world)
-    assert world.beats["tom_admits_more"].name in prompt
-
-    # Fire tom_closes_off → the whole Tom ladder is blocked; nothing fireable.
-    state2 = make_initial_state(world)
-    state2.player_location = "the_slaughtered_lamb"
-    state2.unlocked_beats.add("tom_closes_off")
-    prompt = build_phase1_user_prompt(state2, world)
-    reachable_block = prompt.split("## Reachable Beats")[1].split("\n\n")[0]
-    assert "(none" in reachable_block
+    choices = prompt.split("## Choices Available")[1].split("## This Scene So Far")[0]
+    assert world.beats["decided_to_file"].name in choices
 
 
 def test_phase1_present_block_lists_npcs_at_current_location():
@@ -365,7 +367,7 @@ def test_prose_writer_user_message_first_turn_includes_scene_anchor():
     state = make_initial_state(world)
     state.player_location = "the_slaughtered_lamb"
     msg = build_prose_writer_user_message(
-        state, world, StateChangeBundle(), is_first_turn=True
+        state, world, [], is_first_turn=True
     )
     assert "## You Are At" in msg
     assert "## Present" in msg
@@ -378,7 +380,7 @@ def test_prose_writer_user_message_subsequent_turn_drops_scene_anchor():
     world = load_world(FIXTURE_VALID)
     state = make_initial_state(world)
     msg = build_prose_writer_user_message(
-        state, world, StateChangeBundle(), is_first_turn=False
+        state, world, [], is_first_turn=False
     )
     assert "## You Are At" not in msg
     assert "## Present" not in msg
@@ -389,7 +391,7 @@ def test_prose_writer_user_message_excludes_reachable_beats_and_endings():
     state = make_initial_state(world)
     for first in (True, False):
         msg = build_prose_writer_user_message(
-            state, world, StateChangeBundle(), is_first_turn=first
+            state, world, [], is_first_turn=first
         )
         assert "## Reachable Beats" not in msg
         assert "## All Endings" not in msg
@@ -400,9 +402,7 @@ def test_prose_writer_user_message_excludes_reachable_beats_and_endings():
 def test_prose_writer_user_message_includes_applied_state_changes():
     world = load_world(FIXTURE_VALID)
     state = make_initial_state(world)
-    applied = StateChangeBundle(
-        state_changes=[UnlockBeat(beat_id="tom_named_a_vehicle")]
-    )
+    applied = ["tom_named_a_vehicle"]
     msg = build_prose_writer_user_message(
         state, world, applied, is_first_turn=True
     )
@@ -416,7 +416,7 @@ def test_prose_writer_user_message_has_no_options_or_leave_directive():
     world = load_world(FIXTURE_VALID)
     state = make_initial_state(world)
     msg = build_prose_writer_user_message(
-        state, world, StateChangeBundle(), is_first_turn=True
+        state, world, [], is_first_turn=True
     )
     assert "MUST be EndScene" not in msg
     assert "EndScene" not in msg
@@ -434,7 +434,7 @@ def test_prose_writer_user_message_includes_player_pick_on_subsequent_turn():
         player_pick=Option(text="Ask Tom about the night"),
     ))
     msg = build_prose_writer_user_message(
-        state, world, StateChangeBundle(), is_first_turn=False
+        state, world, [], is_first_turn=False
     )
     assert "## Player" in msg
     assert "Ask Tom about the night" in msg
@@ -558,7 +558,7 @@ def test_prose_writer_user_message_renders_npc_history_when_present():
         "Tom on visit two; he asked after my editor.",
     ]
     msg = build_prose_writer_user_message(
-        state, world, StateChangeBundle(), is_first_turn=True
+        state, world, [], is_first_turn=True
     )
     assert "history with player" in msg
     assert "Did not name what he saw" in msg
@@ -586,9 +586,7 @@ def test_prose_writer_applied_changes_includes_beat_description():
     world = load_world(FIXTURE_VALID)
     state = make_initial_state(world)
     state.player_location = "the_slaughtered_lamb"
-    applied = StateChangeBundle(
-        state_changes=[UnlockBeat(beat_id="tom_named_a_vehicle")]
-    )
+    applied = ["tom_named_a_vehicle"]
     msg = build_prose_writer_user_message(state, world, applied, is_first_turn=True)
     assert "## State Changes Just Applied" in msg
     beat = world.beats["tom_named_a_vehicle"]

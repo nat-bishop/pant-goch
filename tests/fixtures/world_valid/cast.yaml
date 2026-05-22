@@ -8,6 +8,15 @@
     He recognised it. He has not said whose.
   attitude: |
     Initially guarded. Will warm to patience, close down to pressure.
+  disposition:
+    warms: steady
+    spooks: steady
+    breach:
+      - lying or threatening him
+    voice_by_band:
+      cold: ["Aye. Not my business, was it."]
+      open: ["Land Rover. Going the other way. Recognised it."]
+      closed: ["Be off home now, I think."]
 
 - id: maud
   name: Maud Pryce

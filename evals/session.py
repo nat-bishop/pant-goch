@@ -28,7 +28,7 @@ from handler.schemas import (
     FreeText,
     ProsePart,
 )
-from handler.engine import fireable_beat_ids
+from handler.engine import emittable_beat_ids
 from handler.scene_loop import (
     LEAVE_OPTION_MIN_HISTORY,
     PickOption,
@@ -213,7 +213,13 @@ async def run_session(
             [c.beat_id for c in state.dialogue_history[-1].applied_state_changes]
             if state.dialogue_history else []
         )
-        fireable = sorted(fireable_beat_ids(w, s))
+        # Quality deltas the reporter emitted this turn — the "did this turn
+        # move standing?" signal the redefined filler metric reads.
+        applied_deltas = (
+            [d.model_dump() for d in state.dialogue_history[-1].applied_deltas]
+            if state.dialogue_history else []
+        )
+        fireable = sorted(emittable_beat_ids(w, s))
         nxt = prose_part.next
         if isinstance(nxt, Continue):
             options = nxt.options
@@ -232,6 +238,7 @@ async def run_session(
                 "pick_index": idx,
                 "pick_text": options[idx].text,
                 "applied_beats": applied_beats,
+                "applied_deltas": applied_deltas,
                 "fireable": fireable,
             })
             return PickOption(index=idx)
@@ -245,6 +252,7 @@ async def run_session(
                 "prompt": nxt.prompt,
                 "typed": typed,
                 "applied_beats": applied_beats,
+                "applied_deltas": applied_deltas,
                 "fireable": fireable,
             })
             return TypeText(text=typed)

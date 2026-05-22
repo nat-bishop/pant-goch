@@ -1,42 +1,39 @@
-"""Engine helpers (reachability, state application, ending resolution) +
-rule enforcement.
-
-After the Phase-2-split refactor, rules that used to live in
-`validate_state_change_bundle` and `validate_prose_part` are split between:
-  - Canonical schemas (state-INDEPENDENT @model_validators / Field
-    constraints) — tested here by directly constructing the canonical
-    models.
-  - Per-call dynamic builders (state-DEPENDENT Literal narrowing) —
-    tested here against `_build_state_change_bundle_type` via
-    `ValidationError` at parse time.
+"""Engine helpers for the quality engine: confession bands, `when`
+evaluation, delta application + milestone derivation, emittable beats,
+ending resolution, and the per-call dynamic bundle (Literal narrowing).
 """
 from __future__ import annotations
 
+import random
 from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
 from handler.agents import _build_state_change_bundle_type
-import random
-
 from handler.engine import (
     FREE_TEXT_COOLDOWN,
     FREE_TEXT_FALLBACK,
     FREE_TEXT_OFFER_P,
+    _trust_adjustable_here,
     _turns_since_typed,
     apply_state_changes,
-    fireable_beat_ids,
+    band_name,
+    confession_depth,
+    emittable_beat_ids,
     free_text_cadence_ok,
-    reachable_beat_ids,
     resolved_ending_id_at_close,
+    village_ejected,
+    when_satisfied,
 )
-from handler.models import Beat, Brief, Ending, Location, NPC
+from handler.models import Beat, Brief, Disposition, Ending, Location, NPC, When
 from handler.schemas import (
+    AttentionDelta,
     ChoiceBundle,
     Continue,
     FreeText,
     Option,
+    QualityDelta,
     StateChangeBundle,
     UnlockBeat,
 )
@@ -48,13 +45,17 @@ FIXTURE_VALID = Path(__file__).parent / "fixtures" / "world_valid"
 
 
 def _beat(id: str, **kwargs) -> Beat:
-    """Engine-test Beat factory. Supplies `name` (derived from id) and the
-    boilerplate description/notes_to_llm so each call stays one-line.
-    Pass `name=` explicitly to override the derived name."""
     kwargs.setdefault("name", id.replace("_", " ").capitalize())
     kwargs.setdefault("description", "x")
     kwargs.setdefault("notes_to_llm", "y")
     return Beat(id=id, **kwargs)
+
+
+def _npc(id: str, default_location: str, disposition: Disposition | None = None) -> NPC:
+    return NPC(
+        id=id, name=id.capitalize(), default_location=default_location,
+        knowledge="x", attitude="y", disposition=disposition,
+    )
 
 
 def _make_world(
@@ -65,9 +66,6 @@ def _make_world(
     endings: list[Ending] | None = None,
     starts_at: str = "loc_a",
 ) -> World:
-    """Inline world builder for engine tests. Bypasses YAML + invariant
-    checking (the tests need to construct shapes the loader would reject,
-    e.g. permanently-blocked beats)."""
     locations = locations or [
         Location(id="loc_a", name="A", adjacent_to=["loc_b"], description="a"),
         Location(id="loc_b", name="B", adjacent_to=["loc_a"], description="b"),
@@ -93,218 +91,385 @@ def _make_world(
     )
 
 
-# ───────────────────────── fireable_beat_ids (NPC-presence gating) ─────────────────────────
+def _state(world: World, location: str = "loc_a", **kwargs) -> State:
+    """A State with trust/guard seeded for every NPC (mirrors make_initial_state)."""
+    s = State(player_location=location, **kwargs)
+    s.trust = {n: 0 for n in world.npcs}
+    s.guard = {n: 0 for n in world.npcs}
+    return s
 
 
-def _npc(id: str, default_location: str) -> NPC:
-    return NPC(
-        id=id, name=id.capitalize(), default_location=default_location,
-        knowledge="x", attitude="y",
-    )
+# ───────────────────────── confession bands ─────────────────────────
 
 
-def test_fireable_excludes_beat_when_required_npc_absent():
-    """A beat gated on an NPC is dropped from the fireable set when that NPC
-    is elsewhere — even though it's still graph-reachable. This is the fix
-    for the Tom-beat firing in the empty vicarage."""
-    world = _make_world(
-        npcs=[_npc("tom", "loc_b")],
-        beats=[_beat("tom_beat", requires_npcs_present=["tom"])],
-    )
-    state = State(player_location="loc_a")  # tom is at loc_b, not here
-    assert "tom_beat" in reachable_beat_ids(world, state)  # graph says reachable
-    assert "tom_beat" not in fireable_beat_ids(world, state)  # but not here-and-now
+def test_confession_depth_default_width():
+    world = _make_world(npcs=[_npc("tom", "loc_a")])
+    s = _state(world)
+    assert confession_depth(world, s, "tom") == 0
+    s.trust["tom"] = 2
+    assert confession_depth(world, s, "tom") == 2  # default width 1 → depth=trust
+    assert band_name(world, s, "tom") == "open"
 
 
-def test_fireable_includes_beat_when_required_npc_present():
-    world = _make_world(
-        npcs=[_npc("tom", "loc_a")],
-        beats=[_beat("tom_beat", requires_npcs_present=["tom"])],
-    )
-    assert "tom_beat" in fireable_beat_ids(world, State(player_location="loc_a"))
+def test_confession_depth_slow_width():
+    tom = _npc("tom", "loc_a", disposition=Disposition(warms="slow"))
+    world = _make_world(npcs=[tom])
+    s = _state(world)
+    s.trust["tom"] = 2  # slow width 2 → depth 1
+    assert confession_depth(world, s, "tom") == 1
+    assert band_name(world, s, "tom") == "thawing"
+    s.trust["tom"] = 4  # depth 2 → open
+    assert confession_depth(world, s, "tom") == 2
 
 
-def test_fireable_includes_object_beat_with_no_npc_requirement():
-    """Object/decision beats (empty requires_npcs_present) fire with no NPC
-    in the room — e.g. reading the letter at the vicarage."""
-    world = _make_world(beats=[_beat("letter", requires_npcs_present=[])])
-    assert "letter" in fireable_beat_ids(world, State(player_location="loc_a"))
+def test_guard_lowers_effective_warmth():
+    world = _make_world(npcs=[_npc("tom", "loc_a")])
+    s = _state(world)
+    s.trust["tom"] = 3
+    s.guard["tom"] = 2
+    assert confession_depth(world, s, "tom") == 1  # effective 3-2=1
 
 
-def test_fireable_requires_all_listed_npcs_present():
-    """A beat gated on two NPCs needs BOTH in the room — one present is not
-    enough (a confrontation that only works with both parties there)."""
-    world = _make_world(
-        npcs=[_npc("tom", "loc_a"), _npc("dylan", "loc_b")],
-        beats=[_beat("confrontation", requires_npcs_present=["tom", "dylan"])],
-    )
-    state = State(player_location="loc_a")  # only tom is here
-    assert "confrontation" not in fireable_beat_ids(world, state)
-    state.npc_locations["dylan"] = "loc_a"  # now both are here
-    assert "confrontation" in fireable_beat_ids(world, state)
+def test_breach_returns_lost_depth_and_closed_band():
+    world = _make_world(npcs=[_npc("tom", "loc_a")])
+    s = _state(world)
+    s.trust["tom"] = 3
+    s.guard_breached.add("tom")
+    assert confession_depth(world, s, "tom") == -1
+    assert band_name(world, s, "tom") == "closed"
 
 
-def test_fireable_requires_count_threshold():
-    """A beat with requires_count fires only once at least that many of its
-    requires_count_beats are unlocked — the village_runs_you_out '~3 negatives'
-    gate, between ANY (requires_any) and ALL (requires_beats)."""
-    world = _make_world(beats=[
-        _beat("neg_a", requires_npcs_present=[]),
-        _beat("neg_b", requires_npcs_present=[]),
-        _beat("neg_c", requires_npcs_present=[]),
-        _beat("run_out", requires_count_beats=["neg_a", "neg_b", "neg_c"],
-              requires_count=2),
-    ])
-    state = State(player_location="loc_a", unlocked_beats={"neg_a"})
-    assert "run_out" not in fireable_beat_ids(world, state)  # 1 < 2
-    state.unlocked_beats.add("neg_b")
-    assert "run_out" in fireable_beat_ids(world, state)  # 2 >= 2
+# ───────────────────────── when_satisfied ─────────────────────────
 
 
-def test_fireable_min_scenes_with_npc_gate():
-    """A beat with min_scenes_with_npc fires only after the required NPC has
-    been present in that many prior scenes (npc_memory length) — the Maud
-    first-visit / one-scene-ladder pacing gate."""
-    world = _make_world(
-        npcs=[_npc("maud", "loc_a")],
-        beats=[_beat("maud_dump", requires_npcs_present=["maud"],
-                     min_scenes_with_npc=1)],
-    )
-    # First Maud scene: no prior memory → blocked despite presence.
-    state = State(player_location="loc_a", npc_memory={"maud": []})
-    assert "maud_dump" not in fireable_beat_ids(world, state)
-    # After one prior scene with Maud → fireable.
-    state.npc_memory["maud"] = ["met once"]
-    assert "maud_dump" in fireable_beat_ids(world, state)
+def test_when_npc_trust_at_least():
+    world = _make_world(npcs=[_npc("tom", "loc_a")])
+    s = _state(world)
+    w = When(npc="tom", trust_at_least="open")
+    assert not when_satisfied(world, s, w)
+    s.trust["tom"] = 2
+    assert when_satisfied(world, s, w)
 
 
-def test_fireable_respects_npc_location_override():
-    """Presence honours the live npc_locations override (populator moves),
-    not just default_location."""
-    world = _make_world(
-        npcs=[_npc("tom", "loc_b")],
-        beats=[_beat("tom_beat", requires_npcs_present=["tom"])],
-    )
-    state = State(player_location="loc_a")
-    assert "tom_beat" not in fireable_beat_ids(world, state)
-    state.npc_locations["tom"] = "loc_a"  # populator brought Tom here
-    assert "tom_beat" in fireable_beat_ids(world, state)
+def test_when_any_evidence_of():
+    world = _make_world(beats=[_beat("m", when=When(npc="tom", trust_at_least="open"))])
+    s = _state(world)
+    w = When(any_evidence_of=["m"])
+    assert not when_satisfied(world, s, w)
+    s.unlocked_beats.add("m")
+    assert when_satisfied(world, s, w)
 
 
-# ───────────── fireable_beat_ids (strict prereq + location gating) ─────────────
+def test_when_npcs_thawed_at_least():
+    world = _make_world(npcs=[_npc("a", "loc_a"), _npc("b", "loc_a"), _npc("c", "loc_a")])
+    s = _state(world)
+    w = When(npcs_thawed_at_least=2)
+    assert not when_satisfied(world, s, w)
+    s.trust["a"] = 1  # thawing (depth ≥ 1)
+    s.trust["b"] = 1
+    assert when_satisfied(world, s, w)
 
 
-def test_fireable_excludes_beat_whose_requires_beats_not_unlocked():
-    """A beat whose requires_beats is reachable-but-not-yet-unlocked is NOT
-    fireable now — the fire-now gate demands prerequisites be unlocked, so a
-    ladder advances one rung per turn. (reachable_beat_ids, the horizon view,
-    still includes it.)"""
-    world = _make_world(beats=[
-        _beat("root"),
-        _beat("leaf", requires_beats=["root"]),
-    ])
-    state = State(player_location="loc_a")
-    assert "leaf" in reachable_beat_ids(world, state)       # on the horizon
-    assert "leaf" not in fireable_beat_ids(world, state)    # but not now
-    assert "root" in fireable_beat_ids(world, state)
-    state.unlocked_beats.add("root")
-    assert "leaf" in fireable_beat_ids(world, state)        # now the next rung
+def test_when_attention_bands():
+    world = _make_world()
+    s = _state(world)
+    s.village_attention = 1  # noticed
+    assert when_satisfied(world, s, When(village_attention_at_least="noticed"))
+    assert not when_satisfied(world, s, When(village_attention_at_least="hostile"))
+    assert when_satisfied(world, s, When(village_attention_below="hostile"))
+    s.village_attention = 3  # hostile
+    assert not when_satisfied(world, s, When(village_attention_below="hostile"))
 
 
-def test_fireable_decision_beat_needs_evidence_unlocked():
-    """A decision beat gated on requires_any_beats (evidence) is not fireable
-    until at least one evidence beat is actually unlocked — the fix for
-    decision beats / endings firing in the prologue before any evidence
-    exists."""
-    world = _make_world(beats=[
-        _beat("ev_a"),
-        _beat("ev_b"),
-        _beat("decided", requires_any_beats=["ev_a", "ev_b"]),
-    ])
-    state = State(player_location="loc_a")
-    assert "decided" in reachable_beat_ids(world, state)    # eventually reachable
-    assert "decided" not in fireable_beat_ids(world, state)  # but unearned now
-    state.unlocked_beats.add("ev_b")
-    assert "decided" in fireable_beat_ids(world, state)
+def test_village_ejected_at_hostile():
+    s = State(player_location="loc_a")
+    assert not village_ejected(s)
+    s.village_attention = 3
+    assert village_ejected(s)
 
 
-def test_fireable_excludes_beat_at_wrong_location():
-    """requires_location keeps a place-bound beat off the table everywhere
-    but at one of its locations (the crash-site fix)."""
-    world = _make_world(beats=[
-        _beat("at_bend", requires_location=["loc_b"]),
-    ])
-    assert "at_bend" not in fireable_beat_ids(world, State(player_location="loc_a"))
-    assert "at_bend" in fireable_beat_ids(world, State(player_location="loc_b"))
+# ───────────────────────── _trust_adjustable_here ─────────────────────────
+
+
+def test_trust_not_adjustable_when_breached():
+    world = _make_world(npcs=[_npc("tom", "loc_a")])
+    s = _state(world)
+    s.guard_breached.add("tom")
+    assert not _trust_adjustable_here(world, s, "tom")
+
+
+def test_trust_pinned_to_opens_up_only_at():
+    dylan = _npc("dylan", "loc_a", disposition=Disposition(opens_up_only_at=["loc_b"]))
+    world = _make_world(npcs=[dylan])
+    assert not _trust_adjustable_here(world, _state(world, "loc_a"), "dylan")
+    assert _trust_adjustable_here(world, _state(world, "loc_b"), "dylan")
 
 
 # ───────────────────────── apply_state_changes ─────────────────────────
 
 
-def test_apply_unlock_beat_mutates_unlocked_beats():
-    state = State(player_location="loc_a")
-    bundle = StateChangeBundle(state_changes=[UnlockBeat(beat_id="b1")])
-    apply_state_changes(bundle, state)
-    assert state.unlocked_beats == {"b1"}
+def test_apply_quality_delta_clamped_and_attention_ratchets():
+    world = _make_world(npcs=[_npc("tom", "loc_a")])
+    s = _state(world)
+    bundle = StateChangeBundle(deltas=[
+        QualityDelta(npc_id="tom", trust="+1", guard="+1"),
+        AttentionDelta(attention="+1"),
+    ])
+    apply_state_changes(bundle, s, world)
+    assert s.trust["tom"] == 1
+    assert s.guard["tom"] == 1
+    assert s.village_attention == 1
 
 
-def test_apply_two_unlock_beats_in_order():
-    state = State(player_location="loc_a")
-    bundle = StateChangeBundle(
-        state_changes=[UnlockBeat(beat_id="b1"), UnlockBeat(beat_id="b2")]
+def test_apply_breach_latches_guard():
+    world = _make_world(npcs=[_npc("tom", "loc_a")])
+    s = _state(world)
+    apply_state_changes(
+        StateChangeBundle(deltas=[QualityDelta(npc_id="tom", guard="BREACH")]), s, world
     )
-    apply_state_changes(bundle, state)
-    assert state.unlocked_beats == {"b1", "b2"}
+    assert "tom" in s.guard_breached
+    # Further deltas are ignored once breached.
+    apply_state_changes(
+        StateChangeBundle(deltas=[QualityDelta(npc_id="tom", trust="+1")]), s, world
+    )
+    assert s.trust["tom"] == 0
+
+
+def test_apply_positive_trust_pinned_to_location():
+    dylan = _npc("dylan", "loc_a", disposition=Disposition(opens_up_only_at=["loc_b"]))
+    world = _make_world(npcs=[dylan])
+    s = _state(world, "loc_a")  # not where he opens up
+    apply_state_changes(
+        StateChangeBundle(deltas=[QualityDelta(npc_id="dylan", trust="+1")]), s, world
+    )
+    assert s.trust["dylan"] == 0  # positive trust dropped here
+    # Guard still applies anywhere.
+    apply_state_changes(
+        StateChangeBundle(deltas=[QualityDelta(npc_id="dylan", guard="+1")]), s, world
+    )
+    assert s.guard["dylan"] == 1
+
+
+def test_apply_derives_milestone_when_trust_crosses():
+    world = _make_world(
+        npcs=[_npc("tom", "loc_a")],
+        beats=[_beat("tom_named", when=When(npc="tom", trust_at_least="open"))],
+    )
+    s = _state(world)
+    s.trust["tom"] = 1
+    newly = apply_state_changes(
+        StateChangeBundle(deltas=[QualityDelta(npc_id="tom", trust="+1")]), s, world
+    )
+    assert newly == ["tom_named"]
+    assert "tom_named" in s.unlocked_beats
+
+
+def test_apply_commitment_then_derive_in_order():
+    world = _make_world(
+        npcs=[_npc("tom", "loc_a")],
+        beats=[
+            _beat("tom_named", when=When(npc="tom", trust_at_least="open")),
+            _beat("decided_to_file", commitment=True,
+                  when=When(any_evidence_of=["tom_named"])),
+        ],
+    )
+    s = _state(world)
+    s.trust["tom"] = 2  # already open → tom_named will derive
+    s.unlocked_beats.add("tom_named")  # evidence present so the commitment is valid
+    newly = apply_state_changes(
+        StateChangeBundle(commitments=[UnlockBeat(beat_id="decided_to_file")]), s, world
+    )
+    assert "decided_to_file" in newly
+    assert "decided_to_file" in s.unlocked_beats
 
 
 def test_apply_empty_bundle_is_noop():
-    state = State(player_location="loc_a")
-    apply_state_changes(StateChangeBundle(), state)
-    assert state.unlocked_beats == set()
+    world = _make_world(npcs=[_npc("tom", "loc_a")])
+    s = _state(world)
+    assert apply_state_changes(StateChangeBundle(), s, world) == []
 
 
-# ───────────────────────── canonical StateChangeBundle validators ─────────────────────────
+# ───────────────────────── emittable_beat_ids ─────────────────────────
 
 
-def test_state_change_bundle_max_length_two_passes():
-    StateChangeBundle(state_changes=[
-        UnlockBeat(beat_id="b1"), UnlockBeat(beat_id="b2"),
+def test_emittable_observation_milestone_location_gated():
+    world = _make_world(beats=[
+        _beat("read_letter", commitment=True, requires_location=["loc_b"]),
     ])
+    assert "read_letter" not in emittable_beat_ids(world, _state(world, "loc_a"))
+    assert "read_letter" in emittable_beat_ids(world, _state(world, "loc_b"))
 
 
-def test_state_change_bundle_max_length_three_rejected():
+def test_emittable_decision_requires_when():
+    world = _make_world(beats=[
+        _beat("m", when=When(npc="tom", trust_at_least="open")),
+        _beat("decided_to_file", commitment=True, when=When(any_evidence_of=["m"])),
+    ])
+    s = _state(world)
+    assert "decided_to_file" not in emittable_beat_ids(world, s)  # no evidence yet
+    s.unlocked_beats.add("m")
+    assert "decided_to_file" in emittable_beat_ids(world, s)
+
+
+def test_emittable_derived_milestones_never_emittable():
+    world = _make_world(beats=[_beat("m", when=When(npc="tom", trust_at_least="open"))])
+    # Not a commitment → never in the emittable (LLM-fired) set.
+    assert "m" not in emittable_beat_ids(world, _state(world))
+
+
+def test_emittable_decision_mutual_exclusion():
+    world = _make_world(beats=[
+        _beat("m", when=When(npc="tom", trust_at_least="open")),
+        _beat("decided_to_file", commitment=True, when=When(any_evidence_of=["m"])),
+        _beat("decided_to_walk_away", commitment=True, when=When(any_evidence_of=["m"])),
+    ])
+    s = _state(world, unlocked_beats={"m", "decided_to_file"})
+    # one decision taken → the other is no longer emittable
+    assert "decided_to_walk_away" not in emittable_beat_ids(world, s)
+
+
+# ───────────────────────── resolved_ending_id_at_close ─────────────────────────
+
+
+def test_resolved_ending_requires_beats():
+    world = _make_world(
+        beats=[_beat("decided_to_file", commitment=True,
+                     when=When(any_evidence_of=[]))],
+        endings=[Ending(id="published", requires_beats=["decided_to_file"],
+                        notes_to_llm="x", epilogue="y")],
+    )
+    s = _state(world)
+    assert resolved_ending_id_at_close(world, s) is None
+    s.unlocked_beats.add("decided_to_file")
+    assert resolved_ending_id_at_close(world, s) == "published"
+
+
+def test_resolved_ending_quality_gate():
+    world = _make_world(
+        npcs=[_npc("iwan", "loc_a")],
+        beats=[_beat("decided_to_tell", commitment=True, when=When(any_evidence_of=[]))],
+        endings=[Ending(
+            id="iwan_peace", requires_beats=["decided_to_tell"],
+            when=When(npc="iwan", trust_at_least="open"), notes_to_llm="x", epilogue="y",
+        )],
+    )
+    s = _state(world, unlocked_beats={"decided_to_tell"})
+    assert resolved_ending_id_at_close(world, s) is None  # iwan not open
+    s.trust["iwan"] = 2
+    assert resolved_ending_id_at_close(world, s) == "iwan_peace"
+
+
+def test_resolved_ending_run_out_precedence():
+    world = _make_world(
+        beats=[_beat("decided_to_file", commitment=True, when=When(any_evidence_of=[]))],
+        endings=[
+            Ending(id="run_out", when=When(village_attention_at_least="hostile"),
+                   notes_to_llm="x", epilogue="y"),
+            Ending(id="published", requires_beats=["decided_to_file"],
+                   notes_to_llm="x", epilogue="y"),
+        ],
+    )
+    s = _state(world, unlocked_beats={"decided_to_file"})
+    s.village_attention = 3
+    # both satisfied → run_out wins (authored first)
+    assert resolved_ending_id_at_close(world, s) == "run_out"
+
+
+def test_resolved_ending_none_when_no_endings():
+    assert resolved_ending_id_at_close(_make_world(endings=[]), _state(_make_world())) is None
+
+
+# ───────────────────────── dynamic StateChangeBundle (Literal narrowing) ─────────────────────────
+
+
+def _bundle_world():
+    return _make_world(
+        npcs=[_npc("tom", "loc_a"), _npc("maud", "loc_b")],
+        beats=[
+            _beat("read_letter", commitment=True, requires_location=["loc_a"]),
+        ],
+    )
+
+
+def test_dynamic_bundle_accepts_present_npc_quality_delta():
+    world = _bundle_world()
+    Bundle = _build_state_change_bundle_type(world, _state(world, "loc_a"))
+    b = Bundle.model_validate({
+        "deltas": [{"type": "quality_delta", "npc_id": "tom", "trust": "+1"}],
+        "commitments": [],
+    })
+    assert b.deltas[0].npc_id == "tom"  # type: ignore[union-attr]
+
+
+def test_dynamic_bundle_rejects_absent_npc():
+    world = _bundle_world()
+    Bundle = _build_state_change_bundle_type(world, _state(world, "loc_a"))
     with pytest.raises(ValidationError):
-        StateChangeBundle(state_changes=[
-            UnlockBeat(beat_id="b1"),
-            UnlockBeat(beat_id="b2"),
-            UnlockBeat(beat_id="b3"),
-        ])
+        Bundle.model_validate({
+            "deltas": [{"type": "quality_delta", "npc_id": "maud", "trust": "+1"}],
+        })
 
 
-def test_state_change_bundle_duplicate_beat_rejected():
-    with pytest.raises(ValidationError, match="appears twice"):
-        StateChangeBundle(state_changes=[
-            UnlockBeat(beat_id="b1"), UnlockBeat(beat_id="b1"),
-        ])
+def test_dynamic_bundle_rejects_out_of_range_trust():
+    world = _bundle_world()
+    Bundle = _build_state_change_bundle_type(world, _state(world, "loc_a"))
+    with pytest.raises(ValidationError):
+        Bundle.model_validate({
+            "deltas": [{"type": "quality_delta", "npc_id": "tom", "trust": "+2"}],
+        })
+
+
+def test_dynamic_bundle_accepts_attention_delta_with_no_present_npc():
+    world = _bundle_world()
+    Bundle = _build_state_change_bundle_type(world, _state(world, "loc_b"))  # only maud here
+    b = Bundle.model_validate({
+        "deltas": [{"type": "attention_delta", "attention": "+1"}],
+    })
+    assert b.deltas[0].attention == "+1"  # type: ignore[union-attr]
+
+
+def test_dynamic_bundle_accepts_emittable_commitment():
+    world = _bundle_world()
+    Bundle = _build_state_change_bundle_type(world, _state(world, "loc_a"))
+    b = Bundle.model_validate({
+        "commitments": [{"type": "unlock_beat", "beat_name": "Read letter"}],
+    })
+    assert b.commitments[0].beat_name == "Read letter"  # type: ignore[union-attr]
+
+
+def test_dynamic_bundle_rejects_non_emittable_commitment():
+    world = _bundle_world()
+    # at loc_b the location-gated observation milestone is not emittable
+    Bundle = _build_state_change_bundle_type(world, _state(world, "loc_b"))
+    with pytest.raises(ValidationError):
+        Bundle.model_validate({
+            "commitments": [{"type": "unlock_beat", "beat_name": "Read letter"}],
+        })
+
+
+def test_dynamic_bundle_commitment_max_one():
+    world = _make_world(
+        npcs=[_npc("tom", "loc_a")],
+        beats=[
+            _beat("read_letter", commitment=True, requires_location=["loc_a"]),
+            _beat("read_again", commitment=True, requires_location=["loc_a"]),
+        ],
+    )
+    Bundle = _build_state_change_bundle_type(world, _state(world, "loc_a"))
+    with pytest.raises(ValidationError):
+        Bundle.model_validate({
+            "commitments": [
+                {"type": "unlock_beat", "beat_name": "Read letter"},
+                {"type": "unlock_beat", "beat_name": "Read again"},
+            ],
+        })
 
 
 # ───────────────────────── canonical Continue validator ─────────────────────────
 
 
 def test_continue_with_two_options_passes():
-    Continue(options=[
-        Option(text="stay"),
-        Option(text="ask"),
-    ])
-
-
-def test_continue_with_four_options_passes():
-    Continue(options=[
-        Option(text="a"),
-        Option(text="b"),
-        Option(text="c"),
-        Option(text="d"),
-    ])
+    Continue(options=[Option(text="stay"), Option(text="ask")])
 
 
 def test_continue_with_one_option_rejected():
@@ -314,167 +479,13 @@ def test_continue_with_one_option_rejected():
 
 def test_continue_with_five_options_rejected():
     with pytest.raises(ValidationError):
-        Continue(options=[
-            Option(text="a"),
-            Option(text="b"),
-            Option(text="c"),
-            Option(text="d"),
-            Option(text="e"),
-        ])
-
-
-def test_continue_empty_options_rejected():
-    with pytest.raises(ValidationError):
-        Continue(options=[])
-
-
-# ───────────────────────── dynamic StateChangeBundle (Literal narrowing) ─────────────────────────
-
-
-def test_dynamic_bundle_accepts_reachable_beat():
-    world = _make_world(beats=[_beat("b1")])
-    state = State(player_location="loc_a")
-    BundleType = _build_state_change_bundle_type(world, state)
-    bundle = BundleType.model_validate({
-        "state_changes": [{"type": "unlock_beat", "beat_name": "B1"}]
-    })
-    assert bundle.state_changes[0].beat_name == "B1"  # type: ignore[union-attr]
-
-
-def test_dynamic_bundle_rejects_unknown_beat():
-    world = _make_world(beats=[_beat("b1")])
-    state = State(player_location="loc_a")
-    BundleType = _build_state_change_bundle_type(world, state)
-    with pytest.raises(ValidationError):
-        BundleType.model_validate({
-            "state_changes": [{"type": "unlock_beat", "beat_name": "Ghost"}]
-        })
-
-
-def test_dynamic_bundle_rejects_already_fired_beat():
-    """Reachability excludes already-fired beats → grammar Literal omits
-    them → ValidationError at parse time."""
-    world = _make_world(beats=[_beat("b1")])
-    state = State(player_location="loc_a", unlocked_beats={"b1"})
-    BundleType = _build_state_change_bundle_type(world, state)
-    with pytest.raises(ValidationError):
-        BundleType.model_validate({
-            "state_changes": [{"type": "unlock_beat", "beat_name": "B1"}]
-        })
-
-
-def test_dynamic_bundle_rejects_unsatisfied_requires():
-    """Reachability requires every prereq to be fired or transitively reachable.
-    If prereq is unfired and standalone-reachable, b1 is reachable too — so
-    we author a permanently-blocked prereq to test the rejection path."""
-    world = _make_world(beats=[
-        _beat("blocker"),
-        _beat("prereq", blocked_by_beats=["blocker"]),
-        _beat("b1", requires_beats=["prereq"]),
-    ])
-    state = State(player_location="loc_a", unlocked_beats={"blocker"})
-    # blocker is fired → prereq is permanently blocked → b1 is unreachable.
-    BundleType = _build_state_change_bundle_type(world, state)
-    with pytest.raises(ValidationError):
-        BundleType.model_validate({
-            "state_changes": [{"type": "unlock_beat", "beat_name": "B1"}]
-        })
-
-
-def test_dynamic_bundle_rejects_active_blocker():
-    """blocked_by_beats with an active blocker → reachability excludes →
-    grammar Literal omits → ValidationError."""
-    world = _make_world(beats=[
-        _beat("blocker"),
-        _beat("b1", blocked_by_beats=["blocker"]),
-    ])
-    state = State(player_location="loc_a", unlocked_beats={"blocker"})
-    BundleType = _build_state_change_bundle_type(world, state)
-    with pytest.raises(ValidationError):
-        BundleType.model_validate({
-            "state_changes": [{"type": "unlock_beat", "beat_name": "B1"}]
-        })
-
-
-def test_dynamic_bundle_empty_when_no_reachable_beats():
-    """No reachable beats → bundle must be empty (max_length=0)."""
-    world = _make_world(beats=[])
-    state = State(player_location="loc_a")
-    BundleType = _build_state_change_bundle_type(world, state)
-    bundle = BundleType.model_validate({"state_changes": []})
-    assert bundle.state_changes == []
-
-
-def test_dynamic_bundle_max_length_three_rejected():
-    world = _make_world(beats=[
-        _beat("b1"),
-        _beat("b2"),
-        _beat("b3"),
-    ])
-    state = State(player_location="loc_a")
-    BundleType = _build_state_change_bundle_type(world, state)
-    with pytest.raises(ValidationError):
-        BundleType.model_validate({
-            "state_changes": [
-                {"type": "unlock_beat", "beat_name": "B1"},
-                {"type": "unlock_beat", "beat_name": "B2"},
-                {"type": "unlock_beat", "beat_name": "B3"},
-            ]
-        })
-
-
-# ───────────────────────── dynamic ChoiceBundle (Literal narrowing) ─────────────────────────
-
-
-def test_choice_continue_with_two_options_passes():
-    """The choice author uses the canonical `ChoiceBundle` directly (no
-    per-call narrowing now that FreeText is gone)."""
-    bundle = ChoiceBundle.model_validate({
-        "next": {
-            "type": "continue",
-            "options": [{"text": "a"}, {"text": "b"}],
-        },
-    })
-    assert bundle.next.type == "continue"  # type: ignore[union-attr]
-
-
-def test_choice_continue_with_one_option_rejected():
-    """Continue's `min_length=2` lives on the canonical schema."""
-    with pytest.raises(ValidationError):
-        ChoiceBundle.model_validate({
-            "next": {"type": "continue", "options": [{"text": "only"}]},
-        })
-
-
-def test_choice_accepts_leave_marker():
-    """`Leave` is a marker variant with no payload."""
-    bundle = ChoiceBundle.model_validate({"next": {"type": "leave"}})
-    assert bundle.next.type == "leave"  # type: ignore[union-attr]
-
-
-def test_choice_rejects_free_text():
-    """FreeText is no longer a choice-author arm — the gate + engine own it."""
-    with pytest.raises(ValidationError):
-        ChoiceBundle.model_validate({
-            "next": {"type": "free_text", "prompt": "go on", "npc_id": None},
-        })
-
-
-def test_free_text_fallback_is_general_agency():
-    """The fixed fallback box (caption author failed): neutral caption, no
-    addressee, no suggestion."""
-    assert isinstance(FREE_TEXT_FALLBACK, FreeText)
-    assert FREE_TEXT_FALLBACK.prompt == "What do you do next?"
-    assert FREE_TEXT_FALLBACK.npc_id is None
-    assert FREE_TEXT_FALLBACK.suggested is None
+        Continue(options=[Option(text=t) for t in "abcde"])
 
 
 # ───────────────────────── free-text cadence ─────────────────────────
 
 
 def _state_with_history(typed_flags: list[bool]) -> State:
-    """A State whose dialogue_history is one completed TurnRecord per flag
-    (oldest first), each marking whether the player typed that turn."""
     state = State(player_location="x")
     for typed in typed_flags:
         state.dialogue_history.append(
@@ -484,30 +495,20 @@ def _state_with_history(typed_flags: list[bool]) -> State:
 
 
 def test_turns_since_typed_counts_back_to_last_typed_move():
-    # most recent typed move is 2 completed turns back
     assert _turns_since_typed(_state_with_history([True, False, False])) == 2
-    # the last completed turn was typed → 0 turns since
     assert _turns_since_typed(_state_with_history([False, True])) == 0
 
 
 def test_turns_since_typed_large_when_never_typed():
-    state = _state_with_history([False, False])
-    assert _turns_since_typed(state) > FREE_TEXT_COOLDOWN
+    assert _turns_since_typed(_state_with_history([False, False])) > FREE_TEXT_COOLDOWN
 
 
 def test_cadence_suppresses_within_cooldown():
-    """A typed move within FREE_TEXT_COOLDOWN turns suppresses the offer
-    regardless of the RNG draw."""
-    # last turn was typed → 0 < cooldown → suppressed even with rng→0.0
-    state = _state_with_history([True])
-    rng = random.Random(0)
-    assert free_text_cadence_ok(state, rng) is False
+    assert free_text_cadence_ok(_state_with_history([True]), random.Random(0)) is False
 
 
 def test_cadence_probability_is_seedable_and_honored_past_cooldown():
-    """Past the cooldown, the offer is honored only with probability
-    FREE_TEXT_OFFER_P — deterministic under a seeded RNG."""
-    state = _state_with_history([False, False, False])  # no recent typed move
+    state = _state_with_history([False, False, False])
 
     class _Stub:
         def __init__(self, val): self.val = val
@@ -517,282 +518,32 @@ def test_cadence_probability_is_seedable_and_honored_past_cooldown():
     assert free_text_cadence_ok(state, _Stub(FREE_TEXT_OFFER_P + 0.01)) is False
 
 
-# ───────────────────────── resolved_ending_id_at_close ─────────────────────────
-
-
-def test_resolved_ending_id_picks_first_satisfied_in_author_order():
-    """Two endings, both with their requires_beats fired → returns the
-    one declared first in YAML (preserved by world.endings being an
-    insertion-ordered dict)."""
-    world = _make_world(
-        beats=[_beat("filed"), _beat("walked_away")],
-        endings=[
-            Ending(id="published", requires_beats=["filed"], notes_to_llm="x", epilogue="y"),
-            Ending(id="abandoned", requires_beats=["walked_away"], notes_to_llm="x", epilogue="y"),
-        ],
-    )
-    state = State(player_location="loc_a", unlocked_beats={"filed", "walked_away"})
-    assert resolved_ending_id_at_close(world, state) == "published"
-
-
-def test_resolved_ending_id_picks_only_satisfied():
-    """One ending satisfied, one not → returns the satisfied one even if
-    it's not first in author order."""
-    world = _make_world(
-        beats=[_beat("filed"), _beat("walked_away")],
-        endings=[
-            Ending(id="published", requires_beats=["filed"], notes_to_llm="x", epilogue="y"),
-            Ending(id="abandoned", requires_beats=["walked_away"], notes_to_llm="x", epilogue="y"),
-        ],
-    )
-    state = State(player_location="loc_a", unlocked_beats={"walked_away"})
-    assert resolved_ending_id_at_close(world, state) == "abandoned"
-
-
-def test_resolved_ending_id_returns_none_when_none_satisfied():
-    world = _make_world(
-        beats=[_beat("filed")],
-        endings=[Ending(
-            id="published", requires_beats=["filed"], notes_to_llm="x", epilogue="y",
-        )],
-    )
-    state = State(player_location="loc_a")
-    assert resolved_ending_id_at_close(world, state) is None
-
-
-def test_resolved_ending_id_returns_none_with_no_endings_authored():
-    world = _make_world(endings=[])
-    state = State(player_location="loc_a")
-    assert resolved_ending_id_at_close(world, state) is None
-
-
-# ───────────────────────── reachability filter (transitive blocking) ─────────────────────────
-
-
-def test_reachable_includes_standalone_unfired_beats():
-    world = _make_world(beats=[
-        _beat("standalone"),
-    ])
-    state = State(player_location="loc_a")
-    assert reachable_beat_ids(world, state) == {"standalone"}
-
-
-def test_reachable_excludes_fired_beats():
-    world = _make_world(beats=[
-        _beat("b1"),
-    ])
-    state = State(player_location="loc_a", unlocked_beats={"b1"})
-    assert reachable_beat_ids(world, state) == set()
-
-
-def test_reachable_excludes_directly_blocked_beats():
-    world = _make_world(beats=[
-        _beat("blocker"),
-        _beat("b1", blocked_by_beats=["blocker"]),
-    ])
-    state = State(player_location="loc_a", unlocked_beats={"blocker"})
-    # blocker is fired (excluded); b1 is blocked (excluded).
-    assert reachable_beat_ids(world, state) == set()
-
-
-def test_reachable_includes_chain_when_root_unfired():
-    world = _make_world(beats=[
-        _beat("root"),
-        _beat("leaf", requires_beats=["root"]),
-    ])
-    state = State(player_location="loc_a")
-    # Both reachable: root is firable now, leaf is firable after root.
-    assert reachable_beat_ids(world, state) == {"root", "leaf"}
-
-
-def test_reachable_excludes_transitively_blocked_beats():
-    """The whole point of the closure walk: if A requires B and B is
-    permanently blocked by an already-fired C, then A is also unreachable
-    even though A's own requires/blocks list doesn't mention C."""
-    world = _make_world(beats=[
-        _beat("C"),                                  # the blocker
-        _beat("B", blocked_by_beats=["C"]),           # blocked by C
-        _beat("A", requires_beats=["B"]),             # requires B
-    ])
-    # C has fired → B is permanently blocked → A is transitively unreachable.
-    state = State(player_location="loc_a", unlocked_beats={"C"})
-    assert reachable_beat_ids(world, state) == set()
-
-
-def test_reachable_excludes_chain_when_intermediate_blocked():
-    """Longer chain: A requires B requires Z; Z blocked by fired Y → A and B
-    both unreachable."""
-    world = _make_world(beats=[
-        _beat("Y"),
-        _beat("Z", blocked_by_beats=["Y"]),
-        _beat("B", requires_beats=["Z"]),
-        _beat("A", requires_beats=["B"]),
-    ])
-    state = State(player_location="loc_a", unlocked_beats={"Y"})
-    assert reachable_beat_ids(world, state) == set()
-
-
-def test_reachable_includes_alternative_when_one_branch_blocked():
-    """If a beat has multiple independent paths that aren't blocked, it's
-    still reachable through the open path. (Not currently in scope — beats
-    have a single requires_beats list with AND semantics — but verifies the
-    closure handles AND correctly.)"""
-    world = _make_world(beats=[
-        _beat("A"),
-        _beat("B"),
-        # C requires both A and B; both are independent and both reachable.
-        _beat("C", requires_beats=["A", "B"]),
-    ])
-    state = State(player_location="loc_a")
-    assert reachable_beat_ids(world, state) == {"A", "B", "C"}
-
-
-def test_reachable_with_fired_prereq():
-    """A requires B; B has fired → A is reachable now (no closure needed)."""
-    world = _make_world(beats=[
-        _beat("B"),
-        _beat("A", requires_beats=["B"]),
-    ])
-    state = State(player_location="loc_a", unlocked_beats={"B"})
-    assert reachable_beat_ids(world, state) == {"A"}
-
-
-# ───────────────────────── requires_any_beats (OR-clause) ─────────────────────────
-
-
-def test_reachable_with_requires_any_all_unfired_but_reachable():
-    """A requires_any_beats [X, Y]; both X and Y are unfired but both
-    standalone-reachable → A is reachable."""
-    world = _make_world(beats=[
-        _beat("X"),
-        _beat("Y"),
-        _beat("A", requires_any_beats=["X", "Y"]),
-    ])
-    state = State(player_location="loc_a")
-    assert reachable_beat_ids(world, state) == {"X", "Y", "A"}
-
-
-def test_reachable_with_requires_any_one_branch_blocked():
-    """A requires_any_beats [X, Y]; X is permanently blocked but Y is
-    reachable → A is still reachable through Y."""
-    world = _make_world(beats=[
-        _beat("blocker"),
-        _beat("X", blocked_by_beats=["blocker"]),
-        _beat("Y"),
-        _beat("A", requires_any_beats=["X", "Y"]),
-    ])
-    state = State(player_location="loc_a", unlocked_beats={"blocker"})
-    assert reachable_beat_ids(world, state) == {"Y", "A"}
-
-
-def test_reachable_with_requires_any_all_branches_blocked():
-    """A requires_any_beats [X, Y]; both X and Y permanently blocked →
-    A is unreachable."""
-    world = _make_world(beats=[
-        _beat("blocker"),
-        _beat("X", blocked_by_beats=["blocker"]),
-        _beat("Y", blocked_by_beats=["blocker"]),
-        _beat("A", requires_any_beats=["X", "Y"]),
-    ])
-    state = State(player_location="loc_a", unlocked_beats={"blocker"})
-    assert reachable_beat_ids(world, state) == set()
-
-
-def test_reachable_with_requires_any_one_fired():
-    """A requires_any_beats [X, Y]; X has fired → A is reachable even
-    if Y is permanently blocked."""
-    world = _make_world(beats=[
-        _beat("blocker"),
-        _beat("X"),
-        _beat("Y", blocked_by_beats=["blocker"]),
-        _beat("A", requires_any_beats=["X", "Y"]),
-    ])
-    state = State(player_location="loc_a", unlocked_beats={"blocker", "X"})
-    assert reachable_beat_ids(world, state) == {"A"}
-
-
-def test_reachable_combines_requires_and_requires_any():
-    """A requires_beats=[hard] AND requires_any_beats=[X, Y]; hard fires
-    and Y fires → A reachable. hard fires but neither X nor Y → A
-    unreachable."""
-    world_ok = _make_world(beats=[
-        _beat("hard"),
-        _beat("X"),
-        _beat("Y"),
-        _beat("A", requires_beats=["hard"], requires_any_beats=["X", "Y"]),
-    ])
-    state_ok = State(player_location="loc_a", unlocked_beats={"hard", "Y"})
-    assert "A" in reachable_beat_ids(world_ok, state_ok)
-
-    # hard fires, X and Y both blocked → A unreachable
-    world_blocked = _make_world(beats=[
-        _beat("blocker"),
-        _beat("hard"),
-        _beat("X", blocked_by_beats=["blocker"]),
-        _beat("Y", blocked_by_beats=["blocker"]),
-        _beat("A", requires_beats=["hard"], requires_any_beats=["X", "Y"]),
-    ])
-    state_blocked = State(
-        player_location="loc_a", unlocked_beats={"hard", "blocker"},
-    )
-    assert "A" not in reachable_beat_ids(world_blocked, state_blocked)
-
-
-def test_resolved_ending_id_with_requires_any_one_satisfied():
-    """Ending requires_any_beats=[X, Y, Z]; only Y fired → ending fires."""
-    world = _make_world(
-        beats=[_beat("X"), _beat("Y"), _beat("Z")],
-        endings=[Ending(
-            id="published", requires_any_beats=["X", "Y", "Z"],
-            notes_to_llm="x", epilogue="y",
-        )],
-    )
-    state = State(player_location="loc_a", unlocked_beats={"Y"})
-    assert resolved_ending_id_at_close(world, state) == "published"
-
-
-def test_resolved_ending_id_with_requires_any_none_satisfied():
-    """Ending requires_any_beats=[X, Y]; neither fired → None."""
-    world = _make_world(
-        beats=[_beat("X"), _beat("Y")],
-        endings=[Ending(
-            id="published", requires_any_beats=["X", "Y"],
-            notes_to_llm="x", epilogue="y",
-        )],
-    )
-    state = State(player_location="loc_a")
-    assert resolved_ending_id_at_close(world, state) is None
+def test_free_text_fallback_is_general_agency():
+    assert isinstance(FREE_TEXT_FALLBACK, FreeText)
+    assert FREE_TEXT_FALLBACK.npc_id is None
+    assert FREE_TEXT_FALLBACK.suggested is None
 
 
 # ───────────────────────── integration: valid fixture ─────────────────────────
 
 
-def test_dynamic_builder_against_loaded_fixture():
-    """Sanity check: dynamic builder accepts valid changes against the
-    fixture world. Dynamic items carry `beat_name`; the engine boundary
-    (`emit_state_changes`) translates name→id via `World.beat_id_for_name`
-    before constructing the canonical bundle."""
+def test_quality_engine_against_loaded_fixture():
+    """End-to-end against the fixture world: warm Tom to `open` → the engine
+    derives tom_named_a_vehicle; then the player can commit to filing."""
     world = load_world(FIXTURE_VALID)
     state = make_initial_state(world)
-    state.player_location = "the_slaughtered_lamb"  # Tom present → his beats fireable
-    BundleType = _build_state_change_bundle_type(world, state)
-    # tom_named_a_vehicle has no beat prereq, its blocker (tom_closes_off)
-    # hasn't fired, and Tom is in the room — so it's fireable now.
-    bundle = BundleType.model_validate({
-        "state_changes": [
-            {"type": "unlock_beat", "beat_name": "Tom named a vehicle"}
-        ]
-    })
-    canonical = StateChangeBundle(state_changes=[
-        UnlockBeat(beat_id=world.beat_id_for_name(c.beat_name))
-        for c in bundle.state_changes
-    ])
-    apply_state_changes(canonical, state)
+    state.player_location = "the_slaughtered_lamb"  # Tom present
+    # Warm Tom across turns to the open band.
+    for _ in range(2):
+        apply_state_changes(
+            StateChangeBundle(deltas=[QualityDelta(npc_id="tom", trust="+1")]),
+            state, world,
+        )
     assert "tom_named_a_vehicle" in state.unlocked_beats
-    # Now tom_admits_more (requires tom_named_a_vehicle, Tom present) is fireable.
-    BundleType2 = _build_state_change_bundle_type(world, state)
-    BundleType2.model_validate({
-        "state_changes": [
-            {"type": "unlock_beat", "beat_name": "Tom admits more"}
-        ]
-    })
+    # Now the file decision is emittable.
+    assert "decided_to_file" in emittable_beat_ids(world, state)
+    apply_state_changes(
+        StateChangeBundle(commitments=[UnlockBeat(beat_id="decided_to_file")]),
+        state, world,
+    )
+    assert resolved_ending_id_at_close(world, state) == "published_story"

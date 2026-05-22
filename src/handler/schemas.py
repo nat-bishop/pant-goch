@@ -49,25 +49,53 @@ class UnlockBeat(_Strict):
     beat_id: str
 
 
-# Discriminated union for state changes. v1 has only UnlockBeat; widen to
-# `UnlockBeat | MoveNPC | ...` if v1.1+ adds more kinds.
-StateChange = Annotated[UnlockBeat, Field(discriminator="type")]
+# ── bounded ordinal quality deltas (the quality-engine Phase-1 output) ──
+# String literals so the same decode-time grammar narrowing that constrains
+# beat names / npc ids applies verbatim; the engine parses "+1"→+1 and
+# "BREACH"→latch after decode (mirrors beat_name→beat_id). Bounding to ±1 (and
+# the deliberate, separate BREACH member for guard) is what keeps a runaway
+# emission to one recoverable notch instead of a permanent mis-fire.
+TrustDelta = Literal["-1", "0", "+1"]
+GuardDelta = Literal["-1", "0", "+1", "BREACH"]
+AttnDelta = Literal["0", "+1"]
+
+# Parsers: turn the on-the-wire string into an engine effect.
+TRUST_DELTA_VALUES = {"-1": -1, "0": 0, "+1": 1}
+ATTN_DELTA_VALUES = {"0": 0, "+1": 1}
+
+
+class QualityDelta(_Strict):
+    """One present-NPC's trust/guard nudge this turn. `guard="BREACH"` is the
+    latch signal (not a magnitude); the engine adds the npc to
+    `state.guard_breached` and leaves the numeric guard alone."""
+
+    type: Literal["quality_delta"] = "quality_delta"
+    npc_id: str
+    trust: TrustDelta = "0"
+    guard: GuardDelta = "0"
+
+
+class AttentionDelta(_Strict):
+    """A bump to the global village_attention (ratchets up only)."""
+
+    type: Literal["attention_delta"] = "attention_delta"
+    attention: AttnDelta = "0"
+
+
+ApproachChange = Annotated[
+    Union[QualityDelta, AttentionDelta], Field(discriminator="type")
+]
 
 
 class StateChangeBundle(_Strict):
-    state_changes: list[StateChange] = Field(default_factory=list, max_length=2)
+    """Phase-1 output (quality engine). Per turn the classifier reports how the
+    player's move shifted standing — bounded ordinal `deltas` for present NPCs
+    + attention — and at most one explicit `commitments` beat (an observation
+    milestone or a player decision). Evidence/outcome milestones are NOT here:
+    the engine derives them from trust (`engine._derive_milestones`)."""
 
-    @model_validator(mode="after")
-    def _no_duplicate_beat_ids(self) -> StateChangeBundle:
-        seen: set[str] = set()
-        for change in self.state_changes:
-            if isinstance(change, UnlockBeat):
-                if change.beat_id in seen:
-                    raise ValueError(
-                        f"beat_id {change.beat_id!r} appears twice in bundle"
-                    )
-                seen.add(change.beat_id)
-        return self
+    deltas: list[ApproachChange] = Field(default_factory=list, max_length=4)
+    commitments: list[UnlockBeat] = Field(default_factory=list, max_length=1)
 
 
 # ───────────────────────── Phase 2b: choice author output ─────────────────────────

@@ -38,6 +38,26 @@
     - "Land Rover. Going the other way. Recognised it."
     # Closed — the player has lied or pushed; civil but unmoving.
     - "Be off home now, I think."
+  disposition:
+    warms: slow      # he warms across visits, not in one sitting
+    spooks: steady
+    breach:
+      - claiming to be police or family
+      - threatening him or mocking his grief
+      - pushing aggressively after he has asked them to stop
+    voice_by_band:
+      cold:
+        - "Aye. Not my business, was it."
+        - "You're not from round here. I can see that."
+      thawing:
+        - "Sit down if you're going to."
+        - "Megan. Aye. Lovely girl. Quiet, mind."
+      open:
+        - "Land Rover. Going the other way. Recognised it."
+      at_peace:
+        - "I'll go in to Knighton Monday. Say what I should have said."
+      closed:
+        - "Be off home now, I think."
 
 - id: maud
   name: Maud Pryce
@@ -104,6 +124,23 @@
     - "I want it written. Whatever it is. I want it written down."
     # Grieving — when the room has gone quiet on Megan.
     - "She liked the wood. I never asked her why. I should have."
+  disposition:
+    warms: slow      # grows warmer across a second and third visit
+    spooks: slow     # hard to offend; embarrassed rather than angered
+    breach:
+      - pushing for his feelings before earning them, cheaply
+      - treating Megan's death as a story rather than a daughter
+    voice_by_band:
+      cold:
+        - "I'll put the kettle on. Sit there, if you would."
+        - "You'll have eaten. I won't insult you with sandwiches."
+      thawing:
+        - "It's the not knowing. That's the worst of it."
+      open:
+        - "I want it written. Whatever it is. I want it written down."
+        - "She liked the wood. I never asked her why. I should have."
+      closed:
+        - "I think you've had what you came for. Mind how you go."
 
 - id: wendy
   name: Wendy Pritchard
@@ -163,6 +200,23 @@
     - "Off my land, please. While the asking of it is still polite."
     # Collapsed — confronted with what she did, sitting down for whisky.
     - "Pour me one. Don't ask. Just pour me one."
+  disposition:
+    warms: slow      # she does not warm; "thawing" is her dropping the guard enough to be confronted
+    spooks: fast     # quick to bar the gate
+    breach:
+      - accusing or threatening her
+      - recording without permission
+      - pushing aggressively after she has asked them to leave
+    voice_by_band:
+      cold:
+        - "You'll say what you came to say, and then you'll go."
+        - "This is my land. I don't owe you a single word."
+      thawing:
+        - "Pour me one. Don't ask. Just pour me one."
+      open:
+        - "Pour me one. Don't ask. Just pour me one."
+      closed:
+        - "Off my land, please. While the asking of it is still polite."
 
 - id: dylan
   name: Dylan Vaughn
@@ -201,6 +255,25 @@
     # Admitting — the relationship, the knowing, what he carried.
     - "She used to come up here. We used to come up here."
     - "I worked it out. I never asked her. I never had to."
+  disposition:
+    warms: steady    # once he begins, in private, he is unable to stop
+    spooks: fast     # closes completely to aggression or performance
+    opens_up_only_at: [bryn_iago_wood, the_lane, st_caradocs]
+    breach:
+      - pressing him in front of Eluned at Tan-y-coed
+      - threatening to publish without his cooperation
+      - aggression, performance, or making it feel like a transaction
+    voice_by_band:
+      cold:
+        - "Not here. Please. Not here."
+      thawing:
+        - "If you already know, then you already know."
+        - "She used to come up here. We used to come up here."
+      open:
+        - "I haven't said this. To anyone. In seven years."
+        - "I worked it out. I never asked her. I never had to."
+      closed:
+        - "Not here. Please. Not here."
 
 - id: gareth
   name: Father Gareth Hughes
@@ -261,6 +334,23 @@
     - "I knew. I couldn't prove it. That's a different thing."
     # Hardened — the player has been indiscreet; she is done.
     - "I'm afraid I can't see you again. Don't ring my desk, please."
+  disposition:
+    warms: steady    # warms to discretion; the notes come once she trusts
+    spooks: steady
+    breach:
+      - naming her or citing her cooperation in earshot of the village
+      - threatening to publish her involvement
+      - approaching via the press office rather than discreetly
+    voice_by_band:
+      cold:
+        - "I can't discuss an open or closed investigation in detail."
+      thawing:
+        - "Off the record. And I mean that. Off the record."
+        - "I knew. I couldn't prove it. That's a different thing."
+      open:
+        - "It's all in here. Everything I couldn't use. You did not get it from me."
+      closed:
+        - "I'm afraid I can't see you again. Don't ring my desk, please."
 
 - id: owain
   name: Owain Pugh

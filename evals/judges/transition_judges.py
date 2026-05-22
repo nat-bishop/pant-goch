@@ -22,10 +22,11 @@ def _beat_brief(world: World, beat_id: str | None) -> str:
     beat = world.beats.get(beat_id) if beat_id else None
     if beat is None:
         return f"(unknown beat {beat_id!r})"
+    gate = beat.when.model_dump(exclude_none=True) if beat.when is not None else "(none)"
     return (
         f"Beat '{beat.name}' (id={beat.id})\n"
         f"  description: {beat.description.strip()}\n"
-        f"  prerequisites: {beat.prerequisites.strip() or '(none)'}\n"
+        f"  when (quality gate): {gate}\n"
         f"  notes_to_llm: {beat.notes_to_llm.strip()}"
     )
 
@@ -55,7 +56,7 @@ class BeatFiredAppropriately(AgentJudge):
         "notes. You are given ONE turn: the prior case file, the player's action this "
         "turn, the narrator's prose, and the beat that fired. Judge ONE thing: did the "
         "player's action THIS turn legitimately warrant firing THIS beat, honoring its "
-        "notes_to_llm and prerequisites? Fire-too-early, fire-on-mere-navigation, or "
+        "notes_to_llm and `when` gate? Fire-too-early, fire-on-mere-navigation, or "
         "fire-without-the-action-described = NOT warranted. Answer passed=true only if "
         "the firing is clearly earned by the action shown."
     )

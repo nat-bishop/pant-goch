@@ -62,7 +62,7 @@ def test_render_report_diffs_previous():
         "beats_total": 20, "beats_never_fired": [], "location_coverage": 0.5,
         "locations_never_visited": [], "beats_per_location": {},
         "median_scenes_per_session": 5, "median_distinct_locations_per_session": 4,
-        "longest_common_beat_prefix": [], "ladder_compression": {},
+        "longest_common_beat_prefix": [],
     }, "invariants": {"NoPrematureEnding": 1.0}}
     prev = {"metrics": {**cur["metrics"], "ending_entropy_normalized": 0.3}}
     text = run_report.render_report(cur, prev)

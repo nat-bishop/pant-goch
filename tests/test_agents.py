@@ -22,51 +22,49 @@ from handler.world import load_world
 FIXTURE_VALID = Path(__file__).parent / "fixtures" / "world_valid"
 
 
-def test_state_change_bundle_type_accepts_fireable_beat_names():
-    """Phase 1 emits beat NAMES, not ids. Every currently-FIREABLE beat's name
-    must round-trip through the dynamic schema (the schema is built from
-    `fireable_beat_ids`, the fire-now gate). Use a state at the pub so Tom's
-    presence-gated beats are actually fireable and the round-trip is
-    non-vacuous."""
+def test_bundle_accepts_present_npc_delta_and_emittable_commitment():
+    """Phase 1 reports quality deltas for present NPCs (npc_id narrowed) and
+    may emit one emittable commitment by NAME (the engine translates name→id).
+    """
     world = load_world(FIXTURE_VALID)
     state = make_initial_state(world)
     state.player_location = "the_slaughtered_lamb"  # Tom is here
     BundleType = _build_state_change_bundle_type(world, state)
-    from handler.engine import fireable_beat_ids
-    fireable = fireable_beat_ids(world, state)
-    assert fireable, "expected at least one fireable beat at the pub"
-    for beat_id in fireable:
-        beat_name = world.beats[beat_id].name
-        bundle = BundleType.model_validate({
-            "state_changes": [
-                {"type": "unlock_beat", "beat_name": beat_name}
-            ]
-        })
-        assert bundle.state_changes[0].beat_name == beat_name  # type: ignore[union-attr]
-        # Boundary translation: name → id is the engine's job in emit_state_changes.
-        assert world.beat_id_for_name(beat_name) == beat_id
+    b = BundleType.model_validate({
+        "deltas": [{"type": "quality_delta", "npc_id": "tom", "trust": "+1"}],
+    })
+    assert b.deltas[0].npc_id == "tom"  # type: ignore[union-attr]
+
+    # At the post office, the observation milestone is an emittable commitment.
+    state.player_location = "the_post_office"
+    BundleType2 = _build_state_change_bundle_type(world, state)
+    name = world.beats["read_the_letter"].name
+    b2 = BundleType2.model_validate({
+        "commitments": [{"type": "unlock_beat", "beat_name": name}],
+    })
+    assert b2.commitments[0].beat_name == name  # type: ignore[union-attr]
+    assert world.beat_id_for_name(name) == "read_the_letter"
 
 
-def test_state_change_bundle_type_rejects_unknown_beat_name():
+def test_bundle_rejects_unknown_commitment_name():
     world = load_world(FIXTURE_VALID)
     state = make_initial_state(world)
+    state.player_location = "the_post_office"
     BundleType = _build_state_change_bundle_type(world, state)
     with pytest.raises(ValidationError):
         BundleType.model_validate({
-            "state_changes": [
-                {"type": "unlock_beat", "beat_name": "Ghost beat"}
-            ]
+            "commitments": [{"type": "unlock_beat", "beat_name": "Ghost beat"}]
         })
 
 
-def test_state_change_bundle_type_accepts_empty():
+def test_bundle_accepts_empty():
     world = load_world(FIXTURE_VALID)
     state = make_initial_state(world)
     BundleType = _build_state_change_bundle_type(world, state)
-    bundle = BundleType.model_validate({"state_changes": []})
-    assert bundle.state_changes == []
+    bundle = BundleType.model_validate({"deltas": [], "commitments": []})
+    assert bundle.deltas == [] and bundle.commitments == []
     bundle = BundleType.model_validate({})
-    assert bundle.state_changes == []
+    assert bundle.deltas == [] and bundle.commitments == []
 
 
 def test_choice_bundle_continue_passes():

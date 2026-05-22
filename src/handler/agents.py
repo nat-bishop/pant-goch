@@ -47,10 +47,10 @@ from __future__ import annotations
 import random
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, Union
 
 import logfire
-from pydantic import BaseModel, Field, create_model, model_validator
+from pydantic import BaseModel, Field, create_model
 from pydantic_ai import Agent, NativeOutput
 from pydantic_ai.exceptions import UnexpectedModelBehavior
 from pydantic_ai.messages import ModelMessage
@@ -58,7 +58,7 @@ from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.settings import ModelSettings
 
 from .config import THINKING_OFF_EXTRA_BODY
-from .engine import fireable_beat_ids, present_npc_ids
+from .engine import emittable_beat_ids, present_npc_ids
 from .prompts import (
     build_caption_author_system_prompt,
     build_caption_author_user_message,
@@ -77,13 +77,18 @@ from .prompts import (
     build_prose_writer_user_message,
 )
 from .schemas import (
+    AttentionDelta,
+    AttnDelta,
     ChoiceBundle,
     ChronicleEntry,
     FreeTextCaption,
     FreeTextGate,
+    GuardDelta,
     NpcMemoryUpdate,
     NpcPlacementBundle,
+    QualityDelta,
     StateChangeBundle,
+    TrustDelta,
     UnlockBeat,
 )
 from .state import State
@@ -159,66 +164,71 @@ def make_scene_runner_runtime(seed: int | None = None) -> SceneRunnerRuntime:
 
 
 def _build_state_change_bundle_type(world: World, state: State) -> type[BaseModel]:
-    """StateChangeBundle whose UnlockBeat.beat_name is
-    `Literal[*reachable_beat_names(world, state)]`. The grammar sampler
-    rejects any beat_name not currently reachable at decode time — covers
-    requires_beats/blocked_by_beats/already-fired in one Literal.
+    """StateChangeBundle narrowed per call for the quality engine:
 
-    Names (not ids) on the wire: small LLMs reason better with short
-    human-language phrases ("Tom speaks of Megan") than snake_case slugs.
-    `emit_state_changes` translates name → canonical `UnlockBeat.beat_id`
-    after decode so engine/SSE/frontend ride on stable id keys.
+      - `deltas`: a discriminated union of QualityDelta (npc_id narrowed to
+        present, non-breached NPCs) and AttentionDelta. The grammar sampler
+        physically rejects a delta for an absent or breached NPC, and the
+        trust/guard/attention magnitudes are already Literal-bounded on the
+        canonical schema.
+      - `commitments`: at most one UnlockBeat whose `beat_name` is narrowed to
+        `emittable_beat_ids` (observation milestones + currently-available
+        decisions). Evidence/outcome milestones are engine-derived and never
+        appear here.
 
-    The dynamic bundle does NOT inherit from canonical `StateChangeBundle`:
-    canonical's `_no_duplicate_beat_ids` reads `change.beat_id`, which
-    dynamic items lack. The inline `_no_duplicate_beat_names` validator
-    below catches duplicates during the agent's retry loop; canonical
-    validators still fire at the round-trip in `emit_state_changes`
-    (defense in depth).
+    Names (not ids) on the commitment wire — `emit_state_changes` translates
+    `beat_name → beat_id` after decode, same as before.
     """
-    reachable_ids = tuple(sorted(fireable_beat_ids(world, state)))
-    reachable_names = tuple(world.beats[bid].name for bid in reachable_ids)
-    if not reachable_names:
-        # Nothing fireable from this state → bundle must be empty.
-        return create_model(
-            "StateChangeBundle",
-            state_changes=(
-                list[Any],
-                Field(default_factory=list, max_length=0),
-            ),
-        )
-    NameLiteral = Literal[reachable_names]  # type: ignore[valid-type]
-    DynamicUnlockBeat = create_model(
-        "UnlockBeat",
-        type=(Literal["unlock_beat"], "unlock_beat"),
-        beat_name=(NameLiteral, ...),
+    adjustable = tuple(
+        n for n in present_npc_ids(world, state) if n not in state.guard_breached
     )
-    StateChange = Annotated[DynamicUnlockBeat, Field(discriminator="type")]
 
-    def _no_duplicate_beat_names(self):  # type: ignore[no-untyped-def]
-        seen: set[str] = set()
-        for change in self.state_changes:
-            name = getattr(change, "beat_name", None)
-            if name is None:
-                continue
-            if name in seen:
-                raise ValueError(
-                    f"beat_name {name!r} appears twice in bundle"
-                )
-            seen.add(name)
-        return self
+    # ── deltas union ──
+    DynAttention = create_model(
+        "AttentionDelta",
+        type=(Literal["attention_delta"], "attention_delta"),
+        attention=(AttnDelta, "0"),
+    )
+    delta_members: list[type] = []
+    if adjustable:
+        NpcLiteral = Literal[adjustable]  # type: ignore[valid-type]
+        DynQuality = create_model(
+            "QualityDelta",
+            type=(Literal["quality_delta"], "quality_delta"),
+            npc_id=(NpcLiteral, ...),
+            trust=(TrustDelta, "0"),
+            guard=(GuardDelta, "0"),
+        )
+        delta_members.append(DynQuality)
+    delta_members.append(DynAttention)
+    if len(delta_members) == 1:
+        delta_item: Any = delta_members[0]
+    else:
+        delta_item = Annotated[
+            Union[tuple(delta_members)], Field(discriminator="type")  # type: ignore[valid-type]
+        ]
+
+    # ── commitments (≤1, narrowed to emittable names) ──
+    emittable_ids = tuple(sorted(emittable_beat_ids(world, state)))
+    emittable_names = tuple(world.beats[bid].name for bid in emittable_ids)
+    if emittable_names:
+        CommitLiteral = Literal[emittable_names]  # type: ignore[valid-type]
+        DynCommit = create_model(
+            "UnlockBeat",
+            type=(Literal["unlock_beat"], "unlock_beat"),
+            beat_name=(CommitLiteral, ...),
+        )
+        commitments_field = (
+            list[Annotated[DynCommit, Field(discriminator="type")]],
+            Field(default_factory=list, max_length=1),
+        )
+    else:
+        commitments_field = (list[Any], Field(default_factory=list, max_length=0))
 
     return create_model(
         "StateChangeBundle",
-        state_changes=(
-            list[StateChange],
-            Field(default_factory=list, max_length=2),
-        ),
-        __validators__={
-            "_no_duplicate_beat_names": model_validator(mode="after")(
-                _no_duplicate_beat_names
-            ),
-        },
+        deltas=(list[delta_item], Field(default_factory=list, max_length=4)),
+        commitments=commitments_field,
     )
 
 
@@ -452,12 +462,21 @@ async def emit_state_changes(
         NativeOutput(DynamicBundle, strict=True),
     )
     raw = result.output
-    canonical_changes = [
+    deltas: list = []
+    for d in getattr(raw, "deltas", []):
+        kind = getattr(d, "type", None)
+        if kind == "quality_delta":
+            deltas.append(
+                QualityDelta(npc_id=d.npc_id, trust=d.trust, guard=d.guard)
+            )
+        elif kind == "attention_delta":
+            deltas.append(AttentionDelta(attention=d.attention))
+    commitments = [
         UnlockBeat(beat_id=bundle.world.beat_id_for_name(c.beat_name))
-        for c in getattr(raw, "state_changes", [])
+        for c in getattr(raw, "commitments", [])
         if getattr(c, "beat_name", None) is not None
     ]
-    return StateChangeBundle(state_changes=canonical_changes)
+    return StateChangeBundle(deltas=deltas, commitments=commitments)
 
 
 async def emit_placements(
@@ -491,7 +510,7 @@ async def stream_prose_text(
     bundle: AgentBundle,
     runtime: SceneRunnerRuntime,
     state: State,
-    applied: StateChangeBundle,
+    applied_beats: list[str],
 ) -> AsyncIterator[str]:
     """Prose writer LLM call, streamed. Yields text DELTAS as the model
     produces them, so the caller can pace them to the client live instead
@@ -523,7 +542,7 @@ async def stream_prose_text(
         bundle.world.brief.opening_seed if is_session_opening else None
     )
     user_msg = build_prose_writer_user_message(
-        state, bundle.world, applied,
+        state, bundle.world, applied_beats,
         opening_seed=opening_seed,
         is_first_turn=is_first_turn,
     )

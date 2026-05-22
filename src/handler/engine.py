@@ -1,25 +1,28 @@
-"""Scene-loop helpers — reachability, state application, scene lifecycle.
+"""Engine helpers — the quality vector, state application, scene lifecycle.
 
-Pure functions (no LLM, no SSE). All structural / state-dependent rules
-that used to live in `validate_state_change_bundle` and
-`validate_prose_part` have moved:
-
-  - State-INDEPENDENT rules (≤2 unlock_beat cap, no duplicate beats,
-    Continue option count 2-4) → `@model_validator` / `Field(...)` on
-    the canonical schemas in `schemas.py`.
-  - State-DEPENDENT enum constraints (`beat_id` ∈ reachable beats) →
-    per-call `Literal[...]` narrowing in
-    `agents._build_state_change_bundle_type`.
-
-`reachable_beat_ids` and `resolved_ending_id_at_close` stay here — used
-by both grammar narrowing (`agents.py`) and prompt rendering
-(`prompts.py`), plus the scene_loop dispatch on choice-author Leave.
+Pure functions (no LLM, no SSE). The quality engine lives here:
+  - `confession_depth` / `band_name` / `when_satisfied` — derive the world's
+    milestones and ending availability from per-NPC trust/guard.
+  - `apply_state_changes` — apply Phase-1 deltas + commitments, then auto-derive
+    milestones (`_derive_milestones`).
+  - `emittable_beat_ids` — the LLM-emittable commitment beats, narrowed per call
+    in `agents._build_state_change_bundle_type` and rendered in `prompts.py`.
+  - `resolved_ending_id_at_close` — the ending the engine fires on scene close.
 """
 from __future__ import annotations
 
 import random
 
-from .schemas import FreeText, StateChangeBundle, UnlockBeat
+from .models import When
+from .schemas import (
+    ATTN_DELTA_VALUES,
+    AttentionDelta,
+    FreeText,
+    QualityDelta,
+    StateChangeBundle,
+    TRUST_DELTA_VALUES,
+    UnlockBeat,
+)
 from .state import State, TurnRecord
 from .world import World
 
@@ -66,87 +69,202 @@ def free_text_cadence_ok(state: State, rng: random.Random) -> bool:
     return rng.random() < FREE_TEXT_OFFER_P
 
 
-def apply_state_changes(bundle: StateChangeBundle, state: State) -> None:
-    """Apply validated state changes to state. Validation happens upstream
-    via schema @model_validator + per-call Literal narrowing in
+def apply_state_changes(
+    bundle: StateChangeBundle, state: State, world: World
+) -> list[str]:
+    """Apply a Phase-1 bundle to state and return the beat ids newly unlocked
+    THIS turn (LLM-emitted commitments + engine-derived milestones), in that
+    order — the caller emits one `unlock_beat` SSE per id.
+
+    Three effects, in order:
+      1. quality deltas — clamped trust/guard nudges for present NPCs (positive
+         trust pinned to `_trust_adjustable_here`); a `BREACH` latches guard.
+      2. attention deltas — ratchet the global heat up.
+      3. commitments — the LLM-emitted observation/decision beats.
+    Then `_derive_milestones` auto-unlocks any evidence/outcome beat whose
+    `when` gate the deltas just satisfied. Validation happens upstream via
+    schema validators + per-call Literal narrowing in
     `agents._build_state_change_bundle_type`."""
-    for change in bundle.state_changes:
-        if isinstance(change, UnlockBeat):
-            state.unlocked_beats.add(change.beat_id)
-
-
-# ───────────────────────── reachability filter ─────────────────────────
-
-
-def reachable_beat_ids(world: World, state: State) -> set[str]:
-    """Return ids of beats that are *reachable* — unfired AND can eventually
-    fire given current state. This is the graph-only "could fire someday"
-    view: prerequisites count as satisfied if they are unlocked OR themselves
-    reachable.
-
-    NOTE: this is NOT the fire-now gate. The Phase-1 grammar narrowing and
-    the `## Reachable Beats` prompt block both ride on `fireable_beat_ids`,
-    which requires prerequisites to be actually *unlocked* (not merely
-    reachable) — so a decision beat cannot fire before its evidence exists.
-    `reachable_beat_ids` is kept for "what's still on the horizon" reasoning
-    (and external docs) but is off the per-turn hot path.
-
-    Reachability (memoized recursion):
-      A beat B is reachable iff:
-        - B is not in unlocked_beats, AND
-        - no id in B.blocked_by_beats is in unlocked_beats, AND
-        - every id in B.requires_beats is either in unlocked_beats OR reachable, AND
-        - if B.requires_any_beats is non-empty, at least one id in it is
-          either in unlocked_beats OR reachable.
-
-    Cycles in requires_beats / requires_any_beats are forbidden by the world
-    loader (invariant 9), so the recursion terminates.
-    """
-    cache: dict[str, bool] = {}
-
-    def is_reachable(beat_id: str) -> bool:
-        if beat_id in cache:
-            return cache[beat_id]
-        beat = world.beats.get(beat_id)
-        if beat is None:
-            cache[beat_id] = False
-            return False
-        if beat_id in state.unlocked_beats:
-            cache[beat_id] = False
-            return False
-        if any(b in state.unlocked_beats for b in beat.blocked_by_beats):
-            cache[beat_id] = False
-            return False
-        for r in beat.requires_beats:
-            if r in state.unlocked_beats:
-                continue
-            if not is_reachable(r):
-                cache[beat_id] = False
-                return False
-        if beat.requires_any_beats:
-            any_ok = any(
-                r in state.unlocked_beats or is_reachable(r)
-                for r in beat.requires_any_beats
+    for d in bundle.deltas:
+        if isinstance(d, QualityDelta):
+            if d.npc_id in state.guard_breached:
+                continue  # relationship is over; ignore further nudges
+            t = TRUST_DELTA_VALUES[d.trust]
+            if t > 0 and not _trust_adjustable_here(world, state, d.npc_id):
+                t = 0  # won't warm here (e.g. Dylan at Tan-y-coed)
+            state.trust[d.npc_id] = _clamp(
+                state.trust.get(d.npc_id, 0) + t, 0, TRUST_MAX
             )
-            if not any_ok:
-                cache[beat_id] = False
-                return False
-        if beat.requires_count:
-            # Count beats that are unlocked OR themselves reachable — the
-            # "could the threshold ever be met" horizon view (mirrors the
-            # requires_any treatment above). `min_scenes_with_npc` is a timing
-            # gate, not a reachability one, so it is intentionally ignored here.
-            satisfiable = sum(
-                r in state.unlocked_beats or is_reachable(r)
-                for r in beat.requires_count_beats
-            )
-            if satisfiable < beat.requires_count:
-                cache[beat_id] = False
-                return False
-        cache[beat_id] = True
-        return True
+            if d.guard == "BREACH":
+                state.guard_breached.add(d.npc_id)
+            else:
+                state.guard[d.npc_id] = _clamp(
+                    state.guard.get(d.npc_id, 0) + TRUST_DELTA_VALUES[d.guard],
+                    0,
+                    GUARD_MAX,
+                )
+        elif isinstance(d, AttentionDelta):
+            state.village_attention += ATTN_DELTA_VALUES[d.attention]
 
-    return {bid for bid in world.beats if is_reachable(bid)}
+    newly: list[str] = []
+    for c in bundle.commitments:
+        if c.beat_id not in state.unlocked_beats:
+            state.unlocked_beats.add(c.beat_id)
+            newly.append(c.beat_id)
+    newly.extend(_derive_milestones(world, state))
+    return newly
+
+
+# ───────────────────────── quality vector ─────────────────────────
+#
+# The thin spine that replaces the boolean ladder beats: per-NPC `trust`
+# (warmth) and `guard` (alarm) accumulate ±1/turn; the LLM nudges them, the
+# engine derives everything else. A confession DEPTH band is a pure function
+# of those two numbers, so an evidence milestone can never mis-fire — it falls
+# out of the trust the player has actually earned.
+
+# Raw clamps. trust/guard are bounded so a runaway LLM emission saturates
+# harmlessly instead of running off the scale (the boolean DAG had no such
+# floor — a mis-fired beat was permanent). TRUST_MAX must clear 3×the widest
+# band so the terminal `at_peace` band is reachable (Tom → police).
+TRUST_MAX = 8
+GUARD_MAX = 3
+
+# Confession bands, by depth index. Derived from effective warmth
+# (trust − guard) divided by a per-NPC band WIDTH; clamped to the top band.
+# `cold` is the stranger default; the evidence milestone trips at `open`;
+# `at_peace` is the terminal "decides on their own" band (Tom → police).
+BANDS = ("cold", "thawing", "open", "at_peace")
+EVIDENCE_BAND = 2  # BANDS.index("open") — depth at which evidence milestones trip
+
+# Default raw-points-per-band when an NPC has no authored `disposition`. The
+# per-NPC `warms` rate (slow/steady/fast) overrides this in `confession_depth`.
+# Tuned (with TRUST_MAX) so a good single scene of ~3-4 warm turns reaches
+# `open` (evidence) for a steady NPC, and a slow NPC earns it over a little
+# longer — the band-width knob replaces the old min_scenes_with_npc gate.
+DEFAULT_BAND_WIDTH = 1
+_BAND_WIDTH_BY_WARMS = {"slow": 2, "steady": 1, "fast": 1}
+
+# Village attention bands (the global heat). Rises ONLY on conspicuous /
+# aggressive acts, never on gentle repetition; ratchets up. Ejection (the
+# run-out terminal) is `hostile` and is gated on attention ALONE — NOT a
+# breach-count, which is the entropy-0 collapse the boolean system was tuned
+# to avoid (see truth.yaml scar comments).
+ATTENTION_BANDS = {"noticed": 1, "talked_about": 2, "hostile": 3}
+ATTENTION_EJECT = ATTENTION_BANDS["hostile"]
+
+
+def _clamp(v: int, lo: int, hi: int) -> int:
+    return max(lo, min(hi, v))
+
+
+def _band_width(world: World, npc_id: str) -> int:
+    """Raw trust points per confession band for `npc_id`, from the NPC's
+    authored `warms` rate (slow warms slowest → widest bands). Falls back to
+    `DEFAULT_BAND_WIDTH` for NPCs with no `disposition` block."""
+    npc = world.npcs.get(npc_id)
+    disp = getattr(npc, "disposition", None) if npc else None
+    if disp is None:
+        return DEFAULT_BAND_WIDTH
+    return _BAND_WIDTH_BY_WARMS.get(disp.warms, DEFAULT_BAND_WIDTH)
+
+
+def confession_depth(world: World, state: State, npc_id: str) -> int:
+    """How far open `npc_id` is RIGHT NOW, as a band depth in [0, 3] — or -1
+    when the relationship has latched shut (`guard_breached`). Pure function of
+    `trust`/`guard`: effective warmth `trust − guard`, floored at 0, divided by
+    the NPC's band width, clamped to the top band. This is the single arithmetic
+    expression that the whole Tom/Dylan/Helen ladder collapsed into."""
+    if npc_id in state.guard_breached:
+        return -1
+    effective = max(0, state.trust.get(npc_id, 0) - state.guard.get(npc_id, 0))
+    depth = effective // _band_width(world, npc_id)
+    return min(depth, len(BANDS) - 1)
+
+
+def band_name(world: World, state: State, npc_id: str) -> str:
+    """The current band's label for prose/prompt rendering. `closed` when the
+    relationship has breached (the guard-high register), else the depth band."""
+    depth = confession_depth(world, state, npc_id)
+    if depth < 0:
+        return "closed"
+    return BANDS[depth]
+
+
+def village_ejected(state: State) -> bool:
+    """The village has collectively closed ranks — the run-out terminal.
+    Gated on `village_attention` ALONE (see ATTENTION_EJECT)."""
+    return state.village_attention >= ATTENTION_EJECT
+
+
+def when_satisfied(world: World, state: State, when: When) -> bool:
+    """Evaluate a `When` quality/milestone gate against current state. All set
+    conditions must hold (AND). The single replacement for the boolean
+    requires_* family — used to derive evidence milestones, gate decision-beat
+    availability, and gate ending quality conditions."""
+    if when.npc is not None and when.trust_at_least is not None:
+        need = BANDS.index(when.trust_at_least)
+        if confession_depth(world, state, when.npc) < need:
+            return False
+    if when.any_evidence_of and not any(
+        b in state.unlocked_beats for b in when.any_evidence_of
+    ):
+        return False
+    if when.requires_beats and not set(when.requires_beats).issubset(
+        state.unlocked_beats
+    ):
+        return False
+    if when.npcs_thawed_at_least is not None:
+        thawed = sum(
+            1 for nid in world.npcs if confession_depth(world, state, nid) >= 1
+        )
+        if thawed < when.npcs_thawed_at_least:
+            return False
+    if when.village_attention_at_least is not None:
+        if state.village_attention < ATTENTION_BANDS[when.village_attention_at_least]:
+            return False
+    if when.village_attention_below is not None:
+        if state.village_attention >= ATTENTION_BANDS[when.village_attention_below]:
+            return False
+    return True
+
+
+def _is_decision(beat_id: str) -> bool:
+    """The mutually-exclusive player-commitment beats (engine enforces at most
+    one per playthrough). Keyed on the `decided_` id convention so the rule is
+    one line, not a pairwise blocked_by graph."""
+    return beat_id.startswith("decided_")
+
+
+def _trust_adjustable_here(world: World, state: State, npc_id: str) -> bool:
+    """Can positive trust accrue for `npc_id` at the player's CURRENT location?
+    False when the NPC has breached, or when their `opens_up_only_at` excludes
+    here (Dylan won't warm at Tan-y-coed). Guard/BREACH still apply anywhere —
+    this only pins WARMING, the mechanical home of the old requires_location."""
+    if npc_id in state.guard_breached:
+        return False
+    npc = world.npcs.get(npc_id)
+    disp = getattr(npc, "disposition", None) if npc else None
+    if disp and disp.opens_up_only_at and state.player_location not in disp.opens_up_only_at:
+        return False
+    return True
+
+
+def _derive_milestones(world: World, state: State) -> list[str]:
+    """Auto-unlock every engine-derived (non-commitment) beat whose `when` gate
+    is now met. Returns the newly-unlocked ids (for the SSE unlock_beat emit).
+    Idempotent: already-unlocked beats are skipped, so it can run every turn."""
+    newly: list[str] = []
+    for bid, beat in world.beats.items():
+        if beat.commitment or beat.when is None or bid in state.unlocked_beats:
+            continue
+        if when_satisfied(world, state, beat.when):
+            state.unlocked_beats.add(bid)
+            newly.append(bid)
+    return newly
+
+
+# ───────────────────────── emittable beats + ending resolution ─────────────────────────
 
 
 def present_npc_ids(world: World, state: State) -> tuple[str, ...]:
@@ -156,54 +274,31 @@ def present_npc_ids(world: World, state: State) -> tuple[str, ...]:
     return tuple(n.id for n in world.npcs_at(state.player_location, state=state))
 
 
-def fireable_beat_ids(world: World, state: State) -> set[str]:
-    """Beats that can fire RIGHT NOW — the source of both the Phase-1 grammar
-    `Literal` (`agents._build_state_change_bundle_type`) and the
-    `## Reachable Beats` prompt block (`prompts._render_reachable_beats`). A
-    beat is fireable iff ALL of:
+def emittable_beat_ids(world: World, state: State) -> set[str]:
+    """The LLM-emitted beats (`commitment: true`) the classifier may fire RIGHT
+    NOW — the source of both the Phase-1 commitment `Literal`
+    (`agents._build_state_change_bundle_type`) and the `## Choices Available`
+    prompt block. Engine-derived milestones are NOT here: they fall out of
+    `_derive_milestones` from trust and can never be mis-fired.
 
+    A commitment beat is emittable iff ALL of:
       - it is not already unlocked;
-      - no `blocked_by_beats` member is unlocked;
-      - every `requires_beats` is **unlocked** (not merely reachable);
-      - if `requires_any_beats` is non-empty, at least one is **unlocked**;
-      - every `requires_npcs_present` NPC is present at the player's location;
-      - `requires_location` is empty OR contains the player's location.
-
-    The "unlocked, not merely reachable" rule is the load-bearing one: it
-    forces ladders to advance one rung per turn and stops a decision beat
-    (or its ending) from firing before its evidence has actually been
-    gathered. NPC-presence keeps Tom's beats off the table wherever Tom is
-    not; location keeps place-bound beats (the crash site) off the table
-    until the player is there. The model literally cannot emit — and is
-    never even told about — a beat that fails any of these.
+      - it is not a `decided_` beat while another decision is already taken
+        (at-most-one-decision, the replacement for pairwise blocked_by);
+      - its `requires_location` (if any) contains the player's location;
+      - its `when` availability gate (if any) is satisfied.
     """
-    present = set(present_npc_ids(world, state))
     here = state.player_location
-    unlocked = state.unlocked_beats
+    decision_taken = any(_is_decision(b) for b in state.unlocked_beats)
     out: set[str] = set()
     for bid, beat in world.beats.items():
-        if bid in unlocked:
+        if not beat.commitment or bid in state.unlocked_beats:
             continue
-        if any(b in unlocked for b in beat.blocked_by_beats):
-            continue
-        if not set(beat.requires_beats).issubset(unlocked):
-            continue
-        if beat.requires_any_beats and not any(
-            b in unlocked for b in beat.requires_any_beats
-        ):
-            continue
-        if beat.requires_count and sum(
-            b in unlocked for b in beat.requires_count_beats
-        ) < beat.requires_count:
-            continue
-        if not set(beat.requires_npcs_present).issubset(present):
+        if _is_decision(bid) and decision_taken:
             continue
         if beat.requires_location and here not in beat.requires_location:
             continue
-        if beat.min_scenes_with_npc and any(
-            len(state.npc_memory.get(n, [])) < beat.min_scenes_with_npc
-            for n in beat.requires_npcs_present
-        ):
+        if beat.when is not None and not when_satisfied(world, state, beat.when):
             continue
         out.add(bid)
     return out
@@ -212,22 +307,17 @@ def fireable_beat_ids(world: World, state: State) -> set[str]:
 def resolved_ending_id_at_close(world: World, state: State) -> str | None:
     """Pick the ending that fires when a scene closes. Iterates endings in
     author (YAML) order; returns the first whose `requires_beats` are all
-    in `state.unlocked_beats`, or None if no ending is satisfied.
+    unlocked AND whose `when` quality gate (if any) is satisfied, else None.
 
-    By design, decision beats are mutually exclusive (pairwise
-    `blocked_by_beats`), so at most one ending should ever be satisfied
-    simultaneously. The author-order tie-break is defensive.
-
-    Used by `scene_loop._assemble_prose_part` when the choice author emits
-    a Leave variant: if an ending is satisfied, the engine constructs
-    EndGame with that id; otherwise EndScene.
+    `run_out_of_the_village` is authored FIRST so ejection (village_attention
+    ≥ hostile) takes precedence over any other satisfied ending. Decisions are
+    mutually exclusive (engine rule), so at most one decision-gated ending is
+    ever satisfiable simultaneously; the author-order tie-break is defensive.
     """
     for eid, ending in world.endings.items():
         if not set(ending.requires_beats).issubset(state.unlocked_beats):
             continue
-        if ending.requires_any_beats and not any(
-            b in state.unlocked_beats for b in ending.requires_any_beats
-        ):
+        if ending.when is not None and not when_satisfied(world, state, ending.when):
             continue
         return eid
     return None
@@ -253,6 +343,7 @@ def append_turn_record(
     *,
     prose: str,
     applied_state_changes: list[UnlockBeat],
+    applied_deltas: list | None = None,
 ) -> None:
     """Pack a completed turn's data into a TurnRecord and append it to
     dialogue_history. The scene anchor (scene_id, location, npcs_present)
@@ -262,5 +353,6 @@ def append_turn_record(
         TurnRecord(
             prose=prose,
             applied_state_changes=list(applied_state_changes),
+            applied_deltas=list(applied_deltas or []),
         )
     )

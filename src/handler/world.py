@@ -190,45 +190,12 @@ def _build_beat_name_to_id(beats: dict[str, Beat]) -> dict[str, str]:
     return by_name
 
 
-def _check_beat_refs(beats: dict[str, Beat]) -> None:
-    """Invariant 8 — every requires_beats / requires_any_beats / blocked_by_beats
-    reference resolves to a defined beat id; no self-reference."""
-    for beat in beats.values():
-        for field_name in (
-            "requires_beats", "requires_any_beats", "blocked_by_beats",
-            "requires_count_beats",
-        ):
-            for ref in getattr(beat, field_name):
-                if ref == beat.id:
-                    raise WorldLoadError(
-                        f"beat {beat.id!r}: {field_name} contains itself"
-                    )
-                if ref not in beats:
-                    raise WorldLoadError(
-                        f"beat {beat.id!r}: {field_name} references undefined "
-                        f"beat {ref!r}"
-                    )
-
-
-def _check_beat_npc_refs(beats: dict[str, Beat], npcs: dict[str, NPC]) -> None:
-    """Invariant 12 — every requires_npcs_present reference resolves to a
-    defined NPC id. Gates the presence-aware fireability narrowing in
-    engine.fireable_beat_ids."""
-    for beat in beats.values():
-        for ref in beat.requires_npcs_present:
-            if ref not in npcs:
-                raise WorldLoadError(
-                    f"beat {beat.id!r}: requires_npcs_present references "
-                    f"undefined npc {ref!r}"
-                )
-
-
 def _check_beat_location_refs(
     beats: dict[str, Beat], locations: dict[str, Location]
 ) -> None:
-    """Invariant 13 — every requires_location reference resolves to a defined
-    location. Gates the place-aware fireability narrowing in
-    engine.fireable_beat_ids."""
+    """Every requires_location reference resolves to a defined location. Gates
+    the place-aware emittability narrowing in engine.emittable_beat_ids (the
+    observation milestones)."""
     for beat in beats.values():
         for ref in beat.requires_location:
             if ref not in locations:
@@ -239,58 +206,72 @@ def _check_beat_location_refs(
 
 
 def _check_beats_gated(beats: dict[str, Beat]) -> None:
-    """Invariant 14 — every beat carries ≥1 hard gate: requires_beats,
-    requires_any_beats, requires_npcs_present, or requires_location. An ungated
-    beat is globally fireable from turn 1 regardless of place or progress — the
-    failure mode that let `examined_the_crash_site` / `village_runs_you_out`
-    fire in the empty prologue (and, once those were gated, let
-    `decided_to_walk_away` fire the instant the player stepped toward the door).
-    No exceptions: even the player's "I'm walking away" commitment gates on
-    having actually engaged with the village (requires_any_beats)."""
+    """Invariant 14 — every beat carries ≥1 gate. In the quality engine that
+    is the `when` predicate (the evidence/outcome milestones and the decision
+    availability gates); observation milestones gate on `requires_location`.
+    An ungated beat would be globally fireable / derivable from turn 1 — the
+    failure mode that let `examined_the_crash_site` fire in the empty prologue.
+
+    A non-commitment beat (engine-derived) MUST carry a `when` — without it,
+    `_derive_milestones` would never fire it (or, conversely, a `when`-less
+    derived beat is dead). Commitment beats may gate on `when` OR
+    `requires_location` (the observation milestones)."""
     for beat in beats.values():
-        has_gate = (
-            beat.requires_beats
-            or beat.requires_any_beats
-            or beat.requires_npcs_present
-            or beat.requires_location
-            or beat.requires_count
-        )
-        if not has_gate:
+        if not beat.commitment and beat.when is None:
             raise WorldLoadError(
-                f"beat {beat.id!r}: no hard gate (requires_beats / "
-                f"requires_any_beats / requires_npcs_present / "
-                f"requires_location) — it would be globally fireable from turn 1"
+                f"beat {beat.id!r}: engine-derived (commitment=false) but has "
+                f"no `when` gate — it could never be derived"
+            )
+        if beat.when is None and not beat.requires_location:
+            raise WorldLoadError(
+                f"beat {beat.id!r}: no gate (`when` / requires_location) — "
+                f"it would be globally fireable from turn 1"
             )
 
 
-def _check_no_requires_cycles(beats: dict[str, Beat]) -> None:
-    """Invariant 9 — the dependency graph (union of requires_beats AND
-    requires_any_beats) has no cycles. A cycle anywhere would make a beat
-    unfireable. DFS with grey/black colouring; report the cycle path on
-    detection."""
-    WHITE, GREY, BLACK = 0, 1, 2
-    colour: dict[str, int] = {bid: WHITE for bid in beats}
+def _when_beat_refs(when) -> list[str]:
+    """Beat ids referenced by a `When` predicate (any_evidence_of + requires_beats)."""
+    if when is None:
+        return []
+    return list(when.any_evidence_of) + list(when.requires_beats)
 
-    def visit(bid: str, path: list[str]) -> None:
-        colour[bid] = GREY
-        deps = (
-            list(beats[bid].requires_beats)
-            + list(beats[bid].requires_any_beats)
-            + list(beats[bid].requires_count_beats)
-        )
-        for dep in deps:
-            if colour[dep] == GREY:
-                cycle = path[path.index(dep):] + [dep]
+
+def _check_when_refs(
+    beats: dict[str, Beat], endings: dict[str, Ending], npcs: dict[str, NPC]
+) -> None:
+    """Every beat id named in a `when` (on a beat or ending) resolves to a
+    defined beat; every `when.npc` resolves to a defined NPC. The quality-engine
+    analogue of the old requires_* ref checks."""
+    holders: list[tuple[str, object]] = [(b.id, b.when) for b in beats.values()]
+    holders += [(f"ending {e.id}", e.when) for e in endings.values()]
+    for owner, when in holders:
+        if when is None:
+            continue
+        for ref in _when_beat_refs(when):
+            if ref not in beats:
                 raise WorldLoadError(
-                    f"requires cycle: {' -> '.join(cycle)}"
+                    f"{owner}: `when` references undefined beat {ref!r}"
                 )
-            if colour[dep] == WHITE:
-                visit(dep, path + [dep])
-        colour[bid] = BLACK
+        if when.npc is not None and when.npc not in npcs:
+            raise WorldLoadError(
+                f"{owner}: `when.npc` references undefined npc {when.npc!r}"
+            )
 
-    for bid in beats:
-        if colour[bid] == WHITE:
-            visit(bid, [bid])
+
+def _check_disposition_refs(
+    npcs: dict[str, NPC], locations: dict[str, Location]
+) -> None:
+    """Every `disposition.opens_up_only_at` references a defined location."""
+    for npc in npcs.values():
+        disp = npc.disposition
+        if disp is None:
+            continue
+        for ref in disp.opens_up_only_at:
+            if ref not in locations:
+                raise WorldLoadError(
+                    f"npc {npc.id!r}: disposition.opens_up_only_at references "
+                    f"undefined location {ref!r}"
+                )
 
 
 def _check_brief_starts_at(brief: Brief, locations: dict[str, Location]) -> None:
@@ -303,16 +284,15 @@ def _check_brief_starts_at(brief: Brief, locations: dict[str, Location]) -> None
 
 
 def _check_ending_refs(endings: dict[str, Ending], beats: dict[str, Beat]) -> None:
-    """Invariant 10 — every ending's requires_beats / requires_any_beats
-    references a defined beat id."""
+    """Every ending's requires_beats references a defined beat id. (Quality
+    conditions on `when` are validated by `_check_when_refs`.)"""
     for ending in endings.values():
-        for field_name in ("requires_beats", "requires_any_beats"):
-            for ref in getattr(ending, field_name):
-                if ref not in beats:
-                    raise WorldLoadError(
-                        f"ending {ending.id!r}: {field_name} references "
-                        f"undefined beat {ref!r}"
-                    )
+        for ref in ending.requires_beats:
+            if ref not in beats:
+                raise WorldLoadError(
+                    f"ending {ending.id!r}: requires_beats references "
+                    f"undefined beat {ref!r}"
+                )
 
 
 # ───────────────────────── loader ─────────────────────────
@@ -364,12 +344,11 @@ def load_world(path: Path) -> World:
     endings: dict[str, Ending] = {e.id: e for e in truth.endings}
     _check_beat_ending_namespace(beats, endings)
     beat_name_to_id = _build_beat_name_to_id(beats)
-    _check_beat_refs(beats)
-    _check_beat_npc_refs(beats, npcs)
     _check_beat_location_refs(beats, locations)
     _check_beats_gated(beats)
-    _check_no_requires_cycles(beats)
     _check_ending_refs(endings, beats)
+    _check_when_refs(beats, endings, npcs)
+    _check_disposition_refs(npcs, locations)
 
     brief_path = path / "brief.yaml"
     if not brief_path.is_file():

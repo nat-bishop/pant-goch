@@ -192,7 +192,6 @@ def render_report(summary: dict, prev: dict | None) -> str:
     lines.append(f"- median scenes/session: {m['median_scenes_per_session']}  "
                  f"median locations/session: {m['median_distinct_locations_per_session']}")
     lines.append(f"- longest common beat prefix (>50%): {m['longest_common_beat_prefix']}")
-    lines.append(f"- ladder compression: {m['ladder_compression']}")
     lines.append("")
     lines.append("## Invariant gates (pass-rate)")
     for name, rate in summary["invariants"].items():

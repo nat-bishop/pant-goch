@@ -32,6 +32,7 @@ from handler.schemas import (
     NpcPlacementBundle,
     Option,
     ProsePart,
+    QualityDelta,
     StateChangeBundle,
     UnlockBeat,
 )
@@ -273,8 +274,9 @@ def test_assemble_leave_beats_free_text_offer():
 
 async def test_run_turn_applies_state_changes_and_appends_record(monkeypatch, bundle_and_state):
     bundle, runtime, state = bundle_and_state
+    state.trust["tom"] = 1  # one more warm turn reaches `open` → derives the milestone
     _patch_phase1(monkeypatch, StateChangeBundle(
-        state_changes=[UnlockBeat(beat_id="tom_named_a_vehicle")],
+        deltas=[QualityDelta(npc_id="tom", trust="+1")],
     ))
     _patch_prose_writer(monkeypatch, [
         "Tom looks down at his pint, and then up at you.",
@@ -634,7 +636,7 @@ async def test_play_session_calls_both_callbacks_and_terminates_on_end_game(monk
         StateChangeBundle(),  # scene 1 turn 2 (Leave)
         StateChangeBundle(),  # scene 2 turn 1
         StateChangeBundle(   # scene 2 turn 2: fire the decision beat
-            state_changes=[UnlockBeat(beat_id=b) for b in decision_beats],
+            commitments=[UnlockBeat(beat_id=b) for b in decision_beats],
         ),
     ])
 
@@ -683,7 +685,7 @@ async def test_play_session_no_input_when_first_turn_ends_game(monkeypatch):
     _patch_populator(monkeypatch)
     _patch_chronicler(monkeypatch)
     _patch_phase1(monkeypatch, StateChangeBundle(
-        state_changes=[UnlockBeat(beat_id=b) for b in decision_beats],
+        commitments=[UnlockBeat(beat_id=b) for b in decision_beats],
     ))
     _patch_prose_writer(monkeypatch, ["opening"])
     _patch_choice_author(monkeypatch, [ChoiceBundle(next=Leave())])
@@ -709,7 +711,7 @@ async def test_play_session_case_file_entries_accumulate_on_state(monkeypatch):
     _patch_populator(monkeypatch)
     _patch_chronicler(monkeypatch)
     _patch_phase1(monkeypatch, StateChangeBundle(
-        state_changes=[UnlockBeat(beat_id=b) for b in decision_beats],
+        commitments=[UnlockBeat(beat_id=b) for b in decision_beats],
     ))
     _patch_prose_writer(monkeypatch, ["t1"])
     _patch_choice_author(monkeypatch, [ChoiceBundle(next=Leave())])

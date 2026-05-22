@@ -4,38 +4,49 @@ crime: |
   The case was closed.
 
 beats:
+  # Engine-derived evidence milestone — trips when Tom's trust reaches `open`.
   - id: tom_named_a_vehicle
     name: Tom named a vehicle
+    when: {npc: tom, trust_at_least: open}
     description: |
       Tom tells the player he saw Eluned Vaughn's Land Rover speeding
       from the bend the night Megan died.
-    requires_npcs_present: [tom]
-    blocked_by_beats: [tom_closes_off]
     notes_to_llm: |
-      Earn through patience. Tom won't volunteer.
+      Narrate his actual words, quiet, finally.
 
+  # Engine-derived terminal-trust milestone.
   - id: tom_admits_more
     name: Tom admits more
+    when: {npc: tom, trust_at_least: at_peace}
     description: |
       Tom expands on what he saw — speed, sound, time.
-    requires_beats: [tom_named_a_vehicle]
-    requires_npcs_present: [tom]
     notes_to_llm: |
-      Only after he has named the vehicle. Don't fire prematurely.
+      Only when he is fully at peace; narrate without ceremony.
 
-  - id: tom_closes_off
-    name: Tom closes off
+  # LLM-emitted player commitment, available once evidence exists.
+  - id: decided_to_file
+    name: Decided to file
+    commitment: true
+    when: {any_evidence_of: [tom_named_a_vehicle]}
     description: |
-      Tom decides he will not speak to the player again about anything
-      that matters.
-    requires_npcs_present: [tom]
+      The player chooses to write up and file the story.
     notes_to_llm: |
-      Fire when the player has lied, threatened, or pressed too hard.
+      Fire only when the player explicitly says they are filing.
+
+  # Observation milestone — gated on location, LLM-emitted.
+  - id: read_the_letter
+    name: Read the letter
+    commitment: true
+    requires_location: [the_post_office]
+    description: |
+      The player reads the letter left for them.
+    notes_to_llm: |
+      Fire when the player actually reads it.
 
 endings:
   - id: published_story
-    requires_beats: [tom_named_a_vehicle]
+    requires_beats: [decided_to_file]
     notes_to_llm: |
-      Fire when the player has chosen to file the story.
+      Fire when decided_to_file is in state.
     epilogue: |
       The story runs Friday. Eluned is questioned within the week.

@@ -67,6 +67,7 @@ from .schemas import (
     Option,
     ProsePart,
     StateChangeBundle,
+    UnlockBeat,
 )
 from .sse import (
     _words_from_stream,
@@ -227,7 +228,7 @@ async def _stream_pace_and_author(
     bundle: AgentBundle,
     runtime: SceneRunnerRuntime,
     state: State,
-    applied: StateChangeBundle,
+    applied_beats: list[str],
     *,
     emit_event: EmitEvent | None,
     skip_event: asyncio.Event | None,
@@ -260,7 +261,7 @@ async def _stream_pace_and_author(
 
     async def _produce() -> None:
         try:
-            async for delta in stream_prose_text(bundle, runtime, state, applied):
+            async for delta in stream_prose_text(bundle, runtime, state, applied_beats):
                 acc.append(delta)
                 await queue.put(delta)
         finally:
@@ -378,29 +379,33 @@ async def run_turn(
             present_npcs=list(present_npc_ids(bundle.world, state)),
         )
         applied = StateChangeBundle()
-    apply_state_changes(applied, state)
-    if applied.state_changes:
-        # One queryable record per turn that moved state: which beats fired
-        # and the resulting set. Pairs with the per-action logs in main.py so
-        # a session's progress is reconstructable from Logfire alone.
+    newly_unlocked = apply_state_changes(applied, state, bundle.world)
+    if newly_unlocked or applied.deltas:
+        # One queryable record per turn that moved state: which beats unlocked
+        # (commitments + engine-derived), the quality nudges, and the resulting
+        # set. Pairs with the per-action logs in main.py so a session's
+        # progress is reconstructable from Logfire alone.
         logfire.info(
-            "beats applied",
-            applied_beats=[c.beat_id for c in applied.state_changes],
+            "state applied",
+            applied_beats=newly_unlocked,
+            applied_deltas=[d.model_dump() for d in applied.deltas],
             unlocked_beats=sorted(state.unlocked_beats),
+            village_attention=state.village_attention,
             location=state.player_location,
         )
 
     # state_change events go out before any prose word, so the frontend
-    # unlocks beats ahead of the reveal.
+    # unlocks beats ahead of the reveal. Both commitments and engine-derived
+    # milestones surface here, so the frontend contract is unchanged.
     if emit_event is not None:
-        for change in applied.state_changes:
+        for beat_id in newly_unlocked:
             await emit_event(state_change_event(
-                kind="unlock_beat", payload={"beat_id": change.beat_id}
+                kind="unlock_beat", payload={"beat_id": beat_id}
             ))
 
     # ── Phase 2a + 2b/2c: stream prose live, author over the reveal tail ────
     prose, choices_res, gate_res = await _stream_pace_and_author(
-        bundle, runtime, state, applied,
+        bundle, runtime, state, newly_unlocked,
         emit_event=emit_event, skip_event=skip_event,
     )
 
@@ -452,7 +457,8 @@ async def run_turn(
     append_turn_record(
         state,
         prose=prose_part.prose,
-        applied_state_changes=list(applied.state_changes),
+        applied_state_changes=[UnlockBeat(beat_id=b) for b in newly_unlocked],
+        applied_deltas=list(applied.deltas),
     )
 
     return prose_part

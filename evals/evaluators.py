@@ -76,13 +76,14 @@ def _committed_ending(art: SessionArtifact, world: World) -> Ending | None:
 
 
 def _evidence_decision_beats(ending: Ending, world: World) -> list[Beat]:
-    """The ending's gating decision beats that carry evidence — i.e. have a
-    non-empty `requires_any_beats` (Tom's account / Dylan's admission / Helen's
-    notes). A walk-away ending gates on a beat with no such evidence and so
-    yields an empty list."""
+    """The ending's gating decision beats that carry evidence — i.e. whose
+    `when.any_evidence_of` is non-empty (Tom's account / Dylan's admission /
+    Helen's notes). A walk-away ending gates on a decision with no such
+    evidence and so yields an empty list."""
     return [
         b for bid in ending.requires_beats
-        if (b := world.beats.get(bid)) is not None and b.requires_any_beats
+        if (b := world.beats.get(bid)) is not None
+        and b.when is not None and b.when.any_evidence_of
     ]
 
 
@@ -108,7 +109,7 @@ class EndingEarned(Evaluator):
             return True
         unlocked = set(ctx.output.unlocked_beats)
         return all(
-            any(e in unlocked for e in beat.requires_any_beats)
+            any(e in unlocked for e in beat.when.any_evidence_of)
             for beat in _evidence_decision_beats(ending, self.world)
         )
 
