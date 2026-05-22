@@ -1258,34 +1258,34 @@ emit a structured list of placement overrides (or an empty list).
 {_render_beats_compact(world)}
 
 ## Your Job
-Each scene entry, emit ONE NpcPlacementBundle. **Most scene entries
-should be empty** (defaults stand) — an empty `placements` list is the
-normal, correct, complete answer, not a non-answer. When no specific
-reason to move anyone jumps out, emit `{{"placements": []}}` directly and
-stop. Do not narrate or reason it out — the absence of a reason IS the
-answer. Only emit a placement when there is a SPECIFIC dramatic reason for
-an NPC to be somewhere other than their default — and authored bible /
-case file evidence supports it.
+Each scene entry, emit ONE object with one field PER NPC (the field name is
+their id). Each value is a location id, or `"stay"` to keep their current
+location. **Most NPCs should be `"stay"`** — leaving everyone at `"stay"` is
+the normal, correct, complete answer, not a non-answer. When no specific
+reason to move anyone jumps out, set every NPC to `"stay"` and stop. Do not
+narrate or reason it out — the absence of a reason IS the answer. Only give an
+NPC a location other than `"stay"` when there is a SPECIFIC dramatic reason for
+them to be somewhere other than their default — and authored bible / case file
+evidence supports it.
 
 Example of the common case:
 
   - The player walks to the_post_office. Nothing in the case file points
-    to anyone being out of place. Emit `{{"placements": []}}`.
+    to anyone being out of place. Set every NPC to `"stay"`.
 
 Examples of legitimate movements:
 
   - The player walks to bryn_iago_wood. Dylan sometimes walks up here
     after dark; if recent case-file entries suggest he is avoiding
-    Tan-y-coed (Eluned around, the player has pressed him), placing
-    Dylan in the wood is right.
+    Tan-y-coed (Eluned around, the player has pressed him), set
+    `"dylan": "bryn_iago_wood"`.
   - The player walks to knighton AND Helen has agreed off the record
-    to meet at the Costa. Place Helen at knighton (she's there
-    already by default) — the relevant signal is whether to place her
-    "at the Costa" framing is for the narrator; mechanically she
-    stays in knighton.
+    to meet at the Costa. Helen is already in knighton by default, so
+    `"helen": "stay"` — the "at the Costa" framing is for the narrator;
+    mechanically she stays in knighton.
   - Eluned does not leave Tan-y-coed except in extreme circumstances
     (case file shows she has driven herself to Knighton police, etc.).
-    The default is correct.
+    `"eluned": "stay"` is correct.
 
 ## Rules
 1. Move NPCs only with a SPECIFIC reason traceable to the case file or
@@ -1293,8 +1293,7 @@ Examples of legitimate movements:
    enough. "Last scene's case file says Y, so X would plausibly be at
    Z" is enough.
 2. Stay within the established cast and locations. The bible is complete.
-3. Each NPC may appear at most once in the placements list. Do not
-   place an NPC at a location the player is not at unless the bible
+3. Do not give an NPC a location the player is not at unless the bible
    plausibly explains it; the player will not see them either way, so
    the only reason to place them off-screen is to track where they
    logically should be.
@@ -1332,5 +1331,5 @@ scene_id: {state.scene_id}
 {case_file_block}
 
 ## Generate Placements
-Emit an NpcPlacementBundle. NPCs not listed in placements keep their
-current location."""
+Emit the object: one field per NPC, each a location id or `"stay"`. An NPC set
+to `"stay"` keeps their current location."""

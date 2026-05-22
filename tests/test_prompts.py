@@ -615,8 +615,8 @@ def test_populator_system_prompt_carries_cast_knowledge_and_compact_beats():
     # Endings are dropped.
     for ending in world.endings.values():
         assert ending.id not in prompt
-    # Job directive establishes restraint.
-    assert "should be empty" in prompt or "empty bundle" in prompt
+    # Job directive establishes restraint (most NPCs should be left at "stay").
+    assert 'should be `"stay"`' in prompt or 'every NPC to `"stay"`' in prompt
 
 
 def test_populator_user_prompt_includes_current_placements_and_case_file():

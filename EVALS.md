@@ -7,7 +7,9 @@ player) plus the general qualities of good narrative games (pacing, mystery
 payoff, prose, earned endings).
 
 Authoritative engine orientation is `CLAUDE.md` (the v2 `SPEC.md` was retired).
-This doc is the eval companion.
+This doc is the eval companion. For how to *steer* the quality engine with these
+evals (signals → knobs → which eval gates the change), see
+[`evals/CONTROL_LOOP.md`](evals/CONTROL_LOOP.md).
 
 ---
 

@@ -38,53 +38,67 @@ class _FakeRunResult:
 
 
 def test_npc_placement_bundle_type_narrows_to_world_ids():
-    """The dynamic schema narrows npc_id / location_id to Literals of
-    the world's ids. Validating a NpcPlacement with a non-existent id
-    should fail; valid ids should pass."""
+    """The dynamic schema is a fixed-shape object: one field per NPC, value a
+    Literal over the world's location ids plus the "stay" sentinel. Unknown NPC
+    keys and invalid location values are both rejected."""
     world = load_world(FIXTURE_VALID)
     BundleType = _build_npc_placement_bundle_type(world)
 
-    # Valid placement: tom is a defined NPC; the_slaughtered_lamb is defined.
-    valid = BundleType.model_validate({
-        "placements": [{"npc_id": "tom", "location_id": "the_slaughtered_lamb"}]
-    })
-    assert len(valid.placements) == 1
-    assert valid.placements[0].npc_id == "tom"
+    # Valid: tom -> a defined location.
+    valid = BundleType.model_validate({"tom": "the_slaughtered_lamb"})
+    assert valid.tom == "the_slaughtered_lamb"
+    # "stay" is the keep-current sentinel and is always valid.
+    assert BundleType.model_validate({"tom": "stay"}).tom == "stay"
 
-    # Invalid npc_id rejected at validation time.
+    # Unknown npc key rejected (extra="forbid").
     with pytest.raises(Exception):
-        BundleType.model_validate({
-            "placements": [{"npc_id": "ghost", "location_id": "the_slaughtered_lamb"}]
-        })
+        BundleType.model_validate({"ghost": "the_slaughtered_lamb"})
 
-    # Invalid location_id rejected.
+    # Invalid location value rejected (Literal).
     with pytest.raises(Exception):
-        BundleType.model_validate({
-            "placements": [{"npc_id": "tom", "location_id": "atlantis"}]
-        })
+        BundleType.model_validate({"tom": "atlantis"})
 
 
 def test_npc_placement_bundle_type_empty_bundle_is_default():
-    """The grammar-narrowed schema's default is an empty placements list.
+    """The object's default is every NPC at "stay" (keep current location).
     Most scene entries should produce this — no NPCs moved."""
     world = load_world(FIXTURE_VALID)
     BundleType = _build_npc_placement_bundle_type(world)
     bundle = BundleType.model_validate({})
-    assert bundle.placements == []
+    assert world.npcs  # sanity: the fixture has a cast
+    for npc_id in world.npcs:
+        assert getattr(bundle, npc_id) == "stay"
+
+
+def test_npc_placement_bundle_type_has_no_array_fields():
+    """The runaway fix, locked in: the populator wire schema must contain no
+    list field. An array is exactly what the grammar can't bound and what the
+    model loops on, so a future refactor must not reintroduce one."""
+    import typing
+
+    world = load_world(FIXTURE_VALID)
+    BundleType = _build_npc_placement_bundle_type(world)
+    for name, f in BundleType.model_fields.items():
+        origins = [typing.get_origin(f.annotation)] + [
+            typing.get_origin(a) for a in typing.get_args(f.annotation)
+        ]
+        assert list not in origins, (
+            f"NpcPlacementBundle.{name} is/contains a list — array runaway risk"
+        )
 
 
 @pytest.mark.asyncio
 async def test_emit_placements_returns_canonical_bundle(monkeypatch):
-    """emit_placements builds a per-call dynamic schema, runs the agent,
-    and returns the result round-tripped through the canonical bundle."""
+    """emit_placements reads the fixed-shape wire object (one field per NPC),
+    skips "stay", and returns the canonical list-shaped bundle."""
     world = load_world(FIXTURE_VALID)
     bundle = build_scene_runner_bundle(TestModel(), world)
     state = make_initial_state(world)
     state.player_location = "the_slaughtered_lamb"
 
-    canned = NpcPlacementBundle(placements=[
-        NpcPlacement(npc_id="tom", location_id="the_post_office")
-    ])
+    # Wire object: tom moved, every other NPC defaults to "stay".
+    WireType = _build_npc_placement_bundle_type(world)
+    canned = WireType(tom="the_post_office")
 
     async def fake_run(*args, **kwargs):
         return _FakeRunResult(output=canned)
@@ -100,13 +114,16 @@ async def test_emit_placements_returns_canonical_bundle(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_emit_placements_empty_bundle_passes_through(monkeypatch):
-    """No-op populator response: emit_placements returns an empty bundle."""
+    """No-op populator response (every NPC "stay"): emit_placements returns an
+    empty canonical bundle."""
     world = load_world(FIXTURE_VALID)
     bundle = build_scene_runner_bundle(TestModel(), world)
     state = make_initial_state(world)
 
+    WireType = _build_npc_placement_bundle_type(world)
+
     async def fake_run(*args, **kwargs):
-        return _FakeRunResult(output=NpcPlacementBundle())
+        return _FakeRunResult(output=WireType())  # all defaults = "stay"
 
     monkeypatch.setattr(bundle.populator, "run", fake_run)
     result = await emit_placements(bundle, state)
