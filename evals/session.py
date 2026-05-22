@@ -10,6 +10,7 @@ world-free and trivially serializable.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 import uuid
@@ -39,6 +40,12 @@ from handler.scene_loop import (
 )
 from handler.state import State, make_initial_state
 from handler.world import World
+
+
+# Per-session wall-clock ceiling (eval-only safety net; see run_session). Well
+# above a healthy session even under concurrent load — only a true engine stall
+# trips it.
+_SESSION_TIMEOUT_S = 900.0
 
 
 class SessionBudgetExceeded(Exception):
@@ -272,13 +279,27 @@ async def run_session(
         rec.scene_count += 1
 
     try:
-        await play_session(
-            bundle, runtime, state, world,
-            request_player_input=request_player_input,
-            on_scene_close=on_scene_close,
-            on_chronicle_entry=on_chronicle_entry,
+        # Wall-clock safety net (eval-only). The engine occasionally STALLS a
+        # streaming prose response under concurrent load (inferno stops sending
+        # tokens mid-stream; RetryModel retries only the stream *entry*, never a
+        # mid-stream hang). Because run.py awaits every session in one gather, a
+        # single stalled session blocks the whole run — and its summary.json —
+        # indefinitely. The ceiling is generous (sessions are legitimately slow
+        # under load, ~tens of seconds/turn), so it only trips on a true stall;
+        # the session then drops to a truncated artifact instead of hanging the
+        # corpus. Not a scoring change — a hung session has no ending anyway.
+        await asyncio.wait_for(
+            play_session(
+                bundle, runtime, state, world,
+                request_player_input=request_player_input,
+                on_scene_close=on_scene_close,
+                on_chronicle_entry=on_chronicle_entry,
+            ),
+            timeout=_SESSION_TIMEOUT_S,
         )
     except SessionBudgetExceeded:
+        truncated = True
+    except (asyncio.TimeoutError, TimeoutError):
         truncated = True
 
     artifact = SessionArtifact.capture(
