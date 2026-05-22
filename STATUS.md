@@ -149,9 +149,11 @@ confrontational persona pushes hard enough to accrue offsetting guard, so the ot
 three still converge on `tom_takes`. Bigger divergence needs proposal 2 (attention →
 `run_out`) and the other endings becoming reachable. And the aggressive outcome is a
 no-ending *fizzle* rather than a distinct ending (attention never fires). A 2nd
-confirm run (`guard2`) was launched; **re-run `make playtest` on a healthy engine** to
-confirm replication and that the warm personas aren't over-suppressed (if they are,
-try `GUARD_MAX=5–6`).
+confirm run (`guard2`) was launched but stalled at 0/8 under the same engine streaming
+issue, so replication is **not yet confirmed in-session**. The win rests on guard1's
+single clean 8/8 run plus the causal per-session reconstruction. **Next step: re-run
+`make playtest` on a healthy engine** to confirm replication and that the warm personas
+aren't over-suppressed (if they are, try `GUARD_MAX=5–6`).
 
 ### Harness resilience fixes — KEPT (independently correct, not divergence knobs)
 The playtest kept hanging the whole run (one stuck call blocks `run.py`'s single
