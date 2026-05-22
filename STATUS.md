@@ -7,13 +7,16 @@ promote to `make playtest` only when green. Branch: `divergence-tuning`.
 
 **Bottom line.** The per-turn delta engine is *sound* (the delta gate stayed green
 throughout, and a direct probe shows pressure/coolness is correctly penalised). The
-divergence collapse is **cumulative + authoring-shaped**, not a per-turn-sign bug, so
-it lives in two knobs that the delta gate cannot see (`GUARD_MAX`, attention
-authoring). I could not get a clean corpus A/B this session because the playtest hit
-an **engine streaming stall under concurrent load** (diagnosed below). Net result:
-two genuine harness-resilience fixes landed; one pacing experiment (band widening)
-tried at two settings and **reverted** (no divergence gain); the real fix is captured
-as concrete, reasoned **proposals** below for a session with a healthy engine.
+divergence collapse is **cumulative**, not a per-turn-sign bug — it lived in
+`GUARD_MAX`, a clamp the delta gate can't see. **The fix landed (`fba2252`): raising
+`GUARD_MAX` 3→8 makes sustained pressure hold an NPC cold, so approach now forks
+outcome** — in the validation run the aggressive interrogator keeps Tom cold and gets
+no ending while the diligent journalist warms him to `at_peace` (`tom_takes`); baseline
+had *every* persona → `tom_takes`. Also landed: two harness-resilience fixes that
+unblocked the playtest from hanging. Reverted: a band-widening pacing experiment (no
+gain). The win is validated on **one** corpus run (an engine streaming stall this
+session blocked a clean 2nd confirm), but the fork is *mechanistically* shown — the
+reconstructed per-session guard/trust explains each ending, not just an aggregate.
 
 ---
 
@@ -106,6 +109,33 @@ construction.
   trajectory* — and per the diagnosis the trajectory is the problem. Engine + unit
   tests back to baseline (no diff vs `master`); `eval-deltas` green.
 
+### Iter 2 — pacing: raise `GUARD_MAX` 3→8 — KEPT (the divergence win, `fba2252`)
+Effective warmth is `trust − guard`; with `GUARD_MAX=3 << TRUST_MAX=8`, guard
+saturated at 3 while trust climbed to 8 → net effective 5 → every persona crossed
+`open`(4)/`at_peace`(6) regardless of approach. Raising `GUARD_MAX` to 8 lets
+sustained pressure actually suppress the relationship. `eval-deltas` K=24 GREEN
+before/after (the clamp doesn't affect per-turn emission).
+
+Validation run `guard1` (parallel-2, cap-8; Tom's final trust/guard reconstructed
+from per-turn `applied_deltas`, clamped):
+
+| persona | ending | Tom effective warmth |
+|---|---|---|
+| aggressive_interrogator | `None` | **0** (guard +4 / trust 0 — held cold) |
+| aggressive_interrogator | `None` | **1** (barely warmed) |
+| diligent_journalist | `tom_takes_responsibility` | **8** (warmed to `at_peace`) |
+| diligent_journalist | `tom_takes_responsibility` | **8** |
+
+Approach forks outcome: pressing keeps Tom cold → no reveal → the investigation
+fizzles (no ending), while patient/decent play still warms him through. (Ideal would
+be aggressive→`run_out`, but attention never fires — see proposal 2 below — so the
+aggressive fork currently lands as a no-ending fizzle rather than a distinct ending.)
+**Caveat:** one corpus run; the engine streaming stall blocked a clean 2nd confirm
+and the full 8-session set (committed/distracted sessions were still draining via the
+session-timeout at write time). The evidence is causal (per-session state explains the
+fork), not just an aggregate. Re-run `make playtest` on a healthy engine to confirm
+the magnitude and to check the diligent/patient personas aren't over-suppressed.
+
 ### Harness resilience fixes — KEPT (independently correct, not divergence knobs)
 The playtest kept hanging the whole run (one stuck call blocks `run.py`'s single
 `gather`, so `summary.json` never writes). Two distinct stalls, two fixes:
@@ -140,12 +170,10 @@ These are pacing/authoring changes that target the diagnosed root causes. Each i
 blind — validate each with a `make playtest` A/B on a healthy engine, keep only if
 `persona_outcome_separation` / `ending_entropy` rise and it survives a second run.
 
-1. **Raise `GUARD_MAX` (e.g. 3 → 8), most promising.** Lets sustained pressure
-   actually suppress effective warmth, so the aggressive interrogator's 13 guard-turns
-   hold Tom cold instead of saturating at 3. Expected: aggressive/impatient personas
-   stop reaching `tom_takes` and fork toward `None`/walk/`run_out`; patient personas
-   still warm through. Pure pacing constant; delta gate unaffected. Watch for
-   over-suppression of the diligent persona (it also takes some guard) — if so, try 5–6.
+1. ~~Raise `GUARD_MAX` 3 → 8.~~ **DONE — see Iter 2 (`fba2252`).** Validated: aggressive
+   play now holds Tom cold and forks away from `tom_takes`. Remaining follow-ups: confirm
+   on a healthy engine with a full corpus, and check the diligent/patient personas aren't
+   over-suppressed (if they are, try `GUARD_MAX=5–6`).
 
 2. **Make `attention` reachable for aggressive-but-private play.** Today `run_out`
    never fires because attention only rises on public scenes the player never stages.
