@@ -47,19 +47,27 @@ Tried making phase1 trust default to `0`, `+1` only for earned warmth. Two varia
   cleanly separate "warm" from "neutral" via the prompt without nuking genuine
   warmth and destabilising BREACH. **Reverted to baseline prompt.**
 
-### Iter 1 — pacing knob: widen the slow band (GATE GREEN; playtest pending)
-Knob: `src/handler/engine.py` — `_BAND_WIDTH_BY_WARMS["slow"]` 2→**4**, `TRUST_MAX`
-8→**14** (coupled: `at_peace` = 3×width = 12 must stay below the cap). Band constants
-do **not** affect per-turn delta emission, so the delta gate is unchanged by
-construction — and a slow NPC's `at_peace` (the deepest band, which fires
-`tom_takes_responsibility`) now needs effective warmth **12** instead of 6, far more
-than one pub sitting. This opens a gap between `open` (evidence in hand → player can
-file/confront/tell Iwan) and `at_peace` (Tom resolves it himself), so a single warm
-scene no longer auto-collapses every persona into `tom_takes_responsibility`.
-Updated `test_confession_depth_slow_width` to the new width (arithmetic unit test).
-- eval-deltas K=24: **GREEN** — tom_warm_cold 0.875, public_accusation 0.792,
-  neutral_question 1.0, others 1.0 (matches baseline, as expected).
-- playtest: _pending_
+### Iter 1 — pacing knob: widen the slow band
+Knob: `src/handler/engine.py` — `_BAND_WIDTH_BY_WARMS["slow"]` and `TRUST_MAX`
+(coupled: `at_peace` = 3×width must stay below the cap). Band constants do **not**
+affect per-turn delta emission, so the delta gate is unchanged by construction. The
+lever: a slow NPC's `at_peace` (deepest band, fires `tom_takes_responsibility`) needs
+much more warmth, opening a gap between `open` (evidence → file/confront/tell-Iwan
+unlock) and `at_peace` (Tom resolves it himself) so a single warm scene no longer
+auto-collapses every persona into `tom_takes_responsibility`.
+
+- **1a: width 4 / TRUST_MAX 14 (committed `decc26a`) — STARVED.** Gate GREEN
+  (tom_warm_cold 0.875, public_accusation 0.792, matches baseline). But the playtest
+  (cap 40) ran ~17 min with **0/12 sessions resolving** — `at_peace@12`/`open@8` is so
+  far that sessions wander to the scene cap without ever committing to an ending. Too
+  wide; killed the run. (This removed baseline's *automatic* fast resolution without
+  giving the player-driven endings time to fire.)
+- **1b: width 3 / TRUST_MAX 10 — `at_peace@9`, `open@6`** (vs original 6/4). Moderate.
+  Re-ran with a smaller scene cap so non-committing grinders truncate fast.
+  - eval-deltas K=24: _pending_
+  - playtest (cap 20): _pending_
+
+Updated `test_confession_depth_slow_width` to the configured width (arithmetic unit test).
 
 ## Reverts
 _(none yet)_
