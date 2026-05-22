@@ -166,15 +166,27 @@ def make_scene_runner_runtime(seed: int | None = None) -> SceneRunnerRuntime:
 def _build_state_change_bundle_type(world: World, state: State) -> type[BaseModel]:
     """StateChangeBundle narrowed per call for the quality engine:
 
-      - `deltas`: a discriminated union of QualityDelta (npc_id narrowed to
-        present, non-breached NPCs) and AttentionDelta. The grammar sampler
+      - `npc_deltas`: a list of QualityDelta (npc_id narrowed to present,
+        non-breached NPCs), at most one per present NPC. The grammar sampler
         physically rejects a delta for an absent or breached NPC, and the
-        trust/guard/attention magnitudes are already Literal-bounded on the
-        canonical schema.
+        trust/guard magnitudes are already Literal-bounded on the canonical
+        schema.
+      - `attention`: a SCALAR (`"0"`|`"+1"`), defaulting to `"0"`. NOT a list
+        member. The model must affirmatively set it to `"+1"`; left alone it
+        stays `"0"`.
       - `commitments`: at most one UnlockBeat whose `beat_name` is narrowed to
         `emittable_beat_ids` (observation milestones + currently-available
         decisions). Evidence/outcome milestones are engine-derived and never
         appear here.
+
+    Why a scalar `attention` and not a union list member: when `attention` was a
+    second member of one `deltas: list[QualityDelta|AttentionDelta]` union,
+    gemma-4-e4b collapsed to emitting a single `{attention_delta: +1}` on EVERY
+    call — the easiest non-empty list element — regardless of what the player
+    did (even on the scene-opening turn). Splitting attention into its own
+    default-`"0"` scalar removes that degenerate union choice: quality deltas
+    are their own list, and a `"+1"` attention bump is a deliberate, separately
+    typed act. See `evals/phase1_deltas.py` for the regression suite this fixed.
 
     Names (not ids) on the commitment wire — `emit_state_changes` translates
     `beat_name → beat_id` after decode, same as before.
@@ -183,30 +195,21 @@ def _build_state_change_bundle_type(world: World, state: State) -> type[BaseMode
         n for n in present_npc_ids(world, state) if n not in state.guard_breached
     )
 
-    # ── deltas union ──
-    DynAttention = create_model(
-        "AttentionDelta",
-        type=(Literal["attention_delta"], "attention_delta"),
-        attention=(AttnDelta, "0"),
-    )
-    delta_members: list[type] = []
+    # ── npc_deltas: one optional QualityDelta per present, non-breached NPC ──
     if adjustable:
         NpcLiteral = Literal[adjustable]  # type: ignore[valid-type]
         DynQuality = create_model(
             "QualityDelta",
-            type=(Literal["quality_delta"], "quality_delta"),
             npc_id=(NpcLiteral, ...),
             trust=(TrustDelta, "0"),
             guard=(GuardDelta, "0"),
         )
-        delta_members.append(DynQuality)
-    delta_members.append(DynAttention)
-    if len(delta_members) == 1:
-        delta_item: Any = delta_members[0]
+        npc_deltas_field: Any = (
+            list[DynQuality],
+            Field(default_factory=list, max_length=len(adjustable)),
+        )
     else:
-        delta_item = Annotated[
-            Union[tuple(delta_members)], Field(discriminator="type")  # type: ignore[valid-type]
-        ]
+        npc_deltas_field = (list[Any], Field(default_factory=list, max_length=0))
 
     # ── commitments (≤1, narrowed to emittable names) ──
     emittable_ids = tuple(sorted(emittable_beat_ids(world, state)))
@@ -227,7 +230,8 @@ def _build_state_change_bundle_type(world: World, state: State) -> type[BaseMode
 
     return create_model(
         "StateChangeBundle",
-        deltas=(list[delta_item], Field(default_factory=list, max_length=4)),
+        npc_deltas=npc_deltas_field,
+        attention=(AttnDelta, "0"),
         commitments=commitments_field,
     )
 
@@ -474,21 +478,15 @@ async def emit_state_changes(
     raw = result.output
     deltas: list = []
     seen_npcs: set[str] = set()
-    for d in getattr(raw, "deltas", []):
-        kind = getattr(d, "type", None)
-        if kind == "quality_delta":
-            if d.trust == "0" and d.guard == "0":
-                continue  # no-op nudge — moves nothing
-            if d.npc_id in seen_npcs:
-                continue  # keep ±1/turn: first delta per NPC wins
-            seen_npcs.add(d.npc_id)
-            deltas.append(
-                QualityDelta(npc_id=d.npc_id, trust=d.trust, guard=d.guard)
-            )
-        elif kind == "attention_delta":
-            if d.attention == "0":
-                continue  # no-op ratchet
-            deltas.append(AttentionDelta(attention=d.attention))
+    for d in getattr(raw, "npc_deltas", []):
+        if d.trust == "0" and d.guard == "0":
+            continue  # no-op nudge — moves nothing
+        if d.npc_id in seen_npcs:
+            continue  # keep ±1/turn: first delta per NPC wins
+        seen_npcs.add(d.npc_id)
+        deltas.append(QualityDelta(npc_id=d.npc_id, trust=d.trust, guard=d.guard))
+    if getattr(raw, "attention", "0") != "0":
+        deltas.append(AttentionDelta(attention=raw.attention))
     commitments = [
         UnlockBeat(beat_id=bundle.world.beat_id_for_name(c.beat_name))
         for c in getattr(raw, "commitments", [])

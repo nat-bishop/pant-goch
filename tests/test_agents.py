@@ -31,9 +31,10 @@ def test_bundle_accepts_present_npc_delta_and_emittable_commitment():
     state.player_location = "the_slaughtered_lamb"  # Tom is here
     BundleType = _build_state_change_bundle_type(world, state)
     b = BundleType.model_validate({
-        "deltas": [{"type": "quality_delta", "npc_id": "tom", "trust": "+1"}],
+        "npc_deltas": [{"npc_id": "tom", "trust": "+1"}],
     })
-    assert b.deltas[0].npc_id == "tom"  # type: ignore[union-attr]
+    assert b.npc_deltas[0].npc_id == "tom"  # type: ignore[union-attr]
+    assert b.attention == "0"  # scalar, defaults to no-change
 
     # At the post office, the observation milestone is an emittable commitment.
     state.player_location = "the_post_office"
@@ -61,10 +62,12 @@ def test_bundle_accepts_empty():
     world = load_world(FIXTURE_VALID)
     state = make_initial_state(world)
     BundleType = _build_state_change_bundle_type(world, state)
-    bundle = BundleType.model_validate({"deltas": [], "commitments": []})
-    assert bundle.deltas == [] and bundle.commitments == []
+    bundle = BundleType.model_validate(
+        {"npc_deltas": [], "attention": "0", "commitments": []}
+    )
+    assert bundle.npc_deltas == [] and bundle.attention == "0" and bundle.commitments == []
     bundle = BundleType.model_validate({})
-    assert bundle.deltas == [] and bundle.commitments == []
+    assert bundle.npc_deltas == [] and bundle.attention == "0" and bundle.commitments == []
 
 
 def test_state_change_bundle_rejects_duplicate_delta_npc():
@@ -102,13 +105,12 @@ async def test_emit_state_changes_drops_noop_and_dedups_npc(monkeypatch):
     state.player_location = "the_slaughtered_lamb"  # Tom present
 
     raw = SimpleNamespace(
-        deltas=[
-            SimpleNamespace(type="quality_delta", npc_id="tom", trust="0", guard="0"),   # no-op
-            SimpleNamespace(type="quality_delta", npc_id="tom", trust="+1", guard="0"),  # kept
-            SimpleNamespace(type="quality_delta", npc_id="tom", trust="+1", guard="0"),  # dup npc
-            SimpleNamespace(type="attention_delta", attention="0"),                      # no-op
-            SimpleNamespace(type="attention_delta", attention="+1"),                     # kept
+        npc_deltas=[
+            SimpleNamespace(npc_id="tom", trust="0", guard="0"),   # no-op
+            SimpleNamespace(npc_id="tom", trust="+1", guard="0"),  # kept
+            SimpleNamespace(npc_id="tom", trust="+1", guard="0"),  # dup npc
         ],
+        attention="+1",   # kept
         commitments=[],
     )
 

@@ -416,10 +416,10 @@ def test_dynamic_bundle_accepts_present_npc_quality_delta():
     world = _bundle_world()
     Bundle = _build_state_change_bundle_type(world, _state(world, "loc_a"))
     b = Bundle.model_validate({
-        "deltas": [{"type": "quality_delta", "npc_id": "tom", "trust": "+1"}],
+        "npc_deltas": [{"npc_id": "tom", "trust": "+1"}],
         "commitments": [],
     })
-    assert b.deltas[0].npc_id == "tom"  # type: ignore[union-attr]
+    assert b.npc_deltas[0].npc_id == "tom"  # type: ignore[union-attr]
 
 
 def test_dynamic_bundle_rejects_absent_npc():
@@ -427,7 +427,7 @@ def test_dynamic_bundle_rejects_absent_npc():
     Bundle = _build_state_change_bundle_type(world, _state(world, "loc_a"))
     with pytest.raises(ValidationError):
         Bundle.model_validate({
-            "deltas": [{"type": "quality_delta", "npc_id": "maud", "trust": "+1"}],
+            "npc_deltas": [{"npc_id": "maud", "trust": "+1"}],
         })
 
 
@@ -436,17 +436,20 @@ def test_dynamic_bundle_rejects_out_of_range_trust():
     Bundle = _build_state_change_bundle_type(world, _state(world, "loc_a"))
     with pytest.raises(ValidationError):
         Bundle.model_validate({
-            "deltas": [{"type": "quality_delta", "npc_id": "tom", "trust": "+2"}],
+            "npc_deltas": [{"npc_id": "tom", "trust": "+2"}],
         })
 
 
-def test_dynamic_bundle_accepts_attention_delta_with_no_present_npc():
+def test_dynamic_bundle_attention_is_scalar_default_zero():
+    """attention is a scalar field, "0" by default — NOT a list member. The
+    model must affirmatively set "+1"; absent any present NPC, npc_deltas is
+    empty and attention can still be raised."""
     world = _bundle_world()
     Bundle = _build_state_change_bundle_type(world, _state(world, "loc_b"))  # only maud here
-    b = Bundle.model_validate({
-        "deltas": [{"type": "attention_delta", "attention": "+1"}],
-    })
-    assert b.deltas[0].attention == "+1"  # type: ignore[union-attr]
+    b = Bundle.model_validate({"attention": "+1"})
+    assert b.attention == "+1" and b.npc_deltas == []
+    # default when omitted
+    assert Bundle.model_validate({}).attention == "0"
 
 
 def test_dynamic_bundle_accepts_emittable_commitment():

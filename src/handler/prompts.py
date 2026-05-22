@@ -208,24 +208,36 @@ most of them are protecting some part of it. People open up to patience and
 decency; they close to pressure, lies, and performance.
 
 ## Your Job
-Each turn emit ONE StateChangeBundle with two channels, BOTH usually small:
+Each turn emit ONE StateChangeBundle with three channels, ALL usually empty/zero:
 
-1. `deltas` — for each person PRESENT this turn (and only those), how the
-   player's most recent action moved them:
+1. `npc_deltas` — a list with AT MOST ONE entry per person PRESENT this turn
+   (and only those present). Most turns this list has ONE entry for the person
+   the player just engaged, often with a small nudge; when the player engaged
+   no one, it is empty `[]`. Each entry:
+     - `npc_id`: who.
      - `trust`: "+1" if the player was warm, patient, decent, or shared
-       something real; "-1" if cool or careless; "0" (default) if neutral.
+       something real; "-1" if cool or careless; "0" if neutral. **A warm or
+       decent move toward someone present is `trust: "+1"` — this is the
+       single most important thing you do, because warmth is how the player
+       earns what people tell them.**
      - `guard`: "+1" if the player pressed, pried, or made them wary; "-1"
-       if the player put them at ease; "0" (default) for routine talk;
-       "BREACH" ONLY for the genuinely unforgivable (claiming to be police
-       or family, threatening, recording without consent, pushing hard
-       after being told to stop). BREACH is PERMANENT — when unsure, use
-       "+1" guard, never BREACH.
-   You may also emit one `attention` "+1" when the player did something
-   CONSPICUOUS that makes the village close ranks — a public scene, an
-   indiscretion in earshot, naming a confidential source aloud. Never for
-   ordinary, private, gentle conversation.
+       if the player put them at ease; "0" for routine talk; "BREACH" ONLY
+       for the genuinely unforgivable (claiming to be police or family,
+       threatening, recording without consent, pushing hard after being told
+       to stop). BREACH is PERMANENT — when unsure, use "+1" guard, never BREACH.
 
-2. `commitments` — AT MOST ONE, and only from the ## Choices Available
+2. `attention` — a SINGLE value, "0" by DEFAULT. Set it to "+1" ONLY when the
+   player did something CONSPICUOUS that makes the village close ranks — a
+   public scene, an indiscretion in earshot, naming a confidential source
+   aloud, raising their voice or making accusations where others can hear.
+   This is INDEPENDENT of `npc_deltas`: a loud public accusation can BOTH
+   spook the person in front of the player (their `guard` "+1") AND raise
+   `attention` "+1" (the room, the village) — set both. **But leave it "0"
+   for all ordinary, private, gentle conversation** — a quiet exchange at the
+   bar, a question asked across a counter. The default and overwhelmingly most
+   common value is "0".
+
+3. `commitments` — AT MOST ONE, and only from the ## Choices Available
    block in the user prompt. These are the player's explicit declarations
    ("I'm filing it", "I'm going up to Tan-y-coed", "I'm telling Iwan") and
    the two observation milestones (reading the letter, standing at the
@@ -248,10 +260,12 @@ Each turn emit ONE StateChangeBundle with two channels, BOTH usually small:
    relationship for good; attention can run the player out of the village.
    Use them only on a clear, deliberate provocation, never on a guess.
 5. **The first turn of a scene shifts nothing** (the narrator is only
-   setting the scene) — emit empty `deltas` and no commitment.
+   setting the scene) — emit empty `npc_deltas`, `attention` "0", and no
+   commitment.
 6. Stay within the established cast and locations. The bible above is
-   complete. When nothing moved, emit `{{"deltas": [], "commitments": []}}`
-   and stop — the empty bundle is the normal, complete answer.
+   complete. When nothing moved, emit
+   `{{"npc_deltas": [], "attention": "0", "commitments": []}}` and stop — the
+   empty bundle is the normal, complete answer.
 """
 
 
@@ -706,9 +720,11 @@ def build_phase1_user_prompt(state: State, world: World) -> str:
     return suffix + """
 
 ## Report Standing
-Emit a StateChangeBundle: `deltas` for the people present (small — mostly 0),
-and AT MOST ONE `commitments` entry only if the player explicitly made one of
-the choices listed above this turn.
+Emit a StateChangeBundle: `npc_deltas` for the people present (at most one per
+person, small — a warm/decent move is trust "+1"); `attention` "0" unless the
+player did something conspicuous and public; and AT MOST ONE `commitments`
+entry only if the player explicitly made one of the choices listed above this
+turn.
 """
 
 

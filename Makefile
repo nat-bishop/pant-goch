@@ -84,6 +84,14 @@ playtest:
 judge:
 	SMALLVILLE_USE_INFERNO=1 uv run python -m evals.judge_run --run $(RUN)
 
+# Phase-1 delta regression eval — frozen turn contexts run against the live
+# phase1 agent K times each, scored by deterministic assertions on the emitted
+# delta (trust/guard/attention). Fast, focused, no full playthrough. Seeded
+# with the attention-spam regression. Override samples with K=<n>.
+.PHONY: eval-deltas
+eval-deltas:
+	SMALLVILLE_USE_INFERNO=1 uv run python -m evals.phase1_deltas --k $(or $(K),12)
+
 .PHONY: typecheck
 typecheck:
 	cd web && npm run typecheck

@@ -53,6 +53,9 @@ dist/
 world/backdrops/_variants/
 world/_map_variants/
 
+# Playtest / eval run outputs — regenerable, per-run; never source
+evals/artifacts/
+
 # Logfire project credentials (per-machine, contains write token)
 .logfire/
 
