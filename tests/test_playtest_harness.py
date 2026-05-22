@@ -317,3 +317,33 @@ async def test_run_session_truncates_when_budget_hit(monkeypatch, tmp_path):
     assert artifact.truncated is True
     assert artifact.ending_id is None
     assert artifact.scene_count == 2
+
+
+# ───────────────────────── corpus loading + retry wrapper ─────────────────────────
+
+
+def test_load_run_skips_sidecar_json(tmp_path):
+    """load_run (used by run.py for the corpus) must skip the report/judge
+    sidecars; a raw glob would feed summary.json / judges.json to
+    SessionArtifact.load and crash on the non-artifact payload."""
+    import json
+    from evals.session import load_run
+
+    _artifact(persona="p", session_id="abc").dump(tmp_path)
+    (tmp_path / "summary.json").write_text(json.dumps({"not": "an artifact"}), encoding="utf-8")
+    (tmp_path / "judges.json").write_text(json.dumps([{"also": "not"}]), encoding="utf-8")
+
+    arts = load_run(tmp_path)
+    assert len(arts) == 1
+    assert arts[0].session_id == "abc"
+
+
+def test_retry_model_rejects_nonpositive_max_attempts():
+    """max_attempts < 1 would make request() fall through to an implicit
+    return None, which pydantic-ai then crashes on far from the cause — reject
+    it at construction instead."""
+    import pytest
+    from evals.retry_model import RetryModel
+
+    with pytest.raises(ValueError, match="max_attempts"):
+        RetryModel(TestModel(), max_attempts=0)

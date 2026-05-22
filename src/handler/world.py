@@ -258,6 +258,62 @@ def _check_when_refs(
             )
 
 
+def _check_no_when_cycles(beats: dict[str, Beat]) -> None:
+    """No cycle in the `when.requires_beats` dependency graph. A requires-cycle
+    (A needs B, B needs A — or a beat that requires itself) is a hard deadlock:
+    every beat on the cycle waits on another that can never unlock first, so
+    those beats — and any ending gated on them — are dead for the whole run.
+    `_check_when_refs` only proves the referenced ids EXIST; this proves the
+    graph is acyclic, the analogue of the old boolean `requires` cycle check.
+
+    Only `requires_beats` forms a hard AND-edge. `any_evidence_of` is an OR
+    (satisfiable through a non-cyclic member), so it is deliberately not an
+    edge here."""
+    WHITE, GREY, BLACK = 0, 1, 2
+    color = {bid: WHITE for bid in beats}
+
+    def visit(bid: str, stack: list[str]) -> None:
+        color[bid] = GREY
+        stack.append(bid)
+        beat = beats[bid]
+        refs = beat.when.requires_beats if beat.when is not None else []
+        for ref in refs:
+            if ref not in beats:
+                continue  # ref existence is _check_when_refs' job
+            if color[ref] == GREY:
+                cycle = stack[stack.index(ref):] + [ref]
+                raise WorldLoadError(
+                    f"requires cycle in `when.requires_beats`: "
+                    f"{' -> '.join(cycle)}"
+                )
+            if color[ref] == WHITE:
+                visit(ref, stack)
+        stack.pop()
+        color[bid] = BLACK
+
+    for bid in beats:
+        if color[bid] == WHITE:
+            visit(bid, [])
+
+
+def _check_decision_beats_committable(beats: dict[str, Beat]) -> None:
+    """Every `decided_*` beat must set `commitment: true`. The engine keys the
+    mutually-exclusive player-decision rule on the `decided_` id prefix
+    (`engine._is_decision`) and only ever OFFERS commitment beats to the
+    classifier (`engine.emittable_beat_ids`). A `decided_*` beat left at the
+    `commitment=false` default would instead be auto-derived by
+    `_derive_milestones` the instant its `when` gate is met — committing the
+    player to a decision (and its ending) they never chose, the inverse of the
+    player-driven-endings invariant. Kept in sync with `engine._is_decision`."""
+    for beat in beats.values():
+        if beat.id.startswith("decided_") and not beat.commitment:
+            raise WorldLoadError(
+                f"beat {beat.id!r}: `decided_*` decision beats must set "
+                f"`commitment: true` — otherwise the engine derives the "
+                f"decision automatically and commits the player without a choice"
+            )
+
+
 def _check_disposition_refs(
     npcs: dict[str, NPC], locations: dict[str, Location]
 ) -> None:
@@ -348,6 +404,8 @@ def load_world(path: Path) -> World:
     _check_beats_gated(beats)
     _check_ending_refs(endings, beats)
     _check_when_refs(beats, endings, npcs)
+    _check_no_when_cycles(beats)
+    _check_decision_beats_committable(beats)
     _check_disposition_refs(npcs, locations)
 
     brief_path = path / "brief.yaml"

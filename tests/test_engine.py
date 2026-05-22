@@ -375,6 +375,27 @@ def test_resolved_ending_run_out_precedence():
     assert resolved_ending_id_at_close(world, s) == "run_out"
 
 
+def test_resolved_ending_ejection_outranks_regardless_of_author_order():
+    """Ejection precedence is enforced by the engine (the hostile-gated ending
+    wins), NOT by YAML order — so authoring the decision ending FIRST must not
+    flip which ending fires when the player is both ejected and decided."""
+    world = _make_world(
+        beats=[_beat("decided_to_file", commitment=True, when=When(any_evidence_of=[]))],
+        endings=[
+            Ending(id="published", requires_beats=["decided_to_file"],
+                   notes_to_llm="x", epilogue="y"),
+            Ending(id="run_out", when=When(village_attention_at_least="hostile"),
+                   notes_to_llm="x", epilogue="y"),
+        ],
+    )
+    s = _state(world, unlocked_beats={"decided_to_file"})
+    s.village_attention = 3
+    assert resolved_ending_id_at_close(world, s) == "run_out"
+    # Not ejected → the decision ending fires as before.
+    s.village_attention = 0
+    assert resolved_ending_id_at_close(world, s) == "published"
+
+
 def test_resolved_ending_none_when_no_endings():
     assert resolved_ending_id_at_close(_make_world(endings=[]), _state(_make_world())) is None
 

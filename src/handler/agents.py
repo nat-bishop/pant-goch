@@ -451,8 +451,18 @@ async def emit_state_changes(
     Dynamic items carry `beat_name` (grammar-narrowed to reachable beat
     names); this function translates each name back to the canonical
     `beat_id` via `World.beat_id_for_name` and constructs the canonical
-    `StateChangeBundle`, which fires `_no_duplicate_beat_ids` + the
-    `max_length=2` cap at the boundary.
+    `StateChangeBundle` (whose validators enforce the `max_length` caps and
+    per-NPC delta uniqueness at the boundary).
+
+    Two cleanups happen here before the canonical bundle is built, because
+    the grammar sampler constrains *which* ids/values are emittable but not
+    *how many* or whether they move anything:
+      - no-op deltas (trust=guard="0", or attention="0") are dropped — they
+        shift no state but would otherwise pollute the per-turn ledger and
+        read as "movement" in the filler metric;
+      - at most one delta per NPC is kept, so a single turn can never move
+        trust/guard by more than the ±1/turn the band design rests on (the
+        grammar narrows npc_id but does not forbid repeats within the list).
     """
     prompt = build_phase1_user_prompt(state, bundle.world)
     DynamicBundle = _build_state_change_bundle_type(bundle.world, state)
@@ -463,13 +473,21 @@ async def emit_state_changes(
     )
     raw = result.output
     deltas: list = []
+    seen_npcs: set[str] = set()
     for d in getattr(raw, "deltas", []):
         kind = getattr(d, "type", None)
         if kind == "quality_delta":
+            if d.trust == "0" and d.guard == "0":
+                continue  # no-op nudge — moves nothing
+            if d.npc_id in seen_npcs:
+                continue  # keep ±1/turn: first delta per NPC wins
+            seen_npcs.add(d.npc_id)
             deltas.append(
                 QualityDelta(npc_id=d.npc_id, trust=d.trust, guard=d.guard)
             )
         elif kind == "attention_delta":
+            if d.attention == "0":
+                continue  # no-op ratchet
             deltas.append(AttentionDelta(attention=d.attention))
     commitments = [
         UnlockBeat(beat_id=bundle.world.beat_id_for_name(c.beat_name))

@@ -67,6 +67,66 @@ def test_bundle_accepts_empty():
     assert bundle.deltas == [] and bundle.commitments == []
 
 
+def test_state_change_bundle_rejects_duplicate_delta_npc():
+    """Structural cap: one quality delta per NPC per turn, so a single bundle
+    can't move standing by ±2 and skip a confession band."""
+    from handler.schemas import StateChangeBundle
+    with pytest.raises(ValidationError):
+        StateChangeBundle.model_validate({
+            "deltas": [
+                {"type": "quality_delta", "npc_id": "tom", "trust": "+1"},
+                {"type": "quality_delta", "npc_id": "tom", "trust": "-1"},
+            ],
+        })
+    # Distinct NPCs + an attention delta (no npc_id) validate fine.
+    ok = StateChangeBundle.model_validate({
+        "deltas": [
+            {"type": "quality_delta", "npc_id": "tom", "trust": "+1"},
+            {"type": "quality_delta", "npc_id": "helen", "trust": "+1"},
+            {"type": "attention_delta", "attention": "+1"},
+        ],
+    })
+    assert len(ok.deltas) == 3
+
+
+async def test_emit_state_changes_drops_noop_and_dedups_npc(monkeypatch):
+    """emit_state_changes filters no-op deltas (trust=guard="0", attention="0")
+    and keeps the first delta per NPC — the grammar narrows ids/values but not
+    repeats, so this is what holds the ±1/turn and filler-metric contracts."""
+    from types import SimpleNamespace
+    import handler.agents as agents_mod
+    from handler.agents import build_scene_runner_bundle, emit_state_changes
+
+    world = load_world(FIXTURE_VALID)
+    state = make_initial_state(world)
+    state.player_location = "the_slaughtered_lamb"  # Tom present
+
+    raw = SimpleNamespace(
+        deltas=[
+            SimpleNamespace(type="quality_delta", npc_id="tom", trust="0", guard="0"),   # no-op
+            SimpleNamespace(type="quality_delta", npc_id="tom", trust="+1", guard="0"),  # kept
+            SimpleNamespace(type="quality_delta", npc_id="tom", trust="+1", guard="0"),  # dup npc
+            SimpleNamespace(type="attention_delta", attention="0"),                      # no-op
+            SimpleNamespace(type="attention_delta", attention="+1"),                     # kept
+        ],
+        commitments=[],
+    )
+
+    async def fake_run(agent, prompt, output_type):
+        return SimpleNamespace(output=raw)
+
+    monkeypatch.setattr(agents_mod, "_run_decision_agent", fake_run)
+
+    bundle = build_scene_runner_bundle(TestModel(), world)
+    out = await emit_state_changes(bundle, state)
+
+    quality = [d for d in out.deltas if getattr(d, "npc_id", None) is not None]
+    attention = [d for d in out.deltas if getattr(d, "npc_id", None) is None]
+    assert len(quality) == 1
+    assert quality[0].npc_id == "tom" and quality[0].trust == "+1"
+    assert len(attention) == 1 and attention[0].attention == "+1"
+
+
 def test_choice_bundle_continue_passes():
     """A 2-option Continue must validate against the canonical ChoiceBundle.
     The choice author now uses the static `ChoiceBundle` directly — no

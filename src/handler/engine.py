@@ -305,22 +305,32 @@ def emittable_beat_ids(world: World, state: State) -> set[str]:
 
 
 def resolved_ending_id_at_close(world: World, state: State) -> str | None:
-    """Pick the ending that fires when a scene closes. Iterates endings in
-    author (YAML) order; returns the first whose `requires_beats` are all
-    unlocked AND whose `when` quality gate (if any) is satisfied, else None.
+    """Pick the ending that fires when a scene closes: the ending whose
+    `requires_beats` are all unlocked AND whose `when` quality gate (if any) is
+    satisfied. None if none qualify.
 
-    `run_out_of_the_village` is authored FIRST so ejection (village_attention
-    ≥ hostile) takes precedence over any other satisfied ending. Decisions are
-    mutually exclusive (engine rule), so at most one decision-gated ending is
-    ever satisfiable simultaneously; the author-order tie-break is defensive.
+    Ejection takes precedence: a player who provoked the village out is run off
+    even if a decision ending also happens to be satisfied. That precedence is
+    enforced HERE (any satisfied ending gated on `village_attention_at_least:
+    hostile` wins) rather than relying on `run_out_of_the_village` being
+    authored first — a YAML reorder or round-trip must not silently flip which
+    ending fires. Among non-ejection endings, decisions are mutually exclusive
+    (engine rule) so at most one is satisfiable; author order is the defensive
+    tie-break.
     """
-    for eid, ending in world.endings.items():
-        if not set(ending.requires_beats).issubset(state.unlocked_beats):
-            continue
-        if ending.when is not None and not when_satisfied(world, state, ending.when):
-            continue
-        return eid
-    return None
+    satisfied = [
+        eid
+        for eid, ending in world.endings.items()
+        if set(ending.requires_beats).issubset(state.unlocked_beats)
+        and (ending.when is None or when_satisfied(world, state, ending.when))
+    ]
+    if not satisfied:
+        return None
+    for eid in satisfied:
+        when = world.endings[eid].when
+        if when is not None and when.village_attention_at_least == "hostile":
+            return eid
+    return satisfied[0]
 
 
 # ───────────────────────── scene lifecycle ─────────────────────────

@@ -32,6 +32,11 @@ class RetryModel(WrapperModel):
 
     def __init__(self, wrapped, *, max_attempts: int = 5, base_delay: float = 0.5):
         super().__init__(wrapped)
+        if max_attempts < 1:
+            # Otherwise the retry loops never execute their body and `request`
+            # falls through to an implicit `return None`, which pydantic-ai then
+            # dereferences as a ModelResponse — an opaque crash far from here.
+            raise ValueError(f"max_attempts must be >= 1, got {max_attempts}")
         self._max_attempts = max_attempts
         self._base_delay = base_delay
 

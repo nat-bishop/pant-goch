@@ -32,9 +32,16 @@ from handler.world import World
 # error costs a few seconds, not a session.
 _RETRYABLE_STATUS = {408, 409, 425, 429, 500, 502, 503, 504}
 _MAX_ATTEMPTS = 6
+# Free-text fallback for transient errors that arrive WITHOUT a structured
+# status_code (raw httpx/network failures). Phrase hints only — bare numbers
+# like "500" were dropped because a non-retryable message that merely contains
+# such a substring (a quota note mentioning "1500", a validation error quoting
+# an HTTP 500 example) would be retried 6× and mask the real failure. Genuine
+# 5xx/429 responses carry status_code and are caught structurally above.
 _TRANSIENT_HINTS = (
-    "overloaded", "temporarily", "unavailable", "timeout", "timed out",
-    "connection", "reset", "502", "503", "500", "504", "429",
+    "overloaded", "temporarily unavailable", "service unavailable",
+    "timeout", "timed out", "connection reset", "connection error",
+    "connection aborted", "server disconnected",
 )
 
 

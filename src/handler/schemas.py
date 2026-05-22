@@ -97,6 +97,27 @@ class StateChangeBundle(_Strict):
     deltas: list[ApproachChange] = Field(default_factory=list, max_length=4)
     commitments: list[UnlockBeat] = Field(default_factory=list, max_length=1)
 
+    @model_validator(mode="after")
+    def _no_duplicate_delta_npcs(self) -> StateChangeBundle:
+        """One quality delta per NPC per turn. trust/guard accrue ±1 a turn by
+        design (engine band width); two deltas for the same NPC in one bundle
+        would let a single turn move standing by ±2 and cross a confession band
+        early. The grammar sampler narrows npc_id but does not forbid repeats,
+        so the structural cap lives here (agents.emit_state_changes dedups the
+        raw model output before constructing the bundle, so this never trips in
+        the live path — it guards every other constructor)."""
+        seen: set[str] = set()
+        for d in self.deltas:
+            npc_id = getattr(d, "npc_id", None)
+            if npc_id is None:
+                continue  # AttentionDelta carries no npc_id
+            if npc_id in seen:
+                raise ValueError(
+                    f"npc_id {npc_id!r} appears in more than one quality delta"
+                )
+            seen.add(npc_id)
+        return self
+
 
 # ───────────────────────── Phase 2b: choice author output ─────────────────────────
 

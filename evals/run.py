@@ -45,7 +45,7 @@ from . import report as run_report
 from .evaluators import invariant_evaluators
 from .metrics import corpus_metrics
 from .retry_model import RetryModel
-from .session import SessionArtifact, run_session
+from .session import SessionArtifact, load_run, run_session
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _ENGINE_MODEL_NAME = "gemma-4-e4b"
@@ -144,7 +144,11 @@ async def main() -> None:
     # Corpus distributional metrics from the dumped artifacts (decoupled from
     # the pydantic-evals report internals), then the diffed run report +
     # summary.json — the iteration loop.
-    artifacts = [SessionArtifact.load(p) for p in sorted(out_dir.glob("*.json"))]
+    # load_run skips the sidecars (summary.json / judges.json) the report and
+    # judge runs drop into the dir — a raw glob would feed those non-artifact
+    # payloads to SessionArtifact.load and crash, e.g. when --out points at an
+    # existing run dir or a prior judge run left judges.json behind.
+    artifacts = load_run(out_dir)
 
     # Corpus-integrity guard: a session that hits an unhandled engine error
     # (e.g. a transient gemma 500 under load) is dropped by pydantic-evals and

@@ -359,6 +359,57 @@ def test_disposition_opens_up_only_at_undefined_location(tmp_path):
         load_world(target)
 
 
+# ───────────────────────── when-graph acyclicity ─────────────────────────
+
+
+def test_when_requires_cycle_rejected(tmp_path):
+    """A cycle in `when.requires_beats` is a hard deadlock — every beat on it
+    waits on another that can never unlock first — so the loader rejects it.
+    `_check_when_refs` only proves the ids exist; this proves acyclicity."""
+    target = _copy_valid(tmp_path)
+    truth_path = target / "truth.yaml"
+    truth = yaml.safe_load(truth_path.read_text(encoding="utf-8"))
+    for beat in truth["beats"]:
+        if beat["id"] == "tom_named_a_vehicle":
+            beat["when"] = {"requires_beats": ["tom_admits_more"]}
+        elif beat["id"] == "tom_admits_more":
+            beat["when"] = {"requires_beats": ["tom_named_a_vehicle"]}
+    _write_yaml(truth_path, truth)
+    with pytest.raises(WorldLoadError, match="requires cycle"):
+        load_world(target)
+
+
+def test_when_requires_self_cycle_rejected(tmp_path):
+    """A beat that requires itself is the degenerate cycle."""
+    target = _copy_valid(tmp_path)
+    truth_path = target / "truth.yaml"
+    truth = yaml.safe_load(truth_path.read_text(encoding="utf-8"))
+    for beat in truth["beats"]:
+        if beat["id"] == "tom_named_a_vehicle":
+            beat["when"] = {"requires_beats": ["tom_named_a_vehicle"]}
+    _write_yaml(truth_path, truth)
+    with pytest.raises(WorldLoadError, match="requires cycle"):
+        load_world(target)
+
+
+# ───────────────────────── decision beats are commitments ─────────────────────────
+
+
+def test_decided_beat_without_commitment_rejected(tmp_path):
+    """A `decided_*` beat must set commitment: true — otherwise the engine
+    auto-derives the decision (and its ending) without a player choice,
+    inverting the player-driven-endings invariant."""
+    target = _copy_valid(tmp_path)
+    truth_path = target / "truth.yaml"
+    truth = yaml.safe_load(truth_path.read_text(encoding="utf-8"))
+    for beat in truth["beats"]:
+        if beat["id"] == "decided_to_file":
+            beat["commitment"] = False
+    _write_yaml(truth_path, truth)
+    with pytest.raises(WorldLoadError, match="commitment: true"):
+        load_world(target)
+
+
 # ───────────────────────── requires_location refs (observation milestones) ─────────────────────────
 
 
