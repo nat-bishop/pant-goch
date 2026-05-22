@@ -74,8 +74,8 @@ Read a signal that's off, name the layer, turn the matching knob, re-run its gat
 - **Structural fix > prompt patch.** A collapse the prompt can't hold is a schema
   smell — change the shape.
 - **Freeze every real failure as a case.** The bug you just fixed is the
-  regression test that keeps it fixed (`evals/phase1_deltas.py` was seeded from
-  the live attention-spam collapse: 18% → 99%).
+  regression test that keeps it fixed (the deltas suite in `evals/isolation/`
+  was seeded from the live attention-spam collapse: 18% → 99%).
 
 ---
 

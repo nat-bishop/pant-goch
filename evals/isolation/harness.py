@@ -4,7 +4,7 @@ A `Suite` is one agent / property: a list of `IsoCase` frozen contexts, a `task`
 that builds each case's `State` and calls the agent once, and the evaluators that
 score the emitted output. `run_suite` wraps the cases in a `Dataset` and evaluates
 with `repeat=k` — so the K-sample loop, concurrency, and per-case aggregation come
-from the framework, not a hand-rolled runner (the original `phase1_deltas.py` script
+from the framework, not a hand-rolled runner (the original standalone delta script
 re-implemented all three).
 
 Scoring follows the EVALS.md doctrine:

@@ -187,7 +187,7 @@ def _build_state_change_bundle_type(world: World, state: State) -> type[BaseMode
     did (even on the scene-opening turn). Splitting attention into its own
     default-`"0"` scalar removes that degenerate union choice: quality deltas
     are their own list, and a `"+1"` attention bump is a deliberate, separately
-    typed act. See `evals/phase1_deltas.py` for the regression suite this fixed.
+    typed act. See the deltas suite in `evals/isolation/` for the regression that fixed this.
 
     Names (not ids) on the commitment wire — `emit_state_changes` translates
     `beat_name → beat_id` after decode, same as before.

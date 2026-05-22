@@ -17,8 +17,8 @@ What we assert vs. measure (deliberate — do not "judge on opinion"):
   * NOT ASSERTED (reported via the suite's output distribution only): exact magnitude
     of a marginal nudge; guard+1 vs. BREACH on a hostile move.
 
-Migrated verbatim from the original standalone `evals/phase1_deltas.py` script; the
-sampling / concurrency / reporting it hand-rolled now come from the shared harness.
+Migrated from the original standalone delta script; the sampling / concurrency /
+reporting it hand-rolled now come from the shared harness.
 """
 from __future__ import annotations
 
