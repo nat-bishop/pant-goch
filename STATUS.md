@@ -155,7 +155,17 @@ aggressive is 4/4 → cold/`None`. But guard2 was noisier (separation **0.208**,
 (distracted ×2, one diligent, one committed — eff 0/4/5), which depresses the clean
 aggressive-vs-rest separation. Both runs beat baseline (0.095 / 0.181); the aggressive
 cold-fork is the robust, replicated signal, while the exact magnitude is noisy under
-the degraded engine. Re-run on a healthy engine for a clean magnitude. **Next step: re-run
+the degraded engine. Re-run on a healthy engine for a clean magnitude.
+
+**Third run — default `make playtest`** (4 sessions, parallel-16, cap-60):
+`persona_outcome_separation` **0.667**, `ending_entropy_normalized` **0.387** (both the
+highest yet). aggressive → `None` (eff 0, cold) and diligent → `None` (eff 1, didn't
+warm) vs committed/distracted → `tom_takes` (eff 6–7). **Across all three GUARD_MAX=8
+runs the aggressive interrogator is 5/5 → cold/`None`**, and every run's separation
+(0.21–0.67) and entropy (0.31–0.39) beats baseline — the fork is replicated; only the
+magnitude varies (noisy under the engine stall). Endings reached are still
+`tom_takes` vs no-ending fizzle — the other endings need the attention/commitment
+levers (proposal 2). **Next step: re-run
 `make playtest` on a healthy engine** to confirm replication and that the warm personas
 aren't over-suppressed (if they are, try `GUARD_MAX=5–6`).
 
