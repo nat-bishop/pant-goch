@@ -129,6 +129,15 @@ class Settings(BaseSettings):
     playtest_parallel: int = Field(
         default=16, validation_alias="SMALLVILLE_PLAYTEST_PARALLEL"
     )
+    # Runs per persona = repeat depth over the persona set. The harness is
+    # breadth-first: each repeat adds one run to *every* persona, so coverage of
+    # all personas comes first and within-persona flakiness sampling deepens with
+    # depth. Default 1 (one run per persona) is the fast inner loop; raise for a
+    # bigger corpus / more flakiness signal. Override with --runs-per-persona or
+    # SMALLVILLE_PLAYTEST_RUNS.
+    playtest_runs_per_persona: int = Field(
+        default=1, validation_alias="SMALLVILLE_PLAYTEST_RUNS"
+    )
     # API key for the Gemini player. Sourced from the project .env (which
     # `uv run` does NOT export to os.environ), so the harness reads it here
     # and passes it explicitly to GoogleProvider rather than relying on the

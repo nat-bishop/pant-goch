@@ -72,7 +72,10 @@ def load_personas(subset: list[str] | None = None) -> dict[str, str]:
 def _parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(description="HANDLER playtest harness")
     ap.add_argument("--world", type=Path, default=_REPO_ROOT / "world")
-    ap.add_argument("--runs-per-persona", type=int, default=4)
+    ap.add_argument("--runs-per-persona", type=int, default=None,
+                    help="repeat depth over the persona set; each repeat adds one "
+                         "run to every persona (default: settings.playtest_runs_per_persona, "
+                         "1; or SMALLVILLE_PLAYTEST_RUNS)")
     ap.add_argument("--parallel", type=int, default=None,
                     help="max concurrent sessions = engine KV slots "
                          "(default: settings.playtest_parallel, 16 for inferno); "
@@ -103,6 +106,7 @@ async def main() -> None:
     # short sessions drop out. Raise runs_per_persona for a bigger corpus; raise
     # --parallel / SMALLVILLE_PLAYTEST_PARALLEL only if the engine has more slots.
     parallel = args.parallel or settings.playtest_parallel
+    runs_per_persona = args.runs_per_persona or settings.playtest_runs_per_persona
     out_dir = args.out or (_REPO_ROOT / "evals" / "artifacts" / time.strftime("%Y%m%d-%H%M%S"))
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -115,7 +119,7 @@ async def main() -> None:
         model, world, decision_max_tokens=settings.decision_agent_max_tokens
     )
 
-    print(f"playtest: {len(personas)} personas x {args.runs_per_persona} runs "
+    print(f"playtest: {len(personas)} personas x {runs_per_persona} runs "
           f"@ parallel={parallel}; engine={api_url}; player={settings.playtest_player_model}")
     print(f"artifacts -> {out_dir}")
 
@@ -137,7 +141,7 @@ async def main() -> None:
         evaluators=invariant_evaluators(world),
     )
     invariant_report = await dataset.evaluate(
-        task, max_concurrency=parallel, repeat=args.runs_per_persona,
+        task, max_concurrency=parallel, repeat=runs_per_persona,
     )
     invariant_report.print(include_input=False, include_output=False)
 
@@ -157,7 +161,7 @@ async def main() -> None:
     # numbers aren't mistaken for signal (one run silently shrank to 6/16 and
     # 2/16 this way). Below the floor we still write the report (for forensics)
     # but exit non-zero so `make playtest` surfaces the failure.
-    expected = len(personas) * args.runs_per_persona
+    expected = len(personas) * runs_per_persona
     survivors = len(artifacts)
     if survivors < expected:
         print(f"\n⚠️  {survivors}/{expected} sessions survived — "
