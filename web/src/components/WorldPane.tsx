@@ -1,12 +1,12 @@
 // WorldPane = the LEFT pane: backdrop photo + tabs + slate + overlays.
-// Switches between three modes (location / map / notes). During a walk,
+// Switches between three modes (location / map / dossier). During a walk,
 // MAP is forced active and tabs are disabled.
 
 import { useEffect, useMemo } from "react";
 import { useStore } from "../store";
+import { DossierView } from "./DossierView";
 import { ImageSlots } from "./ImageSlots";
 import { MapView } from "./MapView";
-import { NotesView } from "./NotesView";
 
 export function WorldPane() {
   const phase = useStore((s) => s.phase);
@@ -39,7 +39,7 @@ export function WorldPane() {
   // During walks, force map.
   const effectiveMode = walking ? "map" : worldMode;
   const showMap = effectiveMode === "map";
-  const showNotes = effectiveMode === "notes";
+  const showDossier = effectiveMode === "dossier";
   const showLocation = effectiveMode === "location";
 
   // Backdrop URL: while idle (frontispiece), the authored cover.
@@ -70,7 +70,7 @@ export function WorldPane() {
 
       {phase !== "idle" && (
         <div className="world-tabs" role="tablist" aria-label="left pane mode">
-          {(["location", "map", "notes"] as const).map((m) => (
+          {(["location", "map", "dossier"] as const).map((m) => (
             <button
               key={m}
               role="tab"
@@ -106,9 +106,9 @@ export function WorldPane() {
         )}
       </div>
 
-      <div className={"world-overlay world-overlay--notes" + (showNotes && phase !== "idle" ? " in" : "")}>
-        <div className="world-overlay-eyebrow">case file · m. pritchard</div>
-        <NotesView />
+      <div className={"world-overlay world-overlay--dossier" + (showDossier && phase !== "idle" ? " in" : "")}>
+        <div className="world-overlay-eyebrow">the dossier · m. pritchard</div>
+        <DossierView />
       </div>
 
       {showLocation && phase !== "idle" && locationName && (

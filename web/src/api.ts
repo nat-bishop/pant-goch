@@ -127,6 +127,12 @@ export type SseEvent =
   | { event: "location_change"; from: string; to: string }
   | { event: "npc_moved"; npc_id: string; from: string; to: string }
   | {
+      event: "npc_standing";
+      npc_id: string;
+      band: string;
+      impression: string;
+    }
+  | {
       event: "log_entry_word";
       scene_id: number;
       idx: number;

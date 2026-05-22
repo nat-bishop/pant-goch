@@ -494,6 +494,55 @@ async def test_run_turn_caption_failure_falls_back_to_fixed_box(monkeypatch):
     assert result.next == FREE_TEXT_FALLBACK
 
 
+# ───────────────────────── dossier standings (npc_standing) ─────────────────────────
+
+
+async def test_run_turn_emits_npc_standing_on_band_change(monkeypatch, bundle_and_state):
+    """A turn that moves a tracked, present NPC across a confession band emits
+    exactly one npc_standing for them, carrying the new band. Tom (steady, width
+    1) starts cold; a +1 trust nudge reaches `thawing`."""
+    bundle, runtime, state = bundle_and_state  # entered at the_slaughtered_lamb (tom)
+    assert state.trust["tom"] == 0
+    _patch_phase1(monkeypatch, StateChangeBundle(
+        deltas=[QualityDelta(npc_id="tom", trust="+1")],
+    ))
+    _patch_prose_writer(monkeypatch, ["Tom sets his glass down."])
+    _patch_choice_author(monkeypatch, [
+        ChoiceBundle(next=Continue(options=[Option(text="a"), Option(text="b")])),
+    ])
+
+    events: list[dict] = []
+
+    async def collect(ev: dict) -> None:
+        events.append(ev)
+
+    await run_turn(bundle, runtime, state, emit_event=collect)
+
+    standings = [e for e in events if e["event"] == "npc_standing"]
+    assert len(standings) == 1
+    assert standings[0]["npc_id"] == "tom"
+    assert standings[0]["band"] == "thawing"
+
+
+async def test_run_turn_no_npc_standing_when_band_unchanged(monkeypatch, bundle_and_state):
+    """A turn that doesn't move any tracked NPC's band emits no npc_standing —
+    the board updates on transitions, not every turn."""
+    bundle, runtime, state = bundle_and_state
+    _patch_phase1(monkeypatch)  # empty bundle: no deltas
+    _patch_prose_writer(monkeypatch, ["Tom says nothing."])
+    _patch_choice_author(monkeypatch, [
+        ChoiceBundle(next=Continue(options=[Option(text="a"), Option(text="b")])),
+    ])
+
+    events: list[dict] = []
+
+    async def collect(ev: dict) -> None:
+        events.append(ev)
+
+    await run_turn(bundle, runtime, state, emit_event=collect)
+    assert [e for e in events if e["event"] == "npc_standing"] == []
+
+
 # ───────────────────────── play_scene ─────────────────────────
 
 

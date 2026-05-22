@@ -20,7 +20,7 @@ export interface FreeTextRequest {
   npc_id: string | null;
 }
 
-export type WorldMode = "location" | "map" | "notes";
+export type WorldMode = "location" | "map" | "dossier";
 
 export interface TurnPayload {
   /** Prose words appended as `prose_word` events arrive. */
@@ -88,6 +88,11 @@ interface Store {
   /** Live NPC-location map. Seeded from `world.npcs` defaults, mutated
    * by `npc_moved` events. */
   npcLocations: Record<string, string>;
+  /** Per-NPC confession band + the journalist's read, for the dossier
+   * "People" board. Keyed by npc_id; a key's presence means the player has
+   * met that (tracked) NPC. Set by `npc_standing` events — emitted at scene
+   * entry and only when a band changes, never per turn. */
+  npcStandings: Record<string, { band: string; impression: string }>;
 
   /** Left-pane mode (location backdrop / map / notes). Forced to "map"
    * during walks. */
@@ -135,6 +140,7 @@ export const useStore = create<Store>((set) => ({
 
   world: null,
   npcLocations: {},
+  npcStandings: {},
   worldMode: "location",
   walking: null,
   walkReady: false,
@@ -168,6 +174,7 @@ export const useStore = create<Store>((set) => ({
         game_over_ending: null,
         error: null,
         npcLocations,
+        npcStandings: {},
         worldMode: "location",
         walking: null,
         walkReady: false,
@@ -344,6 +351,15 @@ export const useStore = create<Store>((set) => ({
         case "npc_moved": {
           return {
             npcLocations: { ...s.npcLocations, [event.npc_id]: event.to },
+          };
+        }
+
+        case "npc_standing": {
+          return {
+            npcStandings: {
+              ...s.npcStandings,
+              [event.npc_id]: { band: event.band, impression: event.impression },
+            },
           };
         }
 

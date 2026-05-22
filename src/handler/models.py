@@ -54,12 +54,18 @@ class Disposition(_Frozen):
     - `voice_by_band` is the EXISTING `voice_sample` registers, keyed by band
       (cold/thawing/open/at_peace + the guard-high `closed`). The engine renders
       the current band's lines into the prose writer's ## Present card.
+    - `impression_by_band` is the journalist's own read on this person, keyed by
+      band — surfaced on the dossier "People" card (frontend), one short
+      third-person line per band. Diegetic, never a number; parallel to
+      `voice_by_band` but in the reporter's voice. Resolved server-side into the
+      `npc_standing` SSE event; an unauthored band shows no impression line.
     """
 
     warms: Literal["slow", "steady", "fast"] = "steady"
     spooks: Literal["slow", "steady", "fast"] = "steady"
     breach: list[str] = Field(default_factory=list)
     voice_by_band: dict[str, list[str]] = Field(default_factory=dict)
+    impression_by_band: dict[str, str] = Field(default_factory=dict)
     # Locations where this NPC will WARM (positive trust accrues) — the
     # mechanical home of "Dylan only opens up somewhere private". Empty = no
     # restriction. Guard/BREACH still apply anywhere (he can shut down at the

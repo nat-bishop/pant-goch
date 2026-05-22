@@ -58,6 +58,12 @@
         - "I'll go in to Knighton Monday. Say what I should have said."
       closed:
         - "Be off home now, I think."
+    impression_by_band:
+      cold: "Wary. Civil enough, but he keeps the bar between us."
+      thawing: "Softening. He let me sit, talked a little about Megan."
+      open: "He told me what he saw on the road — like he'd waited years to."
+      at_peace: "Lighter, somehow. Says he'll go in to Knighton himself, Monday."
+      closed: "I pushed too hard. He's asked me to be off home, and meant it."
 
 - id: maud
   name: Maud Pryce
@@ -141,6 +147,12 @@
         - "She liked the wood. I never asked her why. I should have."
       closed:
         - "I think you've had what you came for. Mind how you go."
+    impression_by_band:
+      cold: "Formal, hospitable. The kettle on, the feeling kept back."
+      thawing: "Warmer on the second visit. Spoke of the not-knowing."
+      open: "He wants it written down, whatever it is. Trusts me with that."
+      at_peace: "Calm now. He thanked me, asked if I'd stay for more tea."
+      closed: "I made it a story instead of his daughter. He's done with me."
 
 - id: wendy
   name: Wendy Pritchard
@@ -217,6 +229,11 @@
         - "Pour me one. Don't ask. Just pour me one."
       closed:
         - "Off my land, please. While the asking of it is still polite."
+    impression_by_band:
+      cold: "Watchful, courteous, the dogs at her heel. The gate stays shut."
+      thawing: "She hasn't barred the gate. That is as far as she bends."
+      open: "Something gave way in her. She did not deny it."
+      closed: "Off her land, politely. The door will not open again."
 
 - id: dylan
   name: Dylan Vaughn
@@ -274,6 +291,11 @@
         - "I worked it out. I never asked her. I never had to."
       closed:
         - "Not here. Please. Not here."
+    impression_by_band:
+      cold: "Won't speak — not here, not with his mother in earshot."
+      thawing: "Away from the farm he'll talk. Circling something."
+      open: "He's said it now. Seven years, and he told me first."
+      closed: "I made it a transaction. He's shut, and I did it."
 
 - id: gareth
   name: Father Gareth Hughes
@@ -351,6 +373,11 @@
         - "It's all in here. Everything I couldn't use. You did not get it from me."
       closed:
         - "I'm afraid I can't see you again. Don't ring my desk, please."
+    impression_by_band:
+      cold: "Professional, guarded. Nothing on the record, nothing off it."
+      thawing: "Off the record now. She knew; she just couldn't prove it."
+      open: "She gave me the notes. Everything she couldn't use."
+      closed: "I was indiscreet. She won't see me again — not even the desk."
 
 - id: owain
   name: Owain Pugh

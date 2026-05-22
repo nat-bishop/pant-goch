@@ -474,6 +474,178 @@ a { color: inherit; text-decoration: none; }
   font-size: 15px;
 }
 
+/* ── dossier — two sections (the record / the people) ──── */
+
+.dossier {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+}
+.dossier-subnav {
+  display: flex;
+  justify-content: center;
+  gap: 4px;
+  margin-bottom: 16px;
+}
+.dossier-subtab {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  color: var(--on-photo-faint);
+  padding: 6px 14px 7px;
+  border-bottom: 1px solid transparent;
+  background: transparent;
+  cursor: pointer;
+  transition: color 180ms, border-color 180ms;
+}
+.dossier-subtab:hover { color: var(--on-photo); }
+.dossier-subtab.active {
+  color: var(--on-photo);
+  border-bottom-color: var(--red-soft);
+}
+.dossier-subtab:focus-visible {
+  outline: 1px solid var(--red-soft);
+  outline-offset: 2px;
+}
+.dossier-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── the people — cast cards (journalist's read on the met) ── */
+
+.cast-list {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 8px 6vw;
+  max-width: 640px;
+  margin: 0 auto;
+  width: 100%;
+  scrollbar-width: thin;
+  scrollbar-color: var(--on-photo-faint) transparent;
+}
+.cast-list::-webkit-scrollbar { width: 6px; }
+.cast-list::-webkit-scrollbar-thumb { background: var(--on-photo-faint); border-radius: 3px; }
+
+.cast-card {
+  display: flex;
+  gap: 15px;
+  align-items: flex-start;
+  padding: 15px 17px 14px;
+  background: rgba(244, 234, 208, 0.05);
+  border: 1px solid rgba(237, 226, 196, 0.14);
+  animation: cast-in 420ms ease both;
+}
+/* breached — the relationship is over: desaturated, mournful, never red. */
+.cast-card[data-band="closed"] { filter: saturate(0.32) brightness(0.9); }
+
+.cast-card:nth-child(1) { animation-delay: 0ms; }
+.cast-card:nth-child(2) { animation-delay: 70ms; }
+.cast-card:nth-child(3) { animation-delay: 140ms; }
+.cast-card:nth-child(4) { animation-delay: 210ms; }
+.cast-card:nth-child(5) { animation-delay: 280ms; }
+.cast-card:nth-child(n + 6) { animation-delay: 350ms; }
+
+/* "no photograph on file" press slot — a monogram in a vignette whose warmth
+   tracks the band (cool stranger → warm sepia as they open up). */
+.cast-slot {
+  flex: 0 0 auto;
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--mono);
+  font-size: 13px;
+  letter-spacing: 0.06em;
+  border: 1px solid rgba(237, 226, 196, 0.18);
+  color: var(--on-photo-dim);
+  background: rgba(40, 48, 56, 0.22);
+  transition: color 400ms, border-color 400ms, background 400ms;
+}
+.cast-slot[data-band="cold"] {
+  color: rgba(237, 226, 196, 0.5);
+  border-color: rgba(237, 226, 196, 0.16);
+  background: rgba(44, 52, 60, 0.24);
+}
+.cast-slot[data-band="thawing"] {
+  color: rgba(237, 226, 196, 0.72);
+  border-color: rgba(237, 226, 196, 0.3);
+  background: rgba(120, 88, 52, 0.2);
+}
+.cast-slot[data-band="open"] {
+  color: var(--on-photo);
+  border-color: rgba(176, 67, 42, 0.5);
+  background: rgba(138, 46, 28, 0.2);
+}
+.cast-slot[data-band="at_peace"] {
+  color: var(--on-photo);
+  border-color: var(--red-soft);
+  background: rgba(176, 67, 42, 0.26);
+}
+.cast-slot[data-band="closed"] {
+  color: rgba(237, 226, 196, 0.4);
+  border-color: rgba(237, 226, 196, 0.12);
+  background: rgba(20, 16, 12, 0.4);
+}
+
+.cast-body { flex: 1 1 auto; min-width: 0; }
+.cast-name {
+  font-family: var(--display);
+  font-style: italic;
+  font-size: 19px;
+  font-weight: 400;
+  color: var(--on-photo);
+  margin: 0 0 6px;
+  padding-bottom: 5px;
+  border-bottom: 1px solid transparent; /* hairline warms with the band */
+}
+.cast-card[data-band="cold"] .cast-name { border-bottom-color: rgba(237, 226, 196, 0.12); }
+.cast-card[data-band="thawing"] .cast-name { border-bottom-color: rgba(237, 226, 196, 0.26); }
+.cast-card[data-band="open"] .cast-name { border-bottom-color: rgba(176, 67, 42, 0.55); }
+.cast-card[data-band="at_peace"] .cast-name { border-bottom-color: var(--red-soft); }
+.cast-card[data-band="closed"] .cast-name { border-bottom-color: rgba(237, 226, 196, 0.1); }
+
+.cast-meta {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+  color: var(--on-photo-faint);
+  margin-bottom: 8px;
+}
+.cast-impression {
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 14.5px;
+  line-height: 1.55;
+  color: var(--on-photo-dim);
+  margin: 0;
+}
+.cast-closed {
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  color: var(--on-photo-faint);
+  margin-top: 9px;
+}
+
+@keyframes cast-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: none; }
+}
+
 /* ── RIGHT PANE — the prose panel ─────────────────────── */
 
 .panel {

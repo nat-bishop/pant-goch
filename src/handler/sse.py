@@ -246,6 +246,22 @@ def npc_moved_event(npc_id: str, from_id: str, to_id: str) -> dict:
     }
 
 
+def npc_standing_event(npc_id: str, band: str, impression: str) -> dict:
+    """The journalist's read on a dispositioned NPC, for the dossier "People"
+    card. Emitted once per present dispositioned NPC at scene entry (seeding the
+    board / first meetings) and again only when an NPC's confession band changes
+    within a scene — never per turn, so the board reads like *noticing* a thaw,
+    not a gauge. `band` is the raw engine band (`engine.band_name`); `impression`
+    is the authored `disposition.impression_by_band[band]` line, resolved
+    server-side ("" when that band is unauthored). No numbers cross the wire."""
+    return {
+        "event": "npc_standing",
+        "npc_id": npc_id,
+        "band": band,
+        "impression": impression,
+    }
+
+
 def game_over_event(ending_id: str) -> dict:
     return {"event": "game_over", "ending_id": ending_id}
 

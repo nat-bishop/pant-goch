@@ -49,6 +49,7 @@ from .engine import (
     FREE_TEXT_FALLBACK,
     apply_state_changes,
     append_turn_record,
+    band_name,
     enter_scene,
     free_text_cadence_ok,
     present_npc_ids,
@@ -76,6 +77,7 @@ from .sse import (
     game_over_event,
     location_change_event,
     npc_moved_event,
+    npc_standing_event,
     options_event,
     paced_word_emitter,
     scene_exit_event,
@@ -89,6 +91,38 @@ from .world import World
 
 
 EmitEvent = Callable[[dict], Awaitable[None]]
+
+
+# ── dossier "People" standings ──
+# Per-NPC confession band, surfaced on the frontend dossier as the journalist's
+# read on a person (see sse.npc_standing_event). Only NPCs with an authored
+# `disposition` are tracked — auxiliary NPCs stay pure prose and off the board.
+# Emitted at scene entry (seed) and on band CHANGE within a scene (not per turn).
+
+
+def _dispositioned_present(world: World, state: State) -> list[str]:
+    """Present NPC ids that carry a `disposition` — the only ones with a tracked
+    relationship, hence the only ones on the dossier board."""
+    return [
+        nid for nid in present_npc_ids(world, state)
+        if world.npcs[nid].disposition is not None
+    ]
+
+
+def _impression_for(world: World, state: State, npc_id: str, band: str) -> str:
+    """The authored journalist's impression for `npc_id` at `band`. "" when the
+    band is unauthored (the card then shows no impression line)."""
+    disp = world.npcs[npc_id].disposition
+    return disp.impression_by_band.get(band, "") if disp else ""
+
+
+async def _emit_standing(
+    world: World, state: State, npc_id: str, emit_event: EmitEvent
+) -> None:
+    band = band_name(world, state, npc_id)
+    await emit_event(
+        npc_standing_event(npc_id, band, _impression_for(world, state, npc_id, band))
+    )
 
 
 # ── player action: the single input a scene awaits ──
@@ -368,6 +402,15 @@ async def run_turn(
     speed. Both default to None for CLI / tests / evals, which drive the
     turn without SSE.
     """
+    # Confession bands for present, tracked NPCs BEFORE this turn moves state —
+    # so we can emit a dossier standing only for those whose band actually
+    # changes (a thaw, a breach), never every turn. Present set is stable across
+    # a scene, so this snapshot pairs with the post-apply read below.
+    present_tracked = _dispositioned_present(bundle.world, state)
+    bands_before = {
+        nid: band_name(bundle.world, state, nid) for nid in present_tracked
+    }
+
     # ── Phase 1 ────────────────────────────────────────────────────────────
     try:
         applied = await emit_state_changes(bundle, state)
@@ -402,6 +445,10 @@ async def run_turn(
             await emit_event(state_change_event(
                 kind="unlock_beat", payload={"beat_id": beat_id}
             ))
+        # Dossier standings: only NPCs whose band crossed this turn (thaw/breach).
+        for nid in present_tracked:
+            if band_name(bundle.world, state, nid) != bands_before[nid]:
+                await _emit_standing(bundle.world, state, nid, emit_event)
 
     # ── Phase 2a + 2b/2c: stream prose live, author over the reveal tail ────
     prose, choices_res, gate_res = await _stream_pace_and_author(
@@ -553,6 +600,10 @@ async def play_scene(
         if emit_event is not None:
             loc = bundle.world.locations[state.player_location]
             await emit_event(scene_start_event(state.scene_id, loc.id, loc.name))
+            # Seed the dossier with the journalist's read on whoever is present
+            # and tracked — covers first meetings and re-syncs on every entry.
+            for nid in _dispositioned_present(bundle.world, state):
+                await _emit_standing(bundle.world, state, nid, emit_event)
 
     while True:
         # The pick_option / pick_free_text wait below stays OUT of the
