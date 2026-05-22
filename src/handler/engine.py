@@ -126,8 +126,10 @@ def apply_state_changes(
 # Raw clamps. trust/guard are bounded so a runaway LLM emission saturates
 # harmlessly instead of running off the scale (the boolean DAG had no such
 # floor — a mis-fired beat was permanent). TRUST_MAX must clear 3×the widest
-# band so the terminal `at_peace` band is reachable (Tom → police).
-TRUST_MAX = 8
+# band so the terminal `at_peace` band is reachable (Tom → police): widest
+# slow band is 4, so the `at_peace` threshold is 12 and TRUST_MAX leaves a
+# little headroom above it.
+TRUST_MAX = 14
 GUARD_MAX = 3
 
 # Confession bands, by depth index. Derived from effective warmth
@@ -140,10 +142,15 @@ EVIDENCE_BAND = 2  # BANDS.index("open") — depth at which evidence milestones 
 # Default raw-points-per-band when an NPC has no authored `disposition`. The
 # per-NPC `warms` rate (slow/steady/fast) overrides this in `confession_depth`.
 # Tuned (with TRUST_MAX) so a good single scene of ~3-4 warm turns reaches
-# `open` (evidence) for a steady NPC, and a slow NPC earns it over a little
-# longer — the band-width knob replaces the old min_scenes_with_npc gate.
+# `open` (evidence) for a steady NPC, while a slow NPC's deepest band is a
+# multi-visit relationship: at width 4 the `at_peace` terminal needs effective
+# warmth 12 — far more than one pub sitting. This wide slow band is the
+# divergence lever: it opens a gap between `open` (evidence in hand, the player
+# can now file / confront / tell Iwan) and `at_peace` (Tom resolves it himself),
+# so a single warm scene no longer auto-collapses every persona into
+# `tom_takes_responsibility` before the player gets to choose.
 DEFAULT_BAND_WIDTH = 1
-_BAND_WIDTH_BY_WARMS = {"slow": 2, "steady": 1, "fast": 1}
+_BAND_WIDTH_BY_WARMS = {"slow": 4, "steady": 1, "fast": 1}
 
 # Village attention bands (the global heat). Rises ONLY on conspicuous /
 # aggressive acts, never on gentle repetition; ratchets up. Ejection (the

@@ -115,10 +115,10 @@ def test_confession_depth_slow_width():
     tom = _npc("tom", "loc_a", disposition=Disposition(warms="slow"))
     world = _make_world(npcs=[tom])
     s = _state(world)
-    s.trust["tom"] = 2  # slow width 2 → depth 1
+    s.trust["tom"] = 4  # slow width 4 → depth 1
     assert confession_depth(world, s, "tom") == 1
     assert band_name(world, s, "tom") == "thawing"
-    s.trust["tom"] = 4  # depth 2 → open
+    s.trust["tom"] = 8  # depth 2 → open
     assert confession_depth(world, s, "tom") == 2
 
 
