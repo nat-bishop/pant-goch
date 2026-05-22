@@ -32,6 +32,14 @@ from handler.world import World
 # error costs a few seconds, not a session.
 _RETRYABLE_STATUS = {408, 409, 425, 429, 500, 502, 503, 504}
 _MAX_ATTEMPTS = 6
+# Hard wall-clock cap on a single player call. The Gemini endpoint occasionally
+# does not return a 5xx but simply HANGS (connection open, no body) — which the
+# status/hint retry below never catches, so one stuck call blocks the session and,
+# because run.py awaits every session in one gather, the WHOLE run (and its
+# summary.json) hangs behind it. A normal call is ~1–3s, so a 120s ceiling only
+# trips on a true stall; the resulting TimeoutError is treated as transient and
+# retried like any other blip. (Harness resilience only — not a scoring change.)
+_RUN_TIMEOUT_S = 120.0
 # Free-text fallback for transient errors that arrive WITHOUT a structured
 # status_code (raw httpx/network failures). Phrase hints only — bare numbers
 # like "500" were dropped because a non-retryable message that merely contains
@@ -141,15 +149,17 @@ class GeminiPlayer:
         delay = 1.0
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             try:
-                result = await self.agent.run(
-                    prompt, message_history=self.history, **kwargs
+                result = await asyncio.wait_for(
+                    self.agent.run(prompt, message_history=self.history, **kwargs),
+                    timeout=_RUN_TIMEOUT_S,
                 )
                 self.history = result.all_messages()
                 return result
             except Exception as e:  # noqa: BLE001 — narrow to transient below
                 status = getattr(e, "status_code", None)
                 transient = (
-                    (isinstance(e, ModelHTTPError) and status in _RETRYABLE_STATUS)
+                    isinstance(e, (asyncio.TimeoutError, TimeoutError))
+                    or (isinstance(e, ModelHTTPError) and status in _RETRYABLE_STATUS)
                     or (status in _RETRYABLE_STATUS)
                     or any(h in str(e).lower() for h in _TRANSIENT_HINTS)
                 )
