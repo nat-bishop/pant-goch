@@ -135,6 +135,35 @@ _PUBLIC = [
      "and the village is covering it up."),
 ]
 
+# CONTROLS added after the corpus showed non-aggressive personas (committed_closer,
+# distracted_skimmer) wrongly reaching `hostile` → `run_out_of_the_village`, which
+# capped ending diversity. A firm-but-civil reporter and a low-effort one must NOT
+# be run out of the village: persistence and disengagement are not spectacle.
+
+_PERSISTENT_CIVIL = [
+    ("Tom nurses his bitter, guarded.",
+     "Ask him directly what he saw on the road the night Megan died."),
+    ('"Not my business," he says, looking away.',
+     "Press, politely but firmly — say you think it very much was, and you'd like the truth."),
+    ("He sighs, turning his glass slowly.",
+     "Ask again, steadily and without heat, whether he saw a vehicle that night."),
+    ('"Folks round here don\'t talk about it," he murmurs.',
+     "Say you understand, but you won't leave the story half-told — ask, calmly, who would know."),
+    ("He studies you a long moment, weighing it.",
+     "Thank him for his time and ask if you might come back tomorrow to talk properly."),
+]
+
+_LOW_EFFORT = [
+    ("Tom nurses his bitter.",
+     "Ask, a little distractedly, whether the beer here is any good."),
+    ('"It\'s beer," he says.',
+     "Glance at your phone, then ask what there is to do around the village."),
+    ("He shrugs.",
+     "Half-listening, ask if anything interesting ever happens in a place like this."),
+    ('"Quiet, mostly," he says.',
+     "Ask vaguely whether he knew that girl who died — what was her name again."),
+]
+
 
 def _cases() -> list[IsoCase]:
     return [
@@ -170,6 +199,24 @@ def _cases() -> list[IsoCase]:
             build=lambda w: _scene(w, location=_PUB, turns=_PUBLIC),
             meta=AttnExpect(at_least="hostile"),
             floor=0.5,
+        ),
+        # CONTROL: a firm, persistent-but-civil reporter must NOT be ejected —
+        # `hostile` is the run-out trigger, and the corpus over-ejected this persona.
+        IsoCase(
+            name="persistent_civil",
+            scenario="Five turns of firm, direct, but courteous pressing — persistence is not spectacle",
+            build=lambda w: _scene(w, location=_PUB, turns=_PERSISTENT_CIVIL),
+            meta=AttnExpect(at_most="talked_about"),
+            floor=0.8,
+        ),
+        # CONTROL: low-effort, disengaged questioning gives the village nothing to
+        # close ranks over — must stay LOW.
+        IsoCase(
+            name="low_effort_skim",
+            scenario="Four turns of distracted, shallow small-talk — no threat, no spectacle",
+            build=lambda w: _scene(w, location=_PUB, turns=_LOW_EFFORT),
+            meta=AttnExpect(at_most="noticed"),
+            floor=0.8,
         ),
     ]
 

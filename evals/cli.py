@@ -132,5 +132,18 @@ def judge(
     ))
 
 
+@app.command()
+def static(
+    out: Optional[Path] = typer.Option(None, help="write findings to <dir>/static.json"),
+    gate: bool = typer.Option(False, help="exit non-zero if any location is unreachable from start"),
+) -> None:
+    """Static topology lint — no engine, no LLM. BFS reachability, cut-vertex
+    chokepoints (what each gates), and per-beat reach distance over the authored
+    map. Catches the 'content gated behind a chokepoint' class at authoring time."""
+    from . import static as static_lane
+
+    static_lane.main(out=out, gate=gate)
+
+
 if __name__ == "__main__":
     app()

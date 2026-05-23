@@ -39,6 +39,33 @@ def distinct_locations(art: SessionArtifact) -> set[str]:
     return locs
 
 
+def traversed_edges(art: SessionArtifact) -> set[frozenset[str]]:
+    """Every map adjacency edge this session actually walked, as undirected
+    pairs (read from the transcript's `walk` from/to). The edge analogue of
+    `distinct_locations`: node coverage says *where* the player went, edge
+    coverage says *which connections* carried them — so a bypass edge that is
+    authored but never used shows up here, where node coverage can't see it."""
+    edges: set[frozenset[str]] = set()
+    for e in art.transcript:
+        if e.get("kind") == "walk" and e.get("from") and e.get("to"):
+            edges.add(frozenset((e["from"], e["to"])))
+    return edges
+
+
+def _all_edges(world: World) -> set[frozenset[str]]:
+    """Undirected adjacency edges of the map (symmetric by the §2.6 invariant,
+    so each unordered pair is counted once)."""
+    return {
+        frozenset((lid, adj))
+        for lid, loc in world.locations.items()
+        for adj in loc.adjacent_to
+    }
+
+
+def _fmt_edge(edge: frozenset[str]) -> str:
+    return " — ".join(sorted(edge))
+
+
 def _play_turns(art: SessionArtifact) -> list[dict]:
     """The turn / free_text entries (player-facing moments), in order. Walks and
     scene-close lines are excluded — they aren't turns the player acted within."""
@@ -236,6 +263,8 @@ class CorpusMetrics(BaseModel):
     endings_never_reached: list[str]
     location_coverage: float
     locations_never_visited: list[str]
+    edge_coverage: float
+    edges_never_traversed: list[str]
     beats_per_location: dict[str, int]
     # depth / linearity
     median_scenes_per_session: float
@@ -251,14 +280,17 @@ def corpus_metrics(artifacts: list[SessionArtifact], world: World) -> CorpusMetr
     fired_beats: set[str] = set()
     reached_endings: set[str] = set()
     visited: set[str] = set()
+    walked: set[frozenset[str]] = set()
     for art in artifacts:
         fired_beats.update(art.unlocked_beats)
         if art.ending_id:
             reached_endings.add(art.ending_id)
         visited |= distinct_locations(art)
+        walked |= traversed_edges(art)
 
     all_beats = set(world.beats)
     all_locations = set(world.locations)
+    all_edges = _all_edges(world)
     return CorpusMetrics(
         sessions=len(artifacts),
         ending_entropy_normalized=round(
@@ -279,6 +311,9 @@ def corpus_metrics(artifacts: list[SessionArtifact], world: World) -> CorpusMetr
         location_coverage=round(len(visited & all_locations) / len(all_locations), 3)
         if all_locations else 0.0,
         locations_never_visited=sorted(all_locations - visited),
+        edge_coverage=round(len(walked & all_edges) / len(all_edges), 3)
+        if all_edges else 0.0,
+        edges_never_traversed=sorted(_fmt_edge(e) for e in (all_edges - walked)),
         beats_per_location=_beats_per_location(artifacts),
         median_scenes_per_session=_median([art.scene_count for art in artifacts]),
         median_distinct_locations_per_session=_median(

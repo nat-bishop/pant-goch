@@ -237,3 +237,22 @@ it does not block the content merge.
 - Runs: `evals/artifacts/20260523-140146` (0.25), `…-142042` (0.50, judged), `…-144934` (0.50, judged)
 - Isolation: `evals/artifacts/isolation/20260523-135845`
 - Repro tool: `scripts/inferno_stall_repro.py` (currently untracked)
+
+---
+
+## 7. New evals added (so the next iteration is measured, not guessed)
+
+The findings exposed measurement blind spots: we tracked *nodes* but not *edges/paths* or
+structural reachability, and judge scores were aggregated so per-location dips hid in the mean.
+Four evals were added on top of the unified `python -m evals` CLI (these slot into the existing
+`iso` / `play` / `judge` lanes, plus a new no-engine `static` lane).
+
+| Eval | Lane | What it catches | What it found immediately |
+|---|---|---|---|
+| **Static topology lint** (`evals static`) | new, deterministic, no LLM | locations unreachable from start; cut-vertex chokepoints (what each gates); per-beat reach distance | Confirmed Workstream B removed the pub as a cut-vertex; flagged `examined_the_crash_site` at **5 hops** (deepest) — why it never fired in play |
+| **Edge coverage** (`edge_coverage`, `edges_never_traversed` in `play`) | corpus metric | which *connections* carry the player (node coverage can't see an unused edge) | The clean run was coverage 1.0 but **edge 0.9** — the one unused edge was the new bypass `st_caradocs — the_post_office`: players reached the back half via the old route, not B's edge |
+| **Per-location judge breakdown** (`judges_by_location` in `judge`) | judge aggregation | which *places* drag a scored judge down | `npc_voice` 2.86 tan_y_coed / **3.00 st_caradocs (15/15 ≤3)** / 3.00 the_lane — the back-half locations, masked by the 3.67 average; an authoring to-do |
+| **Attention regression guards** (`persistent_civil`, `low_effort_skim` in `iso --suite attention`) | isolation gate | a firm-but-civil or low-effort reporter being wrongly run out of the village | Both pass (noticed / none) — so the corpus `run_out` over-ejection is **not** a classifier misfire on these patterns; it's persona behaviour over a session. Locks the correct behaviour in. |
+
+All four are deterministic or aggregation-only except the attention cases (K-sample gate, already
+green). Unit-tested in `tests/test_static.py` and `tests/test_metrics.py` (edge coverage).
