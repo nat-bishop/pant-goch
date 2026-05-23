@@ -23,6 +23,7 @@ from typing import ClassVar
 from pydantic import BaseModel
 from pydantic_ai import Agent, NativeOutput
 from pydantic_ai.models import Model
+from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_evals.evaluators import EvaluationReason, Evaluator, EvaluatorContext
 
 from .verdicts import PassFail, Scored
@@ -50,6 +51,24 @@ class AgentJudge(Evaluator):
     def render(self, item) -> str:
         raise NotImplementedError
 
+    def _model_settings(self) -> dict:
+        # Settings are split by judge model family. The local Qwen/inferno judge gets
+        # its vendor-recommended sampling + a hard token ceiling; a cloud judge
+        # (gemini:/claude:, opt-in A/B) is left to its own defaults — pinning ours
+        # onto it fights the vendor's guidance (Gemini 3.x wants temp≈1.0) and risks
+        # truncating a thinking model whose reasoning spends the same token budget.
+        inner = getattr(self.model, "wrapped", self.model)  # unwrap RetryModel
+        if isinstance(inner, OpenAIChatModel):
+            # temp=0.6: Qwen3's recommended value — NOT greedy (temp=0), which Qwen
+            # warns degrades into repetition. Reproducibility across runs is bounded
+            # well enough at 0.6 for a trended metric. max_tokens=768: a verdict is
+            # tiny (a PassFail/Scored + a reason string), so cap hard — without it a
+            # runaway response generates until it trips CASE_TIMEOUT_S, the dominant
+            # cause of errored judge cases. The cap (not temp=0) is now what bounds
+            # the runaway, so the recommended non-greedy temp is safe.
+            return {"temperature": 0.6, "max_tokens": 768}
+        return {}
+
     def _agent(self) -> Agent:
         # Built once and reused across this judge's cases (model, output_type and
         # system_prompt are stable). NativeOutput (response_format json_schema),
@@ -60,10 +79,7 @@ class AgentJudge(Evaluator):
             cached = Agent(
                 self.model, output_type=NativeOutput(self.output_type),
                 instructions=self.system_prompt,
-                # temp=0: a judge should be reproducible run-to-run (the temp=1.0
-                # sampling rule is for the Gemma engine-under-test, NOT the judge).
-                # Also curbs the verbose off-the-rails reasoning seen at default temp.
-                model_settings={"temperature": 0.0},
+                model_settings=self._model_settings(),
             )
             self._agent_cache = cached
         return cached
