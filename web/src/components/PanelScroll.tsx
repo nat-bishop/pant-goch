@@ -52,11 +52,22 @@ export function PanelScroll({
   const catchUp = useCallback(() => {
     const panel = scrollRef.current;
     if (!panel) return;
-    // Explicit smooth overrides the element's scroll-behavior:auto.
-    panel.scrollTo({
-      top: panel.scrollHeight - panel.clientHeight,
-      behavior: "smooth",
-    });
+    // Scroll the live edge into view — NOT scrollHeight (that's the empty
+    // .scroll-tail spacer now). Land its bottom at ~80% of the panel: low
+    // enough to show context above, but kept *below* usePageTurn's 0.82
+    // EDGE_TRIGGER so a catch-up mid-stream doesn't instantly re-snap to
+    // 0.30 on the next word. Explicit smooth overrides scroll-behavior:auto.
+    const edge =
+      panel.querySelector<HTMLElement>(".chapter-prose .para.current") ??
+      panel.querySelector<HTMLElement>(".choices-wrap, .freetext-wrap");
+    if (edge) {
+      const panelRect = panel.getBoundingClientRect();
+      const edgeBottom = edge.getBoundingClientRect().bottom - panelRect.top;
+      panel.scrollTo({
+        top: panel.scrollTop + edgeBottom - panelRect.height * 0.8,
+        behavior: "smooth",
+      });
+    }
     setFollow(true);
   }, [setFollow]);
 
@@ -216,6 +227,13 @@ export function PanelScroll({
             )}
             {!following && phase !== "game_over" && phase !== "stranded" && (
               <CatchUpLink onCatchUp={catchUp} />
+            )}
+            {/* Trailing room below the live edge so the page-turn can lift it
+                to EDGE_LANDING and the reader can scroll the last line up
+                manually. Omitted once the run ends — no dead gap under the
+                colophon. */}
+            {phase !== "game_over" && phase !== "stranded" && (
+              <div className="scroll-tail" aria-hidden="true" />
             )}
           </>
         )}
