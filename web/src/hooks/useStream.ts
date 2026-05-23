@@ -23,6 +23,16 @@ export function useStream(active: boolean): void {
     const controller = new AbortController();
     let cancelled = false;
 
+    // A full page unload (refresh / navigate away) tears down the in-flight
+    // fetch from under us, surfacing a network-error TypeError in the loop
+    // below. React's cleanup aborts the controller, but not before the
+    // browser kills the connection — so without this the catch can't tell an
+    // intentional unload from a real mid-session drop and logs a spurious
+    // warning. Aborting on pagehide sets `signal.aborted` first, so the
+    // existing guard swallows it; a genuine network failure still warns.
+    const onPageHide = () => controller.abort();
+    window.addEventListener("pagehide", onPageHide);
+
     // Defer the fetch past React's commit phase so StrictMode's dev-only
     // discard cleanup (which fires synchronously after the first commit)
     // cancels us before we open the stream. Two concurrent consumers on
@@ -61,6 +71,7 @@ export function useStream(active: boolean): void {
     return () => {
       cancelled = true;
       clearTimeout(deferred);
+      window.removeEventListener("pagehide", onPageHide);
       controller.abort();
     };
   }, [active, handleEvent]);

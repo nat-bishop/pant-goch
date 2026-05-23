@@ -90,7 +90,13 @@ export function WorldPane() {
           {walking ? "on the road" : "the survey · pant goch & the marches"}
         </div>
         <MapView
-          active={phase !== "idle" && phase !== "game_over" && !walking}
+          // Pins are interactive only when the map is the active surface
+          // (map tab, or the soft-close auto-flip). On the location/dossier
+          // tabs the survey is shown but inert — gate `active` on `showMap`
+          // so it matches the overlay's `.in` pointer-events, otherwise the
+          // survey advertises armed "walk to" beacons that mouse clicks can't
+          // reach (the backdrop overlay swallows them).
+          active={showMap && phase !== "idle" && phase !== "game_over" && !walking}
           currentLocId={walking ? walking.fromId : visibleScene?.location_id ?? null}
           visitedIds={visitedIds}
         />
