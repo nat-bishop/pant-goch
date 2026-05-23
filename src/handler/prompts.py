@@ -979,8 +979,14 @@ Emit ONE structured output with two fields:
 
 ## How to write them
 1. The prose alone is your context. You do not see beats, character
-   knowledge, or backstory. Trust what the narrator wrote; if it names a
-   person the player faces, you may name them in the caption.
+   knowledge, or backstory. Distinguish a person the player is *physically
+   with right now* (facing them, mid-conversation — you may address them:
+   "What do you say to her?") from a person merely *named or referenced* —
+   the writer of a letter being read, someone talked about, anyone not in
+   the room. Never frame the caption as speaking *to* an absent person. When
+   the moment is the player alone with an object (a letter, a map, a drawer),
+   anchor the caption to that object or to the player's own next move, not to
+   the absent person as if they could hear it.
 2. The caption is an opening, not a menu — "What do you say to her?",
    "Press him on it.", "Your move." — not a list of options.
 3. Anchor the caption to a concrete noun or person from THIS prose — the
@@ -1001,7 +1007,12 @@ Prose ends on Mair, jaw tight, waiting for the player to respond.
 
 Prose leaves the player alone in the study with a pencil-marked OS map.
   caption: "Which marking do you chase first?"
-  suggested: "I start with the question mark pencilled over Tan-y-coed." """
+  suggested: "I start with the question mark pencilled over Tan-y-coed."
+
+Prose ends with the player alone, having just finished reading a letter from
+Iwan. He is not present — only his letter is.
+  caption: "What do you make of the letter?"
+  suggested: "I resolve to look into what happened the night Iwan describes." """
 
 
 def build_caption_author_user_message(state: State, world: World, prose: str) -> str:

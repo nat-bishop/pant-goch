@@ -216,6 +216,11 @@ def test_caption_author_system_prompt_is_byte_stable_and_minimal():
     assert "suggested" in a
     assert "## The Truth" not in a
     assert "## Style Examples" not in a
+    # Guardrail: must distinguish a present interlocutor from a merely
+    # named/referenced (absent) person, so the caption never addresses an
+    # absent letter-writer as if they were in the room.
+    assert "named or referenced" in a
+    assert "absent person" in a
 
 
 def test_caption_author_user_message_is_prose_only():
