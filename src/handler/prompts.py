@@ -799,7 +799,7 @@ def build_prose_writer_user_message(
     # npc_voice_adherence). Re-surface both each turn.
     if not is_first_turn:
         parts.append(_render_here_anchor(state, world))
-        voices = _render_present_voice(state, world)
+        voices = _render_present_voice(state, world, applied_beats=applied_beats)
         if voices:
             parts.append(voices)
 
@@ -831,19 +831,38 @@ def _render_here_anchor(state: State, world: World) -> str:
     )
 
 
-def _render_present_voice(state: State, world: World) -> str:
+def _render_present_voice(
+    state: State, world: World, *, applied_beats: list[str] | None = None
+) -> str:
     """Per-turn (turn 2+) voice recency anchor. Turn 1 hands the narrator each
     present NPC's full voice_sample (every register at once); by mid-scene it
     has scrolled back and the register drifts. Re-surface the lines that fit
     where the player now stands — the current band's `voice_by_band` for NPCs
     with a disposition, else the plain voice_sample. (`voice_by_band` is
     authored on every load-bearing NPC but otherwise never reaches the prose
-    writer.) Empty string when no one is present."""
+    writer.) Empty string when no one is present.
+
+    An NPC whose own reveal beat is firing THIS turn is skipped: their
+    band sample is the terse register cue (Tom's open-band line is "Land
+    Rover. Going the other way. Recognised it."), and re-surfacing it
+    competes with the beat's "depict the full named particulars" directive
+    in ## State Changes Just Applied. On the firing turn the beat content
+    drives that NPC's line, not the register sample."""
     npcs_here = world.npcs_at(state.player_location, state=state)
     if not npcs_here:
         return ""
+    # NPCs whose reveal beat fires this turn — let the beat content lead.
+    firing_npcs = {
+        world.beats[bid].when.npc
+        for bid in (applied_beats or [])
+        if bid in world.beats
+        and world.beats[bid].when is not None
+        and world.beats[bid].when.npc is not None
+    }
     parts = ["## Voices Here"]
     for npc in npcs_here:
+        if npc.id in firing_npcs:
+            continue
         disp = npc.disposition
         lines: list[str] = []
         if disp is not None:
