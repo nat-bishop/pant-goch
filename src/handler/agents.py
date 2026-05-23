@@ -75,10 +75,10 @@ from .prompts import (
     build_populator_user_prompt,
     build_prose_writer_system_prompt,
     build_prose_writer_user_message,
+    build_village_attention_system_prompt,
+    build_village_attention_user_prompt,
 )
 from .schemas import (
-    AttentionDelta,
-    AttnDelta,
     ChoiceBundle,
     ChronicleEntry,
     FreeTextCaption,
@@ -91,6 +91,7 @@ from .schemas import (
     StateChangeBundle,
     TrustDelta,
     UnlockBeat,
+    VillageAttentionVerdict,
 )
 from .state import State
 from .world import World
@@ -104,11 +105,11 @@ class AgentBundle:
     """One world's agents. Built once in lifespan via
     `build_scene_runner_bundle(model, world)`.
 
-    Seven agents (Phase 1 classifier, prose writer, choice author, free-text
-    gate, caption author, populator, chronicler) have world-scoped system
-    prompts and are constructed once at bundle-build time. Per-call dynamic
-    schemas are passed at `agent.run()` time via NativeOutput (or
-    `output_type=str` for the prose writer). System prompts are byte-stable
+    Eight agents (Phase 1 classifier, prose writer, choice author, free-text
+    gate, caption author, populator, chronicler, village-attention) have
+    world-scoped system prompts and are constructed once at bundle-build time.
+    Per-call dynamic schemas are passed at `agent.run()` time via NativeOutput
+    (or `output_type=str` for the prose writer). System prompts are byte-stable
     across the session → KV cache hits across turns / scenes for each agent
     independently.
     """
@@ -120,6 +121,7 @@ class AgentBundle:
     caption_author: Agent[None, FreeTextCaption]
     populator: Agent[None, NpcPlacementBundle]
     chronicler: Agent[None, ChronicleEntry]
+    village_attention: Agent[None, VillageAttentionVerdict]
     world: World
 
 
@@ -172,22 +174,16 @@ def _build_state_change_bundle_type(world: World, state: State) -> type[BaseMode
         physically rejects a delta for an absent or breached NPC, and the
         trust/guard magnitudes are already Literal-bounded on the canonical
         schema.
-      - `attention`: a SCALAR (`"0"`|`"+1"`), defaulting to `"0"`. NOT a list
-        member. The model must affirmatively set it to `"+1"`; left alone it
-        stays `"0"`.
       - `commitments`: at most one UnlockBeat whose `beat_name` is narrowed to
         `emittable_beat_ids` (observation milestones + currently-available
         decisions). Evidence/outcome milestones are engine-derived and never
         appear here.
 
-    Why a scalar `attention` and not a union list member: when `attention` was a
-    second member of one `deltas: list[QualityDelta|AttentionDelta]` union,
-    gemma-4-e4b collapsed to emitting a single `{attention_delta: +1}` on EVERY
-    call — the easiest non-empty list element — regardless of what the player
-    did (even on the scene-opening turn). Splitting attention into its own
-    default-`"0"` scalar removes that degenerate union choice: quality deltas
-    are their own list, and a `"+1"` attention bump is a deliberate, separately
-    typed act. See the deltas suite in `evals/isolation/` for the regression that fixed this.
+    Village attention is NOT a channel here. It was once a scalar `attention`
+    field on this bundle, but the model anchored on the salient per-NPC delta and
+    left it at its default — private aggression never registered. It now has its
+    own dedicated scene-close agent (`emit_village_attention`), asked in isolation,
+    which classifies village suspicion reliably.
 
     Names (not ids) on the commitment wire — `emit_state_changes` translates
     `beat_name → beat_id` after decode, same as before.
@@ -232,7 +228,6 @@ def _build_state_change_bundle_type(world: World, state: State) -> type[BaseMode
     return create_model(
         "StateChangeBundle",
         npc_deltas=npc_deltas_field,
-        attention=(AttnDelta, "0"),
         commitments=commitments_field,
     )
 
@@ -335,9 +330,10 @@ def _build_chronicle_entry_type(
 def build_scene_runner_bundle(
     model: OpenAIChatModel, world: World, *, decision_max_tokens: int = 500
 ) -> AgentBundle:
-    """Construct the agent bundle for `world`. Bakes seven system prompts
+    """Construct the agent bundle for `world`. Bakes eight system prompts
     (Phase 1 classifier, prose writer, choice author, free-text gate,
-    caption author, populator, chronicler) and builds one agent per role.
+    caption author, populator, chronicler, village-attention) and builds one
+    agent per role.
     Per-call dynamic output_type is passed at agent.run() time via
     NativeOutput, except the prose writer which uses `output_type=str`.
 
@@ -402,6 +398,7 @@ def build_scene_runner_bundle(
         model_settings=decision_settings,
     )
     chronicler = build_chronicler_agent(model, world)
+    village_attention = build_village_attention_agent(model, world)
     return AgentBundle(
         phase1=phase1,
         prose_writer=prose_writer,
@@ -410,6 +407,7 @@ def build_scene_runner_bundle(
         caption_author=caption_author,
         populator=populator,
         chronicler=chronicler,
+        village_attention=village_attention,
         world=world,
     )
 
@@ -473,9 +471,9 @@ async def emit_state_changes(
     Two cleanups happen here before the canonical bundle is built, because
     the grammar sampler constrains *which* ids/values are emittable but not
     *how many* or whether they move anything:
-      - no-op deltas (trust=guard="0", or attention="0") are dropped — they
-        shift no state but would otherwise pollute the per-turn ledger and
-        read as "movement" in the filler metric;
+      - no-op deltas (trust=guard="0") are dropped — they shift no state but
+        would otherwise pollute the per-turn ledger and read as "movement" in
+        the filler metric;
       - at most one delta per NPC is kept, so a single turn can never move
         trust/guard by more than the ±1/turn the band design rests on (the
         grammar narrows npc_id but does not forbid repeats within the list).
@@ -497,8 +495,6 @@ async def emit_state_changes(
             continue  # keep ±1/turn: first delta per NPC wins
         seen_npcs.add(d.npc_id)
         deltas.append(QualityDelta(npc_id=d.npc_id, trust=d.trust, guard=d.guard))
-    if getattr(raw, "attention", "0") != "0":
-        deltas.append(AttentionDelta(attention=raw.attention))
     commitments = [
         UnlockBeat(beat_id=bundle.world.beat_id_for_name(c.beat_name))
         for c in getattr(raw, "commitments", [])
@@ -769,3 +765,53 @@ async def emit_chronicle_entry(
             if u.note.strip()
         ],
     )
+
+
+# ───────────────────────── village-attention agent ─────────────────────────
+
+
+def build_village_attention_agent(
+    model: OpenAIChatModel, world: World
+) -> Agent[None, VillageAttentionVerdict]:
+    """Dedicated scene-close classifier for the global `village_attention` heat.
+
+    Split out of Phase 1: bundled with the per-NPC trust/guard deltas the model
+    anchored on those and left attention at its default, so private aggression
+    never registered. Asked in isolation — only "how wary is the village now?" —
+    the same model classifies it reliably. System prompt is baked once (world +
+    voice-only cast, NO knowledge); each call is independent (no message_history).
+
+    Output spec (`NativeOutput(VillageAttentionVerdict, strict=True)`) is passed at
+    `agent.run()` time in `emit_village_attention`, mirroring the chronicler so
+    TestModel-based unit tests can bypass the native-output profile check.
+    Content/judgement agent, so NO `decision_settings` token cap.
+    """
+    return Agent[None, VillageAttentionVerdict](
+        model=model,
+        name="village_attention",
+        system_prompt=build_village_attention_system_prompt(world),
+        output_retries=3,
+    )
+
+
+async def emit_village_attention(
+    bundle: AgentBundle,
+    world: World,
+    state: State,
+) -> str:
+    """Judge the village's attention level for the just-closed scene; returns the
+    level word (`none`|`noticed`|`talked_about`|`hostile`). The caller ratchets
+    `state.village_attention` up via `engine.apply_village_attention` — this stays
+    side-effect-free, like `emit_chronicle_entry`.
+
+    Read off the live `state`, same as the chronicler: at scene close the scene's
+    turns are still in `dialogue_history` and `player_location` still points at
+    the scene's location. The static 4-level schema needs no per-call narrowing.
+    """
+    assert state.dialogue_history, "emit_village_attention: empty dialogue_history"
+    user_prompt = build_village_attention_user_prompt(state, world)
+    result = await bundle.village_attention.run(
+        user_prompt,
+        output_type=NativeOutput(VillageAttentionVerdict, strict=True),
+    )
+    return result.output.level

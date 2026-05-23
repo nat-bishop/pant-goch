@@ -57,11 +57,9 @@ class UnlockBeat(_Strict):
 # emission to one recoverable notch instead of a permanent mis-fire.
 TrustDelta = Literal["-1", "0", "+1"]
 GuardDelta = Literal["-1", "0", "+1", "BREACH"]
-AttnDelta = Literal["0", "+1"]
 
 # Parsers: turn the on-the-wire string into an engine effect.
 TRUST_DELTA_VALUES = {"-1": -1, "0": 0, "+1": 1}
-ATTN_DELTA_VALUES = {"0": 0, "+1": 1}
 
 
 class QualityDelta(_Strict):
@@ -75,26 +73,16 @@ class QualityDelta(_Strict):
     guard: GuardDelta = "0"
 
 
-class AttentionDelta(_Strict):
-    """A bump to the global village_attention (ratchets up only)."""
-
-    type: Literal["attention_delta"] = "attention_delta"
-    attention: AttnDelta = "0"
-
-
-ApproachChange = Annotated[
-    Union[QualityDelta, AttentionDelta], Field(discriminator="type")
-]
-
-
 class StateChangeBundle(_Strict):
     """Phase-1 output (quality engine). Per turn the classifier reports how the
-    player's move shifted standing — bounded ordinal `deltas` for present NPCs
-    + attention — and at most one explicit `commitments` beat (an observation
-    milestone or a player decision). Evidence/outcome milestones are NOT here:
-    the engine derives them from trust (`engine._derive_milestones`)."""
+    player's move shifted standing — bounded ordinal `deltas` for present NPCs —
+    and at most one explicit `commitments` beat (an observation milestone or a
+    player decision). Evidence/outcome milestones are NOT here: the engine
+    derives them from trust (`engine._derive_milestones`). Global
+    `village_attention` is NOT here either — it is owned by a dedicated
+    scene-close agent (`agents.emit_village_attention`)."""
 
-    deltas: list[ApproachChange] = Field(default_factory=list, max_length=4)
+    deltas: list[QualityDelta] = Field(default_factory=list, max_length=4)
     commitments: list[UnlockBeat] = Field(default_factory=list, max_length=1)
 
     @model_validator(mode="after")
@@ -108,9 +96,7 @@ class StateChangeBundle(_Strict):
         the live path — it guards every other constructor)."""
         seen: set[str] = set()
         for d in self.deltas:
-            npc_id = getattr(d, "npc_id", None)
-            if npc_id is None:
-                continue  # AttentionDelta carries no npc_id
+            npc_id = d.npc_id
             if npc_id in seen:
                 raise ValueError(
                     f"npc_id {npc_id!r} appears in more than one quality delta"
@@ -304,6 +290,24 @@ class ChronicleEntry(_Strict):
                 )
             seen.add(upd.npc_id)
         return self
+
+
+# ───────────────────────── Village attention (scene-close heat) ─────────────────────────
+
+
+class VillageAttentionVerdict(_Strict):
+    """Scene-close village-attention classifier output. A dedicated agent reads
+    the just-closed scene's transcript (plus the prior heat level) and judges
+    how much the village has COLLECTIVELY closed ranks against the journalist.
+
+    Split out of the Phase-1 `StateChangeBundle` because, bundled with the
+    salient per-NPC trust/guard deltas, the model anchored on those and left
+    attention at its default — so private aggression never raised it. Asked in
+    isolation the same model classifies it reliably. The level maps to
+    `engine.ATTENTION_LEVEL_VALUES`; the engine ratchets `village_attention` up
+    to it (max), preserving the up-only invariant."""
+
+    level: Literal["none", "noticed", "talked_about", "hostile"]
 
 
 # ───────────────────────── Populator (scene-entry NPC placement) ─────────────────────────

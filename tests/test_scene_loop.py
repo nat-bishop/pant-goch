@@ -74,6 +74,14 @@ def _patch_chronicler(monkeypatch, text: str = "entry"):
     monkeypatch.setattr("handler.scene_loop.emit_chronicle_entry", fake_emit)
 
 
+def _patch_village_attention(monkeypatch, level: str = "none"):
+    """Stub the scene-close village-attention agent (it runs on every Leave /
+    WalkTo close, before ending resolution). Default `none` is a no-op ratchet."""
+    async def fake_emit(*args, **kwargs):
+        return level
+    monkeypatch.setattr("handler.scene_loop.emit_village_attention", fake_emit)
+
+
 def _patch_phase1(monkeypatch, bundle: StateChangeBundle | None = None):
     """Default Phase 1 stub: returns the supplied bundle (or empty)."""
     payload = bundle or StateChangeBundle()
@@ -396,6 +404,7 @@ async def test_run_turn_leave_resolves_to_endgame_when_satisfied(monkeypatch, bu
     state.unlocked_beats = set(bundle.world.endings["published_story"].requires_beats)
 
     _patch_phase1(monkeypatch)
+    _patch_village_attention(monkeypatch)  # Leave closes the scene → attention agent runs
     _patch_prose_writer(monkeypatch, ["A pause."])
     _patch_choice_author(monkeypatch, [ChoiceBundle(next=Leave())])
 
@@ -407,6 +416,7 @@ async def test_run_turn_leave_resolves_to_endgame_when_satisfied(monkeypatch, bu
 async def test_run_turn_leave_resolves_to_endscene_when_no_ending_satisfied(monkeypatch, bundle_and_state):
     bundle, runtime, state = bundle_and_state
     _patch_phase1(monkeypatch)
+    _patch_village_attention(monkeypatch)  # Leave closes the scene → attention agent runs
     _patch_prose_writer(monkeypatch, ["A pause."])
     _patch_choice_author(monkeypatch, [ChoiceBundle(next=Leave())])
 
@@ -557,6 +567,7 @@ async def test_play_scene_drives_until_walk(monkeypatch):
     state.player_location = "the_slaughtered_lamb"
 
     _patch_populator(monkeypatch)
+    _patch_village_attention(monkeypatch)
     _patch_phase1(monkeypatch)
     _patch_prose_writer(monkeypatch, ["t1", "t2", "t3"])
     _patch_closing_prose(monkeypatch, "You shoulder the door open.")
@@ -592,6 +603,7 @@ async def test_play_scene_dispatches_free_text(monkeypatch):
     state.player_location = "the_slaughtered_lamb"
 
     _patch_populator(monkeypatch)
+    _patch_village_attention(monkeypatch)
     _patch_phase1(monkeypatch)
     _patch_prose_writer(monkeypatch, ["t1", "t2"])
     _patch_closing_prose(monkeypatch)
@@ -639,6 +651,7 @@ async def test_play_scene_resets_prose_writer_message_history_at_scene_start(mon
     state.player_location = "the_slaughtered_lamb"
 
     _patch_populator(monkeypatch)
+    _patch_village_attention(monkeypatch)
     _patch_phase1(monkeypatch)
 
     captured: list[list] = []
@@ -677,6 +690,7 @@ async def test_play_session_calls_both_callbacks_and_terminates_on_end_game(monk
     decision_beats = world.endings["published_story"].requires_beats
 
     _patch_populator(monkeypatch)
+    _patch_village_attention(monkeypatch)
     _patch_chronicler(monkeypatch)
     _patch_closing_prose(monkeypatch)
     # Phase 1 fires nothing until scene 2 turn 2 (the fourth call).
@@ -732,6 +746,7 @@ async def test_play_session_no_input_when_first_turn_ends_game(monkeypatch):
     decision_beats = world.endings["published_story"].requires_beats
 
     _patch_populator(monkeypatch)
+    _patch_village_attention(monkeypatch)
     _patch_chronicler(monkeypatch)
     _patch_phase1(monkeypatch, StateChangeBundle(
         commitments=[UnlockBeat(beat_id=b) for b in decision_beats],
@@ -758,6 +773,7 @@ async def test_play_session_case_file_entries_accumulate_on_state(monkeypatch):
     decision_beats = world.endings["published_story"].requires_beats
 
     _patch_populator(monkeypatch)
+    _patch_village_attention(monkeypatch)
     _patch_chronicler(monkeypatch)
     _patch_phase1(monkeypatch, StateChangeBundle(
         commitments=[UnlockBeat(beat_id=b) for b in decision_beats],
@@ -787,6 +803,7 @@ async def test_play_scene_walk_mid_continue_ends_scene(monkeypatch):
     state.player_location = "the_slaughtered_lamb"
 
     _patch_populator(monkeypatch)
+    _patch_village_attention(monkeypatch)
     _patch_phase1(monkeypatch)
     _patch_prose_writer(monkeypatch, ["Tom eyes you over his pint."])
     _patch_closing_prose(monkeypatch, "You leave him to it.")
@@ -821,6 +838,7 @@ async def test_play_scene_walk_resolves_endgame_when_ending_satisfied(monkeypatc
     state.unlocked_beats = set(world.endings["published_story"].requires_beats)
 
     _patch_populator(monkeypatch)
+    _patch_village_attention(monkeypatch)
     _patch_phase1(monkeypatch)
     _patch_prose_writer(monkeypatch, ["The room goes quiet."])
     _patch_choice_author(monkeypatch, [
@@ -840,3 +858,46 @@ async def test_play_scene_walk_resolves_endgame_when_ending_satisfied(monkeypatc
     assert isinstance(result.next, EndGame)
     assert result.next.ending_id == "published_story"
     assert result.prose == "The room goes quiet."  # last prose reused, no closing line
+
+
+async def test_walk_close_ratchets_attention_before_ending_resolution(monkeypatch):
+    """Ordering regression: the scene-close village-attention agent runs and
+    ratchets village_attention BEFORE resolved_ending_id_at_close, so a scene of
+    aggression can trip run_out on the closing turn (not a scene late). We spy on
+    resolution to capture the heat value at the moment it's consulted."""
+    import handler.scene_loop as sl
+
+    world = load_world(FIXTURE_VALID)
+    bundle = build_scene_runner_bundle(TestModel(), world)
+    runtime = make_scene_runner_runtime()
+    state = make_initial_state(world)
+    state.player_location = "the_slaughtered_lamb"
+
+    _patch_populator(monkeypatch)
+    _patch_village_attention(monkeypatch, level="hostile")  # the scene turned the village
+    _patch_phase1(monkeypatch)
+    _patch_prose_writer(monkeypatch, ["t1", "t2"])
+    _patch_closing_prose(monkeypatch, "Out into the rain.")
+    _patch_choice_author(monkeypatch, [
+        ChoiceBundle(next=Continue(options=[Option(text="a"), Option(text="b")])),
+        ChoiceBundle(next=Continue(options=[Option(text="a"), Option(text="b")])),
+    ])
+
+    seen: dict[str, int] = {}
+    real_resolve = sl.resolved_ending_id_at_close
+
+    def spy(world_, state_):
+        seen["attention_at_resolution"] = state_.village_attention
+        return real_resolve(world_, state_)
+
+    monkeypatch.setattr(sl, "resolved_ending_id_at_close", spy)
+
+    dest = world.locations["the_slaughtered_lamb"].adjacent_to[0]
+    actions = iter([PickOption(index=0), WalkTo(location_id=dest)])
+    await play_scene(
+        bundle, runtime, state,
+        request_player_input=lambda pp, s, w: next(actions),
+    )
+
+    assert state.village_attention == 3                 # ratcheted to hostile at close
+    assert seen["attention_at_resolution"] == 3         # ...and BEFORE resolution ran

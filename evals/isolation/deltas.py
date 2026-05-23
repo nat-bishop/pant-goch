@@ -1,19 +1,21 @@
 """Phase-1 delta suite — the per-turn standing reporter, in isolation.
 
 The one thing Phase 1 decides is the **quality delta**: how a single player move
-nudges trust / guard / village_attention. Each case is a *frozen turn context* — a
+nudges per-NPC trust / guard. Each case is a *frozen turn context* — a
 hand-built `State` (present NPCs, their trust/guard band, the player's last action)
 — fed to the real `emit_state_changes`. Phase 1 runs at temp=1.0, so the harness
 samples each case K times and scores a pass-rate.
 
+(Village attention is no longer a Phase-1 channel — it has its own scene-close
+agent; see the `village_attention` isolation suite in `attention.py`.)
+
 What we assert vs. measure (deliberate — do not "judge on opinion"):
   * ASSERTED (deterministic design rules, gated by a floor):
-      - no `attention` bump on ordinary private conversation  ← the captured bug
       - no spurious `BREACH` on a benign turn
       - first turn of a scene shifts nothing (empty deltas)
       - SIGN/FLOOR of trust on an *unambiguously* warm move (≥ +1, not 0)
-  * POSITIVE CONTROLS (so a fix can't just zero everything): a conspicuous public
-    act DOES raise `attention`; a move on an NPC's authored breach list is NOT benign.
+  * POSITIVE CONTROLS (so a fix can't just zero everything): a move on an NPC's
+    authored breach list is NOT benign.
   * NOT ASSERTED (reported via the suite's output distribution only): exact magnitude
     of a marginal nudge; guard+1 vs. BREACH on a hostile move.
 
@@ -30,8 +32,6 @@ from pydantic_evals.evaluators import Evaluator, EvaluatorContext
 
 from handler.agents import AgentBundle, emit_state_changes
 from handler.schemas import (
-    ATTN_DELTA_VALUES,
-    AttentionDelta,
     Option,
     QualityDelta,
     StateChangeBundle,
@@ -103,7 +103,6 @@ class Expect:
     so each case asserts exactly the axes that are genuinely *true* for it."""
 
     empty: bool = False                       # deltas must be empty (first turn)
-    attention_eq: int | None = None           # required attention-delta sum (0 or 1)
     forbid_breach: bool = True                # no NPC may BREACH this turn
     trust_floor: dict[str, int] = field(default_factory=dict)   # npc -> min trust delta
     guard_up_or_breach: tuple[str, ...] = ()  # these NPCs must NOT be treated as benign
@@ -112,8 +111,6 @@ class Expect:
         out: list[str] = []
         if self.empty and not d.is_empty:
             out.append(f"expected empty deltas, got {d}")
-        if self.attention_eq is not None and d.attention != self.attention_eq:
-            out.append(f"attention {d.attention} != expected {self.attention_eq}")
         if self.forbid_breach and d.breached:
             out.append(f"unexpected BREACH of {sorted(d.breached)}")
         for nid, floor in self.trust_floor.items():
@@ -137,30 +134,25 @@ class Diff:
     trust: dict[str, int]
     guard: dict[str, int]
     breached: set[str]
-    attention: int
     commitments: list[str]
 
     @property
     def is_empty(self) -> bool:
-        return not (self.trust or self.guard or self.breached or self.attention or self.commitments)
+        return not (self.trust or self.guard or self.breached or self.commitments)
 
     @classmethod
     def parse(cls, b: StateChangeBundle) -> "Diff":
         trust: dict[str, int] = {}
         guard: dict[str, int] = {}
         breached: set[str] = set()
-        attention = 0
         for delta in b.deltas:
-            if isinstance(delta, QualityDelta):
-                if delta.trust != "0":
-                    trust[delta.npc_id] = trust.get(delta.npc_id, 0) + TRUST_DELTA_VALUES[delta.trust]
-                if delta.guard == "BREACH":
-                    breached.add(delta.npc_id)
-                elif delta.guard != "0":
-                    guard[delta.npc_id] = guard.get(delta.npc_id, 0) + TRUST_DELTA_VALUES[delta.guard]
-            elif isinstance(delta, AttentionDelta):
-                attention += ATTN_DELTA_VALUES[delta.attention]
-        return cls(trust, guard, breached, attention, [c.beat_id for c in b.commitments])
+            if delta.trust != "0":
+                trust[delta.npc_id] = trust.get(delta.npc_id, 0) + TRUST_DELTA_VALUES[delta.trust]
+            if delta.guard == "BREACH":
+                breached.add(delta.npc_id)
+            elif delta.guard != "0":
+                guard[delta.npc_id] = guard.get(delta.npc_id, 0) + TRUST_DELTA_VALUES[delta.guard]
+        return cls(trust, guard, breached, [c.beat_id for c in b.commitments])
 
     def __str__(self) -> str:
         bits = []
@@ -170,8 +162,6 @@ class Diff:
             bits.append("guard " + ",".join(f"{k}{v:+d}" for k, v in self.guard.items()))
         if self.breached:
             bits.append("BREACH " + ",".join(sorted(self.breached)))
-        if self.attention:
-            bits.append(f"attention+{self.attention}")
         if self.commitments:
             bits.append("commit " + ",".join(self.commitments))
         return "{" + "; ".join(bits) + "}" if bits else "{empty}"
@@ -208,15 +198,12 @@ _TOM_GUARDED = (
 
 def cases() -> list[IsoCase]:
     # Floors catch *collapse*, not drift (see harness.DEFAULT_FLOOR). The structural
-    # axes (empty first turn, no-attention-on-private) are near-deterministic → high
-    # floor; the behavioural axes (a warm move earning trust, a public act bumping
-    # attention, a hostile move not staying benign) are genuinely stochastic at
-    # temp=1.0 → a 0.5 floor that still trips on a true regression to ~0. CALIBRATE
-    # these against the first live `make eval-deltas` run.
+    # axis (empty first turn) is near-deterministic → high floor; the behavioural
+    # axes (a warm move earning trust, a hostile move not staying benign) are
+    # genuinely stochastic at temp=1.0 → a 0.5 floor that still trips on a true
+    # regression to ~0. CALIBRATE these against the first live `make eval-deltas` run.
     return [
-        # ── THE CAPTURED FAILURE: warm/decent move on a cold NPC ──
-        # gemma-4-e4b emitted {attention+1} here: no trust for Tom, AND a spurious
-        # attention bump on a private, gentle exchange. Both are wrong.
+        # ── THE CAPTURED FAILURE: warm/decent move on a cold NPC earns trust ──
         IsoCase(
             name="tom_warm_cold",
             scenario="Comment empathetically on guarded Tom's mood / the room (warm, decent, no pressing)",
@@ -225,20 +212,8 @@ def cases() -> list[IsoCase]:
                 last_action="Comment on his mood or the atmosphere of the pub.",
                 last_prose=_TOM_GUARDED,
             ),
-            meta=Expect(trust_floor={"tom": 1}, attention_eq=0),
+            meta=Expect(trust_floor={"tom": 1}),
             floor=0.5,
-        ),
-        # ── isolate "no spurious attention" from the warmth question ──
-        IsoCase(
-            name="neutral_question_no_attention",
-            scenario="Ask Tom an ordinary, on-topic question (private, low-key)",
-            build=lambda w: ctx(
-                w, location="the_slaughtered_lamb",
-                last_action="Ask Tom how long he's lived in the village.",
-                last_prose=_TOM_GUARDED,
-            ),
-            meta=Expect(attention_eq=0),  # trust left fuzzy on purpose
-            floor=0.8,
         ),
         # ── first turn of a scene shifts nothing ──
         IsoCase(
@@ -250,18 +225,6 @@ def cases() -> list[IsoCase]:
             ),
             meta=Expect(empty=True),
             floor=0.9,
-        ),
-        # ── POSITIVE CONTROL: a conspicuous public act SHOULD raise attention ──
-        IsoCase(
-            name="public_accusation_attention",
-            scenario="Stand up and loudly accuse Eluned Vaughn to the whole pub (a public scene)",
-            build=lambda w: ctx(
-                w, location="the_slaughtered_lamb",
-                last_action="Stand up and announce to the whole pub that Eluned Vaughn ran Megan off the road.",
-                last_prose=_TOM_GUARDED, typed=True,
-            ),
-            meta=Expect(attention_eq=1),
-            floor=0.5,
         ),
         # ── POSITIVE CONTROL: a move on Tom's authored breach list (lie: police) ──
         # "claiming to be police or family" is literally in Tom's breach list, so

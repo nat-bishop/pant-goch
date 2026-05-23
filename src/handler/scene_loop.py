@@ -43,11 +43,13 @@ from .agents import (
     emit_free_text_gate,
     emit_placements,
     emit_state_changes,
+    emit_village_attention,
     stream_prose_text,
 )
 from .engine import (
     FREE_TEXT_FALLBACK,
     apply_state_changes,
+    apply_village_attention,
     append_turn_record,
     band_name,
     enter_scene,
@@ -191,6 +193,29 @@ async def _maybe_await(value):
     if inspect.isawaitable(value):
         return await value
     return value
+
+
+async def _update_village_attention_at_close(bundle: AgentBundle, state: State) -> None:
+    """Run the dedicated village-attention classifier over the just-closed scene
+    and ratchet `state.village_attention` up to its verdict.
+
+    MUST run BEFORE `resolved_ending_id_at_close` at either close path, or the
+    `run_out_of_the_village` ending can't fire on the closing turn (attention is
+    what gates it). On retry-exhaustion we leave the heat unchanged: the channel
+    only ever ratchets up, so the safe failure direction is under-counting — a
+    dropped scene never spuriously ejects the player.
+    """
+    if not state.dialogue_history:
+        return
+    try:
+        level = await emit_village_attention(bundle, bundle.world, state)
+    except UnexpectedModelBehavior as e:
+        logfire.warn(
+            "village_attention fallback: retries exhausted; leaving heat unchanged",
+            error=str(e),
+        )
+        return
+    apply_village_attention(state, level)
 
 
 def _assemble_prose_part(
@@ -496,6 +521,11 @@ async def run_turn(
             )
             caption = None
 
+    # A Leave closes the scene inside _assemble_prose_part (it resolves the
+    # ending). Update village attention FIRST so a run_out can fire on this turn.
+    if isinstance(choices.next, Leave):
+        await _update_village_attention_at_close(bundle, state)
+
     prose_part = _assemble_prose_part(
         bundle.world, state, prose, choices,
         free_text_offer=free_text_offer, caption=caption,
@@ -668,6 +698,8 @@ async def play_scene(
 
         # WalkTo — the player leaves; the scene ends from whatever branch.
         assert isinstance(action, WalkTo)
+        # Update village attention before resolving, so walking out can trip run_out.
+        await _update_village_attention_at_close(bundle, state)
         ending_id = resolved_ending_id_at_close(bundle.world, state)
         if ending_id is not None:
             # An ending's beats are already met — the game ends as they

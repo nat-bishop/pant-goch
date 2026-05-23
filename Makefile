@@ -20,7 +20,8 @@ help:
 	@echo "  make playtest            Run simulated Gemini-player playthroughs + invariant report"
 	@echo "  make judge RUN=<dir>     LLM-as-judge pass over a recorded playtest run"
 	@echo "  make eval-deltas         Phase-1 delta isolation eval (fast; deterministic gate)"
-	@echo "  make eval-isolation      All per-agent isolation evals (deltas + prose/choice/chronicler)"
+	@echo "  make eval-attention      Village-attention classifier isolation eval (fast; deterministic gate)"
+	@echo "  make eval-isolation      All per-agent isolation evals (deltas + attention + prose/choice/chronicler)"
 	@echo "  make typecheck           Run TS typecheck on web/"
 	@echo "  make build               Production build of web/"
 	@echo "  make kill                Force-kill stragglers on :8000/:8080/:5173-5176"
@@ -91,12 +92,17 @@ judge:
 # times each (Gemma is temp=1.0), scored as a per-case pass-rate with a CI floor
 # gate. Fast, focused, no full playthrough. Deterministic design rules gate;
 # reused LLM judges trend. See EVALS.md "Isolation" lane.
-#   eval-deltas     — just the Phase-1 delta suite (the attention-spam regression)
-#   eval-isolation  — all suites (deltas + prose voice + choice agency + chronicler)
+#   eval-deltas     — just the Phase-1 per-NPC trust/guard delta suite
+#   eval-attention  — just the scene-close village-attention classifier suite
+#   eval-isolation  — all suites (deltas + attention + prose voice + choice agency + chronicler)
 # Override samples with K=<n> (default 16, keeps the 0.8 floor stable).
 .PHONY: eval-deltas
 eval-deltas:
 	SMALLVILLE_USE_INFERNO=1 uv run python -m evals.isolation --suite deltas --k $(or $(K),16)
+
+.PHONY: eval-attention
+eval-attention:
+	SMALLVILLE_USE_INFERNO=1 uv run python -m evals.isolation --suite attention --k $(or $(K),16)
 
 .PHONY: eval-isolation
 eval-isolation:

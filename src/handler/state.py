@@ -36,7 +36,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .schemas import ApproachChange, Option, UnlockBeat
+from .schemas import Option, QualityDelta, UnlockBeat
 from .world import World
 
 
@@ -57,10 +57,11 @@ class TurnRecord:
     # Beats UNLOCKED this turn (LLM commitments + engine-derived milestones),
     # as UnlockBeat records so renderers keep reading `.beat_id`.
     applied_state_changes: list[UnlockBeat]
-    # The quality deltas the classifier emitted this turn (trust/guard/
-    # attention nudges). Drives the "did this turn move standing?" signal for
-    # the eval filler metric; empty on a no-op turn.
-    applied_deltas: list[ApproachChange] = field(default_factory=list)
+    # The quality deltas the classifier emitted this turn (per-NPC trust/guard
+    # nudges). Drives the "did this turn move standing?" signal for the eval
+    # filler metric; empty on a no-op turn. (Village attention is no longer a
+    # per-turn delta — it's owned by the scene-close village-attention agent.)
+    applied_deltas: list[QualityDelta] = field(default_factory=list)
     player_pick: Option | None = None  # set by engine when player picks
     # True when player_pick is a verbatim free-text line the player typed
     # (vs. a clicked menu option). Lets the next turn's prompts render it

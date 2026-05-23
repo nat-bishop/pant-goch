@@ -109,6 +109,11 @@ def _patch_chronicler(monkeypatch, text: str = "case-file entry"):
     monkeypatch.setattr("handler.scene_loop.emit_chronicle_entry", fake_emit)
 
 
+async def _va_none(*args, **kwargs):
+    """Scene-close village-attention stub (no-op ratchet) for full-loop SSE tests."""
+    return "none"
+
+
 # ───────────────────────── paced_word_emitter ─────────────────────────
 
 
@@ -283,6 +288,7 @@ async def test_play_scene_soft_close_then_walk_emits_scene_spent_and_exit(monkey
     _patch_populator(monkeypatch)
     _patch_closing_prose(monkeypatch)
     monkeypatch.setattr("handler.scene_loop.emit_state_changes", fake_phase1)
+    monkeypatch.setattr("handler.scene_loop.emit_village_attention", _va_none)
     monkeypatch.setattr("handler.scene_loop.stream_prose_text", fake_prose)
     monkeypatch.setattr("handler.scene_loop.emit_choices", fake_choices)
     monkeypatch.setattr("handler.scene_loop.emit_free_text_gate", _gate_off)
@@ -349,6 +355,7 @@ async def test_play_scene_emits_options_event_for_continue(monkeypatch, world_an
     _patch_populator(monkeypatch)
     _patch_closing_prose(monkeypatch)
     monkeypatch.setattr("handler.scene_loop.emit_state_changes", fake_phase1)
+    monkeypatch.setattr("handler.scene_loop.emit_village_attention", _va_none)
     monkeypatch.setattr("handler.scene_loop.stream_prose_text", fake_prose)
     monkeypatch.setattr("handler.scene_loop.emit_choices", fake_choices)
     monkeypatch.setattr("handler.scene_loop.emit_free_text_gate", _gate_off)
@@ -401,6 +408,7 @@ async def test_play_scene_injects_leave_option_from_second_turn(monkeypatch, wor
     _patch_populator(monkeypatch)
     _patch_closing_prose(monkeypatch)
     monkeypatch.setattr("handler.scene_loop.emit_state_changes", fake_phase1)
+    monkeypatch.setattr("handler.scene_loop.emit_village_attention", _va_none)
     monkeypatch.setattr("handler.scene_loop.stream_prose_text", fake_prose)
     monkeypatch.setattr("handler.scene_loop.emit_choices", fake_choices)
     monkeypatch.setattr("handler.scene_loop.emit_free_text_gate", _gate_off)
@@ -449,6 +457,7 @@ async def test_play_scene_emits_game_over_for_end_game(monkeypatch, world_and_bu
 
     _patch_populator(monkeypatch)
     monkeypatch.setattr("handler.scene_loop.emit_state_changes", fake_phase1)
+    monkeypatch.setattr("handler.scene_loop.emit_village_attention", _va_none)
     monkeypatch.setattr("handler.scene_loop.stream_prose_text", fake_prose)
     monkeypatch.setattr("handler.scene_loop.emit_choices", fake_choices)
     monkeypatch.setattr("handler.scene_loop.emit_free_text_gate", _gate_off)
@@ -511,6 +520,7 @@ async def test_play_session_emits_location_change_and_log_entry_words(
     _patch_chronicler(monkeypatch, text="The pub, the road. Tom was at the bar.")
     _patch_closing_prose(monkeypatch)
     monkeypatch.setattr("handler.scene_loop.emit_state_changes", fake_phase1)
+    monkeypatch.setattr("handler.scene_loop.emit_village_attention", _va_none)
     monkeypatch.setattr("handler.scene_loop.stream_prose_text", fake_prose)
     monkeypatch.setattr("handler.scene_loop.emit_choices", fake_choices)
     monkeypatch.setattr("handler.scene_loop.emit_free_text_gate", _gate_off)

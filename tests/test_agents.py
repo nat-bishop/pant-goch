@@ -34,7 +34,6 @@ def test_bundle_accepts_present_npc_delta_and_emittable_commitment():
         "npc_deltas": [{"npc_id": "tom", "trust": "+1"}],
     })
     assert b.npc_deltas[0].npc_id == "tom"  # type: ignore[union-attr]
-    assert b.attention == "0"  # scalar, defaults to no-change
 
     # At the post office, the observation milestone is an emittable commitment.
     state.player_location = "the_post_office"
@@ -63,11 +62,11 @@ def test_bundle_accepts_empty():
     state = make_initial_state(world)
     BundleType = _build_state_change_bundle_type(world, state)
     bundle = BundleType.model_validate(
-        {"npc_deltas": [], "attention": "0", "commitments": []}
+        {"npc_deltas": [], "commitments": []}
     )
-    assert bundle.npc_deltas == [] and bundle.attention == "0" and bundle.commitments == []
+    assert bundle.npc_deltas == [] and bundle.commitments == []
     bundle = BundleType.model_validate({})
-    assert bundle.npc_deltas == [] and bundle.attention == "0" and bundle.commitments == []
+    assert bundle.npc_deltas == [] and bundle.commitments == []
 
 
 def test_state_change_bundle_rejects_duplicate_delta_npc():
@@ -81,21 +80,20 @@ def test_state_change_bundle_rejects_duplicate_delta_npc():
                 {"type": "quality_delta", "npc_id": "tom", "trust": "-1"},
             ],
         })
-    # Distinct NPCs + an attention delta (no npc_id) validate fine.
+    # Distinct NPCs validate fine.
     ok = StateChangeBundle.model_validate({
         "deltas": [
             {"type": "quality_delta", "npc_id": "tom", "trust": "+1"},
             {"type": "quality_delta", "npc_id": "helen", "trust": "+1"},
-            {"type": "attention_delta", "attention": "+1"},
         ],
     })
-    assert len(ok.deltas) == 3
+    assert len(ok.deltas) == 2
 
 
 async def test_emit_state_changes_drops_noop_and_dedups_npc(monkeypatch):
-    """emit_state_changes filters no-op deltas (trust=guard="0", attention="0")
-    and keeps the first delta per NPC — the grammar narrows ids/values but not
-    repeats, so this is what holds the ±1/turn and filler-metric contracts."""
+    """emit_state_changes filters no-op deltas (trust=guard="0") and keeps the
+    first delta per NPC — the grammar narrows ids/values but not repeats, so this
+    is what holds the ±1/turn and filler-metric contracts."""
     from types import SimpleNamespace
     import handler.agents as agents_mod
     from handler.agents import build_scene_runner_bundle, emit_state_changes
@@ -110,7 +108,6 @@ async def test_emit_state_changes_drops_noop_and_dedups_npc(monkeypatch):
             SimpleNamespace(npc_id="tom", trust="+1", guard="0"),  # kept
             SimpleNamespace(npc_id="tom", trust="+1", guard="0"),  # dup npc
         ],
-        attention="+1",   # kept
         commitments=[],
     )
 
@@ -122,11 +119,8 @@ async def test_emit_state_changes_drops_noop_and_dedups_npc(monkeypatch):
     bundle = build_scene_runner_bundle(TestModel(), world)
     out = await emit_state_changes(bundle, state)
 
-    quality = [d for d in out.deltas if getattr(d, "npc_id", None) is not None]
-    attention = [d for d in out.deltas if getattr(d, "npc_id", None) is None]
-    assert len(quality) == 1
-    assert quality[0].npc_id == "tom" and quality[0].trust == "+1"
-    assert len(attention) == 1 and attention[0].attention == "+1"
+    assert len(out.deltas) == 1
+    assert out.deltas[0].npc_id == "tom" and out.deltas[0].trust == "+1"
 
 
 def test_choice_bundle_continue_passes():

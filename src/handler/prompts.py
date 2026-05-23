@@ -27,7 +27,13 @@ See SceneRunnerRuntime in agents.py.
 """
 from __future__ import annotations
 
-from .engine import band_name, confession_depth, emittable_beat_ids, present_npc_ids
+from .engine import (
+    ATTENTION_LEVEL_VALUES,
+    band_name,
+    confession_depth,
+    emittable_beat_ids,
+    present_npc_ids,
+)
 from .state import State
 from .world import World
 
@@ -208,7 +214,7 @@ most of them are protecting some part of it. People open up to patience and
 decency; they close to pressure, lies, and performance.
 
 ## Your Job
-Each turn emit ONE StateChangeBundle with three channels, ALL usually empty/zero:
+Each turn emit ONE StateChangeBundle with two channels, BOTH usually empty:
 
 1. `npc_deltas` — a list with AT MOST ONE entry per person PRESENT this turn
    (and only those present). Most turns this list has ONE entry for the person
@@ -226,18 +232,7 @@ Each turn emit ONE StateChangeBundle with three channels, ALL usually empty/zero
        threatening, recording without consent, pushing hard after being told
        to stop). BREACH is PERMANENT — when unsure, use "+1" guard, never BREACH.
 
-2. `attention` — a SINGLE value, "0" by DEFAULT. Set it to "+1" ONLY when the
-   player did something CONSPICUOUS that makes the village close ranks — a
-   public scene, an indiscretion in earshot, naming a confidential source
-   aloud, raising their voice or making accusations where others can hear.
-   This is INDEPENDENT of `npc_deltas`: a loud public accusation can BOTH
-   spook the person in front of the player (their `guard` "+1") AND raise
-   `attention` "+1" (the room, the village) — set both. **But leave it "0"
-   for all ordinary, private, gentle conversation** — a quiet exchange at the
-   bar, a question asked across a counter. The default and overwhelmingly most
-   common value is "0".
-
-3. `commitments` — AT MOST ONE, and only from the ## Choices Available
+2. `commitments` — AT MOST ONE, and only from the ## Choices Available
    block in the user prompt. These are the player's explicit declarations
    ("I'm filing it", "I'm going up to Tan-y-coed", "I'm telling Iwan") and
    the two observation milestones (reading the letter, standing at the
@@ -256,16 +251,14 @@ Each turn emit ONE StateChangeBundle with three channels, ALL usually empty/zero
    "Dylan admits he knows", "Helen hands over notes" are NOT yours to fire —
    the engine derives them from trust. Your job is only the nudge that earns
    them. Reading the standing block tells you how close they already are.
-4. **BREACH and attention are sticky — reserve them.** A breach ends a
-   relationship for good; attention can run the player out of the village.
-   Use them only on a clear, deliberate provocation, never on a guess.
+4. **BREACH is sticky — reserve it.** A breach ends a relationship for good.
+   Use it only on a clear, deliberate provocation, never on a guess.
 5. **The first turn of a scene shifts nothing** (the narrator is only
-   setting the scene) — emit empty `npc_deltas`, `attention` "0", and no
-   commitment.
+   setting the scene) — emit empty `npc_deltas` and no commitment.
 6. Stay within the established cast and locations. The bible above is
    complete. When nothing moved, emit
-   `{{"npc_deltas": [], "attention": "0", "commitments": []}}` and stop — the
-   empty bundle is the normal, complete answer.
+   `{{"npc_deltas": [], "commitments": []}}` and stop — the empty bundle is
+   the normal, complete answer.
 """
 
 
@@ -721,8 +714,7 @@ def build_phase1_user_prompt(state: State, world: World) -> str:
 
 ## Report Standing
 Emit a StateChangeBundle: `npc_deltas` for the people present (at most one per
-person, small — a warm/decent move is trust "+1"); `attention` "0" unless the
-player did something conspicuous and public; and AT MOST ONE `commitments`
+person, small — a warm/decent move is trust "+1"); and AT MOST ONE `commitments`
 entry only if the player explicitly made one of the choices listed above this
 turn.
 """
@@ -1220,7 +1212,106 @@ Emit the structured output for this scene.
 {npc_directive}"""
 
 
-# ───────────────────────── populator prompts ─────────────────────────
+# ───────────────────────── village attention prompts ─────────────────────────
+
+# Reverse of engine.ATTENTION_LEVEL_VALUES (derived, not hand-copied, so the words
+# and their order can't drift from the engine's int mapping) — index by the level int.
+_ATTENTION_WORDS = tuple(
+    word for word, _ in sorted(ATTENTION_LEVEL_VALUES.items(), key=lambda kv: kv[1])
+)
+
+
+def build_village_attention_system_prompt(world: World) -> str:
+    """Stable system prompt for the dedicated village-attention agent. Baked
+    once; pure function of `world` (KV-cache anchor). Carries locations + cast
+    (voice only, NO knowledge) — this is a judgement about the journalist's
+    CONDUCT, not the mystery's solution, so the hidden truth is withheld (it
+    would only tempt over-reading).
+
+    Why a separate agent at all: bundled into Phase-1's StateChangeBundle the
+    model anchored on the salient per-NPC delta and left attention at its
+    default — private aggression never registered. Asked in isolation the same
+    model classifies village suspicion reliably.
+    """
+    return f"""\
+## Role
+You judge ONE thing: how wary the village of Pant Goch has, COLLECTIVELY, grown
+of the journalist asking around about Megan Pritchard's death — the village's
+ATTENTION. This is NOT any single person's feelings toward her (that is tracked
+elsewhere as trust/guard). It is the village as a whole closing ranks.
+
+## The World
+{_render_locations_block(world)}
+
+## The Cast
+{_render_cast_block(world, voice_only=True)}
+
+## What Raises It
+Village attention rises when the journalist's conduct is the kind that gets
+talked about and makes people guard each other:
+  - a PUBLIC scene or accusation — raised voices, naming names where others hear;
+  - a PATTERN of leaning on people hard — threats, intimidation, refusing to
+    leave when asked, aggressive prying — because word of an outsider behaving
+    like that travels fast in a small place, even when no one else was in the room.
+It does NOT rise from ordinary, courteous questions, however many or however
+pointed. Persistent, decent inquiry is `none`.
+
+## The Four Levels
+Read the scene's transcript (and the prior level) and judge the village's
+CURRENT attention:
+  - `none`: courteous, ordinary inquiry; nothing the village would close ranks over.
+  - `noticed`: the journalist has been pushy or abrasive enough to be remarked on.
+  - `talked_about`: a clear act or pattern of pressure/intimidation; people are
+    wary and warning each other.
+  - `hostile`: the journalist has made themselves unwelcome — a public spectacle
+    or sustained aggression; the village wants them gone.
+
+Attention only ever climbs. If the prior level already exceeds what this scene
+warrants, the engine keeps the higher one — so judge this scene honestly; never
+lower it to be kind.
+
+## Output
+Structured JSON: `{{"level": "none" | "noticed" | "talked_about" | "hostile"}}`.
+"""
+
+
+def build_village_attention_user_prompt(state: State, world: World) -> str:
+    """Per-scene-close user message for the village-attention agent. Stateless
+    per call: the just-ended scene's anchor + turn-by-turn transcript, plus a
+    `## Prior Village Attention` line (the only cross-scene memory — a ratcheting
+    counter needs no more than its current level). Mirrors the chronicler's
+    transcript rendering; the prior level (volatile) lives here, never in the
+    cache-stable system prompt."""
+    assert state.dialogue_history, "build_village_attention_user_prompt: empty dialogue"
+
+    turn_parts: list[str] = []
+    for i, turn in enumerate(state.dialogue_history, start=1):
+        turn_parts.append(f"Turn {i}:\n  Narrator: {turn.prose.strip()}")
+        if turn.player_pick is not None:
+            turn_parts.append("  " + _render_player_pick(
+                turn.player_pick.text, typed=turn.player_pick_typed,
+                typed_label="The journalist", menu_label="The journalist chose to",
+            ))
+    turns_block = "\n".join(turn_parts)
+
+    # Clamp into range (village_attention is 0..3 by design, but guard both ends so a
+    # stray value can never negative-index-wrap into the wrong word).
+    idx = min(max(state.village_attention, 0), len(_ATTENTION_WORDS) - 1)
+    prior_word = _ATTENTION_WORDS[idx]
+
+    return f"""\
+## Prior Village Attention
+Before this scene, the village's attention was: {prior_word}.
+
+## This Scene
+{_chronicler_anchor_lines(state, world)}
+
+Turn-by-turn:
+{turns_block}
+
+## Output
+Judge the village's current attention level after this scene.
+"""
 
 
 def build_populator_system_prompt(world: World) -> str:

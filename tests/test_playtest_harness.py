@@ -230,12 +230,16 @@ def _patch_engine_for_endgame(monkeypatch, decision_beats):
     async def _chronicle(*a, **k):
         return ChronicleEntry(case_file_entry="entry", npc_memory_updates=[])
 
+    async def _village_attention(*a, **k):
+        return "none"
+
     monkeypatch.setattr("handler.scene_loop.emit_placements", _placements)
     monkeypatch.setattr("handler.scene_loop.emit_state_changes", _phase1)
     monkeypatch.setattr("handler.scene_loop.stream_prose_text", _prose)
     monkeypatch.setattr("handler.scene_loop.emit_choices", _choices)
     monkeypatch.setattr("handler.scene_loop.emit_free_text_gate", _gate)
     monkeypatch.setattr("handler.scene_loop.emit_chronicle_entry", _chronicle)
+    monkeypatch.setattr("handler.scene_loop.emit_village_attention", _village_attention)
 
 
 async def test_run_session_smoke_produces_artifact(monkeypatch, tmp_path):

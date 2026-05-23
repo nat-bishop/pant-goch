@@ -18,6 +18,7 @@ from handler.engine import (
     _trust_adjustable_here,
     _turns_since_typed,
     apply_state_changes,
+    apply_village_attention,
     band_name,
     confession_depth,
     emittable_beat_ids,
@@ -28,7 +29,6 @@ from handler.engine import (
 )
 from handler.models import Beat, Brief, Disposition, Ending, Location, NPC, When
 from handler.schemas import (
-    AttentionDelta,
     ChoiceBundle,
     Continue,
     FreeText,
@@ -208,17 +208,27 @@ def test_trust_pinned_to_opens_up_only_at():
 # ───────────────────────── apply_state_changes ─────────────────────────
 
 
-def test_apply_quality_delta_clamped_and_attention_ratchets():
+def test_apply_quality_delta_clamped():
     world = _make_world(npcs=[_npc("tom", "loc_a")])
     s = _state(world)
     bundle = StateChangeBundle(deltas=[
         QualityDelta(npc_id="tom", trust="+1", guard="+1"),
-        AttentionDelta(attention="+1"),
     ])
     apply_state_changes(bundle, s, world)
     assert s.trust["tom"] == 1
     assert s.guard["tom"] == 1
-    assert s.village_attention == 1
+
+
+def test_apply_village_attention_ratchets_up_only():
+    """village_attention is set by the dedicated scene-close agent via
+    apply_village_attention — it climbs to the verdict level and never drops."""
+    world = _make_world(npcs=[_npc("tom", "loc_a")])
+    s = _state(world)
+    assert s.village_attention == 0
+    assert apply_village_attention(s, "talked_about") == 2
+    assert apply_village_attention(s, "none") == 2      # never lowers
+    assert apply_village_attention(s, "noticed") == 2   # nor a lower verdict
+    assert apply_village_attention(s, "hostile") == 3   # but climbs further
 
 
 def test_apply_breach_latches_guard():
@@ -438,18 +448,6 @@ def test_dynamic_bundle_rejects_out_of_range_trust():
         Bundle.model_validate({
             "npc_deltas": [{"npc_id": "tom", "trust": "+2"}],
         })
-
-
-def test_dynamic_bundle_attention_is_scalar_default_zero():
-    """attention is a scalar field, "0" by default — NOT a list member. The
-    model must affirmatively set "+1"; absent any present NPC, npc_deltas is
-    empty and attention can still be raised."""
-    world = _bundle_world()
-    Bundle = _build_state_change_bundle_type(world, _state(world, "loc_b"))  # only maud here
-    b = Bundle.model_validate({"attention": "+1"})
-    assert b.attention == "+1" and b.npc_deltas == []
-    # default when omitted
-    assert Bundle.model_validate({}).attention == "0"
 
 
 def test_dynamic_bundle_accepts_emittable_commitment():

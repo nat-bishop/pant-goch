@@ -15,8 +15,6 @@ import random
 
 from .models import When
 from .schemas import (
-    ATTN_DELTA_VALUES,
-    AttentionDelta,
     FreeText,
     QualityDelta,
     StateChangeBundle,
@@ -76,35 +74,33 @@ def apply_state_changes(
     THIS turn (LLM-emitted commitments + engine-derived milestones), in that
     order — the caller emits one `unlock_beat` SSE per id.
 
-    Three effects, in order:
+    Two effects, in order:
       1. quality deltas — clamped trust/guard nudges for present NPCs (positive
          trust pinned to `_trust_adjustable_here`); a `BREACH` latches guard.
-      2. attention deltas — ratchet the global heat up.
-      3. commitments — the LLM-emitted observation/decision beats.
+      2. commitments — the LLM-emitted observation/decision beats.
     Then `_derive_milestones` auto-unlocks any evidence/outcome beat whose
     `when` gate the deltas just satisfied. Validation happens upstream via
     schema validators + per-call Literal narrowing in
-    `agents._build_state_change_bundle_type`."""
+    `agents._build_state_change_bundle_type`. Global `village_attention` is NOT
+    touched here — it is owned by the dedicated scene-close attention agent
+    (see `apply_village_attention`)."""
     for d in bundle.deltas:
-        if isinstance(d, QualityDelta):
-            if d.npc_id in state.guard_breached:
-                continue  # relationship is over; ignore further nudges
-            t = TRUST_DELTA_VALUES[d.trust]
-            if t > 0 and not _trust_adjustable_here(world, state, d.npc_id):
-                t = 0  # won't warm here (e.g. Dylan at Tan-y-coed)
-            state.trust[d.npc_id] = _clamp(
-                state.trust.get(d.npc_id, 0) + t, 0, TRUST_MAX
+        if d.npc_id in state.guard_breached:
+            continue  # relationship is over; ignore further nudges
+        t = TRUST_DELTA_VALUES[d.trust]
+        if t > 0 and not _trust_adjustable_here(world, state, d.npc_id):
+            t = 0  # won't warm here (e.g. Dylan at Tan-y-coed)
+        state.trust[d.npc_id] = _clamp(
+            state.trust.get(d.npc_id, 0) + t, 0, TRUST_MAX
+        )
+        if d.guard == "BREACH":
+            state.guard_breached.add(d.npc_id)
+        else:
+            state.guard[d.npc_id] = _clamp(
+                state.guard.get(d.npc_id, 0) + TRUST_DELTA_VALUES[d.guard],
+                0,
+                GUARD_MAX,
             )
-            if d.guard == "BREACH":
-                state.guard_breached.add(d.npc_id)
-            else:
-                state.guard[d.npc_id] = _clamp(
-                    state.guard.get(d.npc_id, 0) + TRUST_DELTA_VALUES[d.guard],
-                    0,
-                    GUARD_MAX,
-                )
-        elif isinstance(d, AttentionDelta):
-            state.village_attention += ATTN_DELTA_VALUES[d.attention]
 
     newly: list[str] = []
     for c in bundle.commitments:
@@ -158,6 +154,22 @@ _BAND_WIDTH_BY_WARMS = {"slow": 2, "steady": 1, "fast": 1}
 # to avoid (see truth.yaml scar comments).
 ATTENTION_BANDS = {"noticed": 1, "talked_about": 2, "hostile": 3}
 ATTENTION_EJECT = ATTENTION_BANDS["hostile"]
+
+# The dedicated scene-close attention agent (agents.emit_village_attention) emits
+# one of these four levels; the engine ratchets village_attention UP to its int.
+# `none` (0) is the agent's "nothing the village would close ranks over" verdict —
+# it has no entry in ATTENTION_BANDS (which only names the >0 gate bands), so it
+# lives in this separate level map.
+ATTENTION_LEVEL_VALUES = {"none": 0, "noticed": 1, "talked_about": 2, "hostile": 3}
+
+
+def apply_village_attention(state: State, level: str) -> int:
+    """Ratchet `village_attention` up to the agent's verdict level — never down
+    (the village does not un-notice you). Returns the resulting value."""
+    state.village_attention = max(
+        state.village_attention, ATTENTION_LEVEL_VALUES[level]
+    )
+    return state.village_attention
 
 
 def _clamp(v: int, lo: int, hi: int) -> int:
