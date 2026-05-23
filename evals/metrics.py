@@ -72,6 +72,19 @@ def _play_turns(art: SessionArtifact) -> list[dict]:
     return [e for e in art.transcript if e.get("kind") in ("turn", "free_text")]
 
 
+def _scene_turn_counts(art: SessionArtifact) -> list[int]:
+    """Player turns (turn / free_text) per scene, one count per scene the session
+    played — grouped by the `scene_id` each play turn carries. Surfaces milling:
+    a scene that keeps offering in-scene options shows up here as a large count.
+    With the engine's `MAX_TURNS_PER_SCENE` cap in force, no count should exceed
+    it; a `max_turns_per_scene` riding the cap means scenes routinely mill to the
+    ceiling rather than ending on their own (a soft-close / leave-pressure gap)."""
+    by_scene: Counter[str] = Counter()
+    for e in _play_turns(art):
+        by_scene[e.get("scene_id", "")] += 1
+    return list(by_scene.values())
+
+
 def _ordered_beats(art: SessionArtifact) -> list[str]:
     """Beats in the order they fired across the session — the per-turn
     `applied_beats` concatenated in transcript order. Empty for legacy artifacts
@@ -269,6 +282,8 @@ class CorpusMetrics(BaseModel):
     # depth / linearity
     median_scenes_per_session: float
     median_distinct_locations_per_session: float
+    mean_turns_per_scene: float
+    max_turns_per_scene: int
     longest_common_beat_prefix: list[str]
 
     def to_dict(self) -> dict:
@@ -287,6 +302,10 @@ def corpus_metrics(artifacts: list[SessionArtifact], world: World) -> CorpusMetr
             reached_endings.add(art.ending_id)
         visited |= distinct_locations(art)
         walked |= traversed_edges(art)
+
+    # Flat list of per-scene turn counts across every session — the basis for
+    # mean_turns_per_scene / max_turns_per_scene (milling signal).
+    scene_turns = [c for art in artifacts for c in _scene_turn_counts(art)]
 
     all_beats = set(world.beats)
     all_locations = set(world.locations)
@@ -319,6 +338,9 @@ def corpus_metrics(artifacts: list[SessionArtifact], world: World) -> CorpusMetr
         median_distinct_locations_per_session=_median(
             [len(distinct_locations(art)) for art in artifacts]
         ),
+        mean_turns_per_scene=round(sum(scene_turns) / len(scene_turns), 2)
+        if scene_turns else 0.0,
+        max_turns_per_scene=max(scene_turns) if scene_turns else 0,
         longest_common_beat_prefix=_longest_common_beat_prefix(artifacts),
     )
 

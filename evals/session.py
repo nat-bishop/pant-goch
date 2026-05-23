@@ -43,10 +43,16 @@ from handler.state import State, make_initial_state
 from handler.world import World
 
 
-# Per-session wall-clock ceiling (eval-only safety net; see run_session). Well
-# above a healthy session even under concurrent load — only a true engine stall
-# trips it.
-_SESSION_TIMEOUT_S = 900.0
+# Per-session wall-clock ceiling (eval-only safety net; see run_session). This
+# is a pure hang-backstop, NOT a session-length gate: session length is bounded
+# structurally by the per-scene turn cap (scene_loop.MAX_TURNS_PER_SCENE) × the
+# scene budget (max_scenes), so a healthy playthrough finishes well under this
+# even under concurrent load (deepest observed ~890s at ~16s/turn). It only trips
+# if the engine genuinely wedges — at which point we drop to a truncated artifact
+# rather than letting one stalled session block the whole gather. Raised from
+# 900s after a corpus where deep, fully-healthy exploratory sessions (50+
+# progressing turns) were racing — and losing to — a too-tight 900s wall.
+_SESSION_TIMEOUT_S = 2700.0
 
 
 class SessionBudgetExceeded(Exception):
@@ -299,15 +305,15 @@ async def run_session(
         rec.scene_count += 1
 
     try:
-        # Wall-clock safety net (eval-only). The engine occasionally STALLS a
-        # streaming prose response under concurrent load (inferno stops sending
-        # tokens mid-stream; RetryModel retries only the stream *entry*, never a
-        # mid-stream hang). Because run.py awaits every session in one gather, a
-        # single stalled session blocks the whole run — and its summary.json —
-        # indefinitely. The ceiling is generous (sessions are legitimately slow
-        # under load, ~tens of seconds/turn), so it only trips on a true stall;
-        # the session then drops to a truncated artifact instead of hanging the
-        # corpus. Not a scoring change — a hung session has no ending anyway.
+        # Wall-clock safety net (eval-only) — a hang-backstop, not a length gate.
+        # Session length is bounded by the per-scene turn cap × max_scenes, so a
+        # healthy playthrough finishes well under _SESSION_TIMEOUT_S even under
+        # load (~16s/turn). This guards the one case the structural bounds can't:
+        # if the engine genuinely wedges (a model call that never returns), run.py
+        # awaits every session in one gather, so without this one stalled session
+        # would block the whole run — and its summary.json — indefinitely. On a
+        # true wedge we drop to a truncated artifact instead of hanging the corpus.
+        # Not a scoring change — a wedged session has no ending anyway.
         await asyncio.wait_for(
             play_session(
                 bundle, runtime, state, world,

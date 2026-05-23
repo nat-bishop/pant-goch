@@ -37,6 +37,7 @@ from handler.schemas import (
     UnlockBeat,
 )
 from handler.scene_loop import (
+    MAX_TURNS_PER_SCENE,
     PickOption,
     RunConfig,
     TypeText,
@@ -776,6 +777,50 @@ async def test_play_scene_resets_prose_writer_message_history_at_scene_start(mon
     await play_scene(bundle, runtime, state, request_player_input=_walk_first_adjacent)
     # The first observed prose-writer call MUST see an empty history.
     assert captured == [[]]
+
+
+async def test_play_scene_caps_turns_and_forces_soft_close(monkeypatch):
+    """A scene whose choice author never emits Leave and whose player never
+    elects to leave must still end: at MAX_TURNS_PER_SCENE the engine converts
+    the turn into a narrator soft-close (EndScene), so play_scene returns a
+    finalized EndScene and the player is walked out. This bounds a milling
+    scene (the 40-turns-in-one-location pathology) structurally."""
+    world = load_world(FIXTURE_VALID)
+    bundle = build_scene_runner_bundle(TestModel(), world)
+    runtime = make_scene_runner_runtime()
+    state = make_initial_state(world)
+    state.player_location = "the_slaughtered_lamb"
+
+    _patch_populator(monkeypatch)
+    _patch_village_attention(monkeypatch)
+    _patch_phase1(monkeypatch)
+    # Supply more prose/choices than the cap so a failure to cap overruns into
+    # StopIteration (a loud failure) rather than silently passing.
+    _patch_prose_writer(monkeypatch, [f"t{i}" for i in range(MAX_TURNS_PER_SCENE + 5)])
+    _patch_closing_prose(monkeypatch, "You finally step away.")
+    _patch_choice_author(monkeypatch, [
+        ChoiceBundle(next=Continue(options=[Option(text="stay"), Option(text="press")]))
+        for _ in range(MAX_TURNS_PER_SCENE + 5)
+    ])
+
+    # The player never volunteers to leave — pick option 0 on every Continue.
+    # The only exit is the engine's cap → forced soft-close → walk.
+    def never_leave(prose_part, s, w):
+        if prose_part.next.type == "continue":
+            return PickOption(index=0)
+        return WalkTo(location_id=w.locations[s.player_location].adjacent_to[0])
+
+    result = await play_scene(
+        bundle, runtime, state, request_player_input=never_leave,
+    )
+
+    assert isinstance(result.next, EndScene)
+    assert result.next.to_location in world.locations["the_slaughtered_lamb"].adjacent_to
+    # Exactly the cap's worth of turns ran — no more. The capped turn is the one
+    # with no pick (the player was walked out by the forced soft-close).
+    assert len(state.dialogue_history) == MAX_TURNS_PER_SCENE
+    assert all(r.player_pick is not None for r in state.dialogue_history[:-1])
+    assert state.dialogue_history[-1].player_pick is None
 
 
 # ───────────────────────── play_session ─────────────────────────

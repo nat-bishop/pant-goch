@@ -284,6 +284,17 @@ LEAVE_OPTION_TEXT = "Step outside"
 # every turn after offers a visible way out.
 LEAVE_OPTION_MIN_HISTORY = 2
 
+# Hard ceiling on player turns within a single scene. A scene normally ends
+# when the player leaves or the choice author soft-closes a spent scene; but
+# nothing forces either, so a player who keeps picking in-scene options can
+# mill indefinitely (one observed eval session ran 47 turns in one location).
+# At the cap we convert the turn into a narrator soft-close (EndScene with no
+# destination), so the normal leave path runs — the player picks an adjacent
+# location and any already-met ending still fires on the walk. This bounds a
+# session's wall-clock structurally (cap × max_scenes × per-turn cost), so the
+# eval harness's wall-clock timeout is a pure hang-backstop, never a length gate.
+MAX_TURNS_PER_SCENE = 20
+
 
 def _fallback_choices() -> ChoiceBundle:
     """Engine-authored ChoiceBundle when the choice author's retries
@@ -653,6 +664,7 @@ async def play_scene(
             for nid in _dispositioned_present(bundle.world, state):
                 await _emit_standing(bundle.world, state, nid, emit_event)
 
+    turns_this_scene = 0
     while True:
         # The pick_option / pick_free_text wait below stays OUT of the
         # turn span — span duration should measure the turn's work, not the
@@ -671,6 +683,7 @@ async def play_scene(
                 bundle, runtime, state,
                 emit_event=emit_event, skip_event=skip_event,
             )
+        turns_this_scene += 1
 
         nxt = prose_part.next
 
@@ -680,6 +693,22 @@ async def play_scene(
             if emit_event is not None:
                 await emit_event(game_over_event(nxt.ending_id))
             return prose_part
+
+        # Per-scene turn cap (MAX_TURNS_PER_SCENE): a scene that keeps offering
+        # in-scene options never ends on its own. Once we hit the cap, convert
+        # this turn into a narrator soft-close (EndScene, no destination) so the
+        # spent-scene branch below runs exactly as if the choice author had
+        # closed the scene — the driver surfaces the map and the player walks
+        # out (and `resolved_ending_id_at_close` still fires any met ending).
+        if turns_this_scene >= MAX_TURNS_PER_SCENE and isinstance(nxt, (Continue, FreeText)):
+            logfire.info(
+                "scene hit per-turn cap; forcing soft-close",
+                scene_id=state.scene_id,
+                location=state.player_location,
+                turns_this_scene=turns_this_scene,
+            )
+            nxt = EndScene()
+            prose_part = ProsePart(prose=prose_part.prose, next=nxt)
 
         # Every other branch awaits one PlayerAction. Surface the matching
         # in-scene cue, then arm the map (walk_ready) so a WalkTo is legal.

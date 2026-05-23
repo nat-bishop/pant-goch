@@ -210,6 +210,8 @@ def render_report(summary: dict, prev: dict | None) -> str:
     lines.append(f"- beats per location: {m['beats_per_location']}")
     lines.append(f"- median scenes/session: {m['median_scenes_per_session']}  "
                  f"median locations/session: {m['median_distinct_locations_per_session']}")
+    lines.append(f"- turns/scene: mean {m.get('mean_turns_per_scene')}  "
+                 f"max {m.get('max_turns_per_scene')} (cap 20 — at-cap = milling)")
     lines.append(f"- longest common beat prefix (>50%): {m['longest_common_beat_prefix']}")
     lines.append("")
     lines.append("## Invariant gates (pass-rate)")
