@@ -72,9 +72,11 @@ def _parse_args() -> argparse.Namespace:
     ap.add_argument("--world", type=Path, default=_REPO_ROOT / "world")
     ap.add_argument("--judge-model", type=str, default=None,
                     help="override Settings.judge_model (e.g. gemini:gemini-3.1-pro)")
-    ap.add_argument("--max-cases-per-scope", type=int, default=1000,
+    ap.add_argument("--max-cases-per-scope", type=int, default=400,
                     help="cap cases per scope via a seeded random sample; 0 = no cap. "
-                         "Only the transition scope exceeds the default; the PassFail "
+                         "400 ~ ±5%% margin at 95%% on a rate near 0.5 (precision tracks "
+                         "absolute n, not corpus fraction — so a fixed cap, not a "
+                         "percentage). Only the transition scope exceeds it; the PassFail "
                          "bug-detector scopes run in full.")
     ap.add_argument("--seed", type=int, default=0,
                     help="RNG seed for sampling, so re-judging a run is reproducible")
