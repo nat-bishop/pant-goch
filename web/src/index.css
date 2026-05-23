@@ -741,6 +741,11 @@ a { color: inherit; text-decoration: none; }
 .panel-scroll::-webkit-scrollbar { width: 8px; }
 .panel-scroll::-webkit-scrollbar-thumb { background: var(--ink-faint); border-radius: 3px; }
 
+/* Trailing room so the live edge can be lifted to EDGE_LANDING (~30%) by the
+   page-turn (Chapter.tsx/usePageTurn), and so the reader can scroll the last
+   line up manually. ~70vh ≈ (1 - EDGE_LANDING) of the panel height. */
+.scroll-tail { height: 70vh; flex: 0 0 auto; pointer-events: none; }
+
 /* ── frontispiece ─────────────────────────────────────── */
 
 .frontis {
