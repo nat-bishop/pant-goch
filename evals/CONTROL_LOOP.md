@@ -11,8 +11,11 @@ eval:
 
 | Layer | What it controls | Eval (the gate) | Speed |
 |---|---|---|---|
-| **Per-turn delta** (phase1) | Did *this* move nudge standing correctly? | `make eval-deltas` (deterministic, code-asserted) | seconds |
-| **Corpus behaviour** (sessions) | Does *approach* fork *outcome*? | `make playtest` → `summary.json` | minutes |
+| **Per-turn delta** (phase1) | Did *this* move nudge standing correctly? | `evals iso --suite deltas` (deterministic, code-asserted) | seconds |
+| **Corpus behaviour** (sessions) | Does *approach* fork *outcome*? | `evals play` → `summary.json` | minutes |
+
+(All eval commands run via `uv run python -m evals <cmd>`; an A/B of a single
+design knob is `evals play --experiment <name>`.)
 
 Iterate the fast gate first; only run the corpus once the unit eval is green.
 
@@ -49,7 +52,7 @@ Read a signal that's off, name the layer, turn the matching knob, re-run its gat
 | Signal (where) | What it means | Knob to turn |
 |---|---|---|
 | One delta value emitted on *every* call regardless of input (delta eval ~0%) | Degenerate collapse — model latched a default | **Schema shape** in `agents._build_state_change_bundle_type`. Fix the wire schema, not the prompt (e.g. an optional signal → scalar default, not a union list member). |
-| Warm move → no `trust`; gentle talk → spurious `attention`/`breach` (delta eval) | Per-turn nudge mis-signed | **phase1 prompt** (`build_phase1_system_prompt`). Gate every change on `make eval-deltas`. |
+| Warm move → no `trust`; gentle talk → spurious `attention`/`breach` (delta eval) | Per-turn nudge mis-signed | **phase1 prompt** (`build_phase1_system_prompt`). Gate every change on `evals iso --suite deltas`. |
 | Personas converge on one ending; a shallow persona reaches a **deep-trust** ending (e.g. `distracted_skimmer` → `tom_takes_responsibility`) | Trust accrues **too fast** — `at_peace` reached incidentally | **Band width / pacing**: widen `_BAND_WIDTH_BY_WARMS` / raise `warms` to `slow`, bump `TRUST_MAX`. *And* check the delta eval: if neutral moves score `trust:+1` too often, tighten the prompt's neutral=0/0 rule first. |
 | Every session collapses to `buried_the_story` / truncates with no evidence | Trust accrues **too slow** — nothing reaches `open` | Narrow bands / `warms: steady`; loosen the prompt's warmth threshold. |
 | Patient sessions hit `run_out_of_the_village` | Attention over-emitted on benign play | phase1 prompt: attention `"0"` default, conspicuous-only; verify with the gentle delta cases. |

@@ -170,6 +170,23 @@ OnChronicleEntry = Callable[
 OnSceneClose = Callable[["ProsePart"], Union[None, Awaitable[None]]]
 
 
+@dataclass(frozen=True)
+class RunConfig:
+    """Per-session engine feature flags. Defaults reproduce shipped behaviour,
+    so every existing caller (main.py, __main__.py, tests) that omits it is
+    byte-for-byte unchanged. Threaded through `play_session` → `play_scene`;
+    the eval A/B harness varies it per arm.
+
+    - `allow_mid_scene_leave`: when True (default), the player may leave a scene
+      on any turn once it has a couple of turns behind it — the always-armed map
+      / "Step outside" affordance. When False, the only exit is a narrator
+      soft-close (`Leave`): mid-scene leaving is removed. The first A/B knob
+      (`leave_mode` experiment) flips exactly this.
+    """
+
+    allow_mid_scene_leave: bool = True
+
+
 @contextmanager
 def _root_span(name: str, **attrs):
     """Open a logfire span that starts a NEW root trace, severing the
@@ -582,6 +599,7 @@ async def play_scene(
     emit_event: EmitEvent | None = None,
     skip_event: asyncio.Event | None = None,
     session_id: str = "",
+    run_config: RunConfig = RunConfig(),
 ) -> ProsePart:
     """Run a scene from the current player_location until it ends.
 
@@ -664,24 +682,33 @@ async def play_scene(
             return prose_part
 
         # Every other branch awaits one PlayerAction. Surface the matching
-        # in-scene cue, then arm the map (walk_ready) so a WalkTo is legal
-        # everywhere — including mid-scene. Only the soft-close cue
-        # (scene_spent) flips the frontend to the map; options / free-text
-        # leave the location photo up (quiet voluntary leave).
+        # in-scene cue, then arm the map (walk_ready) so a WalkTo is legal.
+        # With `allow_mid_scene_leave` (default), the map is armed on EVERY
+        # cue, so a WalkTo can end any turn — including mid-scene; only the
+        # soft-close cue (scene_spent) flips the frontend to the map, options /
+        # free-text leave the location photo up (quiet voluntary leave). When
+        # the flag is off, the only exit is a narrator soft-close: the
+        # "Step outside" entry is withheld and the map is armed ONLY on the
+        # spent-scene cue (the A/B `leave_mode` test arm).
         if emit_event is not None:
+            soft_close = not isinstance(nxt, (Continue, FreeText))
             if isinstance(nxt, Continue):
                 # Append the leave entry AFTER the real options so their
                 # indices stay aligned with PickOption. The walk it routes to
                 # is always legal — every location has ≥1 adjacent (invariant 11).
                 payload = [{"text": o.text} for o in nxt.options]
-                if len(state.dialogue_history) >= LEAVE_OPTION_MIN_HISTORY:
+                if (
+                    run_config.allow_mid_scene_leave
+                    and len(state.dialogue_history) >= LEAVE_OPTION_MIN_HISTORY
+                ):
                     payload.append({"text": LEAVE_OPTION_TEXT, "leave": True})
                 await emit_event(options_event(payload))
             elif isinstance(nxt, FreeText):
                 await emit_event(free_text_request_event(nxt))
             else:  # EndScene soft-close — scene spent, only a walk remains
                 await emit_event(scene_spent_event())
-            await emit_event(walk_ready_event())
+            if run_config.allow_mid_scene_leave or soft_close:
+                await emit_event(walk_ready_event())
 
         action = await _maybe_await(
             request_player_input(prose_part, state, bundle.world)
@@ -745,6 +772,7 @@ async def play_session(
     emit_event: EmitEvent | None = None,
     skip_event: asyncio.Event | None = None,
     session_id: str = "",
+    run_config: RunConfig = RunConfig(),
 ) -> ProsePart:
     """Play one full session (multiple scenes) from `state` until an ending
     fires. Returns the terminal EndGame ProsePart.
@@ -776,6 +804,7 @@ async def play_session(
             emit_event=emit_event,
             skip_event=skip_event,
             session_id=session_id,
+            run_config=run_config,
         )
 
         # The closing prose already streamed inside play_scene (EndScene),

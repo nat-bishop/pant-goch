@@ -1,6 +1,6 @@
 """Judge run — score a recorded playtest with the LLM judges, and persist it.
 
-    uv run python -m evals.judge_run --run evals/artifacts/<timestamp>
+    uv run python -m evals judge evals/artifacts/<timestamp>
 
 Decoupled from generation (`evals.run`): reads dumped artifacts only, so it needs
 no llama session and can re-judge a frozen corpus any time. Defaults to local Qwen
@@ -22,19 +22,13 @@ for wall-clock only — the local Qwen judge has no API cost.
 """
 from __future__ import annotations
 
-import argparse
-import asyncio
-import contextlib
 import os
 import random
-import sys
 from collections import defaultdict
 from pathlib import Path
 
+# Tag spans env=eval before importing handler.main (idempotent with evals.cli).
 os.environ.setdefault("HANDLER_ENV", "eval")
-for _stream in (sys.stdout, sys.stderr):
-    with contextlib.suppress(Exception):
-        _stream.reconfigure(encoding="utf-8")
 
 # Importing handler.main configures Logfire + instruments pydantic-ai (same setup
 # evals.run gets), so judge model calls are traced and tagged env=eval.
@@ -64,26 +58,6 @@ from .session import load_run
 from .transitions import extract_transitions, session_view
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
-
-
-def _parse_args() -> argparse.Namespace:
-    ap = argparse.ArgumentParser(description="HANDLER judge run")
-    ap.add_argument("--run", type=Path, required=True, help="artifact dir to judge")
-    ap.add_argument("--world", type=Path, default=_REPO_ROOT / "world")
-    ap.add_argument("--judge-model", type=str, default=None,
-                    help="override Settings.judge_model (e.g. gemini:gemini-3.1-pro)")
-    ap.add_argument("--max-cases-per-scope", type=int, default=400,
-                    help="cap cases per scope via a seeded random sample; 0 = no cap. "
-                         "400 ~ ±5%% margin at 95%% on a rate near 0.5 (precision tracks "
-                         "absolute n, not corpus fraction — so a fixed cap, not a "
-                         "percentage). Only the transition scope exceeds it; the PassFail "
-                         "bug-detector scopes run in full.")
-    ap.add_argument("--seed", type=int, default=0,
-                    help="RNG seed for sampling, so re-judging a run is reproducible")
-    ap.add_argument("--concurrency", type=int, default=64,
-                    help="max judge calls in flight per scope. 64 drains reliably on a "
-                         "single vLLM instance; higher saturated the queue and stalled.")
-    return ap.parse_args()
 
 
 async def _identity(item):
@@ -150,18 +124,32 @@ def _worst_cases_md(results: list[tuple[str, list, object]], k: int = 5) -> str:
     return "\n".join(lines)
 
 
-async def main() -> None:
-    args = _parse_args()
+async def main(
+    *,
+    run: Path,
+    world_path: Path | None = None,
+    judge_model: str | None = None,
+    max_cases_per_scope: int = 400,
+    seed: int = 0,
+    concurrency: int = 64,
+) -> None:
+    """Score a recorded corpus dir (`run`) with the LLM judges and merge the
+    results into its `summary.json` + `judges.md`. Reads dumped artifacts only —
+    no engine session. Settings supply the default judge model.
+
+    `max_cases_per_scope` caps the high-volume transition scope via a seeded
+    sample (0 = no cap); the PassFail bug-detector scopes run in full.
+    """
     settings = Settings()
-    world = load_world(args.world)
-    model = build_judge_model(settings, override=args.judge_model)
-    rng = random.Random(args.seed)
+    world = load_world(world_path or (_REPO_ROOT / "world"))
+    model = build_judge_model(settings, override=judge_model)
+    rng = random.Random(seed)
 
-    print(f"judge_run: scoring {args.run} with "
-          f"{args.judge_model or settings.judge_model}", flush=True)
-    warm_judge(settings, override=args.judge_model)
+    print(f"judge_run: scoring {run} with "
+          f"{judge_model or settings.judge_model}", flush=True)
+    warm_judge(settings, override=judge_model)
 
-    artifacts = load_run(args.run)
+    artifacts = load_run(run)
     transitions = [t for art in artifacts for t in extract_transitions(art)]
     sessions = [session_view(art) for art in artifacts]
     print(f"extracted {len(transitions)} transitions, {len(sessions)} sessions", flush=True)
@@ -178,7 +166,7 @@ async def main() -> None:
     free_text_items = [it for it in tx_items if it[1].is_free_text]
     session_items = [(s.session_id, s) for s in sessions]
 
-    K = args.max_cases_per_scope
+    K = max_cases_per_scope
     scopes: list[tuple[str, list, list]] = [
         ("handler_judge_warrants", _sample(warrant_items, K, rng),
          [BeatFiredAppropriately(model, world), ProseDepictsBeat(model, world)]),
@@ -193,7 +181,7 @@ async def main() -> None:
     scopes = [(name, items, judges) for name, items, judges in scopes if items]
     total = sum(len(items) * len(judges) for _, items, judges in scopes)
     print(f"scoring {total} cases across {sum(len(j) for _, _, j in scopes)} judges "
-          f"(≤{args.concurrency} in flight per scope) ...", flush=True)
+          f"(≤{concurrency} in flight per scope) ...", flush=True)
 
     # One Dataset per scope, run sequentially: each evaluates all cases × its judges
     # concurrently up to max_concurrency; running scopes in series keeps the in-flight
@@ -205,25 +193,21 @@ async def main() -> None:
             cases=[Case(name=cid, inputs=item) for cid, item in items],
             evaluators=judges,
         )
-        rep = await ds.evaluate(_identity, max_concurrency=args.concurrency)
+        rep = await ds.evaluate(_identity, max_concurrency=concurrency)
         results.append((name, judges, rep))
 
     # Headline numbers → merge into summary.json, diffed against the previous run.
     merged: dict[str, dict] = {}
     for _name, _judges, rep in results:
         merged.update(run_report.judge_results(rep))
-    summary_path = run_report.write_judges(args.run, merged)
-    prev = run_report.previous_summary(Path(args.run).parent, args.run)
+    summary_path = run_report.write_judges(run, merged)
+    prev = run_report.previous_summary(Path(run).parent, run)
     prev_judges = (prev or {}).get("judges")
 
     md = _worst_cases_md(results)
-    md_path = Path(args.run) / "judges.md"
+    md_path = Path(run) / "judges.md"
     md_path.write_text(md, encoding="utf-8")
 
     print("\n=== judge summary ===")
     print(run_report.render_judges(merged, prev_judges))
     print(f"\nwrote {summary_path}\n      {md_path}")
-
-
-if __name__ == "__main__":
-    asyncio.run(main())

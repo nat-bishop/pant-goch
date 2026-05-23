@@ -1,33 +1,20 @@
-"""Isolation-eval CLI.
-
-    uv run python -m evals.isolation [--suite deltas,prose,choices,chronicle]
-                                     [--k 16] [--concurrency 16] [--out DIR] [--no-gate]
+"""Isolation-eval lane — driven by the unified `evals` CLI (`evals iso`).
 
 Builds the engine bundle once (and the judge model only if a behavioural suite is
 selected), runs each suite K times per case, merges each suite's pass-rates / judge
 means into `<out>/summary.json`, prints the diffed report, and exits non-zero on any
-floor breach (unless `--no-gate`). Default out dir is `evals/artifacts/isolation/<ts>`
+floor breach (unless gate is off). Default out dir is `evals/artifacts/isolation/<ts>`
 so the run diffs against prior isolation runs (a trend root separate from the playtest
 corpus). Requires a reachable Gemma engine (inferno or bundled llama, per Settings).
 """
 from __future__ import annotations
 
-import argparse
-import asyncio
-import contextlib
 import os
-import sys
 import time
 from pathlib import Path
 
-# Tag spans env=eval before importing handler.main (which configures Logfire at
-# import), so isolation runs are filterable out of real plays.
+# Tag spans env=eval before importing handler.main (idempotent with evals.cli).
 os.environ.setdefault("HANDLER_ENV", "eval")
-
-# Windows consoles default to cp1252 and abort the report on any non-ascii glyph.
-for _stream in (sys.stdout, sys.stderr):
-    with contextlib.suppress(Exception):
-        _stream.reconfigure(encoding="utf-8")
 
 from handler.agents import build_scene_runner_bundle
 from handler.config import Settings
@@ -51,26 +38,20 @@ def resolve_api_url(settings: Settings) -> str:
     return settings.llama_base_url or f"http://{settings.llama_host}:{settings.llama_port}/v1"
 
 
-def _parse_args() -> argparse.Namespace:
-    ap = argparse.ArgumentParser(description="HANDLER isolation-eval lane")
-    ap.add_argument("--suite", type=str, default=None,
-                    help=f"comma-separated subset of {','.join(_ALL_SUITES)} (default: all)")
-    ap.add_argument("--k", type=int, default=16,
-                    help="samples per case (temp=1.0). 16 keeps the 0.8 floor stable.")
-    ap.add_argument("--concurrency", type=int, default=16,
-                    help="max engine/judge calls in flight (= engine KV slots)")
-    ap.add_argument("--out", type=Path, default=None,
-                    help="artifact dir (default: evals/artifacts/isolation/<timestamp>)")
-    ap.add_argument("--judge-model", type=str, default=None,
-                    help="override Settings.judge_model for the behavioural suites")
-    ap.add_argument("--no-gate", action="store_true",
-                    help="report + diff only; never exit non-zero on a floor breach")
-    return ap.parse_args()
-
-
-async def main() -> None:
-    args = _parse_args()
-    selected = [s.strip() for s in args.suite.split(",")] if args.suite else list(_ALL_SUITES)
+async def main(
+    *,
+    suite: str | None = None,
+    k: int = 16,
+    concurrency: int = 16,
+    out: Path | None = None,
+    judge_model: str | None = None,
+    gate: bool = True,
+) -> None:
+    """Run the selected isolation suites (default: all) K times per case, merge
+    pass-rates / judge means into `<out>/summary.json`, print the diffed report,
+    and (when `gate`) exit non-zero on a floor breach. `suite` is a comma-
+    separated subset of `deltas,attention,prose,choices,chronicle`."""
+    selected = [s.strip() for s in suite.split(",")] if suite else list(_ALL_SUITES)
     unknown = [s for s in selected if s not in _ALL_SUITES]
     if unknown:
         raise SystemExit(f"unknown suites: {unknown}. available: {list(_ALL_SUITES)}")
@@ -85,32 +66,27 @@ async def main() -> None:
         model, world, decision_max_tokens=settings.decision_agent_max_tokens
     )
 
-    judge_model = None
+    judge = None
     if _NEEDS_JUDGE.intersection(selected):
-        judge_model = build_judge_model(settings, override=args.judge_model)
-        warm_judge(settings, override=args.judge_model)
+        judge = build_judge_model(settings, override=judge_model)
+        warm_judge(settings, override=judge_model)
 
     factories = {
         "deltas": lambda: deltas.suite(bundle, world),
         "attention": lambda: attention.suite(bundle, world),
-        "prose": lambda: behavioural.prose_suite(bundle, world, judge_model),
-        "choices": lambda: behavioural.choices_suite(bundle, world, judge_model),
+        "prose": lambda: behavioural.prose_suite(bundle, world, judge),
+        "choices": lambda: behavioural.choices_suite(bundle, world, judge),
         "chronicle": lambda: behavioural.chronicle_suite(bundle, world),
     }
     suites = [factories[s]() for s in selected]
 
-    out_dir = args.out or (_REPO_ROOT / "evals" / "artifacts" / "isolation"
-                           / time.strftime("%Y%m%d-%H%M%S"))
-    print(f"isolation: suites={selected} k={args.k} @ concurrency={args.concurrency}; "
+    out_dir = out or (_REPO_ROOT / "evals" / "artifacts" / "isolation"
+                      / time.strftime("%Y%m%d-%H%M%S"))
+    print(f"isolation: suites={selected} k={k} @ concurrency={concurrency}; "
           f"engine={api_url}"
-          + (f"; judge={args.judge_model or settings.judge_model}" if judge_model else ""))
+          + (f"; judge={judge_model or settings.judge_model}" if judge else ""))
     print(f"artifacts -> {out_dir}")
 
     await run_and_report(
-        suites, out_dir=out_dir, k=args.k, concurrency=args.concurrency,
-        gate=not args.no_gate,
+        suites, out_dir=out_dir, k=k, concurrency=concurrency, gate=gate,
     )
-
-
-if __name__ == "__main__":
-    asyncio.run(main())

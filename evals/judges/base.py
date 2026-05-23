@@ -36,6 +36,21 @@ Verdict = PassFail | Scored
 CASE_TIMEOUT_S = 180.0
 
 
+def build_judge_agent(model: Model, output_type: type[BaseModel], system_prompt: str) -> Agent:
+    """A judge agent with the shared wiring every HANDLER judge uses:
+    NativeOutput (json_schema response_format — the local Qwen/inferno endpoint
+    errors on the default tool-output mode) and temperature=0 (a judge must be
+    reproducible run-to-run; the temp=1.0 rule is for the Gemma engine-under-test,
+    not the judge). Used by both the single-item `AgentJudge` and the pairwise
+    judge so they can't drift apart."""
+    return Agent(
+        model,
+        output_type=NativeOutput(output_type),
+        instructions=system_prompt,
+        model_settings={"temperature": 0.0},
+    )
+
+
 @dataclass
 class AgentJudge(Evaluator):
     """Wraps a shared judge model as a pydantic-evals `Evaluator`. Subclasses set
@@ -57,14 +72,7 @@ class AgentJudge(Evaluator):
         # for the default tool-output mode but handles native JSON-schema cleanly.
         cached = getattr(self, "_agent_cache", None)
         if cached is None:
-            cached = Agent(
-                self.model, output_type=NativeOutput(self.output_type),
-                instructions=self.system_prompt,
-                # temp=0: a judge should be reproducible run-to-run (the temp=1.0
-                # sampling rule is for the Gemma engine-under-test, NOT the judge).
-                # Also curbs the verbose off-the-rails reasoning seen at default temp.
-                model_settings={"temperature": 0.0},
-            )
+            cached = build_judge_agent(self.model, self.output_type, self.system_prompt)
             self._agent_cache = cached
         return cached
 

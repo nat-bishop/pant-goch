@@ -17,11 +17,8 @@ help:
 	@echo "  make download-model      Fetch the Gemma 4 E4B Q8_0 GGUF (~8 GB)"
 	@echo "  make test                Run pytest (unit suite, skips live-llama integration)"
 	@echo "  make test-integration    Run pytest including the live-llama integration test"
-	@echo "  make playtest            Run simulated Gemini-player playthroughs + invariant report"
-	@echo "  make judge RUN=<dir>     LLM-as-judge pass over a recorded playtest run"
-	@echo "  make eval-deltas         Phase-1 delta isolation eval (fast; deterministic gate)"
-	@echo "  make eval-attention      Village-attention classifier isolation eval (fast; deterministic gate)"
-	@echo "  make eval-isolation      All per-agent isolation evals (deltas + attention + prose/choice/chronicler)"
+	@echo "  make eval ARGS=\"...\"      Unified eval CLI: iso | play | judge (run with --help)"
+	@echo "                             e.g. ARGS=\"iso\"  |  \"play\"  |  \"play --experiment leave_mode --judge\""
 	@echo "  make typecheck           Run TS typecheck on web/"
 	@echo "  make build               Production build of web/"
 	@echo "  make kill                Force-kill stragglers on :8000/:8080/:5173-5176"
@@ -74,39 +71,18 @@ test:
 test-integration:
 	uv run pytest -q
 
-# Simulated playtest harness — a Gemini player drives many sessions in parallel
-# against the configured engine (inferno by default), each scored against the
-# invariant suite. Requires GOOGLE_API_KEY in env. See EVALS.md.
-.PHONY: playtest
-playtest:
-	SMALLVILLE_USE_INFERNO=1 uv run python -m evals.run
-
-# LLM-as-judge pass over a recorded run. Reads dumped artifacts only (no llama
-# session); defaults to local Qwen via inferno. RUN=<artifact dir> required.
-# e.g. make judge RUN=evals/artifacts/20260520-161349
-.PHONY: judge
-judge:
-	SMALLVILLE_USE_INFERNO=1 uv run python -m evals.judge_run --run $(RUN)
-
-# Isolation-eval lane — frozen turn contexts run against ONE live engine agent K
-# times each (Gemma is temp=1.0), scored as a per-case pass-rate with a CI floor
-# gate. Fast, focused, no full playthrough. Deterministic design rules gate;
-# reused LLM judges trend. See EVALS.md "Isolation" lane.
-#   eval-deltas     — just the Phase-1 per-NPC trust/guard delta suite
-#   eval-attention  — just the scene-close village-attention classifier suite
-#   eval-isolation  — all suites (deltas + attention + prose voice + choice agency + chronicler)
-# Override samples with K=<n> (default 16, keeps the 0.8 floor stable).
-.PHONY: eval-deltas
-eval-deltas:
-	SMALLVILLE_USE_INFERNO=1 uv run python -m evals.isolation --suite deltas --k $(or $(K),16)
-
-.PHONY: eval-attention
-eval-attention:
-	SMALLVILLE_USE_INFERNO=1 uv run python -m evals.isolation --suite attention --k $(or $(K),16)
-
-.PHONY: eval-isolation
-eval-isolation:
-	SMALLVILLE_USE_INFERNO=1 uv run python -m evals.isolation --k $(or $(K),16)
+# Unified eval CLI. The five old targets (playtest / judge / eval-deltas /
+# eval-attention / eval-isolation) are now subcommands of one Typer app; every
+# eval setting is a discoverable flag (`uv run python -m evals <cmd> --help`).
+# `eval` is a thin pass-through so muscle memory survives:
+#   make eval ARGS="iso --suite deltas"
+#   make eval ARGS="play"                       # single-arm playtest
+#   make eval ARGS="play --experiment leave_mode --judge --human"
+#   make eval ARGS="judge evals/artifacts/<ts>"
+# Requires a reachable engine (inferno by default) and, for `play`, GOOGLE_API_KEY.
+.PHONY: eval
+eval:
+	uv run python -m evals $(ARGS)
 
 .PHONY: typecheck
 typecheck:
