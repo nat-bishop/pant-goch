@@ -297,34 +297,48 @@ a { color: inherit; text-decoration: none; }
   height: 100%;
 }
 
+/* Inert dots recede so the eye lands on the beacon(s) and the crosshair.
+   Only the .pin-hit overlay is interactive; every painted marker is inert. */
+.world-overlay--map g > *:not(.pin-hit) { pointer-events: none; }
+
 .world-overlay--map .pin {
-  fill: rgba(237, 226, 196, 0.55);
-  stroke: rgba(13, 10, 7, 0.6);
-  stroke-width: 0.15;
+  fill: rgba(237, 226, 196, 0.32);
+  stroke: rgba(13, 10, 7, 0.5);
+  stroke-width: 0.12;
   transition: fill 260ms, r 260ms;
 }
-.world-overlay--map .pin--here    { fill: var(--red); stroke: rgba(13, 10, 7, 0.8); }
 .world-overlay--map .pin--there   { fill: var(--red-soft); }
-.world-overlay--map .pin--visited { fill: var(--red-soft); }
-/* Reachable now (adjacent + the backend awaiting input): bright cream, the
-   one pin colour that says "click me". Paired with the pulsing .pin-ring. */
-.world-overlay--map .pin--reachable { fill: var(--on-photo); }
+.world-overlay--map .pin--visited { fill: rgba(217, 134, 122, 0.5); }
 
-/* Pulsing ring around a reachable pin — the affordance for "you can walk
-   here." Concentric circle behind the pin; scale+fade loop. */
-.world-overlay--map .pin-ring {
+/* Raised beacon — "you can walk here." A teardrop whose point sits on the
+   location and whose head floats above the sheet, with a ground shadow and a
+   gentle bounce so the affordance reads as UI laid over the drawn map. */
+.world-overlay--map .pin-beacon {
+  fill: #fff7e6;
+  stroke: rgba(13, 10, 7, 0.85);
+  stroke-width: 0.16;
+}
+.world-overlay--map .pin-beacon-dot { fill: var(--red); }
+.world-overlay--map .pin-beacon-shadow { fill: rgba(13, 10, 7, 0.32); }
+.world-overlay--map .pin-beacon-rise {
+  animation: pin-beacon-bounce 1.8s ease-in-out infinite;
+}
+@keyframes pin-beacon-bounce {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(-0.55px); }
+}
+
+/* "You are here" crosshair — the player's home base isn't drawn on the map
+   sheet, so this is the orientation anchor. Steady, restrained pulse. */
+.world-overlay--map .pin-here-ring {
   fill: none;
-  stroke: var(--on-photo);
+  stroke: var(--red);
   stroke-width: 0.18;
-  transform-box: fill-box;
-  transform-origin: center;
-  animation: pin-ring-pulse 1.8s ease-in-out infinite;
+  animation: pin-here-pulse 2.4s ease-in-out infinite;
 }
-@keyframes pin-ring-pulse {
-  0%   { opacity: 0.7; transform: scale(0.7); }
-  70%  { opacity: 0;   transform: scale(1.4); }
-  100% { opacity: 0;   transform: scale(1.4); }
-}
+@keyframes pin-here-pulse { 50% { opacity: 0.4; } }
+.world-overlay--map .pin-here-tick { fill: none; stroke: var(--red); stroke-width: 0.18; }
+.world-overlay--map .pin-here-dot { fill: var(--red); }
 
 .world-overlay--map .pin-hit {
   fill: transparent;
@@ -336,7 +350,7 @@ a { color: inherit; text-decoration: none; }
   cursor: pointer;
 }
 .world-overlay--map .pin-hit[data-clickable="false"] {
-  cursor: not-allowed;
+  cursor: default;
 }
 .world-overlay--map .pin-label {
   font-family: var(--display);
@@ -348,14 +362,21 @@ a { color: inherit; text-decoration: none; }
   stroke: rgba(13, 10, 7, 0.7);
   stroke-width: 0.4;
 }
-.world-overlay--map .pin-label--dim { fill: var(--on-photo-faint); }
-/* Reachable label: brighter + slightly bolder so the eye lands on where
-   you can go. */
-.world-overlay--map .pin-label--reachable {
+/* Beacon label: brightest, so the eye lands on where you can go. */
+.world-overlay--map .pin-label--beacon {
   fill: #fff7e6;
-  font-style: italic;
   font-weight: 600;
 }
+/* "you are here": small caps, red, understated. */
+.world-overlay--map .pin-label--here {
+  fill: var(--red-soft);
+  font-size: 1.7px;
+  font-style: normal;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+/* Hover/transit label on an otherwise-unlabelled dot. */
+.world-overlay--map .pin-label--hover { fill: var(--on-photo); }
 
 .world-overlay--map .tracer {
   fill: none;

@@ -143,10 +143,13 @@ export function MapView({
   const hereXy = currentLocId
     ? toVb(locations.find((l) => l.id === currentLocId)?.map_xy ?? null)
     : null;
-  const hoverXy =
-    hoverId && !walking
-      ? toVb(locations.find((l) => l.id === hoverId)?.map_xy ?? null)
-      : null;
+  // Route preview only when the hovered pin is actually reachable (adjacent
+  // + armed). Hovering an inert pin just reveals its name, not a route.
+  const hoverReachable =
+    hoverId != null && active && !walking && walkReady && adjacent.includes(hoverId);
+  const hoverXy = hoverReachable
+    ? toVb(locations.find((l) => l.id === hoverId)?.map_xy ?? null)
+    : null;
   const preview = hereXy && hoverXy ? tracerPath(hereXy, hoverXy) : null;
 
   return (
@@ -182,43 +185,72 @@ export function MapView({
             const isThere = walking != null && l.id === walking.toId;
             const isVisited = visitedIds.has(l.id) && !isHere && !isThere;
             // Reachable NOW: an adjacent pin while the backend awaits input
-            // (walkReady) and we're not mid-walk. This is the affordance the
-            // old map lacked — gated on walkReady so the pulse only shows
-            // when a click would actually register.
+            // (walkReady) and we're not mid-walk — the one place a click
+            // registers, so it gets the raised beacon.
             const reachable =
               active && !walking && walkReady && adjacent.includes(l.id);
             const clickable = reachable && !walkBusy;
-            const r = isHere || isThere ? 0.9 : isVisited ? 0.6 : 0.45;
+            const isHovered = hoverId === l.id;
+            // Three legible states (cf. Pentiment / FTL travel maps): the
+            // raised bouncing beacon = "walk here"; the crosshair = "you are
+            // here"; everything else recedes to a faint dot. Names appear
+            // only where actionable — beacon, here, or on hover — because the
+            // hand-drawn map already labels most places.
             return (
               <g key={l.id} transform={`translate(${xy.x}, ${xy.y})`}>
-                {reachable && (
-                  // Pulsing ring — "you can walk here." Concentric, behind
-                  // the pin; animation lives in CSS.
-                  <circle r={r + 0.6} className="pin-ring" />
+                {reachable ? (
+                  <>
+                    <ellipse className="pin-beacon-shadow" rx={0.9} ry={0.34} />
+                    <g className="pin-beacon-rise">
+                      <path className="pin-beacon" d="M 0 0 L -0.82 -2.35 A 1.12 1.12 0 1 1 0.82 -2.35 Z" />
+                      <circle className="pin-beacon-dot" cy={-2.85} r={0.42} />
+                    </g>
+                    <text x={0} y={1.7} className="pin-label pin-label--beacon" textAnchor="middle">
+                      {l.name}
+                    </text>
+                  </>
+                ) : isHere ? (
+                  <>
+                    <circle className="pin-here-ring" r={1.05} />
+                    <path className="pin-here-tick" d="M -1.7 0 H -0.7 M 0.7 0 H 1.7 M 0 -1.7 V -0.7 M 0 0.7 V 1.7" />
+                    <circle className="pin-here-dot" r={0.34} />
+                    <text x={0} y={2.5} className="pin-label pin-label--here" textAnchor="middle">
+                      you are here
+                    </text>
+                  </>
+                ) : (
+                  <>
+                    <circle
+                      r={isThere ? 0.9 : isVisited ? 0.55 : 0.45}
+                      className={
+                        "pin" +
+                        (isThere ? " pin--there" : "") +
+                        (isVisited ? " pin--visited" : "")
+                      }
+                    />
+                    {(isThere || isHovered) && (
+                      <text x={0} y={1.6} className="pin-label pin-label--hover" textAnchor="middle">
+                        {l.name}
+                      </text>
+                    )}
+                  </>
                 )}
                 <circle
-                  r={r}
-                  className={
-                    "pin" +
-                    (isHere ? " pin--here" : "") +
-                    (isThere ? " pin--there" : "") +
-                    (isVisited ? " pin--visited" : "") +
-                    (reachable ? " pin--reachable" : "")
-                  }
-                />
-                <circle
-                  r={2.5}
+                  r={reachable ? 3.2 : 2.5}
+                  cy={reachable ? -1.4 : 0}
                   className="pin-hit"
                   data-clickable={clickable ? "true" : "false"}
                   tabIndex={clickable ? 0 : -1}
                   role="button"
                   aria-label={
-                    clickable ? `walk to ${l.name}` : `${l.name} (not adjacent)`
+                    clickable
+                      ? `walk to ${l.name}`
+                      : `${l.name}${isHere ? " (you are here)" : " (not adjacent)"}`
                   }
                   onClick={() => onPinClick(l.id)}
-                  onMouseEnter={() => reachable && setHoverId(l.id)}
+                  onMouseEnter={() => setHoverId(l.id)}
                   onMouseLeave={() => setHoverId((h) => (h === l.id ? null : h))}
-                  onFocus={() => reachable && setHoverId(l.id)}
+                  onFocus={() => setHoverId(l.id)}
                   onBlur={() => setHoverId((h) => (h === l.id ? null : h))}
                   onKeyDown={(e) => {
                     if (clickable && (e.key === "Enter" || e.key === " ")) {
@@ -227,19 +259,6 @@ export function MapView({
                     }
                   }}
                 />
-                <text
-                  x="1.4"
-                  y="0.7"
-                  className={
-                    "pin-label" +
-                    (reachable ? " pin-label--reachable" : "") +
-                    (!isHere && !isThere && !isVisited && !reachable
-                      ? " pin-label--dim"
-                      : "")
-                  }
-                >
-                  {l.name}
-                </text>
               </g>
             );
           })}
