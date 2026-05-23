@@ -262,8 +262,10 @@ judges (one thing each, run on demand).
   Logfire experiments (`handler_judge_*`) alongside the invariants, merge their
   numbers into the run's `summary.json` under a `judges` key (diffed run-over-run
   like the metrics), and write the worst cases to `judges.md`. The high-volume
-  Scored transition scope is sampled (`--max-cases-per-scope`, default 1000, seeded
-  via `--seed`); the small PassFail bug-detector scopes run in full. **Single-transition**
+  Scored transition scope is sampled (`--max-cases-per-scope`, default 400 — ~±5%
+  margin at 95% on a rate near 0.5; precision tracks absolute n, not corpus
+  fraction, so this is a fixed cap rather than a percentage — seeded via `--seed`);
+  the small PassFail bug-detector scopes run in full. **Single-transition**
   (before→after one turn): `beat_fired_appropriately` (the walk-away/Maud-dump/
   helen-without-meeting detector — *not* a regex), `prose_depicts_beat` (phoned-Iwan
   hallucination), `prose_matches_location`, `npc_voice_adherence`,
