@@ -23,6 +23,7 @@ from typing import ClassVar
 from pydantic import BaseModel
 from pydantic_ai import Agent, NativeOutput
 from pydantic_ai.models import Model
+from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_evals.evaluators import EvaluationReason, Evaluator, EvaluatorContext
 
 from .verdicts import PassFail, Scored
@@ -36,18 +37,37 @@ Verdict = PassFail | Scored
 CASE_TIMEOUT_S = 180.0
 
 
+def _judge_model_settings(model: Model) -> dict:
+    # Settings are split by judge model family. The local Qwen/inferno judge gets
+    # its vendor-recommended sampling + a hard token ceiling; a cloud judge
+    # (gemini:/claude:, opt-in A/B) is left to its own defaults — pinning ours
+    # onto it fights the vendor's guidance (Gemini 3.x wants temp≈1.0) and risks
+    # truncating a thinking model whose reasoning spends the same token budget.
+    inner = getattr(model, "wrapped", model)  # unwrap RetryModel
+    if isinstance(inner, OpenAIChatModel):
+        # temp=0.6: Qwen3's recommended value — NOT greedy (temp=0), which Qwen
+        # warns degrades into repetition. Reproducibility across runs is bounded
+        # well enough at 0.6 for a trended metric. max_tokens=768: a verdict is
+        # tiny (a PassFail/Scored + a reason string), so cap hard — without it a
+        # runaway response generates until it trips CASE_TIMEOUT_S, the dominant
+        # cause of errored judge cases. The cap (not temp=0) is now what bounds
+        # the runaway, so the recommended non-greedy temp is safe.
+        return {"temperature": 0.6, "max_tokens": 768}
+    return {}
+
+
 def build_judge_agent(model: Model, output_type: type[BaseModel], system_prompt: str) -> Agent:
-    """A judge agent with the shared wiring every HANDLER judge uses:
-    NativeOutput (json_schema response_format — the local Qwen/inferno endpoint
-    errors on the default tool-output mode) and temperature=0 (a judge must be
-    reproducible run-to-run; the temp=1.0 rule is for the Gemma engine-under-test,
-    not the judge). Used by both the single-item `AgentJudge` and the pairwise
-    judge so they can't drift apart."""
+    """A judge agent with the shared wiring every HANDLER judge uses: NativeOutput
+    (json_schema response_format — the local Qwen/inferno endpoint errors on the
+    default tool-output mode) and family-aware sampling (`_judge_model_settings`:
+    the local Qwen gets temp=0.6 + a hard token cap; a cloud judge keeps its own
+    defaults). Used by both the single-item `AgentJudge` and the pairwise judge so
+    they can't drift apart."""
     return Agent(
         model,
         output_type=NativeOutput(output_type),
         instructions=system_prompt,
-        model_settings={"temperature": 0.0},
+        model_settings=_judge_model_settings(model),
     )
 
 
@@ -67,9 +87,9 @@ class AgentJudge(Evaluator):
 
     def _agent(self) -> Agent:
         # Built once and reused across this judge's cases (model, output_type and
-        # system_prompt are stable). NativeOutput (response_format json_schema),
-        # not tool-calling: the local Qwen/inferno endpoint returns an error body
-        # for the default tool-output mode but handles native JSON-schema cleanly.
+        # system_prompt are stable). Family-aware sampling lives in build_judge_agent
+        # (shared with the pairwise judge), so both judge kinds get the local-Qwen
+        # token cap / cloud-default split from one place.
         cached = getattr(self, "_agent_cache", None)
         if cached is None:
             cached = build_judge_agent(self.model, self.output_type, self.system_prompt)
