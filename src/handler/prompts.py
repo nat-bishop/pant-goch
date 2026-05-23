@@ -342,15 +342,25 @@ The register and rhythm to match:
    thing handed over, the memory shared — not a vague gesture toward it.
    "Tom speaks of Megan" means Tom names a real, particular memory (a
    song, a sports day); it is not Tom muttering "lovely girl" and
-   changing the subject. If no beat is listed, nothing of investigative
-   weight has shifted: write the smaller moment honestly and do not
-   invent a reveal.
+   changing the subject. **Carry the named particulars in the beat's
+   description and "how to write it" notes — the make of the vehicle, the
+   place, the date, the name.** A reveal that drops them ("he saw a
+   vehicle" when the beat says he names a Land Rover he recognised as a
+   specific person's at a named bend) has not depicted the beat. If no
+   beat is listed, nothing of investigative weight has shifted: write the
+   smaller moment honestly and do not invent a reveal.
 
 6. The player may say untrue things — assert events that did not happen,
    put words in a character's mouth, name a motive that is wrong. Do NOT
    adopt the false premise or invent detail that confirms it. The NPC
    deflects, corrects, goes blank, or simply doesn't follow — the world's
-   truth (above) does not bend to a confident question.
+   truth (above) does not bend to a confident question. Specifically: do
+   NOT conjure a physical prop to match the player's assumption (a
+   memorial, a photograph, a badge or marking on a car) when the truth
+   and the location notes do not place it there; do NOT accept a wrong
+   name for the dead or for who did what; and do NOT let an NPC suddenly
+   "recognise" or confirm something the world's truth says they never
+   knew or never said. The prop, the name, the fact stays as authored.
 
 7. Stay inside what the player has observed. Write only what NPCs
    visibly choose to reveal; their hidden thoughts stay hidden.
@@ -460,7 +470,10 @@ emit Continue or Leave.)
    still exploration, and offering a commitment every turn flattens the
    choice. It is a declaration in the current location — it names no
    destination and promises no outcome (Rule 1 still holds); the engine and
-   map carry out whatever follows.
+   map carry out whatever follows. When the user message carries a "## The
+   Player May Be Ready To Act" block, those are the resolutions that are live
+   right now — if the prose supports one, this is where you may voice it; if
+   the block is absent, the moment for a commitment has not come.
 """
 
 
@@ -679,9 +692,19 @@ def _render_applied_changes(applied_beats: list[str], world: World) -> str:
     parts = []
     for bid in applied_beats:
         beat = world.beats.get(bid)
-        name = beat.name if beat else "(unknown beat)"
-        description = beat.description.strip() if beat else "(unknown beat)"
-        parts.append(f"- {name}: {description}")
+        if beat is None:
+            parts.append("- (unknown beat)")
+            continue
+        entry = f"- {beat.name}: {beat.description.strip()}"
+        # notes_to_llm carries the authored particulars the description names
+        # (the actual words, the exact thing handed over) — surfacing it here
+        # is what lets the narrator depict the FULL specific moment instead of
+        # a paraphrase that drops the load-bearing facts (judges:
+        # beat_fired_appropriately, prose_depicts_beat).
+        if beat.notes_to_llm.strip():
+            parts.append(f"{entry}\n  how to write it: {beat.notes_to_llm.strip()}")
+        else:
+            parts.append(entry)
     return "\n".join(parts)
 
 
@@ -769,6 +792,17 @@ def build_prose_writer_user_message(
                 body += "\nHonor this as written — do not re-paraphrase it."
             parts.append(f"## Player\n{body}")
 
+    # Turn 2+ recency anchors. The full location description and NPC voice
+    # samples are injected only on turn 1 (above); by mid-scene they have
+    # scrolled back in the message history and the narrator drifts off the
+    # authored detail and register (judges: prose_matches_location,
+    # npc_voice_adherence). Re-surface both each turn.
+    if not is_first_turn:
+        parts.append(_render_here_anchor(state, world))
+        voices = _render_present_voice(state, world, applied_beats=applied_beats)
+        if voices:
+            parts.append(voices)
+
     parts.append(
         f"## State Changes Just Applied\n{_render_applied_changes(applied_beats, world)}"
     )
@@ -780,6 +814,66 @@ def build_prose_writer_user_message(
     parts.append("## Write\nWrite the prose for what just happened.")
 
     return "\n\n".join(parts)
+
+
+def _render_here_anchor(state: State, world: World) -> str:
+    """Per-turn (turn 2+) sensory recency anchor: re-surface the current
+    location's authored description so the narrator keeps writing the room as
+    written. Grounding, not a cue to re-describe — the detail must stay present
+    and consistent, not be repeated wholesale."""
+    loc = world.locations[state.player_location]
+    return (
+        f"## Here\n"
+        f"{loc.name} — {loc.description.strip()}\n"
+        f"Keep the prose anchored in these specifics — the smells, objects, "
+        f"light, layout. You need not re-describe the room, but nothing you "
+        f"write should drift from or contradict it."
+    )
+
+
+def _render_present_voice(
+    state: State, world: World, *, applied_beats: list[str] | None = None
+) -> str:
+    """Per-turn (turn 2+) voice recency anchor. Turn 1 hands the narrator each
+    present NPC's full voice_sample (every register at once); by mid-scene it
+    has scrolled back and the register drifts. Re-surface the lines that fit
+    where the player now stands — the current band's `voice_by_band` for NPCs
+    with a disposition, else the plain voice_sample. (`voice_by_band` is
+    authored on every load-bearing NPC but otherwise never reaches the prose
+    writer.) Empty string when no one is present.
+
+    An NPC whose own reveal beat is firing THIS turn is skipped: their
+    band sample is the terse register cue (Tom's open-band line is "Land
+    Rover. Going the other way. Recognised it."), and re-surfacing it
+    competes with the beat's "depict the full named particulars" directive
+    in ## State Changes Just Applied. On the firing turn the beat content
+    drives that NPC's line, not the register sample."""
+    npcs_here = world.npcs_at(state.player_location, state=state)
+    if not npcs_here:
+        return ""
+    # NPCs whose reveal beat fires this turn — let the beat content lead.
+    firing_npcs = {
+        world.beats[bid].when.npc
+        for bid in (applied_beats or [])
+        if bid in world.beats
+        and world.beats[bid].when is not None
+        and world.beats[bid].when.npc is not None
+    }
+    parts = ["## Voices Here"]
+    for npc in npcs_here:
+        if npc.id in firing_npcs:
+            continue
+        disp = npc.disposition
+        lines: list[str] = []
+        if disp is not None:
+            lines = disp.voice_by_band.get(band_name(world, state, npc.id), [])
+        if not lines:
+            lines = list(npc.voice_sample)
+        if not lines:
+            continue
+        rendered = " | ".join(f'"{line.strip()}"' for line in lines[:3])
+        parts.append(f"- {npc.name}: {rendered}")
+    return "\n".join(parts) if len(parts) > 1 else ""
 
 
 def _render_stay_here(state: State, world: World) -> str:
@@ -863,11 +957,41 @@ This is turn {turn_n}. No Leave has been emitted yet. {nudge}
 """
 
 
+def _render_decisions_available(state: State, world: World) -> str:
+    """Choice-author hint: the player-decision beats whose `when` gate is
+    satisfied RIGHT NOW (e.g. confront Eluned, tell Iwan, file, walk away).
+    These fire only when the Phase-1 classifier reads an explicit player
+    commitment — which a player who is never offered the move rarely makes.
+    Surfacing the currently-earned decisions lets the choice author offer ONE
+    as an in-voice turning-point option (Rule 7), without naming or signposting
+    it. Empty string when none are earned, so the block costs nothing and never
+    tempts a premature decision. Only `decided_*` beats — observation
+    milestones (reading the letter) surface through the prose on their own."""
+    ids = [
+        bid
+        for bid in emittable_beat_ids(world, state)
+        if world.beats[bid].commitment and bid.startswith("decided_")
+    ]
+    if not ids:
+        return ""
+    parts = [
+        "## The Player May Be Ready To Act",
+        "The scene has reached a point where the player could commit to a "
+        "course of action. IF — and only if — the prose supports it, ONE "
+        "Continue option may be the player resolving on one of these, written "
+        "in their own voice as a natural declaration (Rule 7 — never name it, "
+        "never signpost that anything hangs on it):",
+    ]
+    for bid in sorted(ids, key=lambda b: world.beats[b].name):
+        parts.append(f"- {world.beats[bid].description.strip()}")
+    return "\n".join(parts)
+
+
 def build_choice_author_user_message(state: State, world: World, prose: str) -> str:
     """Per-turn user message for the stateless choice author. The
     just-written prose is the load-bearing context; everything else is a
-    thin scene anchor (where, who's present) so Continue options can
-    ground in location.
+    thin scene anchor (where, who's present, which decisions are earned) so
+    Continue options can ground in location and surface a turning point.
     """
     loc = world.locations[state.player_location]
     present_ids = present_npc_ids(world, state)
@@ -877,6 +1001,8 @@ def build_choice_author_user_message(state: State, world: World, prose: str) -> 
         npcs_line = "no one (you are alone here)"
 
     pacing_block = _render_scene_pacing(state, solo=not present_ids)
+    decisions_block = _render_decisions_available(state, world)
+    decisions_section = f"\n{decisions_block}\n" if decisions_block else ""
 
     return f"""\
 ## Prose
@@ -885,7 +1011,7 @@ def build_choice_author_user_message(state: State, world: World, prose: str) -> 
 ## State
 You are at: {loc.name}
 NPCs present: {npcs_line}
-{pacing_block}
+{pacing_block}{decisions_section}
 ## Choose
 Emit a ChoiceBundle."""
 

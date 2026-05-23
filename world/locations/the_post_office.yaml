@@ -1,7 +1,7 @@
 id: the_post_office
 name: The Post Office
 short_name: the post office
-adjacent_to: [the_old_vicarage, the_slaughtered_lamb]
+adjacent_to: [the_old_vicarage, the_slaughtered_lamb, st_caradocs]
 
 description: |
   The village shop, post office, and one of two places anyone in Pant
@@ -14,7 +14,9 @@ description: |
   Maud has been postmistress for thirty years. She knows most of what
   gets said in Pant Goch and the deliberate trade is in which parts of
   it she repeats. There is a bench outside in the sun where Owain Pugh
-  sometimes sits with his terrier, listening more than he lets on.
+  sometimes sits with his terrier, listening more than he lets on. From
+  the bench a path runs up the hill past the pasture to St Caradoc's
+  churchyard; the pub is the other way, a short walk down the lane.
 
 notes:
   - Maud reads every postcard before stamping it, and remembers most of them.

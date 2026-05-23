@@ -135,3 +135,29 @@ def test_corpus_metrics_smoke():
     # serializes to a flat dict for the report diff
     assert {"ending_entropy_normalized", "filler_turn_ratio",
             "post_exhaustion_turn_ratio"}.issubset(m.to_dict())
+
+
+def _walk(frm, to) -> dict:
+    return {"kind": "walk", "from": frm, "to": to}
+
+
+def test_edge_coverage():
+    # Fixture map is a 3-node chain: vicarage — post_office — slaughtered_lamb (2 edges).
+    world = load_world(FIXTURE_VALID)
+    full = _art(transcript=[
+        _walk("the_old_vicarage", "the_post_office"),
+        _walk("the_post_office", "the_slaughtered_lamb"),
+    ])
+    m = corpus_metrics([full], world)
+    assert m.edge_coverage == 1.0
+    assert m.edges_never_traversed == []
+
+    # Only the first hop walked → half the edges; the unused one is named.
+    partial = _art(transcript=[_walk("the_old_vicarage", "the_post_office")])
+    m2 = corpus_metrics([partial], world)
+    assert m2.edge_coverage == 0.5
+    assert m2.edges_never_traversed == ["the_post_office — the_slaughtered_lamb"]
+
+    # Direction doesn't matter — edges are undirected.
+    rev = _art(transcript=[_walk("the_slaughtered_lamb", "the_post_office")])
+    assert "the_post_office — the_slaughtered_lamb" not in corpus_metrics([rev], world).edges_never_traversed

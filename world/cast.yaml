@@ -1,5 +1,8 @@
-# The 9 named NPCs of Pant Goch. Megan Pritchard exists only as fact and
+# The named NPCs of Pant Goch. Megan Pritchard exists only as fact and
 # prose; she is dead from before the game starts and is not in this file.
+# Mrs Hughes is a deliberate background figure (no disposition ladder — she
+# never becomes a confession source); she is modelled only so the narrator
+# has an authored register to write the vicarage doorstep in.
 
 - id: tom
   name: Old Tom Bevan
@@ -410,3 +413,30 @@
     - "Some of what I say is rubbish. The trick is which."
     # Loyal — protecting Iwan, even from himself.
     - "Iwan doesn't sleep. Did he tell you that? He doesn't."
+
+- id: mrs_hughes
+  name: Mrs Hughes
+  default_location: the_old_vicarage
+  themes:
+    - the running of the house, and nothing beyond it
+    - keeping herself to herself
+  knowledge: |
+    Mrs Hughes cleans and lays fires at the Old Vicarage three mornings
+    a week for the diocese. She knows nothing useful about Megan
+    Pritchard's death and would not discuss it if she did — it is not
+    her place. She is not from the village proper and does not trade in
+    its talk. Treat her as background: she hands over the keys, mentions
+    the letter on the hall table, and gets on with the fire.
+  attitude: |
+    Brisk, civil, incurious. She does not warm to the player and does
+    not gossip; pressed for village talk she deflects to the work in
+    front of her and withdraws to the kitchen. She is not a source and
+    is never a relationship the player can build — keep her to a line or
+    two and let the player move on out into the village.
+  voice_sample:
+    # Brisk and civil — handing over the keys, getting on with it.
+    - "Keys are on the hook. There's a letter come for you on the hall table."
+    - "I'll see to the fire. Kitchen's through there if you want the kettle."
+    # Deflecting — she will not be drawn on the village or the death.
+    - "I wouldn't know about any of that. I only do for the house."
+    - "That's not for me to say. I'll leave you to settle in."

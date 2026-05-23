@@ -161,15 +161,26 @@ beats:
 
   - id: tom_decides_to_speak_to_police
     name: Tom decides to speak to police
-    when: {npc: tom, trust_at_least: at_peace}
+    # at_peace AND the player already holds corroboration earned ELSEWHERE
+    # (the crash site, Dylan, or Helen — NOT tom_named_a_vehicle, which is his
+    # own pub reveal). Tom only resolves to go to the police once it is clear
+    # the truth is already coming out without him — it is no longer his secret
+    # alone to keep. This stops the pub from being a 3-scene terminal: the
+    # player must investigate beyond the village before the climax can fire.
+    when:
+      npc: tom
+      trust_at_least: at_peace
+      any_evidence_of: [examined_the_crash_site, dylan_admits_he_knows, helen_hands_over_notes]
     description: |
       Tom Bevan, having unburdened himself across more than one
       conversation and feeling steadier than he has in seven years, tells
       the player he is going to Knighton on Monday to make a new statement.
     notes_to_llm: |
       Tom decides on his own — narrate without ceremony, a man telling
-      another man he is going into town next week. After this, Tom is at
-      peace with himself for the first time in the story.
+      another man he is going into town next week. He does this only once he
+      senses the player already knows enough that the truth will surface with
+      or without him; it tips him from carrying it alone to letting it go.
+      After this, Tom is at peace with himself for the first time in the story.
 
   # ─────────────────────── Decision beats (LLM-emitted, mutually exclusive) ───────────────────────
   # The ONLY beats the classifier emits as the player's explicit commitment.

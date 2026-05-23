@@ -124,6 +124,50 @@ def _worst_cases_md(results: list[tuple[str, list, object]], k: int = 5) -> str:
     return "\n".join(lines)
 
 
+def _judges_by_location(
+    results: list[tuple[str, list, object]], loc_by_cid: dict[str, str]
+) -> dict[str, dict]:
+    """Per-location breakdown of the SCORED transition judges (prose↔location,
+    choice meaningfulness, voice). The corpus average hides which *places* drag a
+    judge down — e.g. thinly-authored back-half locations producing cosmetic
+    choices. Sorted-worst-first rendering turns that into an authoring to-do.
+    Keyed judge → location → {mean, n, n_below_3}."""
+    out: dict[str, dict[str, dict]] = {}
+    for name, _judges, rep in results:
+        if name != "handler_judge_transitions":
+            continue
+        for case in rep.cases:
+            loc = loc_by_cid.get(case.name)
+            if loc is None:
+                continue
+            for jname, r in case.scores.items():
+                v = float(r.value)
+                d = out.setdefault(jname, {}).setdefault(
+                    loc, {"_sum": 0.0, "n": 0, "n_below_3": 0})
+                d["_sum"] += v
+                d["n"] += 1
+                if v <= 3:
+                    d["n_below_3"] += 1
+    return {
+        jname: {
+            loc: {"mean": round(d["_sum"] / d["n"], 3),
+                  "n": d["n"], "n_below_3": d["n_below_3"]}
+            for loc, d in locs.items()
+        }
+        for jname, locs in out.items()
+    }
+
+
+def _render_judges_by_location(by_location: dict[str, dict]) -> str:
+    lines = ["=== judges by location (scored transition judges, worst first) ==="]
+    for jname in sorted(by_location):
+        lines.append(f"- {jname}:")
+        for loc, st in sorted(by_location[jname].items(), key=lambda kv: kv[1]["mean"]):
+            flag = "  ⚠️" if st["n_below_3"] else ""
+            lines.append(f"    {st['mean']:>5.2f}  {loc:24} (n={st['n']}, ≤3×{st['n_below_3']}){flag}")
+    return "\n".join(lines)
+
+
 async def main(
     *,
     run: Path,
@@ -208,6 +252,14 @@ async def main(
     md_path = Path(run) / "judges.md"
     md_path.write_text(md, encoding="utf-8")
 
+    # Per-location breakdown of the scored transition judges (Tier 2a) — surfaces
+    # the quality dip in thinly-authored locations the corpus average smooths over.
+    by_location = _judges_by_location(results, {cid: t.location for cid, t in tx_items})
+    if by_location:
+        run_report.write_summary_block(run, "judges_by_location", by_location)
+
     print("\n=== judge summary ===")
     print(run_report.render_judges(merged, prev_judges))
+    if by_location:
+        print("\n" + _render_judges_by_location(by_location))
     print(f"\nwrote {summary_path}\n      {md_path}")
