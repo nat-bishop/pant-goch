@@ -57,6 +57,52 @@ make test                  # fast unit suite (~3s, no live llama)
 make test-integration      # includes the live-llama integration test
 ```
 
+## Evals
+
+One CLI, three subcommands (run from the repo root; the engine defaults to the
+inferno gateway). Every setting is a flag — run any command with `--help`:
+
+```
+uv run python -m evals --help          # lists iso / play / judge
+uv run python -m evals play --help     # every flag for that subcommand
+```
+
+| Command | What it does |
+|---|---|
+| `uv run python -m evals iso` | Fast deterministic per-agent gate (frozen turn contexts, K samples, CI floor). `--suite deltas,attention,…` to scope. |
+| `uv run python -m evals play` | Full simulated-player corpus + invariant report + `summary.json`. |
+| `uv run python -m evals play --experiment <name>` | **A/B**: runs the two arms in `evals/experiments/<name>.yaml`, diffs the metrics, and (with `--judge`) pairwise-judges blinded transcripts and clusters the rationales into common themes. |
+| `uv run python -m evals judge <run-dir>` | Re-judge a recorded corpus (no engine needed). |
+
+`make eval ARGS="…"` is a thin pass-through, e.g. `make eval ARGS="iso --suite deltas"`.
+
+**A/B human rating** (optional). After `play --experiment <name>` writes blinded
+`pairs.jsonl`, rate them side-by-side in the browser, then re-run with `--human`
+to merge your verdicts (human win-rate + agreement with the LLM judge):
+
+```
+uv run python scripts/ab_rater.py --run evals/artifacts/ab/<ts>   # opens :8766
+uv run python -m evals play --experiment leave_mode --human       # merges human_ratings.jsonl
+```
+
+### Shorter command (optional shell alias)
+
+`uv run python -m evals …` is the portable form. To type just `evals …` instead,
+add a shell function (it must be run from inside the repo, like `uv run` itself):
+
+```powershell
+# PowerShell — add to $PROFILE
+function evals { uv run python -m evals @args }
+```
+
+```bash
+# bash / zsh — add to ~/.bashrc or ~/.zshrc
+evals() { uv run python -m evals "$@"; }
+```
+
+Then `evals iso`, `evals play --experiment leave_mode --judge`, etc. Tab-completion
+is available via `uv run python -m evals --install-completion`.
+
 ## Authoring
 
 World content lives in `world/`:

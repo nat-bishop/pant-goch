@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>HANDLER A/B rater</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.5 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+         background: #14161a; color: #d7dbe0; }
+  header { padding: 12px 18px; border-bottom: 1px solid #2a2e36; display: flex;
+           align-items: baseline; gap: 16px; position: sticky; top: 0; background: #14161a; }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; color: #fff; }
+  #progress { color: #8b919c; }
+  #persona { color: #e0b072; }
+  main { padding: 18px; max-width: 1500px; margin: 0 auto; }
+  .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .side { background: #1b1e24; border: 1px solid #2a2e36; border-radius: 8px; padding: 14px; }
+  .side h2 { margin: 0 0 10px; font-size: 13px; letter-spacing: .08em; color: #8b919c; }
+  pre { white-space: pre-wrap; word-break: break-word; margin: 0; font-size: 13.5px; }
+  .controls { display: flex; gap: 10px; justify-content: center; margin: 22px 0 8px; }
+  button { font: inherit; padding: 10px 22px; border-radius: 8px; cursor: pointer;
+           border: 1px solid #3a4250; background: #232833; color: #d7dbe0; }
+  button.a { border-color: #3d6e9e; } button.a:hover { background: #20364c; }
+  button.b { border-color: #9e6e3d; } button.b:hover { background: #4c3620; }
+  button:hover { background: #2c333f; }
+  .hint { text-align: center; color: #6c727c; font-size: 13px; }
+  #done { text-align: center; padding: 60px 20px; color: #8fae6b; }
+</style>
+</head>
+<body>
+<header>
+  <h1>A/B rater</h1>
+  <span id="progress">loading…</span>
+  <span id="persona"></span>
+</header>
+<main>
+  <div id="card"></div>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+let queue = [];      // unrated pairs
+let totals = { rated: 0, total: 0 };
+
+async function load() {
+  const r = await fetch("/api/pairs");
+  const data = await r.json();
+  queue = data.pairs;
+  totals = { rated: data.rated.length, total: data.total };
+  render();
+}
+
+function render() {
+  if (!queue.length) {
+    $("progress").textContent = `${totals.rated}/${totals.total} rated`;
+    $("persona").textContent = "";
+    $("card").innerHTML = `<div id="done">All ${totals.total} pairs rated. ✓<br>
+      Re-run <code>evals play --experiment &lt;name&gt; --human</code> to merge.</div>`;
+    return;
+  }
+  const p = queue[0];
+  $("progress").textContent = `${totals.rated}/${totals.total} rated — ${queue.length} left`;
+  $("persona").textContent = `persona: ${p.persona}`;
+  $("card").innerHTML = `
+    <div class="pair">
+      <div class="side"><h2>TRANSCRIPT A</h2><pre>${esc(p.A)}</pre></div>
+      <div class="side"><h2>TRANSCRIPT B</h2><pre>${esc(p.B)}</pre></div>
+    </div>
+    <div class="controls">
+      <button class="a" onclick="rate('A')">A is better &nbsp;(1)</button>
+      <button onclick="rate('tie')">Tie &nbsp;(2)</button>
+      <button class="b" onclick="rate('B')">B is better &nbsp;(3)</button>
+    </div>
+    <p class="hint">Which is the better scene experience? Keys: 1 = A, 2 = tie, 3 = B</p>`;
+}
+
+function esc(s) { return s.replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c])); }
+
+async function rate(choice) {
+  const p = queue[0];
+  if (!p) return;
+  await fetch("/api/rate", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ pair_id: p.pair_id, choice }),
+  });
+  queue.shift();
+  totals.rated++;
+  render();
+}
+
+document.addEventListener("keydown", (e) => {
+  if (!queue.length) return;
+  if (e.key === "1") rate("A");
+  else if (e.key === "2") rate("tie");
+  else if (e.key === "3") rate("B");
+});
+
+load();
+</script>
+</body>
+</html>

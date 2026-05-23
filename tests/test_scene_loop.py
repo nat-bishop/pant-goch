@@ -38,6 +38,7 @@ from handler.schemas import (
 )
 from handler.scene_loop import (
     PickOption,
+    RunConfig,
     TypeText,
     WalkTo,
     _assemble_prose_part,
@@ -589,6 +590,112 @@ async def test_play_scene_drives_until_walk(monkeypatch):
     assert state.dialogue_history[0].player_pick is not None
     assert state.dialogue_history[1].player_pick is not None
     assert state.dialogue_history[2].player_pick is None
+
+
+def _gated_scene_fixtures(monkeypatch):
+    """Two Continue turns then a Leave soft-close, with all LLM calls stubbed —
+    shared setup for the leave-affordance arm tests below. Returns
+    (bundle, runtime, state)."""
+    world = load_world(FIXTURE_VALID)
+    bundle = build_scene_runner_bundle(TestModel(), world)
+    runtime = make_scene_runner_runtime()
+    state = make_initial_state(world)
+    state.player_location = "the_slaughtered_lamb"
+
+    _patch_populator(monkeypatch)
+    _patch_village_attention(monkeypatch)
+    _patch_phase1(monkeypatch)
+    _patch_prose_writer(monkeypatch, ["t1", "t2", "t3"])
+    _patch_closing_prose(monkeypatch, "You step back out into the lane.")
+    _patch_choice_author(monkeypatch, [
+        ChoiceBundle(next=Continue(options=[Option(text="stay"), Option(text="ask")])),
+        ChoiceBundle(next=Continue(options=[Option(text="watch"), Option(text="speak")])),
+        ChoiceBundle(next=Leave()),
+    ])
+    return bundle, runtime, state
+
+
+async def test_play_scene_default_offers_step_outside_and_arms_map_each_turn(monkeypatch):
+    """Default RunConfig (allow_mid_scene_leave=True): the "Step outside" leave
+    entry is appended to the 2nd+ Continue turn's options, and walk_ready arms
+    the map after every cue (mid-scene exit always available)."""
+    bundle, runtime, state = _gated_scene_fixtures(monkeypatch)
+    events: list[dict] = []
+
+    async def collect(ev):
+        events.append(ev)
+
+    await play_scene(
+        bundle, runtime, state,
+        request_player_input=_walk_first_adjacent,
+        emit_event=collect,
+    )
+
+    option_events = [e for e in events if e["event"] == "options"]
+    # Turn 1 (no history yet) → no leave entry; turn 2 → "Step outside" appended.
+    assert not any(o.get("leave") for o in option_events[0]["options"])
+    assert any(o.get("leave") for o in option_events[1]["options"])
+    # The map is armed after every cue, including the mid-scene Continue turns.
+    assert sum(e["event"] == "walk_ready" for e in events) == len(option_events) + 1
+
+
+async def test_play_scene_gated_withholds_midscene_leave(monkeypatch):
+    """RunConfig(allow_mid_scene_leave=False): no "Step outside" entry on any
+    Continue turn, and walk_ready arms the map ONLY at the soft-close — never
+    mid-scene. The soft-close still resolves normally (player walks out)."""
+    bundle, runtime, state = _gated_scene_fixtures(monkeypatch)
+    events: list[dict] = []
+
+    async def collect(ev):
+        events.append(ev)
+
+    result = await play_scene(
+        bundle, runtime, state,
+        request_player_input=_walk_first_adjacent,
+        emit_event=collect,
+        run_config=RunConfig(allow_mid_scene_leave=False),
+    )
+
+    option_events = [e for e in events if e["event"] == "options"]
+    # No Continue turn ever offers the leave entry.
+    assert not any(o.get("leave") for e in option_events for o in e["options"])
+    # walk_ready fires exactly once — at the spent-scene cue, not mid-scene.
+    walk_ready_idxs = [i for i, e in enumerate(events) if e["event"] == "walk_ready"]
+    spent_idx = next(i for i, e in enumerate(events) if e["event"] == "scene_spent")
+    assert walk_ready_idxs == [spent_idx + 1]
+    # The soft-close still ends the scene the same way.
+    assert isinstance(result.next, EndScene)
+
+
+async def test_play_scene_gated_still_resolves_ending_on_close(monkeypatch):
+    """Gating mid-scene leave must not skip a climax: a soft-close into a
+    satisfied ending still returns EndGame (the player never had to walk)."""
+    world = load_world(FIXTURE_VALID)
+    bundle = build_scene_runner_bundle(TestModel(), world)
+    runtime = make_scene_runner_runtime()
+    state = make_initial_state(world)
+    state.player_location = "the_slaughtered_lamb"
+
+    _patch_populator(monkeypatch)
+    _patch_village_attention(monkeypatch)
+    _patch_phase1(monkeypatch)
+    _patch_prose_writer(monkeypatch, ["t1"])
+    # Drive an ending to satisfied, then Leave on turn 1 → EndGame at close.
+    monkeypatch.setattr(
+        "handler.scene_loop.resolved_ending_id_at_close",
+        lambda world, state: next(iter(world.endings)),
+    )
+    _patch_choice_author(monkeypatch, [ChoiceBundle(next=Leave())])
+
+    def _never_walk(prose_part, s, w):
+        raise AssertionError("gated soft-close into an ending must not await a walk")
+
+    result = await play_scene(
+        bundle, runtime, state,
+        request_player_input=_never_walk,
+        run_config=RunConfig(allow_mid_scene_leave=False),
+    )
+    assert isinstance(result.next, EndGame)
 
 
 async def test_play_scene_dispatches_free_text(monkeypatch):

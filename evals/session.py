@@ -34,6 +34,7 @@ from handler.scene_loop import (
     LEAVE_OPTION_MIN_HISTORY,
     PickOption,
     PlayerAction,
+    RunConfig,
     TypeText,
     WalkTo,
     play_session,
@@ -85,6 +86,10 @@ class SessionArtifact:
     case_file_entries: list[str]
     npc_memory: dict[str, list[str]]
     transcript: list[dict]
+    # A/B arm label ("control" / "test"). None for ordinary single-arm
+    # playtests. Defaulted so artifacts written before this field still load
+    # via `cls(**json)`.
+    arm: str | None = None
 
     @classmethod
     def capture(
@@ -100,6 +105,7 @@ class SessionArtifact:
         scene_count: int,
         truncated: bool,
         transcript: list[dict],
+        arm: str | None = None,
     ) -> SessionArtifact:
         return cls(
             persona=persona,
@@ -115,6 +121,7 @@ class SessionArtifact:
             case_file_entries=list(state.case_file_entries),
             npc_memory={k: list(v) for k, v in state.npc_memory.items() if v},
             transcript=transcript,
+            arm=arm,
         )
 
     def dump(self, out_dir: Path) -> Path:
@@ -166,11 +173,17 @@ async def run_session(
     model_player: str = "gemini-3.1-flash-lite",
     player_api_key: str | None = None,
     player: Player | None = None,
+    run_config: RunConfig = RunConfig(),
+    arm: str | None = None,
 ) -> SessionArtifact:
     """Play one full session and return (and dump) its artifact.
 
     `player` is injectable: real runs leave it None and a `GeminiPlayer` is
     built from `persona_prompt`; tests pass a stub so no cloud call is made.
+
+    `run_config` selects per-arm engine behaviour (e.g. whether the player may
+    leave mid-scene); `arm` tags the artifact for A/B diffing. Both default to
+    shipped/single-arm behaviour.
     """
     if player is None:
         from .player import GeminiPlayer
@@ -230,7 +243,14 @@ async def run_session(
         nxt = prose_part.next
         if isinstance(nxt, Continue):
             options = nxt.options
-            can_leave = len(state.dialogue_history) >= LEAVE_OPTION_MIN_HISTORY
+            # The mid-scene leave affordance mirrors the always-on UI exit, but
+            # only when this arm allows it (RunConfig.allow_mid_scene_leave).
+            # The test arm withholds it, so the player can only leave at a
+            # narrator soft-close — exactly the engine gate in play_scene.
+            can_leave = (
+                run_config.allow_mid_scene_leave
+                and len(state.dialogue_history) >= LEAVE_OPTION_MIN_HISTORY
+            )
             idx = await player.pick_option(prose_part, can_leave=can_leave)
             if can_leave and idx >= len(options):
                 # Player chose the appended Leave entry over any in-scene option.
@@ -294,6 +314,7 @@ async def run_session(
                 request_player_input=request_player_input,
                 on_scene_close=on_scene_close,
                 on_chronicle_entry=on_chronicle_entry,
+                run_config=run_config,
             ),
             timeout=_SESSION_TIMEOUT_S,
         )
@@ -313,6 +334,7 @@ async def run_session(
         scene_count=rec.scene_count,
         truncated=truncated,
         transcript=rec.transcript,
+        arm=arm,
     )
     artifact.dump(out_dir)
     return artifact

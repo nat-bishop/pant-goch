@@ -138,8 +138,8 @@ temp=1.0.** "Phase 1 must not bump `attention` on a private warm exchange" is a
 *hard rule*, but the agent is stochastic, so a single run is not a build-gateable
 boolean — it is a **pass-rate over K samples**.
 
-This is the **isolation lane** (`evals/isolation/`, `make eval-deltas` /
-`make eval-isolation`). Freeze the input `State`, re-run the real agent K times,
+This is the **isolation lane** (`evals/isolation/`, `python -m evals iso --suite deltas` /
+`python -m evals iso`). Freeze the input `State`, re-run the real agent K times,
 score each sample, gate on the per-case pass-rate with a floor:
 
 - It re-executes the agent, so unlike a frozen *judge* case (which freezes recorded
@@ -239,12 +239,17 @@ Three lanes, scoped by where a property is decidable. The discipline: structural
 facts are gates/metrics (pure-python, every run); behavioural judgments are LLM
 judges (one thing each, run on demand).
 
+All three lanes run through one CLI — `uv run python -m evals <iso|play|judge>`
+(every setting is a `--flag`; `make eval ARGS="..."` is a thin pass-through). A/B
+is `play --experiment <name>` (the multi-arm case), not a separate command.
+
 | Lane | Scope | Module | Surface |
 |---|---|---|---|
-| **Gates** (must hold) | per session | `evals/evaluators.py` | `make playtest` |
-| **Metrics** (trend) | corpus | `evals/metrics.py` → `report.py` | `make playtest` → `summary.json` + diffed report |
-| **Judges** (score one thing) | transition / session | `evals/judges/` | `make judge RUN=<dir>` |
-| **Isolation** (re-run one agent K×) | single agent | `evals/isolation/` | `make eval-deltas` / `make eval-isolation` |
+| **Gates** (must hold) | per session | `evals/evaluators.py` | `evals play` |
+| **Metrics** (trend) | corpus | `evals/metrics.py` → `report.py` | `evals play` → `summary.json` + diffed report |
+| **Judges** (score one thing) | transition / session | `evals/judges/` | `evals judge <dir>` (or `evals play --judge`) |
+| **Isolation** (re-run one agent K×) | single agent | `evals/isolation/` | `evals iso --suite deltas` / `evals iso` |
+| **A/B** (two arms + diff) | corpus × 2 | `evals/ab.py`, `evals/judges/pairwise.py` | `evals play --experiment <name> [--judge] [--human]` |
 
 - **Gates** — `NoPrematureEnding` is the live depth gate (an ending must follow ≥3
   scenes / ≥3 locations); `EndingEarned`/`ExploredBeyondStart` are superseded but
@@ -254,7 +259,7 @@ judges (one thing each, run on demand).
   separation) plus coverage, beats-per-location, depth, longest-common-beat-prefix,
   and ladder-compression. Each run writes `summary.json`; the report diffs it
   against the previous run — that diff is the iteration loop.
-- **Judges** (`make judge RUN=<artifact dir>`) — default to local Qwen via inferno
+- **Judges** (`evals judge <artifact dir>`) — default to local Qwen via inferno
   (no key; warmed once; fired concurrently). Each judge is a pydantic-evals
   `Evaluator` (`AgentJudge.evaluate` bridges its PassFail/Scored verdict onto a
   bool assertion / float score); `judge_run` wraps each scope's items in a `Dataset`
