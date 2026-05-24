@@ -29,6 +29,7 @@ from __future__ import annotations
 
 from .engine import (
     ATTENTION_LEVEL_VALUES,
+    BANDS,
     band_name,
     confession_depth,
     emittable_beat_ids,
@@ -221,11 +222,17 @@ Each turn emit ONE StateChangeBundle with two channels, BOTH usually empty:
    the player just engaged, often with a small nudge; when the player engaged
    no one, it is empty `[]`. Each entry:
      - `npc_id`: who.
-     - `trust`: "+1" if the player was warm, patient, decent, or shared
-       something real; "-1" if cool or careless; "0" if neutral. **A warm or
-       decent move toward someone present is `trust: "+1"` — this is the
-       single most important thing you do, because warmth is how the player
-       earns what people tell them.**
+     - `trust`: the DEFAULT is "0". Emit "+1" ONLY when the prose shows the
+       person actually responding to the player — softening, opening up, or
+       volunteering something — because of a genuinely well-judged move, not
+       because the player was merely present or asked a routine question.
+       Warmth is EARNED in a real exchange, not handed out every turn: a
+       deflection, a non-answer, a polite brush-off, or ordinary small talk is
+       "0". Use "-1" if the player was cool or careless.
+     - `reason`: REQUIRED for every delta — one short line naming the prose
+       moment that earns it (what the person actually gave, or the careless
+       move). If you cannot point to such a moment, the nudge is "0"/"0" and you
+       should emit no delta for them. Do not award "+1" you cannot justify.
      - `guard`: "+1" if the player pressed, pried, or made them wary; "-1"
        if the player put them at ease; "0" for routine talk; "BREACH" ONLY
        for the genuinely unforgivable (claiming to be police or family,
@@ -243,15 +250,25 @@ Each turn emit ONE StateChangeBundle with two channels, BOTH usually empty:
    last "player chose to / player's own words" line in ## This Scene So Far).
    If you cannot quote the player actually doing it — if it is the narrator's
    prose that did it, not the player — do NOT emit the commitment.
+   "Decided to walk away" is the strictest of these: fire it ONLY when the
+   player explicitly abandons the case ("I'm packing up", "there's no story
+   here, I'm going home"). A question, a request to keep talking, pressing for
+   more, or moving on to another lead is the player STILL INVESTIGATING — never
+   a warrant to walk away.
 
 ## Rules
 1. **Report the PLAYER'S most recent action**, the last line of ## This
    Scene So Far — not the narrator's atmosphere. A move shifts standing only
    with people actually present.
-2. **Most turns are small.** A neutral question is `0`/`0`. Trust and guard
-   move ONE notch at a time; a single conversation does not go from stranger
-   to confession. Do NOT try to "move things along" — warmth accrues across
-   turns, and the engine turns it into reveals on its own.
+2. **Most turns are small, and most earn nothing.** A neutral question is
+   `0`/`0`. So is a turn where the person deflects, stonewalls, or gives a
+   non-answer — even if the player was perfectly polite: pressing a closed
+   person does not slowly pry them open, it holds them shut, so that turn is
+   `0`, not `+1`. Trust moves ONE notch at a time and only on a turn that
+   actually drew the person out; a single conversation does not go from
+   stranger to confession. Do NOT try to "move things along" — warmth accrues
+   across the turns that genuinely land, and the engine turns it into reveals
+   on its own.
 3. **You never report what the player LEARNS.** "Tom names the vehicle",
    "Dylan admits he knows", "Helen hands over notes" are NOT yours to fire —
    the engine derives them from trust. Your job is only the nudge that earns
@@ -348,6 +365,14 @@ The register and rhythm to match:
    off-voice, however atmospheric it sounds. A brisk, incurious character
    like Mrs Hughes gets a line or two and turns back to the work — never a
    monologue.
+   **When the player keeps pressing or prying, show the person visibly
+   closing DOWN — and show it getting worse, not holding flat.** Each push
+   against a guarded person costs something the reader can see: the answers
+   get shorter, they turn away, busy their hands, let a silence harden, the
+   shutter comes down a notch further than last time. Do not write the same
+   neutral "they deflect" beat over and over — that reads as a stuck wall with
+   no cause. The player should be able to FEEL that their pressure is what is
+   closing the door, so the failing approach is legible as their own doing.
 
 5. **If ## State Changes Just Applied lists a beat, your prose this turn
    MUST depict that beat's specific event** — the actual words said, the
@@ -460,12 +485,17 @@ Read the prose, then emit ONE structured output: a ChoiceBundle whose
   - Continue with 2-4 options. Each option is a short line of what the
     player says or does next — dialogue, observation, small action, or a
     declaration of intent. Most are low-stakes; at a charged turning point
-    one may be the player resolving to act (see Rule 7).
+    one may be the player resolving to act (see Rule 7). At most ONE option
+    may be the player LEAVING the scene — set `leave: true` on it and write
+    it as a diegetic departure ("Thank Maud and step back into the lane");
+    picking it ends the scene the same way Leave does (see Rule 8).
 
   - Leave. The conversation has reached a natural close — a goodbye, a
     door, a silence the player would step out of. The engine treats the
     just-written prose as the closing beat and resolves which ending
-    (if any) fires from the state.
+    (if any) fires from the state. (A `leave: true` option inside a Continue
+    is the player-PICKED version of this; bare Leave is the close-now version
+    with no further choice.)
 
 (A separate agent decides whether the player writes their own move this
 turn instead of picking your options — that is not your concern. Always
@@ -519,9 +549,18 @@ emit Continue or Leave.)
    choice. It is a declaration in the current location — it names no
    destination and promises no outcome (Rule 1 still holds); the engine and
    map carry out whatever follows. When the user message carries a "## The
-   Player May Be Ready To Act" block, those are the resolutions that are live
-   right now — if the prose supports one, this is where you may voice it; if
-   the block is absent, the moment for a commitment has not come.
+   Player Can Now Act" block, those are the resolutions that are live right now
+   — include one of them as an option this turn (the block is only present once
+   the player has earned the turning point).
+8. The diegetic exit (`leave: true`). A scene can always be left, and leaving
+   should read as the player's own move, not a system button. When you judge
+   the scene is winding down, you MAY mark one option `leave: true`, written
+   in-fiction as the player stepping out ("Settle the tab and go", "Thank him
+   and let yourself out"). When the user message carries a "## The Scene Is
+   Spent — Offer The Exit" block, you MUST include exactly one such option —
+   the scene has nothing left to give and the player needs a clean way out.
+   Never set `leave: true` on more than one option, and never use the bare word
+   "Leave" as the option text — it is a real line of departure in the fiction.
 """
 
 
@@ -785,9 +824,10 @@ def build_phase1_user_prompt(state: State, world: World) -> str:
 
 ## Report Standing
 Emit a StateChangeBundle: `npc_deltas` for the people present (at most one per
-person, small — a warm/decent move is trust "+1"); and AT MOST ONE `commitments`
-entry only if the player explicitly made one of the choices listed above this
-turn.
+person; default "0"/"0" — emit "+1" trust ONLY when this turn actually drew the
+person out, with a `reason` naming the moment, never for routine talk or a
+deflection); and AT MOST ONE `commitments` entry only if the player explicitly
+made one of the choices listed above this turn.
 """
 
 
@@ -888,6 +928,30 @@ def _render_here_anchor(state: State, world: World) -> str:
     )
 
 
+def _voiceable_band(world: World, state: State, npc_id: str) -> str:
+    """The band whose voice sample is safe to surface for `npc_id` right now.
+    Normally the current band — but if a not-yet-drawn findable is gated at the
+    current band (its `trust_at_least` equals where the NPC stands), that band's
+    register IS the reveal (Tom's `open` line names the Land Rover), so we drop
+    one band lower to avoid leaking it before the player earns it. The terminal
+    band can't drop further; there `closed` (breach) is handled by band_name."""
+    band = band_name(world, state, npc_id)
+    if band not in BANDS:
+        return band  # "closed" (breached) — not a depth band
+    depth = confession_depth(world, state, npc_id)
+    pending_here = any(
+        beat.commitment
+        and beat.id not in state.unlocked_beats
+        and beat.when is not None
+        and beat.when.npc == npc_id
+        and beat.when.trust_at_least == band
+        for beat in world.beats.values()
+    )
+    if pending_here and depth > 0:
+        return BANDS[depth - 1]
+    return band
+
+
 def _render_present_voice(
     state: State, world: World, *, applied_beats: list[str] | None = None
 ) -> str:
@@ -904,7 +968,14 @@ def _render_present_voice(
     Rover. Going the other way. Recognised it."), and re-surfacing it
     competes with the beat's "depict the full named particulars" directive
     in ## State Changes Just Applied. On the firing turn the beat content
-    drives that NPC's line, not the register sample."""
+    drives that NPC's line, not the register sample.
+
+    The same band sample also LEAKS the reveal on the turns BEFORE the beat
+    fires: an NPC sitting at the reveal band (Tom at `open`) whose findable the
+    player has not yet drawn out would otherwise be voiced with the reveal line
+    every turn. So while a band still has an un-drawn findable gated at it, the
+    NPC is voiced from the band BELOW — the register escalates only once the
+    reveal actually lands."""
     npcs_here = world.npcs_at(state.player_location, state=state)
     if not npcs_here:
         return ""
@@ -923,7 +994,8 @@ def _render_present_voice(
         disp = npc.disposition
         lines: list[str] = []
         if disp is not None:
-            lines = disp.voice_by_band.get(band_name(world, state, npc.id), [])
+            band = _voiceable_band(world, state, npc.id)
+            lines = disp.voice_by_band.get(band, [])
         if not lines:
             lines = list(npc.voice_sample)
         if not lines:
@@ -1023,7 +1095,14 @@ def _render_decisions_available(state: State, world: World) -> str:
     as an in-voice turning-point option (Rule 7), without naming or signposting
     it. Empty string when none are earned, so the block costs nothing and never
     tempts a premature decision. Only `decided_*` beats — observation
-    milestones (reading the letter) surface through the prose on their own."""
+    milestones (reading the letter) surface through the prose on their own.
+
+    Framed as a REQUIREMENT, not a hint: the engine emits this block only once a
+    decision's prerequisites are genuinely met, so the player has earned the
+    turning point. A soft "you may, if the prose supports it" was ignored every
+    time in playtests — the decision beats never fired and the earned endings
+    were unreachable. So when this block is present, exactly one option MUST be
+    the player resolving to act; the steering is the point."""
     ids = [
         bid
         for bid in emittable_beat_ids(world, state)
@@ -1032,12 +1111,14 @@ def _render_decisions_available(state: State, world: World) -> str:
     if not ids:
         return ""
     parts = [
-        "## The Player May Be Ready To Act",
-        "The scene has reached a point where the player could commit to a "
-        "course of action. IF — and only if — the prose supports it, ONE "
-        "Continue option may be the player resolving on one of these, written "
-        "in their own voice as a natural declaration (Rule 7 — never name it, "
-        "never signpost that anything hangs on it):",
+        "## The Player Can Now Act — Offer The Turning Point",
+        "The scene has reached a genuine turning point: the player has earned "
+        "the standing to commit to a course of action. Include EXACTLY ONE "
+        "Continue option that is the player resolving to do one of the things "
+        "below, written in their own voice as a natural in-location declaration "
+        "(Rule 7 — never name it, never signpost that anything hangs on it). The "
+        "other options stay ordinary moves. Do not omit it — this is the choice "
+        "the whole scene has been building toward:",
     ]
     for bid in sorted(ids, key=lambda b: world.beats[b].name):
         parts.append(f"- {world.beats[bid].description.strip()}")
@@ -1142,12 +1223,35 @@ def _render_present_findables(state: State, world: World) -> str:
     )
 
 
-def build_choice_author_user_message(state: State, world: World, prose: str) -> str:
+def _render_offer_the_exit() -> str:
+    """Choice-author directive (rendered when the engine judges the scene spent
+    or a decision just fired): one option MUST be the diegetic exit. The engine
+    guarantees an exit either way (it appends a generic one / soft-closes), but a
+    player-picked in-fiction departure reads far better than a forced map-jump,
+    so we instruct the author to write the good version here."""
+    return (
+        "## The Scene Is Spent — Offer The Exit\n"
+        "This scene has run its course — there is nothing left here worth a new "
+        "exchange. EXACTLY ONE of your options must be the player leaving, written "
+        "in-fiction as their natural way out (\"Thank Maud and step back into the "
+        "lane\", \"Drain the glass and go\") — never the bare word \"Leave\". Mark "
+        "that option with `leave: true`. The other options may stay, but a clean, "
+        "in-character way out must be on the table."
+    )
+
+
+def build_choice_author_user_message(
+    state: State, world: World, prose: str, *, leave_required: bool = False
+) -> str:
     """Per-turn user message for the stateless choice author. The
     just-written prose is the load-bearing context; everything else is a
     thin scene anchor (where, who's present, what's already been done, what's
     still live, which decisions are earned) so Continue options can ground in
     location, avoid re-treading covered ground, and surface a turning point.
+
+    `leave_required` (engine-judged: the scene is spent, or a decision just
+    fired) adds the "Offer The Exit" directive so the author marks one option as
+    the diegetic departure.
     """
     loc = world.locations[state.player_location]
     present_ids = present_npc_ids(world, state)
@@ -1157,14 +1261,16 @@ def build_choice_author_user_message(state: State, world: World, prose: str) -> 
         npcs_line = "no one (you are alone here)"
 
     pacing_block = _render_scene_pacing(state, solo=not present_ids)
-    # Covered-ground + beat-magnet + earned decisions, each its own block,
-    # joined with blank lines and rendered only when non-empty.
+    # Covered-ground + beat-magnet + earned decisions + (when spent) the exit
+    # directive, each its own block, joined with blank lines, rendered only when
+    # non-empty.
     extras = "".join(
         f"\n{block}\n"
         for block in (
             _render_covered_ground(state),
             _render_worth_pursuing_here(state, world),
             _render_decisions_available(state, world),
+            _render_offer_the_exit() if leave_required else "",
         )
         if block
     )

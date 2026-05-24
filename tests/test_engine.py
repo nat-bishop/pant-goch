@@ -509,7 +509,7 @@ def test_dynamic_bundle_accepts_present_npc_quality_delta():
     world = _bundle_world()
     Bundle = _build_state_change_bundle_type(world, _state(world, "loc_a"))
     b = Bundle.model_validate({
-        "npc_deltas": [{"npc_id": "tom", "trust": "+1"}],
+        "npc_deltas": [{"npc_id": "tom", "trust": "+1", "reason": "warmed"}],
         "commitments": [],
     })
     assert b.npc_deltas[0].npc_id == "tom"  # type: ignore[union-attr]

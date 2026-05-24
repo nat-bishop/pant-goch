@@ -250,10 +250,11 @@ def when_satisfied(world: World, state: State, when: When) -> bool:
     return True
 
 
-def _is_decision(beat_id: str) -> bool:
+def is_decision(beat_id: str) -> bool:
     """The mutually-exclusive player-commitment beats (engine enforces at most
     one per playthrough). Keyed on the `decided_` id convention so the rule is
-    one line, not a pairwise blocked_by graph."""
+    one line, not a pairwise blocked_by graph. Public: scene_loop also uses it
+    to detect a decision firing (the scene then winds down — leave is offered)."""
     return beat_id.startswith("decided_")
 
 
@@ -318,12 +319,12 @@ def emittable_beat_ids(world: World, state: State) -> set[str]:
     """
     here = state.player_location
     present = present_npc_ids(world, state)
-    decision_taken = any(_is_decision(b) for b in state.unlocked_beats)
+    decision_taken = any(is_decision(b) for b in state.unlocked_beats)
     out: set[str] = set()
     for bid, beat in world.beats.items():
         if not beat.commitment or bid in state.unlocked_beats:
             continue
-        if _is_decision(bid) and decision_taken:
+        if is_decision(bid) and decision_taken:
             continue
         if beat.requires_location and here not in beat.requires_location:
             continue
@@ -371,9 +372,23 @@ def scene_is_spent(world: World, state: State) -> bool:
     """
     if not state.dialogue_history:
         return False
-    here = state.player_location
     # completed turns this scene == len(dialogue_history) at the call site.
-    if len(state.dialogue_history) <= SCENE_FINDABLE_GRACE_TURNS:
+    if not scene_exhausted_here(world, state, len(state.dialogue_history)):
+        return False
+    last = state.dialogue_history[-1]
+    return not last.applied_state_changes and not last.applied_deltas
+
+
+def scene_exhausted_here(world: World, state: State, completed_turns: int) -> bool:
+    """True when nothing here can still pay off — the AVAILABILITY half of
+    `scene_is_spent`, split out so the choice author can ask it BEFORE the turn
+    record is appended (it takes `completed_turns` explicitly rather than reading
+    `len(dialogue_history)`). Within the grace window a live findable here or a
+    present NPC who can still open up keeps the scene productive; past it,
+    availability no longer holds the scene open (only this-turn movement does, a
+    check the caller pairs with this). Pure; no dialogue_history read."""
+    if completed_turns <= SCENE_FINDABLE_GRACE_TURNS:
+        here = state.player_location
         for bid in emittable_beat_ids(world, state):
             beat = world.beats[bid]
             if not beat.requires_location or here in beat.requires_location:
@@ -386,8 +401,7 @@ def scene_is_spent(world: World, state: State) -> bool:
                 continue
             if confession_depth(world, state, nid) < len(BANDS) - 1:
                 return False
-    last = state.dialogue_history[-1]
-    return not last.applied_state_changes and not last.applied_deltas
+    return True
 
 
 def resolved_ending_id_at_close(world: World, state: State) -> str | None:

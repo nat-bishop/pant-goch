@@ -147,6 +147,14 @@ class Beat(_Frozen):
     # for trust-derived milestones and decisions. Validated against locations
     # at load (engine.emittable_beat_ids consumes it).
     requires_location: list[str] = Field(default_factory=list)
+    # Object tokens that anchor this beat to a specific ACTION (e.g. the letter,
+    # the map, the grave). When set, the Phase-1 warrant check
+    # (agents._warrant_supported) fires the beat only if the player's pick this
+    # turn references one of these — so "Read Iwan's letter" no longer fires when
+    # the player walked to the study to look at the map. Empty for beats with no
+    # single object to point at (NPC findables, decisions), which keep the looser
+    # content-word overlap check.
+    triggers: list[str] = Field(default_factory=list)
     notes_to_llm: str
     # ── quality engine gate ──
     # `when` is the quality/milestone gate (see When). For a trust-derived

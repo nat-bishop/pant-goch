@@ -83,6 +83,7 @@ beats:
     name: Read Iwan's letter
     commitment: true
     requires_location: [the_old_vicarage]
+    triggers: [letter, envelope, seal]
     description: |
       The player opens the sealed letter from Iwan Pritchard on the hall
       table and reads it through. Iwan's "Whatever you find, I would like
@@ -99,6 +100,7 @@ beats:
     name: Examined the crash site
     commitment: true
     requires_location: [the_black_dog_bend]
+    triggers: [lay-by, layby, verge, flowers, embankment, ditch, road, bend, crash, site, where]
     description: |
       The player walks the lay-by and verge at the Black Dog Bend — the
       flowers, the place where the grass grows differently below the
@@ -115,6 +117,7 @@ beats:
     name: Found the marked map
     commitment: true
     requires_location: [the_old_vicarage]
+    triggers: [map, marking, pencil, ridge, OS]
     description: |
       The player unrolls the previous occupant's pencil-marked OS map in
       the study and sees the markings gather around the ridge toward
@@ -134,6 +137,7 @@ beats:
     name: Noticed the funeral notice
     commitment: true
     requires_location: [the_post_office]
+    triggers: [newsletter, notice, funeral, obituary, parish, newsprint]
     description: |
       The player finds Megan Pritchard's funeral notice still on the back
       page of the 2019 parish newsletter on the post office rack — a small,
@@ -149,6 +153,7 @@ beats:
     name: Visited Megan's grave
     commitment: true
     requires_location: [st_caradocs]
+    triggers: [grave, headstone, gravestone, stone, inscription, flowers, plot, epitaph]
     description: |
       The player stands at Megan Pritchard's grave by the east wall of St
       Caradoc's — the clean headstone, the fresh flowers someone keeps
@@ -258,6 +263,37 @@ beats:
       fact she can stand behind. Points the player at Eluned without proving
       anything. Narrate the cost of saying it; she has crossed her own line
       about the village's business. After this she will give no more.
+
+  - id: iwan_keeps_the_flowers
+    name: Iwan keeps the flowers
+    commitment: true
+    when: {npc: iwan, trust_at_least: thawing}
+    description: |
+      Iwan admits — quietly, to the player and almost to himself — that he
+      drives out to the Black Dog Bend on the fourteenth of every month and
+      leaves fresh flowers, and that he has never told Wendy he does it.
+    notes_to_llm: |
+      A human-detail findable, not a clue — the first real thing Iwan gives of
+      himself rather than of the case. Narrate it gently, in his formal,
+      careful register; the weight is that he has carried this small private
+      ritual alone for seven years. It reveals nothing about the road. If the
+      player already stood at the grave or the bend and saw fresh flowers, this
+      is who leaves them. Do not let him volunteer anything evidential here.
+
+  - id: iwan_wondered_about_dylan
+    name: Iwan wondered about Dylan
+    commitment: true
+    when: {npc: iwan, trust_at_least: open}
+    description: |
+      Iwan admits he has long wondered about Dylan Vaughn and Megan — whether
+      there was something between them — but that he never asked, and the
+      wondering never became knowing.
+    notes_to_llm: |
+      His deepest disclosure, and an act of trust: a grieving father naming a
+      suspicion he has never spoken aloud, careful not to accuse. A soft lead
+      toward the affair, NOT proof — he knows nothing, he only wondered.
+      Narrate the difficulty of saying it. He does not know what happened on
+      the road and must not be made to; this is feeling, not evidence.
 
   # ─────────────────────── Outcome / terminal-trust milestones (derived) ───────────────────────
 

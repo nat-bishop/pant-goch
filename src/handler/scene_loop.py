@@ -54,8 +54,10 @@ from .engine import (
     band_name,
     enter_scene,
     free_text_cadence_ok,
+    is_decision,
     present_npc_ids,
     resolved_ending_id_at_close,
+    scene_exhausted_here,
     scene_is_spent,
 )
 from .schemas import (
@@ -311,6 +313,15 @@ def _fallback_choices() -> ChoiceBundle:
     ]))
 
 
+def _authored_leave_present(nxt: object) -> bool:
+    """True when the choice author marked one of this turn's options as the
+    diegetic exit (`leave: true`). When so, the engine lets the PLAYER pick that
+    in-fiction departure rather than force-closing the scene itself: the spent
+    auto-close is skipped and the generic 'Step outside' entry is not appended
+    (no duplicate exits)."""
+    return isinstance(nxt, Continue) and any(o.leave for o in nxt.options)
+
+
 def _fallback_closing_prose() -> str:
     """Engine-authored closing line when the prose writer's retries
     exhaust on a leave. Voice-neutral; never shown as engine metatext."""
@@ -325,6 +336,7 @@ async def _stream_pace_and_author(
     *,
     emit_event: EmitEvent | None,
     skip_event: asyncio.Event | None,
+    leave_required: bool = False,
 ) -> tuple[str, object, object]:
     """Phase 2a + 2b/2c, fused so the reveal overlaps the authoring.
 
@@ -408,7 +420,7 @@ async def _stream_pace_and_author(
                         event_kind="prose_word", skip_event=skip_event,
                     )
             choices_res, gate_res = await asyncio.gather(
-                emit_choices(bundle, state, prose),
+                emit_choices(bundle, state, prose, leave_required=leave_required),
                 emit_free_text_gate(bundle, state, prose),
                 return_exceptions=True,
             )
@@ -420,7 +432,7 @@ async def _stream_pace_and_author(
         # await the pacer's remaining holds.
         prose = "".join(acc)
         authoring = asyncio.gather(
-            emit_choices(bundle, state, prose),
+            emit_choices(bundle, state, prose, leave_required=leave_required),
             emit_free_text_gate(bundle, state, prose),
             return_exceptions=True,
         )
@@ -509,10 +521,28 @@ async def run_turn(
             if band_name(bundle.world, state, nid) != bands_before[nid]:
                 await _emit_standing(bundle.world, state, nid, emit_event)
 
+    # Should the choice author offer a diegetic exit this turn? Two triggers:
+    #  - a decision just fired — the player committed, so the scene winds down
+    #    (one closing exchange, then a clean way out) rather than letting them
+    #    keep interrogating past the turning point;
+    #  - the scene is spent — this turn moved nothing AND nothing here can still
+    #    pay off (mirrors scene_is_spent, but evaluated from THIS turn's movement
+    #    since the turn record isn't appended until below). Completed turns after
+    #    this one == len(dialogue_history)+1, matching scene_is_spent's grace read.
+    decision_fired = any(is_decision(b) for b in newly_unlocked)
+    this_turn_moved = bool(newly_unlocked) or bool(applied.deltas)
+    leave_required = decision_fired or (
+        not this_turn_moved
+        and scene_exhausted_here(
+            bundle.world, state, len(state.dialogue_history) + 1
+        )
+    )
+
     # ── Phase 2a + 2b/2c: stream prose live, author over the reveal tail ────
     prose, choices_res, gate_res = await _stream_pace_and_author(
         bundle, runtime, state, newly_unlocked,
         emit_event=emit_event, skip_event=skip_event,
+        leave_required=leave_required,
     )
 
     if isinstance(choices_res, UnexpectedModelBehavior):
@@ -727,6 +757,7 @@ async def play_scene(
             isinstance(nxt, (Continue, FreeText))
             and turns_this_scene >= SPENT_CLOSE_MIN_TURNS
             and scene_is_spent(bundle.world, state)
+            and not _authored_leave_present(nxt)
         ):
             logfire.info(
                 "scene spent; forcing soft-close",
@@ -749,12 +780,20 @@ async def play_scene(
         if emit_event is not None:
             soft_close = not isinstance(nxt, (Continue, FreeText))
             if isinstance(nxt, Continue):
-                # Append the leave entry AFTER the real options so their
-                # indices stay aligned with PickOption. The walk it routes to
-                # is always legal — every location has ≥1 adjacent (invariant 11).
-                payload = [{"text": o.text} for o in nxt.options]
+                # Carry each option's `leave` flag to the client so a diegetic
+                # exit the choice author wrote renders (and routes) as the exit.
+                payload = [
+                    {"text": o.text, "leave": True} if o.leave else {"text": o.text}
+                    for o in nxt.options
+                ]
+                # Append the generic leave entry AFTER the real options (indices
+                # stay aligned with PickOption) ONLY when the author did not write
+                # one — otherwise the player would see two ways out. The walk it
+                # routes to is always legal (every location has ≥1 adjacent,
+                # invariant 11).
                 if (
-                    run_config.allow_mid_scene_leave
+                    not _authored_leave_present(nxt)
+                    and run_config.allow_mid_scene_leave
                     and len(state.dialogue_history) >= LEAVE_OPTION_MIN_HISTORY
                 ):
                     payload.append({"text": LEAVE_OPTION_TEXT, "leave": True})

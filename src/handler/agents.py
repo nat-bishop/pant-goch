@@ -203,6 +203,10 @@ def _build_state_change_bundle_type(world: World, state: State) -> type[BaseMode
             npc_id=(NpcLiteral, ...),
             trust=(TrustDelta, "0"),
             guard=(GuardDelta, "0"),
+            # Required: the prose moment that earns a non-zero nudge. Forces the
+            # classifier to articulate a real disclosure / careless move before
+            # moving standing — the discipline that ends the +1-every-turn drip.
+            reason=(str, ...),
         )
         npc_deltas_field: Any = (
             list[DynQuality],
@@ -434,18 +438,31 @@ _WARRANT_STOPWORDS = frozenset({
 })
 
 
-def _warrant_supported(warrant: str, pick_text: str) -> bool:
-    """True when a commitment's `warrant` shares a content word (4-char stem)
-    with the player's actual pick this turn — a cheap guard that the commitment
-    reflects what the PLAYER did, not what the narrator's prose drifted into.
+def _warrant_supported(
+    warrant: str, pick_text: str, triggers: tuple[str, ...] = ()
+) -> bool:
+    """True when the commitment is genuinely warranted by the player's pick this
+    turn — a guard that the beat reflects what the PLAYER did, not what the
+    narrator's prose drifted into.
 
-    Conservative by design: returns True unless there is ZERO overlap, so a
-    legitimate fire is never dropped over a paraphrase, while the egregious
-    mismatch (a beat firing on an unrelated action — the judge's
-    beat_fired_appropriately failures) is caught. A dropped commitment is
-    recoverable: the beat stays emittable and the choice author re-steers toward
-    it next turn (the beat-magnet block), so the asymmetry favors dropping.
+    Two modes:
+      - `triggers` set (object-anchored observation beats — the letter, the map,
+        the grave): the player's pick MUST reference one of those object tokens.
+        This is the strict gate that stops "Read Iwan's letter" firing when the
+        player walked to the study to look at the map (judge:
+        beat_fired_appropriately) — the letter beat's triggers don't appear in a
+        map action, so it is dropped.
+      - no `triggers` (NPC findables, decisions): the looser fallback — the
+        `warrant` must share a content word (4-char stem) with the pick.
+
+    Conservative by design: a dropped commitment is recoverable — the beat stays
+    emittable and the choice author re-steers toward it next turn — so the
+    asymmetry favors dropping over a false fire.
     """
+    if triggers:
+        p = pick_text.lower()
+        return any(t.lower() in p for t in triggers if t)
+
     def stems(s: str) -> set[str]:
         return {
             w[:4]
@@ -535,10 +552,25 @@ async def emit_state_changes(
     for d in getattr(raw, "npc_deltas", []):
         if d.trust == "0" and d.guard == "0":
             continue  # no-op nudge — moves nothing
+        reason = (getattr(d, "reason", "") or "").strip()
+        if not reason:
+            # A non-zero nudge with no stated justification is the drip the
+            # rework targets — drop it. The NPC stays warmable, so a genuine
+            # move next turn still lands; only the unjustified tick is lost.
+            logfire.info(
+                "delta dropped: no reason for non-zero nudge",
+                npc_id=d.npc_id,
+                trust=d.trust,
+                guard=d.guard,
+                location=state.player_location,
+            )
+            continue
         if d.npc_id in seen_npcs:
             continue  # keep ±1/turn: first delta per NPC wins
         seen_npcs.add(d.npc_id)
-        deltas.append(QualityDelta(npc_id=d.npc_id, trust=d.trust, guard=d.guard))
+        deltas.append(
+            QualityDelta(npc_id=d.npc_id, trust=d.trust, guard=d.guard, reason=reason)
+        )
 
     # Commitments are warranted against the player's pick THIS turn: the action
     # that triggered this turn is on the last dialogue_history record (set in
@@ -554,19 +586,20 @@ async def emit_state_changes(
     for c in getattr(raw, "commitments", []):
         if getattr(c, "beat_name", None) is None:
             continue
+        beat_id = bundle.world.beat_id_for_name(c.beat_name)
+        triggers = tuple(bundle.world.beats[beat_id].triggers)
         warrant = getattr(c, "warrant", "") or ""
-        if last_pick is None or not _warrant_supported(warrant, last_pick):
+        if last_pick is None or not _warrant_supported(warrant, last_pick, triggers):
             logfire.info(
                 "commitment dropped: warrant unsupported by player action",
                 beat_name=c.beat_name,
                 warrant=warrant,
                 player_pick=last_pick,
+                triggers=triggers,
                 location=state.player_location,
             )
             continue
-        commitments.append(
-            UnlockBeat(beat_id=bundle.world.beat_id_for_name(c.beat_name))
-        )
+        commitments.append(UnlockBeat(beat_id=beat_id))
     return StateChangeBundle(deltas=deltas, commitments=commitments)
 
 
@@ -695,6 +728,8 @@ async def emit_choices(
     bundle: AgentBundle,
     state: State,
     prose: str,
+    *,
+    leave_required: bool = False,
 ) -> ChoiceBundle:
     """Choice author LLM call. Stateless (no message_history). The
     just-written prose is the load-bearing context; the system prompt
@@ -703,8 +738,13 @@ async def emit_choices(
     The output schema is static (`Continue | Leave`, no per-call id
     narrowing) so the canonical `ChoiceBundle` is passed directly — its
     `Continue` 2-4-option validator fires during the agent's retry loop.
+
+    `leave_required` (the engine judged the scene spent / a decision just fired)
+    adds the "Offer The Exit" directive so one option is the diegetic departure.
     """
-    user_msg = build_choice_author_user_message(state, bundle.world, prose)
+    user_msg = build_choice_author_user_message(
+        state, bundle.world, prose, leave_required=leave_required
+    )
     result = await bundle.choice_author.run(
         user_msg,
         output_type=NativeOutput(ChoiceBundle, strict=True),
