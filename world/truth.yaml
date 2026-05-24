@@ -100,7 +100,7 @@ beats:
     name: Examined the crash site
     commitment: true
     requires_location: [the_black_dog_bend]
-    triggers: [lay-by, layby, verge, flowers, embankment, ditch, road, bend, crash, site, where]
+    triggers: [lay-by, layby, verge, flowers, embankment, ditch, road, bend, crash, tarmac, skid]
     description: |
       The player walks the lay-by and verge at the Black Dog Bend — the
       flowers, the place where the grass grows differently below the
@@ -117,7 +117,7 @@ beats:
     name: Found the marked map
     commitment: true
     requires_location: [the_old_vicarage]
-    triggers: [map, marking, pencil, ridge, OS]
+    triggers: [map, marking, pencil, ridge]
     description: |
       The player unrolls the previous occupant's pencil-marked OS map in
       the study and sees the markings gather around the ridge toward

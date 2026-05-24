@@ -459,16 +459,31 @@ def _warrant_supported(
     emittable and the choice author re-steers toward it next turn — so the
     asymmetry favors dropping over a false fire.
     """
-    if triggers:
-        p = pick_text.lower()
-        return any(t.lower() in p for t in triggers if t)
-
     def stems(s: str) -> set[str]:
         return {
             w[:4]
             for w in re.findall(r"[a-z]+", s.lower())
             if len(w) > 2 and w not in _WARRANT_STOPWORDS
         }
+
+    if triggers:
+        # Match a single-word trigger on a 4-char word STEM (so "flowers" still
+        # matches "flower", "grave" matches "graves") rather than raw substring
+        # — raw `t in pick` spuriously fired on "cobblestone" for "stone" and
+        # missed singular/plural. Multi-word / hyphenated triggers ("lay-by")
+        # fall back to substring, where stemming doesn't apply.
+        pick_stems = {w[:4] for w in re.findall(r"[a-z]+", pick_text.lower())}
+        pick_lower = pick_text.lower()
+        for t in triggers:
+            tl = t.lower().strip()
+            if not tl:
+                continue
+            if "-" in tl or " " in tl:
+                if tl in pick_lower:
+                    return True
+            elif len(tl) > 2 and tl[:4] in pick_stems:
+                return True
+        return False
 
     w, p = stems(warrant), stems(pick_text)
     if not w or not p:

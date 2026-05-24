@@ -455,6 +455,7 @@ async def run_turn(
     *,
     emit_event: EmitEvent | None = None,
     skip_event: asyncio.Event | None = None,
+    allow_mid_scene_leave: bool = True,
 ) -> ProsePart:
     """One full turn end-to-end. Returns the engine-assembled ProsePart
     so the caller can dispatch on `prose_part.next` (Continue → wait
@@ -529,12 +530,18 @@ async def run_turn(
     #    pay off (mirrors scene_is_spent, but evaluated from THIS turn's movement
     #    since the turn record isn't appended until below). Completed turns after
     #    this one == len(dialogue_history)+1, matching scene_is_spent's grace read.
+    # Gated on allow_mid_scene_leave: the `leave_mode` test arm withholds the
+    # voluntary mid-scene exit entirely, so it must NOT get a diegetic leave
+    # option either — there the scene ends only at the narrator soft-close.
     decision_fired = any(is_decision(b) for b in newly_unlocked)
     this_turn_moved = bool(newly_unlocked) or bool(applied.deltas)
-    leave_required = decision_fired or (
-        not this_turn_moved
-        and scene_exhausted_here(
-            bundle.world, state, len(state.dialogue_history) + 1
+    leave_required = allow_mid_scene_leave and (
+        decision_fired
+        or (
+            not this_turn_moved
+            and scene_exhausted_here(
+                bundle.world, state, len(state.dialogue_history) + 1
+            )
         )
     )
 
@@ -718,6 +725,7 @@ async def play_scene(
             prose_part = await run_turn(
                 bundle, runtime, state,
                 emit_event=emit_event, skip_event=skip_event,
+                allow_mid_scene_leave=run_config.allow_mid_scene_leave,
             )
         turns_this_scene += 1
 
@@ -757,7 +765,9 @@ async def play_scene(
             isinstance(nxt, (Continue, FreeText))
             and turns_this_scene >= SPENT_CLOSE_MIN_TURNS
             and scene_is_spent(bundle.world, state)
-            and not _authored_leave_present(nxt)
+            and not (
+                run_config.allow_mid_scene_leave and _authored_leave_present(nxt)
+            )
         ):
             logfire.info(
                 "scene spent; forcing soft-close",

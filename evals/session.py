@@ -251,15 +251,18 @@ async def run_session(
             options = nxt.options
             # A diegetic exit the choice author wrote (leave: true) is presented
             # as a normal in-list option; picking it ends the scene like a walk.
-            authored_leave_idx = next(
-                (i for i, o in enumerate(options) if o.leave), None
+            # Honored only when this arm allows mid-scene leave — the test arm
+            # withholds every voluntary exit, so a spontaneously-authored leave
+            # option is treated as an ordinary pick there (no early walk).
+            authored_leave_idx = (
+                next((i for i, o in enumerate(options) if o.leave), None)
+                if run_config.allow_mid_scene_leave
+                else None
             )
             # The mid-scene leave affordance mirrors the always-on UI exit, but
             # only when this arm allows it (RunConfig.allow_mid_scene_leave) AND
             # the author didn't already write a diegetic exit (then the player
             # picks that — no duplicate, mirroring play_scene's append rule).
-            # The test arm withholds it, so the player can only leave at a
-            # narrator soft-close — exactly the engine gate in play_scene.
             can_leave = (
                 run_config.allow_mid_scene_leave
                 and authored_leave_idx is None
@@ -284,9 +287,10 @@ async def run_session(
                 "applied_deltas": applied_deltas,
                 "fireable": fireable,
             })
-            if chosen.leave:
+            if chosen.leave and run_config.allow_mid_scene_leave:
                 # Player picked the diegetic exit — end the scene like a walk
                 # (resolves any met ending / surfaces the map), not a Continue.
+                # Gated with the arm: the test arm never honors a voluntary exit.
                 return await walk_out(s, w, mid_scene=True)
             return PickOption(index=idx)
         if isinstance(nxt, FreeText):
