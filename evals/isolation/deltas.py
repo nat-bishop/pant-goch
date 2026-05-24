@@ -203,13 +203,18 @@ def cases() -> list[IsoCase]:
     # genuinely stochastic at temp=1.0 → a 0.5 floor that still trips on a true
     # regression to ~0. CALIBRATE these against the first live `make eval-deltas` run.
     return [
-        # ── THE CAPTURED FAILURE: warm/decent move on a cold NPC earns trust ──
+        # ── A GENUINE, SUBSTANTIVE warm move on a cold NPC earns trust ──
+        # The trust rework (substantive-only) deliberately stopped mild small
+        # talk ("comment on the atmosphere") from earning +1 — that freeness was
+        # the drip. This case now tests the OTHER side of that line: a real warm,
+        # patient move (sit with him, no questions, let him take your measure)
+        # must still begin a thaw, or warming is over-starved and no NPC opens up.
         IsoCase(
             name="tom_warm_cold",
-            scenario="Comment empathetically on guarded Tom's mood / the room (warm, decent, no pressing)",
+            scenario="A genuine warm, patient move on guarded Tom: sit with him, no questions, let him take your measure",
             build=lambda w: ctx(
                 w, location="the_slaughtered_lamb",
-                last_action="Comment on his mood or the atmosphere of the pub.",
+                last_action="Set the notebook aside and just sit with Tom a while — no questions, an easy warmth, letting him take your measure in his own time.",
                 last_prose=_TOM_GUARDED,
             ),
             meta=Expect(trust_floor={"tom": 1}),

@@ -222,17 +222,20 @@ Each turn emit ONE StateChangeBundle with two channels, BOTH usually empty:
    the player just engaged, often with a small nudge; when the player engaged
    no one, it is empty `[]`. Each entry:
      - `npc_id`: who.
-     - `trust`: the DEFAULT is "0". Emit "+1" ONLY when the prose shows the
-       person actually responding to the player — softening, opening up, or
-       volunteering something — because of a genuinely well-judged move, not
-       because the player was merely present or asked a routine question.
-       Warmth is EARNED in a real exchange, not handed out every turn: a
-       deflection, a non-answer, a polite brush-off, or ordinary small talk is
-       "0". Use "-1" if the player was cool or careless.
-     - `reason`: REQUIRED for every delta — one short line naming the prose
-       moment that earns it (what the person actually gave, or the careless
-       move). If you cannot point to such a moment, the nudge is "0"/"0" and you
-       should emit no delta for them. Do not award "+1" you cannot justify.
+     - `trust`: "+1" when the player was warm, patient, decent, or shared
+       something real — a move that meets the person as a person and would begin
+       to earn even a guarded one's trust (easing the mood, a kindness, real
+       empathy, a question that invites rather than interrogates). That counts
+       even before they visibly soften — it is how a thaw begins. "-1" if the
+       player was cool or careless. Otherwise "0" — and "0" is the common case:
+       do NOT default to "+1". Pressing, prying, interrogating for facts,
+       repeating a push, or a flatly routine question earns NO warmth (it is "0"
+       or guard), even when politely worded; warmth is the genuine warm move,
+       not every turn the player takes.
+     - `reason`: REQUIRED for every delta — one short line naming the move that
+       earns it (the warm/decent thing the player did, or the careless move). If
+       you cannot point to such a move, the nudge is "0"/"0" and you should emit
+       no delta for them. Do not award "+1" you cannot justify.
      - `guard`: "+1" if the player pressed, pried, or made them wary; "-1"
        if the player put them at ease; "0" for routine talk; "BREACH" ONLY
        for the genuinely unforgivable (claiming to be police or family,
@@ -260,15 +263,15 @@ Each turn emit ONE StateChangeBundle with two channels, BOTH usually empty:
 1. **Report the PLAYER'S most recent action**, the last line of ## This
    Scene So Far — not the narrator's atmosphere. A move shifts standing only
    with people actually present.
-2. **Most turns are small, and most earn nothing.** A neutral question is
-   `0`/`0`. So is a turn where the person deflects, stonewalls, or gives a
-   non-answer — even if the player was perfectly polite: pressing a closed
-   person does not slowly pry them open, it holds them shut, so that turn is
-   `0`, not `+1`. Trust moves ONE notch at a time and only on a turn that
-   actually drew the person out; a single conversation does not go from
-   stranger to confession. Do NOT try to "move things along" — warmth accrues
-   across the turns that genuinely land, and the engine turns it into reveals
-   on its own.
+2. **Most turns are small.** A genuine warm or decent move DOES earn `+1`, even
+   on a guarded stranger — that is how a thaw begins. But trust moves only ONE
+   notch at a time, and a neutral or routine question is `0`/`0`. A turn spent
+   pressing, prying, or repeating a push at a person who is closing down is
+   guard, not warmth: pressing a closed person does not slowly pry them open, it
+   holds them shut, so the trust nudge there is `0`, not `+1`. Do NOT try to
+   "move things along" by handing out `+1` for ordinary talk — a single
+   conversation does not go stranger-to-confession; warmth accrues across the
+   turns that genuinely land, and the engine turns it into reveals on its own.
 3. **You never report what the player LEARNS.** "Tom names the vehicle",
    "Dylan admits he knows", "Helen hands over notes" are NOT yours to fire —
    the engine derives them from trust. Your job is only the nudge that earns
@@ -824,10 +827,10 @@ def build_phase1_user_prompt(state: State, world: World) -> str:
 
 ## Report Standing
 Emit a StateChangeBundle: `npc_deltas` for the people present (at most one per
-person; default "0"/"0" — emit "+1" trust ONLY when this turn actually drew the
-person out, with a `reason` naming the moment, never for routine talk or a
-deflection); and AT MOST ONE `commitments` entry only if the player explicitly
-made one of the choices listed above this turn.
+person; default "0"/"0" — emit "+1" trust for a genuine warm or decent move,
+with a `reason` naming it, but never for routine talk, prying, or a deflected
+push); and AT MOST ONE `commitments` entry only if the player explicitly made
+one of the choices listed above this turn.
 """
 
 
