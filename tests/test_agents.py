@@ -156,27 +156,6 @@ async def test_emit_state_changes_drops_nonzero_delta_without_reason(monkeypatch
     assert out.deltas == []  # the unjustified +1 was dropped
 
 
-def test_warrant_triggers_gate_observation_beats():
-    """§4: a beat that declares `triggers` (the letter, the map) fires only when
-    the player's pick references one of those objects — so 'Read Iwan's letter'
-    no longer fires when the player walked to the study to look at the map."""
-    from handler.agents import _warrant_supported
-
-    letter_triggers = ("letter", "envelope", "seal")
-    # Player went to the study for the map — the letter beat must NOT fire.
-    assert not _warrant_supported(
-        "the player read the letter", "Walk to the study to look at the map",
-        letter_triggers,
-    )
-    # Player actually engaged the letter — fires.
-    assert _warrant_supported(
-        "opened the letter", "Pick up and read the sealed letter", letter_triggers
-    )
-    # No triggers (NPC findable / decision): falls back to content-word overlap.
-    assert _warrant_supported("tell Iwan", "I'm going to tell Iwan", ())
-    assert not _warrant_supported("file the story", "Ask Tom about the road", ())
-
-
 def test_choice_bundle_continue_passes():
     """A 2-option Continue must validate against the canonical ChoiceBundle.
     The choice author now uses the static `ChoiceBundle` directly — no

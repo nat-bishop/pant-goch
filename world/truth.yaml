@@ -83,7 +83,6 @@ beats:
     name: Read Iwan's letter
     commitment: true
     requires_location: [the_old_vicarage]
-    triggers: [letter, envelope, seal]
     description: |
       The player opens the sealed letter from Iwan Pritchard on the hall
       table and reads it through. Iwan's "Whatever you find, I would like
@@ -100,7 +99,6 @@ beats:
     name: Examined the crash site
     commitment: true
     requires_location: [the_black_dog_bend]
-    triggers: [lay-by, layby, verge, flowers, embankment, ditch, road, bend, crash, tarmac, skid]
     description: |
       The player walks the lay-by and verge at the Black Dog Bend — the
       flowers, the place where the grass grows differently below the
@@ -117,7 +115,6 @@ beats:
     name: Found the marked map
     commitment: true
     requires_location: [the_old_vicarage]
-    triggers: [map, marking, pencil, ridge]
     description: |
       The player unrolls the previous occupant's pencil-marked OS map in
       the study and sees the markings gather around the ridge toward
@@ -137,7 +134,6 @@ beats:
     name: Noticed the funeral notice
     commitment: true
     requires_location: [the_post_office]
-    triggers: [newsletter, notice, funeral, obituary, parish, newsprint]
     description: |
       The player finds Megan Pritchard's funeral notice still on the back
       page of the 2019 parish newsletter on the post office rack — a small,
@@ -153,7 +149,6 @@ beats:
     name: Visited Megan's grave
     commitment: true
     requires_location: [st_caradocs]
-    triggers: [grave, headstone, gravestone, stone, inscription, flowers, plot, epitaph]
     description: |
       The player stands at Megan Pritchard's grave by the east wall of St
       Caradoc's — the clean headstone, the fresh flowers someone keeps

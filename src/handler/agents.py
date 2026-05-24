@@ -45,7 +45,6 @@ no JSON schema involved.
 from __future__ import annotations
 
 import random
-import re
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Annotated, Any, Literal
@@ -428,69 +427,6 @@ def build_scene_runner_bundle(
 # ───────────────────────── per-call run wrappers ─────────────────────────
 
 
-# Stopwords stripped before comparing a commitment's `warrant` to the player's
-# pick — connective / framing words that would create spurious overlap.
-_WARRANT_STOPWORDS = frozenset({
-    "the", "a", "an", "and", "or", "to", "of", "in", "on", "at", "it", "is",
-    "was", "you", "your", "they", "them", "this", "that", "with", "for",
-    "about", "ask", "asks", "asked", "say", "says", "said", "tell", "tells",
-    "told", "what", "who", "her", "him", "his", "she", "he", "from", "into",
-})
-
-
-def _warrant_supported(
-    warrant: str, pick_text: str, triggers: tuple[str, ...] = ()
-) -> bool:
-    """True when the commitment is genuinely warranted by the player's pick this
-    turn — a guard that the beat reflects what the PLAYER did, not what the
-    narrator's prose drifted into.
-
-    Two modes:
-      - `triggers` set (object-anchored observation beats — the letter, the map,
-        the grave): the player's pick MUST reference one of those object tokens.
-        This is the strict gate that stops "Read Iwan's letter" firing when the
-        player walked to the study to look at the map (judge:
-        beat_fired_appropriately) — the letter beat's triggers don't appear in a
-        map action, so it is dropped.
-      - no `triggers` (NPC findables, decisions): the looser fallback — the
-        `warrant` must share a content word (4-char stem) with the pick.
-
-    Conservative by design: a dropped commitment is recoverable — the beat stays
-    emittable and the choice author re-steers toward it next turn — so the
-    asymmetry favors dropping over a false fire.
-    """
-    def stems(s: str) -> set[str]:
-        return {
-            w[:4]
-            for w in re.findall(r"[a-z]+", s.lower())
-            if len(w) > 2 and w not in _WARRANT_STOPWORDS
-        }
-
-    if triggers:
-        # Match a single-word trigger on a 4-char word STEM (so "flowers" still
-        # matches "flower", "grave" matches "graves") rather than raw substring
-        # — raw `t in pick` spuriously fired on "cobblestone" for "stone" and
-        # missed singular/plural. Multi-word / hyphenated triggers ("lay-by")
-        # fall back to substring, where stemming doesn't apply.
-        pick_stems = {w[:4] for w in re.findall(r"[a-z]+", pick_text.lower())}
-        pick_lower = pick_text.lower()
-        for t in triggers:
-            tl = t.lower().strip()
-            if not tl:
-                continue
-            if "-" in tl or " " in tl:
-                if tl in pick_lower:
-                    return True
-            elif len(tl) > 2 and tl[:4] in pick_stems:
-                return True
-        return False
-
-    w, p = stems(warrant), stems(pick_text)
-    if not w or not p:
-        return False
-    return bool(w & p)
-
-
 # Attempts for the two capped decision agents (phase1, populator). Their cap
 # turns a runaway reasoning loop into a fast `length` finish that pydantic-ai
 # raises as UnexpectedModelBehavior; since the leak is intermittent (~6-18% per
@@ -587,34 +523,33 @@ async def emit_state_changes(
             QualityDelta(npc_id=d.npc_id, trust=d.trust, guard=d.guard, reason=reason)
         )
 
-    # Commitments are warranted against the player's pick THIS turn: the action
-    # that triggered this turn is on the last dialogue_history record (set in
-    # play_scene before the next run_turn). A commitment whose `warrant` shares
-    # no content word with that pick is dropped — it fired on the narrator's
-    # prose, not the player's action (or it is turn 1, which has no pick and so
-    # cannot warrant anything). The beat stays emittable, so a false drop simply
-    # defers the fire by a turn.
-    last_pick = None
-    if state.dialogue_history and state.dialogue_history[-1].player_pick is not None:
-        last_pick = state.dialogue_history[-1].player_pick.text
+    # Commitments are trusted as the classifier emits them. The grammar already
+    # narrows them to beats emittable HERE (right location / present NPC / gate
+    # met), and the classifier carries the beat's notes plus a `warrant` it must
+    # quote from the player's actual pick — that self-justification is the gate.
+    # We no longer second-guess it with post-hoc string matching (warrant
+    # stem-overlap / object triggers): that was brittle and overfit to a few
+    # transcripts, and the right fix for a mis-fire is better prompting, not a
+    # regex. The one structural guard kept: turn 1 has no player action yet, so
+    # nothing can have been performed — fire no commitment.
+    have_player_action = bool(
+        state.dialogue_history and state.dialogue_history[-1].player_pick is not None
+    )
     commitments: list[UnlockBeat] = []
     for c in getattr(raw, "commitments", []):
         if getattr(c, "beat_name", None) is None:
             continue
-        beat_id = bundle.world.beat_id_for_name(c.beat_name)
-        triggers = tuple(bundle.world.beats[beat_id].triggers)
-        warrant = getattr(c, "warrant", "") or ""
-        if last_pick is None or not _warrant_supported(warrant, last_pick, triggers):
-            logfire.info(
-                "commitment dropped: warrant unsupported by player action",
-                beat_name=c.beat_name,
-                warrant=warrant,
-                player_pick=last_pick,
-                triggers=triggers,
-                location=state.player_location,
-            )
-            continue
-        commitments.append(UnlockBeat(beat_id=beat_id))
+        if not have_player_action:
+            continue  # turn 1: no action to perform a beat
+        logfire.info(
+            "commitment fired",
+            beat_name=c.beat_name,
+            warrant=getattr(c, "warrant", "") or "",
+            location=state.player_location,
+        )
+        commitments.append(
+            UnlockBeat(beat_id=bundle.world.beat_id_for_name(c.beat_name))
+        )
     return StateChangeBundle(deltas=deltas, commitments=commitments)
 
 

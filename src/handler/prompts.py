@@ -246,13 +246,30 @@ Each turn emit ONE StateChangeBundle with two channels, BOTH usually empty:
    block in the user prompt. These are the player's explicit declarations
    ("I'm filing it", "I'm going up to Tan-y-coed", "I'm telling Iwan") and
    the observation milestones (reading the letter, examining the marked map,
-   reading the funeral notice, standing at the grave or the crash site). If
-   the player did not clearly do one of those THIS turn, or it is not listed
-   as available, emit none. Each commitment carries a `warrant`: a short quote
-   of the PLAYER'S own words or chosen action this turn that performs it (the
-   last "player chose to / player's own words" line in ## This Scene So Far).
-   If you cannot quote the player actually doing it — if it is the narrator's
-   prose that did it, not the player — do NOT emit the commitment.
+   reading the funeral notice, standing at the grave or the crash site).
+
+   **A commitment fires ONLY when the player's pick THIS turn IS the action the
+   beat describes — match the beat to what the player actually DID, not to what
+   is merely present in the room.** Several findables can be available in one
+   place at once (the vicarage holds both the letter and the marked map); fire
+   the ONE the player's action performed, and if their action was neither, fire
+   NONE — the others wait, still available, until the player turns to them. Read
+   each candidate's own note: it says what counts ("actually opened and read the
+   letter", "is physically at the bend, near enough to touch the flowers", "not
+   on a general look around the shop").
+
+   Each commitment carries a `warrant`: copy the exact words of the player's
+   pick that perform the beat (the last "player chose to / player's own words"
+   line in ## This Scene So Far). This is your own check — if the player's pick
+   was a DIFFERENT action and you cannot fill `warrant` truthfully from it, the
+   beat did not happen: emit no commitment.
+
+   Worked example. The player is at the vicarage; both `Read Iwan's letter` and
+   `Found the marked map` are available. Player's pick this turn: "Walk to the
+   study to look at the map." → Fire `Found the marked map` (warrant: "look at
+   the map"). Do NOT fire `Read Iwan's letter`: the player did not touch the
+   letter this turn, so there is no honest warrant for it — it waits.
+
    "Decided to walk away" is the strictest of these: fire it ONLY when the
    player explicitly abandons the case ("I'm packing up", "there's no story
    here, I'm going home"). A question, a request to keep talking, pressing for
