@@ -1,7 +1,7 @@
 id: the_old_vicarage
 name: The Old Vicarage
 short_name: the vicarage
-adjacent_to: [the_post_office]
+adjacent_to: [the_post_office, st_caradocs]
 
 description: |
   Your lodgings for the assignment. A stone-and-slate house set back from

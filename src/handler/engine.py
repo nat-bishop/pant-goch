@@ -87,6 +87,9 @@ def apply_state_changes(
     for d in bundle.deltas:
         if d.npc_id in state.guard_breached:
             continue  # relationship is over; ignore further nudges
+        npc = world.npcs.get(d.npc_id)
+        if npc is not None and npc.background:
+            continue  # deliberate background figure (Mrs Hughes) — never warms
         t = TRUST_DELTA_VALUES[d.trust]
         if t > 0 and not _trust_adjustable_here(world, state, d.npc_id):
             t = 0  # won't warm here (e.g. Dylan at Tan-y-coed)
@@ -320,6 +323,45 @@ def emittable_beat_ids(world: World, state: State) -> set[str]:
             continue
         out.add(bid)
     return out
+
+
+def scene_is_spent(world: World, state: State) -> bool:
+    """True when the current scene has nothing productive left AND the last
+    completed turn moved nothing — the engine's content-derived soft-close
+    signal (scene_loop converts a spent Continue/FreeText into an EndScene).
+
+    A scene is NOT spent while either holds:
+      - a commitment beat can still fire here — an observation milestone
+        anchored to this location, or any currently-available decision
+        (decisions carry no `requires_location`, so they keep any scene live);
+      - a present, tracked NPC can still open up further — warmable here, not
+        breached, not yet at the top band — i.e. a conversation that can still
+        pay off, even if this single turn happened to be neutral.
+    Otherwise the scene is spent only once the last completed turn was DRY: it
+    unlocked no beat and shifted no disposition (a delta turn is movement, which
+    the filler metric also treats as productive, so a scene still accruing trust
+    never trips this). Returns False before any turn completes.
+
+    Distinct from the flat `MAX_TURNS_PER_SCENE` hang-backstop in scene_loop:
+    this ends a dead room the moment it is dead, instead of milling to the cap.
+    """
+    here = state.player_location
+    for bid in emittable_beat_ids(world, state):
+        beat = world.beats[bid]
+        if not beat.requires_location or here in beat.requires_location:
+            return False
+    for nid in present_npc_ids(world, state):
+        npc = world.npcs[nid]
+        if npc.disposition is None or nid in state.guard_breached:
+            continue
+        if not _trust_adjustable_here(world, state, nid):
+            continue
+        if confession_depth(world, state, nid) < len(BANDS) - 1:
+            return False
+    if not state.dialogue_history:
+        return False
+    last = state.dialogue_history[-1]
+    return not last.applied_state_changes and not last.applied_deltas
 
 
 def resolved_ending_id_at_close(world: World, state: State) -> str | None:

@@ -40,7 +40,9 @@ def test_bundle_accepts_present_npc_delta_and_emittable_commitment():
     BundleType2 = _build_state_change_bundle_type(world, state)
     name = world.beats["read_the_letter"].name
     b2 = BundleType2.model_validate({
-        "commitments": [{"type": "unlock_beat", "beat_name": name}],
+        "commitments": [
+            {"type": "unlock_beat", "beat_name": name, "warrant": "I read the letter"}
+        ],
     })
     assert b2.commitments[0].beat_name == name  # type: ignore[union-attr]
     assert world.beat_id_for_name(name) == "read_the_letter"

@@ -110,6 +110,14 @@ class NPC(_Frozen):
     # (Gareth, Owain, Wendy, Maud) who stay pure prose and carry no tracked
     # quality.
     disposition: Disposition | None = None
+    # A deliberate background figure (e.g. Mrs Hughes) who is never a
+    # relationship the player can build: the classifier must not warm them, so
+    # the engine drops their trust/guard deltas (engine.apply_state_changes) and
+    # the grammar sampler never offers them as a delta target
+    # (agents._build_state_change_bundle_type). Distinct from `disposition=None`
+    # auxiliaries (Maud, Gareth) who DO warm by the default band width —
+    # `background` means "not even that."
+    background: bool = False
 
 
 class Beat(_Frozen):

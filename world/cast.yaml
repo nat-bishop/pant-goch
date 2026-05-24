@@ -417,6 +417,7 @@
 - id: mrs_hughes
   name: Mrs Hughes
   default_location: the_old_vicarage
+  background: true
   themes:
     - the running of the house, and nothing beyond it
     - keeping herself to herself

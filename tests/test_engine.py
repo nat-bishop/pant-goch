@@ -454,7 +454,9 @@ def test_dynamic_bundle_accepts_emittable_commitment():
     world = _bundle_world()
     Bundle = _build_state_change_bundle_type(world, _state(world, "loc_a"))
     b = Bundle.model_validate({
-        "commitments": [{"type": "unlock_beat", "beat_name": "Read letter"}],
+        "commitments": [
+            {"type": "unlock_beat", "beat_name": "Read letter", "warrant": "I read the letter"}
+        ],
     })
     assert b.commitments[0].beat_name == "Read letter"  # type: ignore[union-attr]
 

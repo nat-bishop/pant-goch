@@ -56,6 +56,7 @@ from .engine import (
     free_text_cadence_ok,
     present_npc_ids,
     resolved_ending_id_at_close,
+    scene_is_spent,
 )
 from .schemas import (
     ChoiceBundle,
@@ -294,6 +295,11 @@ LEAVE_OPTION_MIN_HISTORY = 2
 # session's wall-clock structurally (cap × max_scenes × per-turn cost), so the
 # eval harness's wall-clock timeout is a pure hang-backstop, never a length gate.
 MAX_TURNS_PER_SCENE = 20
+
+# Minimum completed turns before the content-derived soft-close (engine.scene_is_spent)
+# may fire. A scene gets at least this many turns to breathe — arrive, take the
+# room in — before a dry, beat-less turn can end it. Mirrors LEAVE_OPTION_MIN_HISTORY.
+SPENT_CLOSE_MIN_TURNS = 2
 
 
 def _fallback_choices() -> ChoiceBundle:
@@ -703,6 +709,27 @@ async def play_scene(
         if turns_this_scene >= MAX_TURNS_PER_SCENE and isinstance(nxt, (Continue, FreeText)):
             logfire.info(
                 "scene hit per-turn cap; forcing soft-close",
+                scene_id=state.scene_id,
+                location=state.player_location,
+                turns_this_scene=turns_this_scene,
+            )
+            nxt = EndScene()
+            prose_part = ProsePart(prose=prose_part.prose, next=nxt)
+
+        # Content-derived soft-close (engine.scene_is_spent): end a dead room the
+        # moment it is dead — no beat can still fire here, no present NPC can still
+        # open up, and the last turn moved nothing — rather than milling to the cap
+        # above. This is what stops the "investigate inert scenery in circles"
+        # tail (e.g. the vicarage map dead-end). Same conversion as the cap: a
+        # destinationless EndScene drops into the spent-scene branch below, the
+        # player walks out, and any met ending still fires on the walk.
+        elif (
+            isinstance(nxt, (Continue, FreeText))
+            and turns_this_scene >= SPENT_CLOSE_MIN_TURNS
+            and scene_is_spent(bundle.world, state)
+        ):
+            logfire.info(
+                "scene spent; forcing soft-close",
                 scene_id=state.scene_id,
                 location=state.player_location,
                 turns_this_scene=turns_this_scene,

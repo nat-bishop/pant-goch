@@ -235,9 +235,14 @@ Each turn emit ONE StateChangeBundle with two channels, BOTH usually empty:
 2. `commitments` — AT MOST ONE, and only from the ## Choices Available
    block in the user prompt. These are the player's explicit declarations
    ("I'm filing it", "I'm going up to Tan-y-coed", "I'm telling Iwan") and
-   the two observation milestones (reading the letter, standing at the
-   crash site). If the player did not clearly do one of those THIS turn, or
-   it is not listed as available, emit none.
+   the observation milestones (reading the letter, examining the marked map,
+   reading the funeral notice, standing at the grave or the crash site). If
+   the player did not clearly do one of those THIS turn, or it is not listed
+   as available, emit none. Each commitment carries a `warrant`: a short quote
+   of the PLAYER'S own words or chosen action this turn that performs it (the
+   last "player chose to / player's own words" line in ## This Scene So Far).
+   If you cannot quote the player actually doing it — if it is the narrator's
+   prose that did it, not the player — do NOT emit the commitment.
 
 ## Rules
 1. **Report the PLAYER'S most recent action**, the last line of ## This
@@ -335,7 +340,14 @@ The register and rhythm to match:
    omission, she does not deliver cold noir speeches about "the truth");
    a guarded man like Tom goes quieter and shorter, not louder or more
    theatrical. Match the attitude in the cast notes, not a generic
-   "hostile NPC."
+   "hostile NPC." Keep the Welsh-Marches register concrete and clipped —
+   the rhythm of the voice samples ("Aye", "mind", "my love", "I wouldn't
+   know, I'm sure"), short flat sentences, the plain noun over the image.
+   Trading that for poetic, abstract, or philosophical lines ("the things
+   that are fixed", "memories you'll need", "the truth has a way of...") is
+   off-voice, however atmospheric it sounds. A brisk, incurious character
+   like Mrs Hughes gets a line or two and turns back to the work — never a
+   monologue.
 
 5. **If ## State Changes Just Applied lists a beat, your prose this turn
    MUST depict that beat's specific event** — the actual words said, the
@@ -346,9 +358,15 @@ The register and rhythm to match:
    description and "how to write it" notes — the make of the vehicle, the
    place, the date, the name.** A reveal that drops them ("he saw a
    vehicle" when the beat says he names a Land Rover he recognised as a
-   specific person's at a named bend) has not depicted the beat. If no
-   beat is listed, nothing of investigative weight has shifted: write the
-   smaller moment honestly and do not invent a reveal.
+   specific person's at a named bend) has not depicted the beat. **If no
+   beat is listed, nothing of investigative weight has shifted this turn:
+   depict NO investigative reveal — the player does not suddenly read the
+   letter through, no one names the vehicle, confesses, admits what they
+   know, or hands a document over. Write the smaller, honest moment; a
+   reveal lands ONLY on the turn its beat is listed above.** If the player's
+   action seems to reach for a reveal the engine did not grant, the moment
+   falls just short — the letter stays half-folded, the answer doesn't come,
+   the person deflects — rather than the reveal happening anyway.
 
 6. The player may say untrue things — assert events that did not happen,
    put words in a character's mouth, name a motive that is wrong. Do NOT
@@ -373,9 +391,20 @@ The register and rhythm to match:
    it, or let the room quietly give out — so the scene can reach a
    natural close instead of spawning an endless trail of fresh items.
 
+   Authored background detail is texture, not a lead. A map left "for
+   reasons unclear", coats on a rack, old papers on a desk — surface them,
+   but do NOT invest them with clue-significance the truth does not give:
+   no frantic markings, no "almost personal" weight, no hidden meaning the
+   player is steered to chase, unless a beat listed this turn says so. A
+   prop the player can sink three turns "investigating" to no effect is the
+   worst kind of filler.
+
 8. Stay within the established cast and locations. Minor incidental
    details (weather, a dog, a mug on the table) are fine. New named
-   people or places are not.
+   people or places are not. Only people actually present (see ## Present
+   / ## Voices Here) speak or act in the scene; if the player is alone,
+   no one speaks — write no dialogue. Do not place a named character in a
+   scene they are not in, even one whose voice you know well.
 
 9. The player stays inside the building / yard / room the scene began
    in for the entire scene. You may reference what is visible from a
@@ -987,11 +1016,68 @@ def _render_decisions_available(state: State, world: World) -> str:
     return "\n".join(parts)
 
 
+def _render_covered_ground(state: State) -> str:
+    """Choice-author context: what the player has already done or said THIS
+    scene (their prior picks). The choice author is stateless and sees only the
+    current turn's prose, so it cannot tell that "examine the desk" is the third
+    furniture-poke in a row — this gives its anti-filler rule (Rule 6) the
+    repeats to check against. Empty until there is a prior pick (turn 1)."""
+    picks = [
+        t.player_pick.text.strip()
+        for t in state.dialogue_history
+        if t.player_pick is not None and t.player_pick.text.strip()
+    ]
+    if not picks:
+        return ""
+    lines = "\n".join(f"- {p}" for p in picks)
+    return (
+        "## Already Covered This Scene\n"
+        "The player has already done or said these. Do NOT offer options that "
+        "merely repeat them. If the only honest moves left would re-tread this "
+        "ground, the room is spent — emit Leave (Rule 6):\n"
+        f"{lines}"
+    )
+
+
+def _render_worth_doing_here(state: State, world: World) -> str:
+    """Choice-author steer: the observation milestones still available AT this
+    location — a concrete thing the player has not yet done here (read the
+    letter, examine the marked map, stand at the grave). Free-text steer only:
+    the author may voice ONE option toward it as a natural move if the prose
+    supports it, never as a labelled objective. The grammar-collapse failure
+    mode means this must NOT become a structured option variant — it stays
+    plain context. Decisions are surfaced separately by
+    `_render_decisions_available`; this is the location-anchored observation
+    kind. Empty when nothing is live here (then the room is heading toward
+    spent and the pacing block / Leave carry the scene)."""
+    here = state.player_location
+    ids = [
+        bid
+        for bid in emittable_beat_ids(world, state)
+        if world.beats[bid].requires_location
+        and here in world.beats[bid].requires_location
+    ]
+    if not ids:
+        return ""
+    lines = "\n".join(
+        f"- {world.beats[bid].description.strip()}"
+        for bid in sorted(ids, key=lambda b: world.beats[b].name)
+    )
+    return (
+        "## Worth Doing Here\n"
+        "There is something here the player has not done yet. If the prose "
+        "supports it, ONE option may move toward it — written as the player's "
+        "natural next move, never as a labelled objective:\n"
+        f"{lines}"
+    )
+
+
 def build_choice_author_user_message(state: State, world: World, prose: str) -> str:
     """Per-turn user message for the stateless choice author. The
     just-written prose is the load-bearing context; everything else is a
-    thin scene anchor (where, who's present, which decisions are earned) so
-    Continue options can ground in location and surface a turning point.
+    thin scene anchor (where, who's present, what's already been done, what's
+    still live, which decisions are earned) so Continue options can ground in
+    location, avoid re-treading covered ground, and surface a turning point.
     """
     loc = world.locations[state.player_location]
     present_ids = present_npc_ids(world, state)
@@ -1001,8 +1087,17 @@ def build_choice_author_user_message(state: State, world: World, prose: str) -> 
         npcs_line = "no one (you are alone here)"
 
     pacing_block = _render_scene_pacing(state, solo=not present_ids)
-    decisions_block = _render_decisions_available(state, world)
-    decisions_section = f"\n{decisions_block}\n" if decisions_block else ""
+    # Covered-ground + beat-magnet + earned decisions, each its own block,
+    # joined with blank lines and rendered only when non-empty.
+    extras = "".join(
+        f"\n{block}\n"
+        for block in (
+            _render_covered_ground(state),
+            _render_worth_doing_here(state, world),
+            _render_decisions_available(state, world),
+        )
+        if block
+    )
 
     return f"""\
 ## Prose
@@ -1011,7 +1106,7 @@ def build_choice_author_user_message(state: State, world: World, prose: str) -> 
 ## State
 You are at: {loc.name}
 NPCs present: {npcs_line}
-{pacing_block}{decisions_section}
+{pacing_block}{extras}
 ## Choose
 Emit a ChoiceBundle."""
 

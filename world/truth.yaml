@@ -78,8 +78,8 @@ beats:
       merely noticed it. Narrate the letter's content in the player's
       reading: Megan's death, the police closing it too quickly, the final
       line about living with not knowing for seven years. Once it has fired,
-      there is nothing more to do at the vicarage — steer the player out
-      toward the village.
+      the letter itself is done; the marked map in the study is the other
+      thing worth the player's attention here.
 
   - id: examined_the_crash_site
     name: Examined the crash site
@@ -97,6 +97,55 @@ beats:
       revelation. A natural place for the player to feel the human weight
       of what happened (and to think of Iwan's monthly flowers).
 
+  - id: found_map_marking
+    name: Found the marked map
+    commitment: true
+    requires_location: [the_old_vicarage]
+    description: |
+      The player unrolls the previous occupant's pencil-marked OS map in
+      the study and sees the markings gather around the ridge toward
+      Tan-y-coed. Whatever the marks once meant, they give the player a
+      direction worth starting from.
+    notes_to_llm: |
+      Fire when the player actually examines the marked map — unrolls it,
+      studies the pencil marks — not on merely noticing it on the desk.
+      The map is the previous occupant's and its real purpose is unknown:
+      do NOT imply the vicar was investigating Megan, and invent no new
+      "clue" it does not hold. Narrate only what the player sees — the
+      marks clustering near the Tan-y-coed ridge — and the player's own
+      sense that it is a place worth going. A quiet orienting beat, not a
+      revelation.
+
+  - id: noticed_funeral_notice
+    name: Noticed the funeral notice
+    commitment: true
+    requires_location: [the_post_office]
+    description: |
+      The player finds Megan Pritchard's funeral notice still on the back
+      page of the 2019 parish newsletter on the post office rack — a small,
+      unremarked trace of the death the village has otherwise gone quiet on.
+    notes_to_llm: |
+      Fire when the player actually reads the funeral notice on the old
+      newsletter, not on a general look around the shop. Narrate it
+      soberly — a few lines of newsprint, the date, nothing dramatic. It
+      reveals no new fact; it is the human weight of the death surfacing in
+      an ordinary place. Do not have Maud volunteer anything because of it.
+
+  - id: visited_megans_grave
+    name: Visited Megan's grave
+    commitment: true
+    requires_location: [st_caradocs]
+    description: |
+      The player stands at Megan Pritchard's grave by the east wall of St
+      Caradoc's — the clean headstone, the fresh flowers someone keeps
+      bringing.
+    notes_to_llm: |
+      Fire when the player is actually at the graveside, reading the stone
+      or taking in the flowers — not on a general look around the churchyard.
+      Narrate it quietly; the fresh flowers are Iwan's (he places them on
+      the 14th), though the player has no way to know that yet. A human
+      beat, not a clue.
+
   # ─────────────────────── Evidence milestones (engine-derived) ───────────────────────
   # No requires_*, no notes about WHEN to fire — the engine fires these the
   # turn the named NPC's trust crosses the `open` band. notes_to_llm is purely
@@ -111,9 +160,13 @@ beats:
       it as Eluned Vaughn's.
     notes_to_llm: |
       When this lands, narrate Tom's actual words — quiet, finally, a
-      relief he did not know he wanted. Do not fire on inference; Tom must
-      say it. After this, Tom is a different man: tired, lighter,
-      sometimes weepy.
+      relief he did not know he wanted. His words must carry ALL THREE
+      specifics, not a fragment of them: (1) it was a Land Rover; (2) it was
+      speeding away from the Black Dog Bend the night Megan died; (3) he
+      recognised it as Eluned Vaughn's. "Land Rover. Recognised it." is NOT
+      this beat — it drops the bend, the night, and whose it was. Do not fire
+      on inference; Tom must say it. After this, Tom is a different man:
+      tired, lighter, sometimes weepy.
 
   - id: dylan_admits_he_knows
     name: Dylan admits he knows
