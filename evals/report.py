@@ -26,6 +26,12 @@ NORTH_STAR_KEYS = [
     "post_exhaustion_turn_ratio",
     "mean_pairwise_beat_jaccard_distance",
     "persona_outcome_separation",
+    # playability health — the mid/end-game reachability signals
+    "ejection_rate",
+    "npc_thawed_rate",
+    "person_findable_rate",
+    "decision_fired_rate",
+    "ending_diversity",
 ]
 _HIGHER_IS_BETTER = {
     "ending_entropy_normalized": True,
@@ -34,6 +40,11 @@ _HIGHER_IS_BETTER = {
     "post_exhaustion_turn_ratio": False,
     "mean_pairwise_beat_jaccard_distance": True,
     "persona_outcome_separation": True,
+    "ejection_rate": False,
+    "npc_thawed_rate": True,
+    "person_findable_rate": True,
+    "decision_fired_rate": True,
+    "ending_diversity": True,
 }
 
 
@@ -218,7 +229,29 @@ def render_report(summary: dict, prev: dict | None) -> str:
     for name, rate in summary["invariants"].items():
         flag = "" if rate >= 1.0 else "  ⚠️"
         lines.append(f"- {name}: {rate}{flag}")
+    tripwires = playability_tripwires(m)
+    if tripwires:
+        lines.append("")
+        lines.append("## Playability tripwires")
+        lines.extend(f"- ⚠️ {t}" for t in tripwires)
     return "\n".join(lines)
+
+
+def playability_tripwires(metrics: dict) -> list[str]:
+    """The "this build is unplayable" alarms, derived from the health metrics.
+    Each is a corpus-wide collapse: a single ending swallowing every run, or the
+    mid/end-game never opening. Empty when the run is healthy. Returned (not
+    just printed) so a CI/eval gate can fail on a non-empty list."""
+    out: list[str] = []
+    if metrics.get("sessions", 0) and metrics.get("ejection_rate", 0.0) >= 1.0:
+        out.append("ejection_rate == 1.0 — EVERY session was run out of the village")
+    if metrics.get("decision_fired_rate", 0.0) <= 0.0:
+        out.append("decision_fired_rate == 0.0 — no session reached a player decision")
+    if metrics.get("person_findable_rate", 0.0) <= 0.0:
+        out.append("person_findable_rate == 0.0 — no NPC findable ever landed")
+    if metrics.get("npc_thawed_rate", 0.0) <= 0.0:
+        out.append("npc_thawed_rate == 0.0 — no NPC ever warmed past cold")
+    return out
 
 
 def emit(out_dir: Path, metrics: CorpusMetrics, invariant_report, *, console: bool = True) -> Path:

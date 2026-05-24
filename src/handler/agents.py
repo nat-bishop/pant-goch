@@ -45,7 +45,6 @@ no JSON schema involved.
 from __future__ import annotations
 
 import random
-import re
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Annotated, Any, Literal
@@ -203,6 +202,10 @@ def _build_state_change_bundle_type(world: World, state: State) -> type[BaseMode
             npc_id=(NpcLiteral, ...),
             trust=(TrustDelta, "0"),
             guard=(GuardDelta, "0"),
+            # Required: the prose moment that earns a non-zero nudge. Forces the
+            # classifier to articulate a real disclosure / careless move before
+            # moving standing — the discipline that ends the +1-every-turn drip.
+            reason=(str, ...),
         )
         npc_deltas_field: Any = (
             list[DynQuality],
@@ -424,41 +427,6 @@ def build_scene_runner_bundle(
 # ───────────────────────── per-call run wrappers ─────────────────────────
 
 
-# Stopwords stripped before comparing a commitment's `warrant` to the player's
-# pick — connective / framing words that would create spurious overlap.
-_WARRANT_STOPWORDS = frozenset({
-    "the", "a", "an", "and", "or", "to", "of", "in", "on", "at", "it", "is",
-    "was", "you", "your", "they", "them", "this", "that", "with", "for",
-    "about", "ask", "asks", "asked", "say", "says", "said", "tell", "tells",
-    "told", "what", "who", "her", "him", "his", "she", "he", "from", "into",
-})
-
-
-def _warrant_supported(warrant: str, pick_text: str) -> bool:
-    """True when a commitment's `warrant` shares a content word (4-char stem)
-    with the player's actual pick this turn — a cheap guard that the commitment
-    reflects what the PLAYER did, not what the narrator's prose drifted into.
-
-    Conservative by design: returns True unless there is ZERO overlap, so a
-    legitimate fire is never dropped over a paraphrase, while the egregious
-    mismatch (a beat firing on an unrelated action — the judge's
-    beat_fired_appropriately failures) is caught. A dropped commitment is
-    recoverable: the beat stays emittable and the choice author re-steers toward
-    it next turn (the beat-magnet block), so the asymmetry favors dropping.
-    """
-    def stems(s: str) -> set[str]:
-        return {
-            w[:4]
-            for w in re.findall(r"[a-z]+", s.lower())
-            if len(w) > 2 and w not in _WARRANT_STOPWORDS
-        }
-
-    w, p = stems(warrant), stems(pick_text)
-    if not w or not p:
-        return False
-    return bool(w & p)
-
-
 # Attempts for the two capped decision agents (phase1, populator). Their cap
 # turns a runaway reasoning loop into a fast `length` finish that pydantic-ai
 # raises as UnexpectedModelBehavior; since the leak is intermittent (~6-18% per
@@ -535,35 +503,50 @@ async def emit_state_changes(
     for d in getattr(raw, "npc_deltas", []):
         if d.trust == "0" and d.guard == "0":
             continue  # no-op nudge — moves nothing
+        reason = (getattr(d, "reason", "") or "").strip()
+        if not reason:
+            # A non-zero nudge with no stated justification is the drip the
+            # rework targets — drop it. The NPC stays warmable, so a genuine
+            # move next turn still lands; only the unjustified tick is lost.
+            logfire.info(
+                "delta dropped: no reason for non-zero nudge",
+                npc_id=d.npc_id,
+                trust=d.trust,
+                guard=d.guard,
+                location=state.player_location,
+            )
+            continue
         if d.npc_id in seen_npcs:
             continue  # keep ±1/turn: first delta per NPC wins
         seen_npcs.add(d.npc_id)
-        deltas.append(QualityDelta(npc_id=d.npc_id, trust=d.trust, guard=d.guard))
+        deltas.append(
+            QualityDelta(npc_id=d.npc_id, trust=d.trust, guard=d.guard, reason=reason)
+        )
 
-    # Commitments are warranted against the player's pick THIS turn: the action
-    # that triggered this turn is on the last dialogue_history record (set in
-    # play_scene before the next run_turn). A commitment whose `warrant` shares
-    # no content word with that pick is dropped — it fired on the narrator's
-    # prose, not the player's action (or it is turn 1, which has no pick and so
-    # cannot warrant anything). The beat stays emittable, so a false drop simply
-    # defers the fire by a turn.
-    last_pick = None
-    if state.dialogue_history and state.dialogue_history[-1].player_pick is not None:
-        last_pick = state.dialogue_history[-1].player_pick.text
+    # Commitments are trusted as the classifier emits them. The grammar already
+    # narrows them to beats emittable HERE (right location / present NPC / gate
+    # met), and the classifier carries the beat's notes plus a `warrant` it must
+    # quote from the player's actual pick — that self-justification is the gate.
+    # We no longer second-guess it with post-hoc string matching (warrant
+    # stem-overlap / object triggers): that was brittle and overfit to a few
+    # transcripts, and the right fix for a mis-fire is better prompting, not a
+    # regex. The one structural guard kept: turn 1 has no player action yet, so
+    # nothing can have been performed — fire no commitment.
+    have_player_action = bool(
+        state.dialogue_history and state.dialogue_history[-1].player_pick is not None
+    )
     commitments: list[UnlockBeat] = []
     for c in getattr(raw, "commitments", []):
         if getattr(c, "beat_name", None) is None:
             continue
-        warrant = getattr(c, "warrant", "") or ""
-        if last_pick is None or not _warrant_supported(warrant, last_pick):
-            logfire.info(
-                "commitment dropped: warrant unsupported by player action",
-                beat_name=c.beat_name,
-                warrant=warrant,
-                player_pick=last_pick,
-                location=state.player_location,
-            )
-            continue
+        if not have_player_action:
+            continue  # turn 1: no action to perform a beat
+        logfire.info(
+            "commitment fired",
+            beat_name=c.beat_name,
+            warrant=getattr(c, "warrant", "") or "",
+            location=state.player_location,
+        )
         commitments.append(
             UnlockBeat(beat_id=bundle.world.beat_id_for_name(c.beat_name))
         )
@@ -695,6 +678,8 @@ async def emit_choices(
     bundle: AgentBundle,
     state: State,
     prose: str,
+    *,
+    leave_required: bool = False,
 ) -> ChoiceBundle:
     """Choice author LLM call. Stateless (no message_history). The
     just-written prose is the load-bearing context; the system prompt
@@ -703,8 +688,13 @@ async def emit_choices(
     The output schema is static (`Continue | Leave`, no per-call id
     narrowing) so the canonical `ChoiceBundle` is passed directly — its
     `Continue` 2-4-option validator fires during the agent's retry loop.
+
+    `leave_required` (the engine judged the scene spent / a decision just fired)
+    adds the "Offer The Exit" directive so one option is the diegetic departure.
     """
-    user_msg = build_choice_author_user_message(state, bundle.world, prose)
+    user_msg = build_choice_author_user_message(
+        state, bundle.world, prose, leave_required=leave_required
+    )
     result = await bundle.choice_author.run(
         user_msg,
         output_type=NativeOutput(ChoiceBundle, strict=True),

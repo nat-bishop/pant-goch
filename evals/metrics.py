@@ -21,6 +21,8 @@ from itertools import combinations
 
 from pydantic import BaseModel
 
+from handler.engine import confession_depth
+from handler.state import make_initial_state
 from handler.world import World
 
 from .session import SessionArtifact
@@ -247,6 +249,75 @@ def _beats_per_location(artifacts: list[SessionArtifact]) -> dict[str, int]:
     return {loc: len(beats) for loc, beats in sorted(by_loc.items())}
 
 
+# ───────────────────────── playability health (W3) ─────────────────────────
+#
+# The signals that would have flashed red on the noregex-20260524 run, where
+# every persona was run out of the village having warmed no one: the mid-game
+# (person-anchored findables) and end-game (decisions, real endings) were
+# structurally unreachable. `beats_never_fired` lumped them in with everything
+# else; these isolate the "is the game actually playable?" question per session.
+
+
+def _ejection_ending_ids(world: World) -> set[str]:
+    """Endings that fire on losing the village — gated on
+    `village_attention_at_least: hostile`. The run-out terminal; a corpus that
+    only ever reaches these is unplayable, not varied."""
+    return {
+        eid
+        for eid, ending in world.endings.items()
+        if ending.when is not None
+        and ending.when.village_attention_at_least == "hostile"
+    }
+
+
+def _person_findable_ids(world: World) -> set[str]:
+    """Commitment findables anchored to a specific NPC (`when.npc`), excluding
+    the player-decision beats — Tom naming the vehicle, Dylan admitting what he
+    knows, etc. The mid-game content that only lands once an NPC has thawed."""
+    return {
+        bid
+        for bid, beat in world.beats.items()
+        if beat.commitment
+        and not bid.startswith("decided_")
+        and beat.when is not None
+        and beat.when.npc is not None
+    }
+
+
+def _delta_int(s: object) -> int:
+    """Parse a wire trust/guard string ("+1"/"-1"/"0") to an int; everything
+    else (None, "BREACH") is 0 — BREACH latches separately."""
+    try:
+        return int(s)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0
+
+
+def _session_thawed_npcs(art: SessionArtifact, world: World) -> set[str]:
+    """The tracked NPCs this session warmed to `thawing`+ (confession depth ≥ 1).
+    Reconstructs per-NPC trust/guard by summing the transcript's `applied_deltas`
+    — which now record the REALIZED change (post-zero/post-clamp), so the sum
+    reproduces final state — then asks the engine for the band. NOTE: artifacts
+    written before the effective-delta change logged *emitted* deltas and so
+    overcount thaw; this metric is meaningful only on post-change runs."""
+    s = make_initial_state(world)
+    for e in _play_turns(art):
+        for d in e.get("applied_deltas", []):
+            nid = d.get("npc_id")
+            if nid is None:
+                continue
+            if d.get("guard") == "BREACH":
+                s.guard_breached.add(nid)
+            else:
+                s.guard[nid] = s.guard.get(nid, 0) + _delta_int(d.get("guard"))
+            s.trust[nid] = s.trust.get(nid, 0) + _delta_int(d.get("trust"))
+    return {nid for nid in world.npcs if confession_depth(world, s, nid) >= 1}
+
+
+def _rate(predicate_true: int, total: int) -> float:
+    return round(predicate_true / total, 3) if total else 0.0
+
+
 def _median(values: list[float]) -> float:
     if not values:
         return 0.0
@@ -268,6 +339,12 @@ class CorpusMetrics(BaseModel):
     post_exhaustion_turn_ratio: float
     mean_pairwise_beat_jaccard_distance: float
     persona_outcome_separation: float
+    # playability health — is the mid/end-game reachable at all?
+    ejection_rate: float
+    npc_thawed_rate: float
+    person_findable_rate: float
+    decision_fired_rate: float
+    ending_diversity: float
     # coverage
     beats_total: int
     beats_never_fired: list[str]
@@ -310,6 +387,22 @@ def corpus_metrics(artifacts: list[SessionArtifact], world: World) -> CorpusMetr
     all_beats = set(world.beats)
     all_locations = set(world.locations)
     all_edges = _all_edges(world)
+
+    # Playability health: per-session pass rates over the whole corpus.
+    n = len(artifacts)
+    ejection_ids = _ejection_ending_ids(world)
+    person_ids = _person_findable_ids(world)
+    ejected = sum(1 for a in artifacts if a.ending_id in ejection_ids)
+    thawed = sum(1 for a in artifacts if _session_thawed_npcs(a, world))
+    with_person = sum(
+        1 for a in artifacts if person_ids & set(a.unlocked_beats)
+    )
+    with_decision = sum(
+        1
+        for a in artifacts
+        if any(b.startswith("decided_") for b in a.unlocked_beats)
+    )
+
     return CorpusMetrics(
         sessions=len(artifacts),
         ending_entropy_normalized=round(
@@ -322,6 +415,11 @@ def corpus_metrics(artifacts: list[SessionArtifact], world: World) -> CorpusMetr
             _mean_pairwise_beat_jaccard_distance(artifacts), 3
         ),
         persona_outcome_separation=round(_persona_outcome_separation(artifacts), 3),
+        ejection_rate=_rate(ejected, n),
+        npc_thawed_rate=_rate(thawed, n),
+        person_findable_rate=_rate(with_person, n),
+        decision_fired_rate=_rate(with_decision, n),
+        ending_diversity=_rate(len(reached_endings), n),
         beats_total=len(all_beats),
         beats_never_fired=sorted(all_beats - fired_beats),
         endings_total=len(world.endings),

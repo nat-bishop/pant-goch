@@ -65,12 +65,21 @@ TRUST_DELTA_VALUES = {"-1": -1, "0": 0, "+1": 1}
 class QualityDelta(_Strict):
     """One present-NPC's trust/guard nudge this turn. `guard="BREACH"` is the
     latch signal (not a magnitude); the engine adds the npc to
-    `state.guard_breached` and leaves the numeric guard alone."""
+    `state.guard_breached` and leaves the numeric guard alone.
+
+    `reason` is a one-line justification the classifier must give for a non-zero
+    nudge — a quote or paraphrase of the prose moment that earned it (the NPC
+    actually softening / volunteering, or the player's careless move). It forces
+    the classifier to point at something real before awarding warmth (the
+    `+1`-every-turn drip was the root of milling + unearned endings), and makes
+    each delta auditable in the transcript. Defaulted so non-LLM constructors
+    (tests, fallbacks) need not supply it."""
 
     type: Literal["quality_delta"] = "quality_delta"
     npc_id: str
     trust: TrustDelta = "0"
     guard: GuardDelta = "0"
+    reason: str = ""
 
 
 class StateChangeBundle(_Strict):
@@ -109,10 +118,16 @@ class StateChangeBundle(_Strict):
 
 
 class Option(_Strict):
-    """One player-facing choice within a Continue. Just text now —
-    `leaves_for` was removed (the map is the navigation surface per SPEC §1)."""
+    """One player-facing choice within a Continue. `text` is the player-facing
+    line; `leave` marks this option as the diegetic exit — picking it ends the
+    scene (the client routes it to a walk, exactly like the engine's appended
+    exit entry) instead of continuing. At most one option per Continue may set
+    it (validated on Continue). A scalar flag, NOT a union variant — the grammar
+    sampler handles a bool field cleanly, whereas a per-option union of
+    continue/leave shapes collapsed (the leaves_for scar)."""
 
     text: str
+    leave: bool = False
 
 
 class Continue(_Strict):
@@ -120,6 +135,20 @@ class Continue(_Strict):
 
     type: Literal["continue"] = "continue"
     options: list[Option] = Field(min_length=2, max_length=4)
+
+    @model_validator(mode="after")
+    def _at_most_one_leave(self) -> Continue:
+        """At most one option may be the diegetic exit. Two leave options would
+        give the player two ways to end the same scene — incoherent, and the
+        engine's 'an authored leave is present' check (which suppresses the
+        generic exit + the spent auto-close) expects a single one. Raised here
+        so the choice author's `output_retries` re-roll fixes an over-emission."""
+        n_leave = sum(1 for o in self.options if o.leave)
+        if n_leave > 1:
+            raise ValueError(
+                f"at most one option may set leave=true (got {n_leave})"
+            )
+        return self
 
 
 class Leave(_Strict):

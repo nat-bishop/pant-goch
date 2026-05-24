@@ -111,16 +111,16 @@ async def test_emit_returns_level_word():
     assert level == "talked_about"
 
 
-# ───────────────────────── ratchet ─────────────────────────
+# ───────────────────────── climb fast / cool slow ─────────────────────────
 
 
-def test_apply_ratchets_up_only():
+def test_apply_climbs_fast_cools_slow():
     state = State(player_location="the_slaughtered_lamb")
     assert state.village_attention == 0
-    assert apply_village_attention(state, "talked_about") == 2
-    assert apply_village_attention(state, "none") == 2     # never lowers
-    assert apply_village_attention(state, "noticed") == 2  # nor a lower verdict
-    assert apply_village_attention(state, "hostile") == 3  # but climbs further
+    assert apply_village_attention(state, "talked_about") == 2  # jumps to verdict
+    assert apply_village_attention(state, "none") == 1     # cools one band, not to 0
+    assert apply_village_attention(state, "noticed") == 1  # holds at the lower verdict
+    assert apply_village_attention(state, "hostile") == 3  # spreads fast again
 
 
 def test_level_vocabulary_is_consistent_across_modules():

@@ -52,10 +52,14 @@ from .engine import (
     apply_village_attention,
     append_turn_record,
     band_name,
+    effective_deltas,
     enter_scene,
     free_text_cadence_ok,
+    is_decision,
     present_npc_ids,
     resolved_ending_id_at_close,
+    seed_present_npcs,
+    scene_exhausted_here,
     scene_is_spent,
 )
 from .schemas import (
@@ -311,6 +315,15 @@ def _fallback_choices() -> ChoiceBundle:
     ]))
 
 
+def _authored_leave_present(nxt: object) -> bool:
+    """True when the choice author marked one of this turn's options as the
+    diegetic exit (`leave: true`). When so, the engine lets the PLAYER pick that
+    in-fiction departure rather than force-closing the scene itself: the spent
+    auto-close is skipped and the generic 'Step outside' entry is not appended
+    (no duplicate exits)."""
+    return isinstance(nxt, Continue) and any(o.leave for o in nxt.options)
+
+
 def _fallback_closing_prose() -> str:
     """Engine-authored closing line when the prose writer's retries
     exhaust on a leave. Voice-neutral; never shown as engine metatext."""
@@ -325,6 +338,7 @@ async def _stream_pace_and_author(
     *,
     emit_event: EmitEvent | None,
     skip_event: asyncio.Event | None,
+    leave_required: bool = False,
 ) -> tuple[str, object, object]:
     """Phase 2a + 2b/2c, fused so the reveal overlaps the authoring.
 
@@ -408,7 +422,7 @@ async def _stream_pace_and_author(
                         event_kind="prose_word", skip_event=skip_event,
                     )
             choices_res, gate_res = await asyncio.gather(
-                emit_choices(bundle, state, prose),
+                emit_choices(bundle, state, prose, leave_required=leave_required),
                 emit_free_text_gate(bundle, state, prose),
                 return_exceptions=True,
             )
@@ -420,7 +434,7 @@ async def _stream_pace_and_author(
         # await the pacer's remaining holds.
         prose = "".join(acc)
         authoring = asyncio.gather(
-            emit_choices(bundle, state, prose),
+            emit_choices(bundle, state, prose, leave_required=leave_required),
             emit_free_text_gate(bundle, state, prose),
             return_exceptions=True,
         )
@@ -443,6 +457,7 @@ async def run_turn(
     *,
     emit_event: EmitEvent | None = None,
     skip_event: asyncio.Event | None = None,
+    allow_mid_scene_leave: bool = True,
 ) -> ProsePart:
     """One full turn end-to-end. Returns the engine-assembled ProsePart
     so the caller can dispatch on `prose_part.next` (Continue → wait
@@ -481,16 +496,36 @@ async def run_turn(
             present_npcs=list(present_npc_ids(bundle.world, state)),
         )
         applied = StateChangeBundle()
+    # Snapshot trust/guard BEFORE applying, so `effective_deltas` can report what
+    # the engine ACTUALLY did (a +1 zeroed by opens_up_only_at, a clamp-saturated
+    # nudge) rather than what the classifier asked for — the transcript/metrics
+    # must read realized state, not emitted intent (the Dylan "+10" that was 0).
+    trust_before = dict(state.trust)
+    guard_before = dict(state.guard)
+    breached_before = set(state.guard_breached)
     newly_unlocked = apply_state_changes(applied, state, bundle.world)
-    if newly_unlocked or applied.deltas:
+    # Only the deltas that actually moved standing: an all-zero realized delta
+    # changed nothing, so the turn reads dry (scene soft-close + filler metrics).
+    moved_deltas = [
+        d
+        for d in effective_deltas(
+            applied,
+            state,
+            trust_before=trust_before,
+            guard_before=guard_before,
+            breached_before=breached_before,
+        )
+        if d.trust != "0" or d.guard != "0"
+    ]
+    if newly_unlocked or moved_deltas:
         # One queryable record per turn that moved state: which beats unlocked
-        # (commitments + engine-derived), the quality nudges, and the resulting
-        # set. Pairs with the per-action logs in main.py so a session's
-        # progress is reconstructable from Logfire alone.
+        # (commitments + engine-derived), the quality nudges actually applied, and
+        # the resulting set. Pairs with the per-action logs in main.py so a
+        # session's progress is reconstructable from Logfire alone.
         logfire.info(
             "state applied",
             applied_beats=newly_unlocked,
-            applied_deltas=[d.model_dump() for d in applied.deltas],
+            applied_deltas=[d.model_dump() for d in moved_deltas],
             unlocked_beats=sorted(state.unlocked_beats),
             village_attention=state.village_attention,
             location=state.player_location,
@@ -509,10 +544,34 @@ async def run_turn(
             if band_name(bundle.world, state, nid) != bands_before[nid]:
                 await _emit_standing(bundle.world, state, nid, emit_event)
 
+    # Should the choice author offer a diegetic exit this turn? Two triggers:
+    #  - a decision just fired — the player committed, so the scene winds down
+    #    (one closing exchange, then a clean way out) rather than letting them
+    #    keep interrogating past the turning point;
+    #  - the scene is spent — this turn moved nothing AND nothing here can still
+    #    pay off (mirrors scene_is_spent, but evaluated from THIS turn's movement
+    #    since the turn record isn't appended until below). Completed turns after
+    #    this one == len(dialogue_history)+1, matching scene_is_spent's grace read.
+    # Gated on allow_mid_scene_leave: the `leave_mode` test arm withholds the
+    # voluntary mid-scene exit entirely, so it must NOT get a diegetic leave
+    # option either — there the scene ends only at the narrator soft-close.
+    decision_fired = any(is_decision(b) for b in newly_unlocked)
+    this_turn_moved = bool(newly_unlocked) or bool(moved_deltas)
+    leave_required = allow_mid_scene_leave and (
+        decision_fired
+        or (
+            not this_turn_moved
+            and scene_exhausted_here(
+                bundle.world, state, len(state.dialogue_history) + 1
+            )
+        )
+    )
+
     # ── Phase 2a + 2b/2c: stream prose live, author over the reveal tail ────
     prose, choices_res, gate_res = await _stream_pace_and_author(
         bundle, runtime, state, newly_unlocked,
         emit_event=emit_event, skip_event=skip_event,
+        leave_required=leave_required,
     )
 
     if isinstance(choices_res, UnexpectedModelBehavior):
@@ -569,7 +628,7 @@ async def run_turn(
         state,
         prose=prose_part.prose,
         applied_state_changes=[UnlockBeat(beat_id=b) for b in newly_unlocked],
-        applied_deltas=list(applied.deltas),
+        applied_deltas=moved_deltas,
     )
 
     return prose_part
@@ -661,6 +720,19 @@ async def play_scene(
             placements = NpcPlacementBundle()
         await _apply_placements(state, bundle, placements, emit_event=emit_event)
 
+        # Deterministic reachability: force any location-pinned NPC (Dylan) present
+        # where the player can actually warm them, so their findable doesn't hinge
+        # on the stay-biased populator. Done AFTER the populator so it overrides a
+        # stale placement, and emits npc_moved like any other arrival.
+        seed_prev = {nid: state.npc_locations.get(nid) for nid in bundle.world.npcs}
+        for nid in seed_present_npcs(bundle.world, state):
+            if emit_event is not None:
+                await emit_event(npc_moved_event(
+                    npc_id=nid,
+                    from_id=seed_prev[nid] or bundle.world.npcs[nid].default_location,
+                    to_id=state.player_location,
+                ))
+
         runtime.prose_writer_message_history = []
         if emit_event is not None:
             loc = bundle.world.locations[state.player_location]
@@ -688,6 +760,7 @@ async def play_scene(
             prose_part = await run_turn(
                 bundle, runtime, state,
                 emit_event=emit_event, skip_event=skip_event,
+                allow_mid_scene_leave=run_config.allow_mid_scene_leave,
             )
         turns_this_scene += 1
 
@@ -727,6 +800,9 @@ async def play_scene(
             isinstance(nxt, (Continue, FreeText))
             and turns_this_scene >= SPENT_CLOSE_MIN_TURNS
             and scene_is_spent(bundle.world, state)
+            and not (
+                run_config.allow_mid_scene_leave and _authored_leave_present(nxt)
+            )
         ):
             logfire.info(
                 "scene spent; forcing soft-close",
@@ -749,12 +825,20 @@ async def play_scene(
         if emit_event is not None:
             soft_close = not isinstance(nxt, (Continue, FreeText))
             if isinstance(nxt, Continue):
-                # Append the leave entry AFTER the real options so their
-                # indices stay aligned with PickOption. The walk it routes to
-                # is always legal — every location has ≥1 adjacent (invariant 11).
-                payload = [{"text": o.text} for o in nxt.options]
+                # Carry each option's `leave` flag to the client so a diegetic
+                # exit the choice author wrote renders (and routes) as the exit.
+                payload = [
+                    {"text": o.text, "leave": True} if o.leave else {"text": o.text}
+                    for o in nxt.options
+                ]
+                # Append the generic leave entry AFTER the real options (indices
+                # stay aligned with PickOption) ONLY when the author did not write
+                # one — otherwise the player would see two ways out. The walk it
+                # routes to is always legal (every location has ≥1 adjacent,
+                # invariant 11).
                 if (
-                    run_config.allow_mid_scene_leave
+                    not _authored_leave_present(nxt)
+                    and run_config.allow_mid_scene_leave
                     and len(state.dialogue_history) >= LEAVE_OPTION_MIN_HISTORY
                 ):
                     payload.append({"text": LEAVE_OPTION_TEXT, "leave": True})

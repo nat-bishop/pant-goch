@@ -259,6 +259,37 @@ beats:
       anything. Narrate the cost of saying it; she has crossed her own line
       about the village's business. After this she will give no more.
 
+  - id: iwan_keeps_the_flowers
+    name: Iwan keeps the flowers
+    commitment: true
+    when: {npc: iwan, trust_at_least: thawing}
+    description: |
+      Iwan admits — quietly, to the player and almost to himself — that he
+      drives out to the Black Dog Bend on the fourteenth of every month and
+      leaves fresh flowers, and that he has never told Wendy he does it.
+    notes_to_llm: |
+      A human-detail findable, not a clue — the first real thing Iwan gives of
+      himself rather than of the case. Narrate it gently, in his formal,
+      careful register; the weight is that he has carried this small private
+      ritual alone for seven years. It reveals nothing about the road. If the
+      player already stood at the grave or the bend and saw fresh flowers, this
+      is who leaves them. Do not let him volunteer anything evidential here.
+
+  - id: iwan_wondered_about_dylan
+    name: Iwan wondered about Dylan
+    commitment: true
+    when: {npc: iwan, trust_at_least: open}
+    description: |
+      Iwan admits he has long wondered about Dylan Vaughn and Megan — whether
+      there was something between them — but that he never asked, and the
+      wondering never became knowing.
+    notes_to_llm: |
+      His deepest disclosure, and an act of trust: a grieving father naming a
+      suspicion he has never spoken aloud, careful not to accuse. A soft lead
+      toward the affair, NOT proof — he knows nothing, he only wondered.
+      Narrate the difficulty of saying it. He does not know what happened on
+      the road and must not be made to; this is feeling, not evidence.
+
   # ─────────────────────── Outcome / terminal-trust milestones (derived) ───────────────────────
 
   - id: eluned_breaks

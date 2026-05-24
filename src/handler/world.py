@@ -299,12 +299,12 @@ def _check_no_when_cycles(beats: dict[str, Beat]) -> None:
 def _check_decision_beats_committable(beats: dict[str, Beat]) -> None:
     """Every `decided_*` beat must set `commitment: true`. The engine keys the
     mutually-exclusive player-decision rule on the `decided_` id prefix
-    (`engine._is_decision`) and only ever OFFERS commitment beats to the
+    (`engine.is_decision`) and only ever OFFERS commitment beats to the
     classifier (`engine.emittable_beat_ids`). A `decided_*` beat left at the
     `commitment=false` default would instead be auto-derived by
     `_derive_milestones` the instant its `when` gate is met — committing the
     player to a decision (and its ending) they never chose, the inverse of the
-    player-driven-endings invariant. Kept in sync with `engine._is_decision`."""
+    player-driven-endings invariant. Kept in sync with `engine.is_decision`."""
     for beat in beats.values():
         if beat.id.startswith("decided_") and not beat.commitment:
             raise WorldLoadError(

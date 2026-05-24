@@ -22,10 +22,14 @@ from handler.engine import (
     apply_village_attention,
     band_name,
     confession_depth,
+    effective_deltas,
     emittable_beat_ids,
     free_text_cadence_ok,
+    has_live_findable,
+    present_npc_ids,
     resolved_ending_id_at_close,
     scene_is_spent,
+    seed_present_npcs,
     village_ejected,
     when_satisfied,
 )
@@ -224,16 +228,19 @@ def test_apply_quality_delta_clamped():
     assert s.guard["tom"] == 1
 
 
-def test_apply_village_attention_ratchets_up_only():
+def test_apply_village_attention_climbs_fast_cools_slow():
     """village_attention is set by the dedicated scene-close agent via
-    apply_village_attention — it climbs to the verdict level and never drops."""
+    apply_village_attention — it jumps UP to a verdict at/above the current heat
+    (suspicion spreads fast) but only steps DOWN one band per calmer scene (the
+    village cools slowly), so a pushy stretch is recoverable but not instantly."""
     world = _make_world(npcs=[_npc("tom", "loc_a")])
     s = _state(world)
     assert s.village_attention == 0
-    assert apply_village_attention(s, "talked_about") == 2
-    assert apply_village_attention(s, "none") == 2      # never lowers
-    assert apply_village_attention(s, "noticed") == 2   # nor a lower verdict
-    assert apply_village_attention(s, "hostile") == 3   # but climbs further
+    assert apply_village_attention(s, "talked_about") == 2  # jumps up to verdict
+    assert apply_village_attention(s, "none") == 1          # cools ONE band, not to 0
+    assert apply_village_attention(s, "none") == 0          # another calm scene → 0
+    assert apply_village_attention(s, "hostile") == 3       # spreads fast again
+    assert apply_village_attention(s, "noticed") == 2       # then eases one band
 
 
 def test_apply_breach_latches_guard():
@@ -509,7 +516,7 @@ def test_dynamic_bundle_accepts_present_npc_quality_delta():
     world = _bundle_world()
     Bundle = _build_state_change_bundle_type(world, _state(world, "loc_a"))
     b = Bundle.model_validate({
-        "npc_deltas": [{"npc_id": "tom", "trust": "+1"}],
+        "npc_deltas": [{"npc_id": "tom", "trust": "+1", "reason": "warmed"}],
         "commitments": [],
     })
     assert b.npc_deltas[0].npc_id == "tom"  # type: ignore[union-attr]
@@ -702,3 +709,146 @@ def test_choice_author_worth_pursuing_names_present_npc_findable():
     msg = build_choice_author_user_message(s, world, prose="The bar is quiet.")
     assert "## Worth Pursuing Here" in msg
     assert "Tom" in msg
+
+
+# ───────────────────── effective deltas (realized changes) ─────────────────────
+
+
+def _world_dylan() -> World:
+    """A world where dylan opens up only at loc_b (NOT his default loc_a) and
+    carries a person-anchored findable gated on his trust — the Dylan trap in
+    miniature."""
+    dylan = _npc("dylan", "loc_a", disposition=Disposition(opens_up_only_at=["loc_b"]))
+    beat = _beat(
+        "dylan_admits", name="Dylan admits", commitment=True,
+        when=When(npc="dylan", trust_at_least="open"),
+    )
+    return _make_world(npcs=[dylan], beats=[beat])
+
+
+def _apply_and_realize(world, s, bundle):
+    tb, gb, bb = dict(s.trust), dict(s.guard), set(s.guard_breached)
+    apply_state_changes(bundle, s, world)
+    return effective_deltas(
+        bundle, s, trust_before=tb, guard_before=gb, breached_before=bb
+    )
+
+
+def test_effective_deltas_zeroed_off_opens_location():
+    world = _world_dylan()
+    s = _state(world, location="loc_a")  # not where dylan warms
+    bundle = StateChangeBundle(deltas=[QualityDelta(npc_id="dylan", trust="+1", reason="r")])
+    eff = _apply_and_realize(world, s, bundle)
+    assert eff[0].trust == "0"      # warmth dropped at a non-opens-up location
+    assert s.trust["dylan"] == 0
+
+
+def test_effective_deltas_applied_on_opens_location():
+    world = _world_dylan()
+    s = _state(world, location="loc_b")  # dylan opens up here
+    bundle = StateChangeBundle(deltas=[QualityDelta(npc_id="dylan", trust="+1", reason="r")])
+    eff = _apply_and_realize(world, s, bundle)
+    assert eff[0].trust == "+1"
+    assert s.trust["dylan"] == 1
+
+
+def test_effective_deltas_clamp_saturation_reads_zero():
+    world = _make_world(npcs=[_npc("tom", "loc_a")])
+    s = _state(world)
+    s.trust["tom"] = 8  # already at TRUST_MAX
+    bundle = StateChangeBundle(deltas=[QualityDelta(npc_id="tom", trust="+1")])
+    eff = _apply_and_realize(world, s, bundle)
+    assert eff[0].trust == "0"      # saturated → nothing actually applied
+
+
+def test_effective_deltas_breach_records_breach():
+    world = _make_world(npcs=[_npc("tom", "loc_a")])
+    s = _state(world)
+    bundle = StateChangeBundle(deltas=[QualityDelta(npc_id="tom", guard="BREACH")])
+    eff = _apply_and_realize(world, s, bundle)
+    assert eff[0].guard == "BREACH"
+
+
+# ───────────────────── seed_present_npcs (reachability) ─────────────────────
+
+
+def test_seed_present_npcs_places_dylan_where_warmable():
+    world = _world_dylan()
+    s = make_initial_state(world)  # dylan at default loc_a
+    s.player_location = "loc_b"    # an opens-up spot, findable still live
+    assert seed_present_npcs(world, s) == ["dylan"]
+    assert s.npc_locations["dylan"] == "loc_b"
+
+
+def test_seed_present_npcs_skips_non_opens_location():
+    world = _world_dylan()
+    s = make_initial_state(world)
+    s.player_location = "loc_a"    # default, but not an opens-up spot
+    assert seed_present_npcs(world, s) == []
+
+
+def test_seed_present_npcs_skips_when_findable_done():
+    world = _world_dylan()
+    s = make_initial_state(world)
+    s.player_location = "loc_b"
+    s.unlocked_beats.add("dylan_admits")
+    assert not has_live_findable(world, s, "dylan")
+    assert seed_present_npcs(world, s) == []
+
+
+def test_seed_present_npcs_skips_when_breached():
+    world = _world_dylan()
+    s = make_initial_state(world)
+    s.player_location = "loc_b"
+    s.guard_breached.add("dylan")
+    assert seed_present_npcs(world, s) == []
+
+
+# ───────────────────── not-here steer + bible reachability ─────────────────────
+
+
+def test_choice_author_steers_away_from_dead_location():
+    """A present NPC who can't warm HERE gets a 'won't talk here / somewhere
+    quieter' steer instead of another futile press."""
+    world = _world_dylan()
+    s = _state(world, location="loc_a")  # dylan present (default) but unwarmable here
+    msg = build_choice_author_user_message(s, world, prose="Dylan looks away.")
+    assert "## They Won't Talk Here" in msg
+
+
+def test_choice_author_no_dead_location_steer_where_warmable():
+    world = _world_dylan()
+    s = _state(world, location="loc_b")
+    s.npc_locations = {"dylan": "loc_b"}  # present where he opens up
+    msg = build_choice_author_user_message(s, world, prose="Dylan exhales.")
+    assert "## They Won't Talk Here" not in msg
+
+
+REAL_WORLD = Path(__file__).parent.parent / "world"
+
+
+def test_every_person_findable_has_a_warmable_present_spot():
+    """Regression for the Dylan trap, on the real bible: every person-anchored
+    findable must have at least one location where its NPC is BOTH present
+    (default or engine-seeded) AND warmable (`_trust_adjustable_here`). Before
+    `seed_present_npcs`, dylan_admits_he_knows failed — Dylan was present only at
+    Tan-y-coed (where he won't warm) and warmable only where the populator rarely
+    placed him."""
+    world = load_world(REAL_WORLD)
+    person_beats = {
+        bid: b.when.npc
+        for bid, b in world.beats.items()
+        if b.commitment and not bid.startswith("decided_")
+        and b.when is not None and b.when.npc is not None
+    }
+    assert person_beats, "expected person-anchored findables in the bible"
+    for bid, nid in person_beats.items():
+        reachable = False
+        for loc in world.locations:
+            s = make_initial_state(world)
+            s.player_location = loc
+            seed_present_npcs(world, s)
+            if nid in present_npc_ids(world, s) and _trust_adjustable_here(world, s, nid):
+                reachable = True
+                break
+        assert reachable, f"{bid}: NPC {nid!r} is never both present and warmable"

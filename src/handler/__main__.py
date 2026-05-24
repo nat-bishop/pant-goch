@@ -70,7 +70,8 @@ def _print_prose_part(prose_part: ProsePart) -> None:
     print()
     if isinstance(prose_part.next, Continue):
         for i, opt in enumerate(prose_part.next.options, start=1):
-            print(f"  {i}) {opt.text}")
+            tag = "  (leave)" if opt.leave else ""
+            print(f"  {i}) {opt.text}{tag}")
     elif isinstance(prose_part.next, FreeText):
         print(f"[type your reply: {prose_part.next.prompt}]")
         if prose_part.next.suggested:
@@ -120,6 +121,10 @@ def _request_input(prose_part: ProsePart, state: State, world: World) -> PlayerA
                 print("Enter an option number or 'go <n>'.")
                 continue
             if 0 <= idx < n:
+                if nxt.options[idx].leave:
+                    # Diegetic exit — fall through to the walk prompt below so
+                    # the player picks where they go (the close resolves there).
+                    break
                 return PickOption(index=idx)
             print(f"Out of range. Pick 1-{n}.")
 

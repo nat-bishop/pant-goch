@@ -31,7 +31,9 @@ def test_bundle_accepts_present_npc_delta_and_emittable_commitment():
     state.player_location = "the_slaughtered_lamb"  # Tom is here
     BundleType = _build_state_change_bundle_type(world, state)
     b = BundleType.model_validate({
-        "npc_deltas": [{"npc_id": "tom", "trust": "+1"}],
+        "npc_deltas": [
+            {"npc_id": "tom", "trust": "+1", "reason": "he shared a real memory"}
+        ],
     })
     assert b.npc_deltas[0].npc_id == "tom"  # type: ignore[union-attr]
 
@@ -106,9 +108,9 @@ async def test_emit_state_changes_drops_noop_and_dedups_npc(monkeypatch):
 
     raw = SimpleNamespace(
         npc_deltas=[
-            SimpleNamespace(npc_id="tom", trust="0", guard="0"),   # no-op
-            SimpleNamespace(npc_id="tom", trust="+1", guard="0"),  # kept
-            SimpleNamespace(npc_id="tom", trust="+1", guard="0"),  # dup npc
+            SimpleNamespace(npc_id="tom", trust="0", guard="0", reason=""),   # no-op
+            SimpleNamespace(npc_id="tom", trust="+1", guard="0", reason="warmed"),  # kept
+            SimpleNamespace(npc_id="tom", trust="+1", guard="0", reason="warmed"),  # dup npc
         ],
         commitments=[],
     )
@@ -123,6 +125,35 @@ async def test_emit_state_changes_drops_noop_and_dedups_npc(monkeypatch):
 
     assert len(out.deltas) == 1
     assert out.deltas[0].npc_id == "tom" and out.deltas[0].trust == "+1"
+
+
+@pytest.mark.asyncio
+async def test_emit_state_changes_drops_nonzero_delta_without_reason(monkeypatch):
+    """§1 trust rework: a non-zero nudge with no stated justification is the
+    +1-every-turn drip the rework targets — drop it. A blank/whitespace reason
+    on a +1 means the classifier could not point at a real disclosure."""
+    from types import SimpleNamespace
+    import handler.agents as agents_mod
+    from handler.agents import build_scene_runner_bundle, emit_state_changes
+
+    world = load_world(FIXTURE_VALID)
+    state = make_initial_state(world)
+    state.player_location = "the_slaughtered_lamb"  # Tom present
+
+    raw = SimpleNamespace(
+        npc_deltas=[
+            SimpleNamespace(npc_id="tom", trust="+1", guard="0", reason="   "),  # unjustified
+        ],
+        commitments=[],
+    )
+
+    async def fake_run(agent, prompt, output_type):
+        return SimpleNamespace(output=raw)
+
+    monkeypatch.setattr(agents_mod, "_run_decision_agent", fake_run)
+    bundle = build_scene_runner_bundle(TestModel(), world)
+    out = await emit_state_changes(bundle, state)
+    assert out.deltas == []  # the unjustified +1 was dropped
 
 
 def test_choice_bundle_continue_passes():
@@ -142,6 +173,36 @@ def test_choice_bundle_accepts_leave():
     """Leave is a marker variant — no payload required."""
     bundle = ChoiceBundle.model_validate({"next": {"type": "leave"}})
     assert bundle.next.type == "leave"  # type: ignore[union-attr]
+
+
+def test_continue_accepts_one_leave_option():
+    """§3: one option may be the diegetic exit (leave: true)."""
+    bundle = ChoiceBundle.model_validate({
+        "next": {
+            "type": "continue",
+            "options": [
+                {"text": "Press her about Dylan"},
+                {"text": "Thank her and step back into the lane", "leave": True},
+            ],
+        }
+    })
+    opts = bundle.next.options  # type: ignore[union-attr]
+    assert opts[1].leave and not opts[0].leave
+
+
+def test_continue_rejects_two_leave_options():
+    """§3: at most one option may set leave=true (the validator re-rolls a
+    double-emission; the engine's authored-leave check expects a single one)."""
+    with pytest.raises(ValidationError):
+        ChoiceBundle.model_validate({
+            "next": {
+                "type": "continue",
+                "options": [
+                    {"text": "Go out the front", "leave": True},
+                    {"text": "Slip out the back", "leave": True},
+                ],
+            }
+        })
 
 
 def test_choice_bundle_rejects_free_text():
