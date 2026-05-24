@@ -9,6 +9,7 @@ typed input until termination.
 """
 from __future__ import annotations
 
+import itertools
 from pathlib import Path
 
 import pytest
@@ -84,12 +85,20 @@ def _patch_village_attention(monkeypatch, level: str = "none"):
     monkeypatch.setattr("handler.scene_loop.emit_village_attention", fake_emit)
 
 
-def _patch_phase1(monkeypatch, bundle: StateChangeBundle | None = None):
-    """Default Phase 1 stub: returns the supplied bundle (or empty)."""
-    payload = bundle or StateChangeBundle()
+def _patch_phase1(monkeypatch, bundle: StateChangeBundle | list | None = None):
+    """Default Phase 1 stub: returns the supplied bundle (or empty). A list of
+    bundles is CYCLED, one per call — handy for a delta that must realize
+    movement every turn without saturating a clamp (oscillate guard ±1)."""
+    if isinstance(bundle, list):
+        seq = itertools.cycle(bundle)
 
-    async def fake(*args, **kwargs):
-        return payload
+        async def fake(*args, **kwargs):
+            return next(seq)
+    else:
+        payload = bundle or StateChangeBundle()
+
+        async def fake(*args, **kwargs):
+            return payload
 
     monkeypatch.setattr("handler.scene_loop.emit_state_changes", fake)
 
@@ -793,12 +802,16 @@ async def test_play_scene_caps_turns_and_forces_soft_close(monkeypatch):
 
     _patch_populator(monkeypatch)
     _patch_village_attention(monkeypatch)
-    # Every turn moves standing (a +1 on Tom), so the content-derived soft-close
-    # (scene_is_spent) never trips — a productive scene is held open. This
-    # isolates the FLAT cap as the sole terminator: a scene that keeps paying off
-    # but is never left must still end at MAX_TURNS_PER_SCENE. (A dry, dead room
-    # closes earlier via scene_is_spent — covered in test_engine.)
-    _patch_phase1(monkeypatch, StateChangeBundle(deltas=[QualityDelta(npc_id="tom", trust="+1")]))
+    # Every turn moves standing, so the content-derived soft-close (scene_is_spent)
+    # never trips — a productive scene is held open. Oscillate Tom's guard ±1 so the
+    # realized delta is non-zero EVERY turn (a flat +1 would saturate at TRUST_MAX
+    # and then realize 0, correctly going dry — that's the dead-room path, not what
+    # this test isolates). This pins the FLAT cap as the sole terminator: a scene
+    # that keeps paying off but is never left must still end at MAX_TURNS_PER_SCENE.
+    _patch_phase1(monkeypatch, [
+        StateChangeBundle(deltas=[QualityDelta(npc_id="tom", guard="+1")]),
+        StateChangeBundle(deltas=[QualityDelta(npc_id="tom", guard="-1")]),
+    ])
     # Supply more prose/choices than the cap so a failure to cap overruns into
     # StopIteration (a loud failure) rather than silently passing.
     _patch_prose_writer(monkeypatch, [f"t{i}" for i in range(MAX_TURNS_PER_SCENE + 5)])

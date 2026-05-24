@@ -33,6 +33,7 @@ from .engine import (
     band_name,
     confession_depth,
     emittable_beat_ids,
+    has_live_findable,
     present_npc_ids,
 )
 from .state import State
@@ -1182,6 +1183,43 @@ def _pursuable_findables(state: State, world: World) -> list[str]:
     )
 
 
+def _render_not_here(state: State, world: World) -> str:
+    """Choice-author steer for an NPC who is PRESENT but cannot open up at this
+    location — their `opens_up_only_at` excludes here (Dylan, at Tan-y-coed in
+    front of Eluned). Without this the author keeps offering "press him", the
+    engine silently drops the warmth (`_trust_adjustable_here`), and the player
+    grinds a dead room with no idea why. Names where they WOULD talk so the author
+    can offer 'catch them somewhere quieter' as the natural move instead. Only
+    for NPCs who still have something to give (a live findable); empty otherwise."""
+    here = state.player_location
+    lines: list[str] = []
+    for nid in present_npc_ids(world, state):
+        npc = world.npcs[nid]
+        disp = getattr(npc, "disposition", None)
+        if not disp or not disp.opens_up_only_at or here in disp.opens_up_only_at:
+            continue
+        if nid in state.guard_breached or not has_live_findable(world, state, nid):
+            continue
+        where = " or ".join(
+            world.locations[loc].display_short
+            for loc in disp.opens_up_only_at
+            if loc in world.locations
+        )
+        lines.append(
+            f"- {npc.name} will not open up here — not with others in earshot. "
+            f"Somewhere private ({where}) is where they'd finally talk. Don't keep "
+            f"pressing them here; a natural move is to seek them out alone."
+        )
+    if not lines:
+        return ""
+    return (
+        "## They Won't Talk Here\n"
+        "Present, but holding back at this spot. If the prose supports it, one "
+        "option may steer toward catching them somewhere quieter — never a "
+        "labelled objective:\n" + "\n".join(lines)
+    )
+
+
 def _render_worth_pursuing_here(state: State, world: World) -> str:
     """Choice-author steer: findables the player has not yet pulled here — a
     physical thing in the room (the letter, the marked map, the funeral notice)
@@ -1289,6 +1327,7 @@ def build_choice_author_user_message(
         for block in (
             _render_covered_ground(state),
             _render_worth_pursuing_here(state, world),
+            _render_not_here(state, world),
             _render_decisions_available(state, world),
             _render_offer_the_exit() if leave_required else "",
         )

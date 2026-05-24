@@ -114,6 +114,54 @@ def apply_state_changes(
     return newly
 
 
+def _fmt_delta(n: int) -> str:
+    """Render a realized integer change back into the on-the-wire ±/0 string
+    vocabulary (`TrustDelta`/`GuardDelta`), so an effective QualityDelta is
+    byte-identical in shape to the emitted one."""
+    return f"+{n}" if n > 0 else (str(n) if n < 0 else "0")
+
+
+def effective_deltas(
+    bundle: StateChangeBundle,
+    state: State,
+    *,
+    trust_before: dict[str, int],
+    guard_before: dict[str, int],
+    breached_before: set[str],
+) -> list[QualityDelta]:
+    """The deltas as ACTUALLY APPLIED this turn — the realized, post-zero /
+    post-clamp / post-breach change per emitted NPC delta, in emission order.
+    Same `QualityDelta` shape as the emitted bundle (so transcripts and
+    `model_dump` are unchanged downstream) but carrying what the engine *did*,
+    not what the classifier *asked for*: a `+1` zeroed by `opens_up_only_at`
+    records `0`, a nudge saturated at the clamp records `0`, and the turn a
+    relationship latches records `guard="BREACH"`.
+
+    Call AFTER `apply_state_changes`, passing snapshots of `state.trust`,
+    `state.guard`, and `state.guard_breached` taken BEFORE it. Callers keep the
+    NON-zero results (an all-zero delta moved nothing, so the turn reads dry —
+    `scene_is_spent` and the filler metrics treat the absence of movement
+    correctly without special-casing)."""
+    out: list[QualityDelta] = []
+    for d in bundle.deltas:
+        nid = d.npc_id
+        if nid in breached_before:
+            # Relationship was already over — apply_state_changes skipped it.
+            trust_str, guard_str = "0", "0"
+        else:
+            trust_str = _fmt_delta(state.trust.get(nid, 0) - trust_before.get(nid, 0))
+            if nid in state.guard_breached:
+                guard_str = "BREACH"  # latched this turn
+            else:
+                guard_str = _fmt_delta(
+                    state.guard.get(nid, 0) - guard_before.get(nid, 0)
+                )
+        out.append(
+            QualityDelta(npc_id=nid, trust=trust_str, guard=guard_str, reason=d.reason)
+        )
+    return out
+
+
 # ───────────────────────── quality vector ─────────────────────────
 #
 # The thin spine that replaces the boolean ladder beats: per-NPC `trust`
@@ -167,11 +215,25 @@ ATTENTION_LEVEL_VALUES = {"none": 0, "noticed": 1, "talked_about": 2, "hostile":
 
 
 def apply_village_attention(state: State, level: str) -> int:
-    """Ratchet `village_attention` up to the agent's verdict level — never down
-    (the village does not un-notice you). Returns the resulting value."""
-    state.village_attention = max(
-        state.village_attention, ATTENTION_LEVEL_VALUES[level]
-    )
+    """Move `village_attention` toward the agent's scene verdict, ASYMMETRICALLY:
+    suspicion spreads fast but the village cools slowly. A verdict at or above the
+    current heat jumps straight to it (word of a scene travels); a lower verdict —
+    a scene the village had nothing to remark on — steps the heat DOWN by one band,
+    no further. Returns the resulting value.
+
+    Why not a pure ratchet (the old behaviour): a monotone climb gave a player who
+    was merely pushy across a few scenes no way back — every persona accreted to
+    `hostile` and was run out, the run-out monopoly. A one-band cool-down per
+    courteous scene means "stop pushing and the village settles" is a real play,
+    while a genuinely hostile scene still ejects on its own close (the heat reaches
+    `hostile` immediately and `resolved_ending_id_at_close` fires before any
+    cool-down). Recovery takes as many calm scenes as the climb did — the village
+    does not forget in one polite afternoon."""
+    target = ATTENTION_LEVEL_VALUES[level]
+    if target >= state.village_attention:
+        state.village_attention = target
+    else:
+        state.village_attention -= 1
     return state.village_attention
 
 
@@ -294,6 +356,49 @@ def present_npc_ids(world: World, state: State) -> tuple[str, ...]:
     (the populator runs only at scene entry), so callers can compute
     on demand without caching."""
     return tuple(n.id for n in world.npcs_at(state.player_location, state=state))
+
+
+def has_live_findable(world: World, state: State, npc_id: str) -> bool:
+    """True when `npc_id` still has an un-fired person-anchored findable — a
+    commitment beat gated on this NPC (`when.npc`) that has not yet unlocked, so
+    there is still something to earn from them face to face."""
+    return any(
+        beat.commitment
+        and beat.when is not None
+        and beat.when.npc == npc_id
+        and bid not in state.unlocked_beats
+        for bid, beat in world.beats.items()
+    )
+
+
+def seed_present_npcs(world: World, state: State) -> list[str]:
+    """NPCs the engine FORCES present at the player's current location, on top of
+    the populator's placements, and the ids it actually moved (for the SSE).
+
+    An NPC whose warming is location-pinned (`opens_up_only_at`) to spots that
+    EXCLUDE their `default_location` (Dylan: opens up only at the wood/lane/
+    churchyard, lives at Tan-y-coed) is only ever present at a warmable spot if
+    the stay-biased populator happens to move them — so their findable is
+    effectively unreachable. This makes "go where they'll talk" a reliable play:
+    when the player is AT one of an NPC's open-up locations, that NPC is not
+    breached, and they still have a live findable, seed them present here. Pairs
+    with `_trust_adjustable_here` (warming is allowed at exactly these locations)
+    so presence and warmability coincide. Other NPCs are untouched — only those
+    with a non-empty `opens_up_only_at` are ever seeded."""
+    here = state.player_location
+    moved: list[str] = []
+    for nid, npc in world.npcs.items():
+        if nid in state.guard_breached:
+            continue
+        disp = getattr(npc, "disposition", None)
+        if not disp or not disp.opens_up_only_at or here not in disp.opens_up_only_at:
+            continue
+        if state.npc_locations.get(nid) == here:
+            continue
+        if has_live_findable(world, state, nid):
+            state.npc_locations[nid] = here
+            moved.append(nid)
+    return moved
 
 
 def emittable_beat_ids(world: World, state: State) -> set[str]:

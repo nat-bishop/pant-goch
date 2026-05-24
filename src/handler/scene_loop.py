@@ -52,11 +52,13 @@ from .engine import (
     apply_village_attention,
     append_turn_record,
     band_name,
+    effective_deltas,
     enter_scene,
     free_text_cadence_ok,
     is_decision,
     present_npc_ids,
     resolved_ending_id_at_close,
+    seed_present_npcs,
     scene_exhausted_here,
     scene_is_spent,
 )
@@ -494,16 +496,36 @@ async def run_turn(
             present_npcs=list(present_npc_ids(bundle.world, state)),
         )
         applied = StateChangeBundle()
+    # Snapshot trust/guard BEFORE applying, so `effective_deltas` can report what
+    # the engine ACTUALLY did (a +1 zeroed by opens_up_only_at, a clamp-saturated
+    # nudge) rather than what the classifier asked for — the transcript/metrics
+    # must read realized state, not emitted intent (the Dylan "+10" that was 0).
+    trust_before = dict(state.trust)
+    guard_before = dict(state.guard)
+    breached_before = set(state.guard_breached)
     newly_unlocked = apply_state_changes(applied, state, bundle.world)
-    if newly_unlocked or applied.deltas:
+    # Only the deltas that actually moved standing: an all-zero realized delta
+    # changed nothing, so the turn reads dry (scene soft-close + filler metrics).
+    moved_deltas = [
+        d
+        for d in effective_deltas(
+            applied,
+            state,
+            trust_before=trust_before,
+            guard_before=guard_before,
+            breached_before=breached_before,
+        )
+        if d.trust != "0" or d.guard != "0"
+    ]
+    if newly_unlocked or moved_deltas:
         # One queryable record per turn that moved state: which beats unlocked
-        # (commitments + engine-derived), the quality nudges, and the resulting
-        # set. Pairs with the per-action logs in main.py so a session's
-        # progress is reconstructable from Logfire alone.
+        # (commitments + engine-derived), the quality nudges actually applied, and
+        # the resulting set. Pairs with the per-action logs in main.py so a
+        # session's progress is reconstructable from Logfire alone.
         logfire.info(
             "state applied",
             applied_beats=newly_unlocked,
-            applied_deltas=[d.model_dump() for d in applied.deltas],
+            applied_deltas=[d.model_dump() for d in moved_deltas],
             unlocked_beats=sorted(state.unlocked_beats),
             village_attention=state.village_attention,
             location=state.player_location,
@@ -534,7 +556,7 @@ async def run_turn(
     # voluntary mid-scene exit entirely, so it must NOT get a diegetic leave
     # option either — there the scene ends only at the narrator soft-close.
     decision_fired = any(is_decision(b) for b in newly_unlocked)
-    this_turn_moved = bool(newly_unlocked) or bool(applied.deltas)
+    this_turn_moved = bool(newly_unlocked) or bool(moved_deltas)
     leave_required = allow_mid_scene_leave and (
         decision_fired
         or (
@@ -606,7 +628,7 @@ async def run_turn(
         state,
         prose=prose_part.prose,
         applied_state_changes=[UnlockBeat(beat_id=b) for b in newly_unlocked],
-        applied_deltas=list(applied.deltas),
+        applied_deltas=moved_deltas,
     )
 
     return prose_part
@@ -697,6 +719,19 @@ async def play_scene(
             )
             placements = NpcPlacementBundle()
         await _apply_placements(state, bundle, placements, emit_event=emit_event)
+
+        # Deterministic reachability: force any location-pinned NPC (Dylan) present
+        # where the player can actually warm them, so their findable doesn't hinge
+        # on the stay-biased populator. Done AFTER the populator so it overrides a
+        # stale placement, and emits npc_moved like any other arrival.
+        seed_prev = {nid: state.npc_locations.get(nid) for nid in bundle.world.npcs}
+        for nid in seed_present_npcs(bundle.world, state):
+            if emit_event is not None:
+                await emit_event(npc_moved_event(
+                    npc_id=nid,
+                    from_id=seed_prev[nid] or bundle.world.npcs[nid].default_location,
+                    to_id=state.player_location,
+                ))
 
         runtime.prose_writer_message_history = []
         if emit_event is not None:
