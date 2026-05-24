@@ -106,17 +106,18 @@ class NPC(_Frozen):
     # more dialogue weight than three lines of attitude prose. Defaults to []
     # so older fixtures load; production cast should fill it.
     voice_sample: list[str] = Field(default_factory=list)
-    # Quality control surface — see Disposition. None for auxiliary NPCs
-    # (Gareth, Owain, Wendy, Maud) who stay pure prose and carry no tracked
-    # quality.
+    # Quality control surface — see Disposition. A SOURCE NPC carries one
+    # (Tom, Iwan, Eluned, Dylan, Helen, Maud) and has findables gated on its
+    # bands; a BACKGROUND NPC carries none. Every NPC is one or the other —
+    # there is no "disposition: None but not background" limbo (a person who
+    # warms yet pays off nothing was the fake-progression bug).
     disposition: Disposition | None = None
-    # A deliberate background figure (e.g. Mrs Hughes) who is never a
-    # relationship the player can build: the classifier must not warm them, so
+    # A deliberate background figure (Mrs Hughes, Wendy, Gareth, Owain): never a
+    # relationship the player can build. The classifier must not warm them, so
     # the engine drops their trust/guard deltas (engine.apply_state_changes) and
     # the grammar sampler never offers them as a delta target
-    # (agents._build_state_change_bundle_type). Distinct from `disposition=None`
-    # auxiliaries (Maud, Gareth) who DO warm by the default band width —
-    # `background` means "not even that."
+    # (agents._build_state_change_bundle_type). They still speak — the narrator
+    # voices them from their knowledge/voice_sample — they just never "open up."
     background: bool = False
 
 

@@ -793,7 +793,12 @@ async def test_play_scene_caps_turns_and_forces_soft_close(monkeypatch):
 
     _patch_populator(monkeypatch)
     _patch_village_attention(monkeypatch)
-    _patch_phase1(monkeypatch)
+    # Every turn moves standing (a +1 on Tom), so the content-derived soft-close
+    # (scene_is_spent) never trips — a productive scene is held open. This
+    # isolates the FLAT cap as the sole terminator: a scene that keeps paying off
+    # but is never left must still end at MAX_TURNS_PER_SCENE. (A dry, dead room
+    # closes earlier via scene_is_spent — covered in test_engine.)
+    _patch_phase1(monkeypatch, StateChangeBundle(deltas=[QualityDelta(npc_id="tom", trust="+1")]))
     # Supply more prose/choices than the cap so a failure to cap overruns into
     # StopIteration (a loud failure) rather than silently passing.
     _patch_prose_writer(monkeypatch, [f"t{i}" for i in range(MAX_TURNS_PER_SCENE + 5)])

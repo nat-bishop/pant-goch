@@ -15,6 +15,7 @@ from handler.engine import (
     FREE_TEXT_COOLDOWN,
     FREE_TEXT_FALLBACK,
     FREE_TEXT_OFFER_P,
+    SCENE_FINDABLE_GRACE_TURNS,
     _trust_adjustable_here,
     _turns_since_typed,
     apply_state_changes,
@@ -24,12 +25,16 @@ from handler.engine import (
     emittable_beat_ids,
     free_text_cadence_ok,
     resolved_ending_id_at_close,
+    scene_is_spent,
     village_ejected,
     when_satisfied,
 )
 from handler.models import Beat, Brief, Disposition, Ending, Location, NPC, When
+from handler.prompts import (
+    build_choice_author_user_message,
+    build_prose_writer_user_message,
+)
 from handler.schemas import (
-    ChoiceBundle,
     Continue,
     FreeText,
     Option,
@@ -338,6 +343,84 @@ def test_emittable_decision_mutual_exclusion():
     assert "decided_to_walk_away" not in emittable_beat_ids(world, s)
 
 
+def test_emittable_npc_findable_requires_presence_and_trust():
+    """A person-anchored findable (commitment + when.npc) is pursuable only when
+    the NPC is BOTH present and trust-gated — the unified findable model."""
+    tom = _npc("tom", "loc_a")
+    world = _make_world(
+        npcs=[tom],
+        beats=[_beat("tom_tells", commitment=True,
+                     when=When(npc="tom", trust_at_least="open"))],
+    )
+    # present (loc_a) + open (depth 2 at default width) → emittable
+    s_here_open = _state(world, "loc_a")
+    s_here_open.trust["tom"] = 2
+    assert "tom_tells" in emittable_beat_ids(world, s_here_open)
+    # present but below the band → trust gate withholds it
+    s_here_cold = _state(world, "loc_a")
+    assert "tom_tells" not in emittable_beat_ids(world, s_here_cold)
+    # open but player elsewhere (Tom absent) → presence gate withholds it
+    s_away_open = _state(world, "loc_b")
+    s_away_open.trust["tom"] = 2
+    assert "tom_tells" not in emittable_beat_ids(world, s_away_open)
+
+
+# ───────────────────────── scene_is_spent (grace window) ─────────────────────────
+
+
+def _dry_turn() -> TurnRecord:
+    return TurnRecord(prose="p", applied_state_changes=[], applied_deltas=[])
+
+
+def _moving_turn() -> TurnRecord:
+    return TurnRecord(prose="p", applied_state_changes=[],
+                      applied_deltas=[QualityDelta(npc_id="tom", trust="+1")])
+
+
+def test_scene_not_spent_within_grace_with_findable():
+    """An un-pursued findable keeps the scene alive during the opening grace
+    window — the room gets a few turns to breathe."""
+    world = _make_world(beats=[
+        _beat("look", commitment=True, requires_location=["loc_a"]),
+    ])
+    s = _state(world, "loc_a")
+    s.dialogue_history = [_dry_turn() for _ in range(2)]
+    assert len(s.dialogue_history) <= SCENE_FINDABLE_GRACE_TURNS
+    assert scene_is_spent(world, s) is False
+
+
+def test_scene_spent_past_grace_on_dry_turn_despite_findable():
+    """Past the grace window, a still-available but un-pursued findable no
+    longer immortalises the room — a dry turn closes it (the post-office /
+    vicarage 'circles forever' tail)."""
+    world = _make_world(beats=[
+        _beat("look", commitment=True, requires_location=["loc_a"]),
+    ])
+    s = _state(world, "loc_a")
+    s.dialogue_history = [_dry_turn() for _ in range(SCENE_FINDABLE_GRACE_TURNS + 1)]
+    assert scene_is_spent(world, s) is True
+
+
+def test_scene_not_spent_past_grace_when_last_turn_moved():
+    """Movement always holds a scene open: even past grace, a turn that shifted
+    standing is not a dry turn, so a productive conversation never auto-closes."""
+    world = _make_world(npcs=[_npc("tom", "loc_a")], beats=[
+        _beat("look", commitment=True, requires_location=["loc_a"]),
+    ])
+    s = _state(world, "loc_a")
+    s.dialogue_history = [_dry_turn() for _ in range(SCENE_FINDABLE_GRACE_TURNS)]
+    s.dialogue_history.append(_moving_turn())
+    assert scene_is_spent(world, s) is False
+
+
+def test_scene_spent_dead_room_past_grace_no_findable():
+    """A room with nothing live and a dry last turn is spent past grace."""
+    world = _make_world()
+    s = _state(world, "loc_a")
+    s.dialogue_history = [_dry_turn() for _ in range(SCENE_FINDABLE_GRACE_TURNS + 1)]
+    assert scene_is_spent(world, s) is True
+
+
 # ───────────────────────── resolved_ending_id_at_close ─────────────────────────
 
 
@@ -571,3 +654,51 @@ def test_quality_engine_against_loaded_fixture():
         state, world,
     )
     assert resolved_ending_id_at_close(world, state) == "published_story"
+
+
+# ───────────────────────── findable surfacing in prompts ─────────────────────────
+
+
+def test_prose_surfaces_present_findable_as_set_dressing():
+    """A live location findable is surfaced (by name) in the prose writer's
+    '## Present In The Scene' block, and drops out once unlocked."""
+    world = _make_world(beats=[
+        _beat("read_letter", name="Read the letter",
+              commitment=True, requires_location=["loc_a"]),
+    ])
+    s = _state(world, "loc_a")
+    msg = build_prose_writer_user_message(s, world, [], is_first_turn=True)
+    assert "## Present In The Scene" in msg
+    assert "Read the letter" in msg
+    s.unlocked_beats.add("read_letter")
+    msg2 = build_prose_writer_user_message(s, world, [], is_first_turn=True)
+    assert "## Present In The Scene" not in msg2
+
+
+def test_prose_does_not_set_dress_npc_findable():
+    """Person-anchored findables are pursued in conversation, not pre-planted as
+    scenery — they must not appear in the prose '## Present In The Scene' block."""
+    tom = _npc("tom", "loc_a")
+    world = _make_world(npcs=[tom], beats=[
+        _beat("tom_tells", name="Tom tells", commitment=True,
+              when=When(npc="tom", trust_at_least="open")),
+    ])
+    s = _state(world, "loc_a")
+    s.trust["tom"] = 2
+    msg = build_prose_writer_user_message(s, world, [], is_first_turn=True)
+    assert "## Present In The Scene" not in msg
+
+
+def test_choice_author_worth_pursuing_names_present_npc_findable():
+    """The choice author's '## Worth Pursuing Here' steer surfaces a present,
+    open NPC's findable spoiler-free (the person, not the payoff)."""
+    tom = _npc("tom", "loc_a")
+    world = _make_world(npcs=[tom], beats=[
+        _beat("tom_tells", name="Tom tells", commitment=True,
+              when=When(npc="tom", trust_at_least="open")),
+    ])
+    s = _state(world, "loc_a")
+    s.trust["tom"] = 2
+    msg = build_choice_author_user_message(s, world, prose="The bar is quiet.")
+    assert "## Worth Pursuing Here" in msg
+    assert "Tom" in msg

@@ -1,8 +1,17 @@
 # The named NPCs of Pant Goch. Megan Pritchard exists only as fact and
 # prose; she is dead from before the game starts and is not in this file.
-# Mrs Hughes is a deliberate background figure (no disposition ladder — she
-# never becomes a confession source); she is modelled only so the narrator
-# has an authored register to write the vicarage doorstep in.
+#
+# Every NPC is one of two kinds — never a limbo between them (a person who
+# warms but pays off nothing is the "fake progression" bug):
+#   - a SOURCE: carries a `disposition` (trust/guard bands) AND one or more
+#     findables gated on those bands, so warming them pays off (Tom, Iwan,
+#     Eluned, Dylan, Helen, Maud).
+#   - BACKGROUND (`background: true`): never warms, accrues no standing, is
+#     never a trust target — colour and signposting only, written from their
+#     voice/knowledge (Mrs Hughes, Wendy, Gareth, Owain). The narrator still
+#     voices them; they simply have nothing to "open up" toward.
+# (Gareth and Owain are background FOR NOW — both flagged for promotion to
+# real, deliberately-limited sources in the multi-findable authoring pass.)
 
 - id: tom
   name: Old Tom Bevan
@@ -98,6 +107,28 @@
     # Cornered — the player has shown they already know.
     - "Now you didn't hear that from me. You understand?"
     - "Well. Since you've come this far."
+  disposition:
+    warms: slow      # she has to be convinced telling is the right thing
+    spooks: steady
+    breach:
+      - making it plain you are after a sensational story
+      - naming who told you, or threatening to print the village's business
+      - pushing aggressively after she has deflected
+    voice_by_band:
+      cold:
+        - "Oh, well. You'll have to ask someone else about that, my love."
+        - "Funny times, weren't they. Funny times."
+      thawing:
+        - "Well. Since you've come this far."
+      open:
+        - "Now you didn't hear that from me. You understand?"
+      closed:
+        - "I wouldn't know, I'm sure. People say a lot of things."
+    impression_by_band:
+      cold: "Warm as anything, and tells me nothing. All surface."
+      thawing: "Something slipped — she knows more than she gossips."
+      open: "She trusted me with what she really thinks, over her shoulder."
+      closed: "She's decided I'm after a headline. The shutters are down."
 
 - id: iwan
   name: Iwan Pritchard
@@ -160,6 +191,10 @@
 - id: wendy
   name: Wendy Pritchard
   default_location: lower_hafod
+  # Background: she actively avoids the player and holds no lead — warming her
+  # is not on offer (no trust deltas, never a delta target). She is a soft wall,
+  # not a source.
+  background: true
   themes:
     - protecting what is left
     - believing the investigation will only hurt them again
@@ -303,6 +338,11 @@
 - id: gareth
   name: Father Gareth Hughes
   default_location: knighton
+  # Background for now: a signpost whose hints flow through prose (his knowledge
+  # / voice), not a trust ladder — the seal of confession means he has no
+  # findable to yield. FOLLOW-UP: promote to a real source with a single guarded
+  # findable (gareth_hints_at_confession) once the multi-findable pass reaches him.
+  background: true
   themes:
     - the ministry he cannot make matter in this case
     - what he heard in confession that he cannot say
@@ -385,6 +425,11 @@
 - id: owain
   name: Owain Pugh
   default_location: lower_hafod
+  # Background for now: talkative folklore/colour in prose, but no trust-gated
+  # findable yet, so he does not accrue (inert) standing. FOLLOW-UP: promote to a
+  # real (deliberately unreliable) source — an owain_recalls_the_dog findable —
+  # in the multi-findable pass.
+  background: true
   themes:
     - the folklore he half-believes
     - his loyalty to Iwan

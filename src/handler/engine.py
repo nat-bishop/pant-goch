@@ -307,9 +307,17 @@ def emittable_beat_ids(world: World, state: State) -> set[str]:
       - it is not a `decided_` beat while another decision is already taken
         (at-most-one-decision, the replacement for pairwise blocked_by);
       - its `requires_location` (if any) contains the player's location;
+      - if it is anchored to an NPC (`when.npc` set), that NPC is PRESENT — a
+        person-anchored findable (Tom naming the vehicle, Dylan admitting what
+        he knows) is pursued face to face, so it is live only in a scene the
+        NPC is actually in. `when_satisfied` checks the trust band globally;
+        presence is the other half of "anchored to a person" and is enforced
+        here so the Phase-1 commitment `Literal` and the choice/prose steers
+        narrow to it too;
       - its `when` availability gate (if any) is satisfied.
     """
     here = state.player_location
+    present = present_npc_ids(world, state)
     decision_taken = any(_is_decision(b) for b in state.unlocked_beats)
     out: set[str] = set()
     for bid, beat in world.beats.items():
@@ -319,10 +327,22 @@ def emittable_beat_ids(world: World, state: State) -> set[str]:
             continue
         if beat.requires_location and here not in beat.requires_location:
             continue
+        if beat.when is not None and beat.when.npc and beat.when.npc not in present:
+            continue
         if beat.when is not None and not when_satisfied(world, state, beat.when):
             continue
         out.add(bid)
     return out
+
+
+# How many completed turns a scene gets to "breathe" before the mere
+# AVAILABILITY of something to pursue (a findable still live here, a present NPC
+# who could still open up) stops keeping it alive. Past this window only ACTUAL
+# movement holds a scene open: a room with an un-pursued findable the player
+# keeps declining closes on the first dry turn instead of milling to
+# MAX_TURNS_PER_SCENE. The findable simply goes unfound — you left before doing
+# it — which is the intended "you can't find everything in one visit."
+SCENE_FINDABLE_GRACE_TURNS = 5
 
 
 def scene_is_spent(world: World, state: State) -> bool:
@@ -330,36 +350,42 @@ def scene_is_spent(world: World, state: State) -> bool:
     completed turn moved nothing — the engine's content-derived soft-close
     signal (scene_loop converts a spent Continue/FreeText into an EndScene).
 
-    A scene is NOT spent while either holds:
-      - a commitment beat can still fire here — an observation milestone
-        anchored to this location, or any currently-available decision
-        (decisions carry no `requires_location`, so they keep any scene live);
-      - a present, tracked NPC can still open up further — warmable here, not
-        breached, not yet at the top band — i.e. a conversation that can still
-        pay off, even if this single turn happened to be neutral.
-    Otherwise the scene is spent only once the last completed turn was DRY: it
-    unlocked no beat and shifted no disposition (a delta turn is movement, which
-    the filler metric also treats as productive, so a scene still accruing trust
-    never trips this). Returns False before any turn completes.
+    Two regimes, split at `SCENE_FINDABLE_GRACE_TURNS`:
 
-    Distinct from the flat `MAX_TURNS_PER_SCENE` hang-backstop in scene_loop:
-    this ends a dead room the moment it is dead, instead of milling to the cap.
+    - Within the opening grace window, a scene is kept alive by mere
+      possibility — a findable still live here (an observation milestone
+      anchored to this location, or a present-NPC findable now in reach), or a
+      present tracked NPC who can still open up (warmable here, not breached,
+      not yet at the top band). The room gets a few turns to breathe before it
+      can close.
+    - Past the window, only MOVEMENT keeps it open: the scene is spent the
+      moment a completed turn is DRY (unlocked no beat, shifted no disposition).
+      A productive conversation never trips this — its deltas keep the last turn
+      non-dry — but a stalled room with a findable the player keeps not pursuing
+      now closes instead of looping forever (the post-office funeral-notice
+      tail, the vicarage map dead-end).
+
+    Returns False before any turn completes. Distinct from the flat
+    `MAX_TURNS_PER_SCENE` hang-backstop in scene_loop: this ends a dead room the
+    moment it is dead, instead of milling to the cap.
     """
-    here = state.player_location
-    for bid in emittable_beat_ids(world, state):
-        beat = world.beats[bid]
-        if not beat.requires_location or here in beat.requires_location:
-            return False
-    for nid in present_npc_ids(world, state):
-        npc = world.npcs[nid]
-        if npc.disposition is None or nid in state.guard_breached:
-            continue
-        if not _trust_adjustable_here(world, state, nid):
-            continue
-        if confession_depth(world, state, nid) < len(BANDS) - 1:
-            return False
     if not state.dialogue_history:
         return False
+    here = state.player_location
+    # completed turns this scene == len(dialogue_history) at the call site.
+    if len(state.dialogue_history) <= SCENE_FINDABLE_GRACE_TURNS:
+        for bid in emittable_beat_ids(world, state):
+            beat = world.beats[bid]
+            if not beat.requires_location or here in beat.requires_location:
+                return False
+        for nid in present_npc_ids(world, state):
+            npc = world.npcs[nid]
+            if npc.disposition is None or nid in state.guard_breached:
+                continue
+            if not _trust_adjustable_here(world, state, nid):
+                continue
+            if confession_depth(world, state, nid) < len(BANDS) - 1:
+                return False
     last = state.dialogue_history[-1]
     return not last.applied_state_changes and not last.applied_deltas
 

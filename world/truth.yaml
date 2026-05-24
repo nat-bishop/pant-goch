@@ -1,19 +1,33 @@
 # The truth of Pant Goch. The LLM reads this once at startup and is briefed
 # on what's real. The model never has to "figure out" the mystery; it knows.
 #
-# QUALITY ENGINE (see plan: dissolve the beat-DAG into a quality vector):
+# QUALITY ENGINE + the three kinds of beat:
 #   - Relationship progress is NOT a ladder of beats. It is per-NPC `trust`
 #     and `guard` (engine state). The LLM nudges them ±1/turn; the engine
 #     derives confession DEPTH bands (cold→thawing→open→at_peace) from them.
-#   - Most beats here are EVIDENCE/OUTCOME milestones the ENGINE derives the
-#     moment a `when` gate is met — they cannot be mis-fired, because they
-#     fall out of the trust the player actually earned. They carry `when`.
-#   - A handful are LLM-emitted (`commitment: true`): the player's explicit
-#     choices (decided_*) and two observation milestones (reading the letter,
-#     standing at the crash site) that fire on a location, not on a person
-#     opening up.
-#   - The four `decided_*` beats are mutually exclusive (engine rule: at most
-#     one decision per playthrough).
+#
+#   Beats come in exactly three kinds, by how they enter state:
+#   - FINDABLES (`commitment: true`) — a fact the player UNCOVERS by pursuing
+#     it. Same shape whether anchored to a place or a person; only the
+#     availability gate differs:
+#       · location-anchored → `requires_location` (be there): reading the
+#         letter, the marked map, the funeral notice, the grave, the crash site.
+#       · person-anchored → `when: {npc, trust_at_least}` (the relationship is
+#         deep enough) AND the NPC is present: Tom's memory of Megan / his
+#         naming the vehicle, Dylan admitting, Helen's notes, Maud's slips.
+#     Trust is the GATE, not the trigger — warming unlocks the topic; the
+#     player still has to go after it. An NPC may carry several findables at
+#     different bands; you may only reach the early ones before a scene closes,
+#     and a BREACH drops the band and forecloses the rest. That is where
+#     "you can't find everything" comes from — no exclusion machinery needed.
+#   - DECISIONS (`decided_*`, `commitment: true`) — the player's explicit
+#     course of action. Mutually exclusive (engine rule: at most one per
+#     playthrough). `when` gates AVAILABILITY (earned by findables held).
+#   - OUTCOMES (`commitment: false`, carry `when`) — emergent consequences the
+#     ENGINE derives the moment their gate is met; they are not "found" but
+#     fall out of accumulated state (eluned_breaks, tom_decides_to_speak...).
+#     Only these are engine-fired and so can never be mis-fired.
+#
 #   - Negative beats, ladder rungs, and run_out's count machinery are GONE:
 #     a rupture is `guard` latching (BREACH); the village running you out is
 #     `village_attention` reaching `hostile`.
@@ -146,23 +160,46 @@ beats:
       the 14th), though the player has no way to know that yet. A human
       beat, not a clue.
 
-  # ─────────────────────── Evidence milestones (engine-derived) ───────────────────────
-  # No requires_*, no notes about WHEN to fire — the engine fires these the
-  # turn the named NPC's trust crosses the `open` band. notes_to_llm is purely
-  # how to NARRATE the moment when it lands.
+  # ─────────────────────── Findables anchored to a person (LLM-emitted, pursued) ───────────────────────
+  # Same shape as the location observation milestones above — `commitment: true`,
+  # the player must PURSUE them — but anchored to an NPC instead of a place: the
+  # `when: {npc, trust_at_least}` gate is AVAILABILITY (the reveal is only in
+  # reach once the relationship is deep enough), and the engine additionally
+  # requires the NPC be PRESENT (emittable_beat_ids). Trust is the gate, not the
+  # trigger: warming an NPC unlocks the topic; the player still has to go after
+  # it. An NPC can carry several, gated at different bands — you may only reach
+  # the early ones before a scene closes, and pushing wrong (BREACH) drops the
+  # band below the gate and forecloses the rest. notes_to_llm is how to NARRATE
+  # the moment when the player draws it out.
+
+  - id: tom_remembers_megan
+    name: Tom remembers Megan
+    commitment: true
+    when: {npc: tom, trust_at_least: thawing}
+    description: |
+      Tom, softened enough to stop deflecting, shares one specific,
+      ordinary memory of Megan — a particular day, a thing she said or
+      did — speaking of her as a person rather than "lovely girl, mind."
+    notes_to_llm: |
+      The first time Tom gives the player something real, and it is human,
+      not evidential — a small, concrete memory (helping at a lambing, a
+      song she liked, a sharp thing she once said). Quiet and brief; he may
+      surprise himself. Reveals no fact about the crash. A player who only
+      ever thaws Tom and moves on gets this and not the vehicle.
 
   - id: tom_named_a_vehicle
     name: Tom named a vehicle
+    commitment: true
     when: {npc: tom, trust_at_least: open}
     description: |
       Tom Bevan tells the player he saw a Land Rover speeding away from
       the Black Dog Bend the night Megan died, and that he recognised
       it as Eluned Vaughn's.
     notes_to_llm: |
-      When this lands, narrate Tom's actual words — quiet, finally, a
-      relief he did not know he wanted. His words must carry ALL THREE
-      specifics, not a fragment of them: (1) it was a Land Rover; (2) it was
-      speeding away from the Black Dog Bend the night Megan died; (3) he
+      When the player draws this out, narrate Tom's actual words — quiet,
+      finally, a relief he did not know he wanted. His words must carry ALL
+      THREE specifics, not a fragment of them: (1) it was a Land Rover; (2) it
+      was speeding away from the Black Dog Bend the night Megan died; (3) he
       recognised it as Eluned Vaughn's. "Land Rover. Recognised it." is NOT
       this beat — it drops the bend, the night, and whose it was. Do not fire
       on inference; Tom must say it. After this, Tom is a different man:
@@ -170,6 +207,7 @@ beats:
 
   - id: dylan_admits_he_knows
     name: Dylan admits he knows
+    commitment: true
     when: {npc: dylan, trust_at_least: open}
     description: |
       Dylan tells the player he has known since April 2019 what his
@@ -181,6 +219,7 @@ beats:
 
   - id: helen_hands_over_notes
     name: Helen hands over notes
+    commitment: true
     when: {npc: helen, trust_at_least: open}
     description: |
       Helen hands the player a manila envelope containing her unofficial
@@ -190,6 +229,35 @@ beats:
       Narrate the handover plainly — a few sheets of A4, the envelope
       unmarked. She will not be quoted, and this must be explicit in the
       dialogue around the handover, not after.
+
+  - id: maud_saw_them_together
+    name: Maud saw them together
+    commitment: true
+    when: {npc: maud, trust_at_least: thawing}
+    description: |
+      Maud lets slip that she once saw Dylan Vaughn and Megan Pritchard
+      together — that the two of them were more than the village ever said
+      out loud.
+    notes_to_llm: |
+      She does not mean to say it; it escapes, then she retreats ("now you
+      didn't hear that from me"). Corroborates the affair — motive, the shape
+      of things — but not who was on the road. Narrate it as a slip she half
+      regrets, in her surfacy, loyal register. Do not let her volunteer more
+      than the one fact.
+
+  - id: maud_suspects_eluned_knew
+    name: Maud suspects Eluned knew
+    commitment: true
+    when: {npc: maud, trust_at_least: open}
+    description: |
+      Maud, having decided the player is not after sensation, admits she
+      always believed Eluned Vaughn knew about Dylan and Megan — and that
+      Eluned is not a woman who lets a thing like that lie.
+    notes_to_llm: |
+      Her hardest admission, and still couched — a suspicion offered, not a
+      fact she can stand behind. Points the player at Eluned without proving
+      anything. Narrate the cost of saying it; she has crossed her own line
+      about the village's business. After this she will give no more.
 
   # ─────────────────────── Outcome / terminal-trust milestones (derived) ───────────────────────
 
@@ -269,7 +337,11 @@ beats:
   - id: decided_to_confront_eluned
     name: Decided to confront Eluned
     commitment: true
-    when: {any_evidence_of: [tom_named_a_vehicle, dylan_admits_he_knows, helen_hands_over_notes]}
+    # maud_suspects_eluned_knew is a soft alternative route here: it lets a
+    # player who worked the village (not Tom/Dylan/Helen) resolve to confront
+    # Eluned on suspicion — but eluned_breaks still requires the hard three, so
+    # confronting on Maud's word alone is a gamble that closes the door.
+    when: {any_evidence_of: [tom_named_a_vehicle, dylan_admits_he_knows, helen_hands_over_notes, maud_suspects_eluned_knew]}
     description: |
       The player has explicitly chosen to drive up to Tan-y-coed and put
       what they know to Eluned Vaughn herself.

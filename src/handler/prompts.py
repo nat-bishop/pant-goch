@@ -368,6 +368,12 @@ The register and rhythm to match:
    falls just short — the letter stays half-folded, the answer doesn't come,
    the person deflects — rather than the reveal happening anyway.
 
+   Anything in ## Present In The Scene is a finding the player has NOT made
+   yet: keep it visible and available — an object in view they could turn to,
+   a thread they could pull — but do NOT deliver it. The finding lands only on
+   the turn its beat appears under ## State Changes Just Applied. Surface the
+   sealed letter, the rack of old papers, the rolled map; do not read them out.
+
 6. The player may say untrue things — assert events that did not happen,
    put words in a character's mouth, name a motive that is wrong. Do NOT
    adopt the false premise or invent detail that confirms it. The NPC
@@ -379,6 +385,10 @@ The register and rhythm to match:
    name for the dead or for who did what; and do NOT let an NPC suddenly
    "recognise" or confirm something the world's truth says they never
    knew or never said. The prop, the name, the fact stays as authored.
+   But the player's move is always ANSWERED in the fiction — the person
+   replies, deflects, corrects, or visibly declines; a typed line, a denial,
+   a contradiction, a direct question never goes unacknowledged as if the
+   player had said nothing. Engage it, then hold the truth.
 
 7. Stay inside what the player has observed. Write only what NPCs
    visibly choose to reveal; their hidden thoughts stay hidden.
@@ -391,13 +401,14 @@ The register and rhythm to match:
    it, or let the room quietly give out — so the scene can reach a
    natural close instead of spawning an endless trail of fresh items.
 
-   Authored background detail is texture, not a lead. A map left "for
-   reasons unclear", coats on a rack, old papers on a desk — surface them,
-   but do NOT invest them with clue-significance the truth does not give:
-   no frantic markings, no "almost personal" weight, no hidden meaning the
-   player is steered to chase, unless a beat listed this turn says so. A
-   prop the player can sink three turns "investigating" to no effect is the
-   worst kind of filler.
+   Authored background detail is texture, not a lead. Coats on a rack, a
+   mug on the draining board, an umbrella stand — surface them, but do NOT
+   invest them with clue-significance the truth does not give: no frantic
+   markings, no "almost personal" weight, no hidden meaning the player is
+   steered to chase. (Genuine findings are different: they appear in
+   ## Present In The Scene and resolve only when their beat fires — see Rule
+   5.) A prop the player can sink three turns "investigating" to no effect is
+   the worst kind of filler.
 
 8. Stay within the established cast and locations. Minor incidental
    details (weather, a dog, a mug on the table) are fine. New named
@@ -465,8 +476,13 @@ emit Continue or Leave.)
    current location. They must NOT promise outcomes the engine doesn't
    know about ("Punch him," "Steal the keys," "Drive to London") and
    must NOT propose travel to another location.
-2. The prose alone is your context. You do not see beats, endings,
-   character knowledge, or backstory. Trust what the narrator wrote.
+2. Ground every option in what is actually here — the just-written prose and
+   the steer blocks beneath it (## Worth Pursuing Here, ## The Player May Be
+   Ready To Act). You do not see the wider plot, endings, or backstory, so do
+   NOT invent concrete things the narrator did not put in the scene: no missing
+   parcel or package, no document, vehicle, event, or named person that has not
+   appeared. If you are not sure a thing exists in the fiction, it does not —
+   work only from what is on the page.
 3. Match the structure to the moment. Continue when the scene still
    has air. Leave when the beat has resolved and a next exchange would
    be filler.
@@ -481,13 +497,16 @@ emit Continue or Leave.)
    track", "Step into the lane", "Head to the wood", "Move toward
    the kitchen and out the back door"). Departure is what Leave is
    for; the engine and map handle travel, not the prose.
-6. Make the options MATTER. Each should be a distinct intent that could
-   steer the investigation or carry a social cost — press vs. soften,
-   pursue one thread vs. another, reveal what you know vs. hold it back.
-   Avoid cosmetic busywork that changes nothing: re-examining scenery,
-   "look closer at the X", "inspect the Y", inventory-poking. A turn
-   should feel like a decision, not a click. If the only honest options
-   left are cosmetic, the scene has run its course — emit Leave instead.
+6. Make the options MATTER — but matter by pursuing something REAL and
+   present: a thread the prose actually opened, a person in the room, a thing
+   surfaced in the scene or named in ## Worth Pursuing Here. Distinct intents
+   (press vs. soften, pursue this thread vs. that, reveal what you know vs. hold
+   it back), NEVER an invented stake dressed up to sound consequential — a
+   fabricated "missing package" is worse than an honest small move. Avoid empty
+   scenery-poking that changes nothing ("look closer at the X", "inspect the
+   Y", inventory-poking); the fix for a flat moment is a real thread, not a made-
+   up one. If the only honest options left are cosmetic and no thread is live,
+   the scene has run its course — emit Leave instead.
 7. At a charged turning point — the player plainly has the measure of
    something and the scene is poised for them to act — ONE option may be
    the player resolving to act on it, spoken in their own voice ("Tell Tom
@@ -832,6 +851,15 @@ def build_prose_writer_user_message(
         if voices:
             parts.append(voices)
 
+    # Findables physically present here that the player hasn't engaged yet —
+    # surfaced as available set-dressing so the choice author has a real hook
+    # and the player can choose to pursue them, WITHOUT the narrator resolving
+    # them (Voice Rule 5). This is the channel that stops the "nothing here to
+    # do but invent a missing parcel" deadlock.
+    present_findables = _render_present_findables(state, world)
+    if present_findables:
+        parts.append(present_findables)
+
     parts.append(
         f"## State Changes Just Applied\n{_render_applied_changes(applied_beats, world)}"
     )
@@ -1039,35 +1067,77 @@ def _render_covered_ground(state: State) -> str:
     )
 
 
-def _render_worth_doing_here(state: State, world: World) -> str:
-    """Choice-author steer: the observation milestones still available AT this
-    location — a concrete thing the player has not yet done here (read the
-    letter, examine the marked map, stand at the grave). Free-text steer only:
-    the author may voice ONE option toward it as a natural move if the prose
-    supports it, never as a labelled objective. The grammar-collapse failure
-    mode means this must NOT become a structured option variant — it stays
-    plain context. Decisions are surfaced separately by
-    `_render_decisions_available`; this is the location-anchored observation
-    kind. Empty when nothing is live here (then the room is heading toward
-    spent and the pacing block / Leave carry the scene)."""
-    here = state.player_location
-    ids = [
-        bid
-        for bid in emittable_beat_ids(world, state)
-        if world.beats[bid].requires_location
-        and here in world.beats[bid].requires_location
-    ]
-    if not ids:
-        return ""
-    lines = "\n".join(
-        f"- {world.beats[bid].description.strip()}"
-        for bid in sorted(ids, key=lambda b: world.beats[b].name)
+def _pursuable_findables(state: State, world: World) -> list[str]:
+    """Beat ids the player can PURSUE right now — emittable commitment beats
+    minus decisions (those are surfaced by `_render_decisions_available`).
+    `emittable_beat_ids` has already narrowed these to this location and to
+    present, trust-gated NPCs, so the set is exactly the findables live in this
+    scene. The single shared source for the choice author's 'Worth Pursuing
+    Here' steer and the prose writer's 'Present In The Scene' set-dressing, so
+    the two name the same things. Sorted by beat name for a stable prompt."""
+    return sorted(
+        (b for b in emittable_beat_ids(world, state) if not b.startswith("decided_")),
+        key=lambda b: world.beats[b].name,
     )
+
+
+def _render_worth_pursuing_here(state: State, world: World) -> str:
+    """Choice-author steer: findables the player has not yet pulled here — a
+    physical thing in the room (the letter, the marked map, the funeral notice)
+    or a present person now open enough to be pressed on what they know.
+    Free-text steer only: the author may voice ONE option toward one as a
+    natural move if the prose supports it, never a labelled objective (the
+    grammar-collapse failure mode means this must NOT become a structured option
+    variant). Person-anchored findables are named spoiler-free — the thread, not
+    the answer. Decisions are surfaced separately. Empty when nothing is live
+    here (the room is heading toward spent; the pacing block / Leave carry it)."""
+    loc_lines: list[str] = []
+    npc_names: list[str] = []
+    for bid in _pursuable_findables(state, world):
+        beat = world.beats[bid]
+        if beat.requires_location:
+            loc_lines.append(f"- {beat.description.strip()}")
+        elif beat.when is not None and beat.when.npc:
+            npc_names.append(world.npcs[beat.when.npc].name)
+    lines = list(loc_lines)
+    for name in sorted(set(npc_names)):
+        lines.append(
+            f"- {name} is open enough now that pressing gently on what they "
+            "know could finally land something — if the prose supports it."
+        )
+    if not lines:
+        return ""
     return (
-        "## Worth Doing Here\n"
-        "There is something here the player has not done yet. If the prose "
-        "supports it, ONE option may move toward it — written as the player's "
-        "natural next move, never as a labelled objective:\n"
+        "## Worth Pursuing Here\n"
+        "Threads the player has not yet pulled here. If the prose supports it, "
+        "ONE option may move toward one — the player's natural next move, never "
+        "a labelled objective:\n" + "\n".join(lines)
+    )
+
+
+def _render_present_findables(state: State, world: World) -> str:
+    """Prose-writer set-dressing: the physical, location-anchored findables in
+    reach here that the player has NOT yet engaged (the sealed letter on the
+    table, the rolled OS map, the parish-newsletter rack). Surface them as
+    present in the scene so the player can CHOOSE to pursue them next — but make
+    them available, not resolved: the finding lands only on the turn its beat is
+    listed under ## State Changes Just Applied (Voice Rule 5). Rendered by beat
+    NAME, not description, so the narrator cues the object without being handed
+    the payoff. NPC-anchored findables are NOT here — those are pursued in
+    conversation, not pre-planted as scenery."""
+    names = [
+        world.beats[bid].name
+        for bid in _pursuable_findables(state, world)
+        if world.beats[bid].requires_location
+    ]
+    if not names:
+        return ""
+    lines = "\n".join(f"- {n}" for n in names)
+    return (
+        "## Present In The Scene\n"
+        "Within reach here but not yet examined — let each be visible in the "
+        "room (an object in view the player could turn to), WITHOUT performing "
+        "the finding itself (Rule 5):\n"
         f"{lines}"
     )
 
@@ -1093,7 +1163,7 @@ def build_choice_author_user_message(state: State, world: World, prose: str) -> 
         f"\n{block}\n"
         for block in (
             _render_covered_ground(state),
-            _render_worth_doing_here(state, world),
+            _render_worth_pursuing_here(state, world),
             _render_decisions_available(state, world),
         )
         if block
