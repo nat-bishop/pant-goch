@@ -473,21 +473,17 @@ def test_choice_author_user_message_carries_prose_as_load_bearing_context():
     assert "## Choose" in msg
 
 
-def test_choice_author_user_message_lists_present_npcs():
+def test_choice_author_user_message_omits_present_npcs():
+    """Prose-only: the choice author no longer gets a present-NPC list. Who is in
+    the room reaches it through the prose, so a present-but-unintroduced NPC
+    cannot leak into an option (the 'Turn to face Dylan Vaughn' desync)."""
     world = load_world(FIXTURE_VALID)
     state = make_initial_state(world)
     state.player_location = "the_slaughtered_lamb"
     msg = build_choice_author_user_message(state, world, "anything")
-    assert "NPCs present" in msg
-    # Tom is at the pub by default.
-    assert world.npcs["tom"].name in msg
-
-
-def test_choice_author_user_message_when_alone():
-    world = load_world(FIXTURE_VALID)
-    state = make_initial_state(world)  # vicarage; no NPCs
-    msg = build_choice_author_user_message(state, world, "the door clicks shut")
-    assert "alone" in msg.lower()
+    assert "NPCs present" not in msg
+    # Tom is at the pub by default, but the prose did not name him → no leak.
+    assert world.npcs["tom"].name not in msg
 
 
 def test_choice_author_user_message_omits_pacing_block_early_turns():
@@ -520,18 +516,21 @@ def test_choice_author_user_message_nudges_solo_from_turn_2():
     assert "turn 2" in msg
 
 
-def test_choice_author_user_message_nudges_solo_after_quiet_turns():
-    """Turn 5+ (PACING_QUIET_TURNS=4) with no NPCs present → render the
-    soft solo Scene Pacing nudge."""
+def test_choice_author_user_message_spent_room_gets_content_cue():
+    """When the room has nothing live left to pursue (no findable here, no NPC
+    present), the Scene Pacing block carries the content-derived live/spent cue —
+    a pure-pacing 'nothing here is still worth pursuing' nudge (names nothing) —
+    rather than the generic turn-count solo line. The fixture vicarage is solo
+    with no location findables, so it is spent from the start."""
     world = load_world(FIXTURE_VALID)
-    state = make_initial_state(world)  # vicarage; alone
+    state = make_initial_state(world)  # vicarage; alone, no findables here
     state.dialogue_history = [
         TurnRecord(prose="t", applied_state_changes=[]) for _ in range(4)
     ]
     msg = build_choice_author_user_message(state, world, "Anything.")
     assert "## Scene Pacing" in msg
     assert "turn 5" in msg
-    assert "Solo exploration" in msg
+    assert "Nothing here is still worth pursuing" in msg
 
 
 def test_choice_author_user_message_hard_nudge_after_hard_turns():

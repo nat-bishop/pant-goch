@@ -587,6 +587,8 @@ async def stream_prose_text(
     runtime: SceneRunnerRuntime,
     state: State,
     applied_beats: list[str],
+    *,
+    turning_point: bool = False,
 ) -> AsyncIterator[str]:
     """Prose writer LLM call, streamed. Yields text DELTAS as the model
     produces them, so the caller can pace them to the client live instead
@@ -621,6 +623,7 @@ async def stream_prose_text(
         state, bundle.world, applied_beats,
         opening_seed=opening_seed,
         is_first_turn=is_first_turn,
+        turning_point=turning_point,
     )
     async with bundle.prose_writer.run_stream(
         user_msg,
@@ -671,6 +674,7 @@ async def emit_choices(
     prose: str,
     *,
     leave_required: bool = False,
+    turning_point: bool = False,
 ) -> ChoiceBundle:
     """Choice author LLM call. Stateless (no message_history). The
     just-written prose is the load-bearing context; the system prompt
@@ -682,9 +686,12 @@ async def emit_choices(
 
     `leave_required` (the engine judged the scene spent / a decision just fired)
     adds the "Offer The Exit" directive so one option is the diegetic departure.
+    `turning_point` (a decision is earned this turn) adds the content-free
+    directive to include one resolve-to-act option.
     """
     user_msg = build_choice_author_user_message(
-        state, bundle.world, prose, leave_required=leave_required
+        state, bundle.world, prose,
+        leave_required=leave_required, turning_point=turning_point,
     )
     result = await bundle.choice_author.run(
         user_msg,

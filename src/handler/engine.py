@@ -482,6 +482,33 @@ def scene_is_spent(world: World, state: State) -> bool:
     return not last.applied_state_changes and not last.applied_deltas
 
 
+def has_live_pursuit_here(world: World, state: State) -> bool:
+    """True when the current location still has something to pursue RIGHT NOW —
+    a findable live here (location-anchored, or a present-NPC findable whose gate
+    is met), or a present NPC who can still warm (warmable here, not breached, not
+    yet at the top band). Turn-count-neutral: the pure availability question.
+
+    This is the engine's 'is there a live thread here' signal — the content half
+    of `scene_exhausted_here` (which gates it on the grace window). The choice
+    author reads its negation as a content-free 'the room is giving out' pacing
+    cue (it names nothing, so it never leaks a thread); `scene_exhausted_here`
+    reuses it within the grace window."""
+    here = state.player_location
+    for bid in emittable_beat_ids(world, state):
+        beat = world.beats[bid]
+        if not beat.requires_location or here in beat.requires_location:
+            return True
+    for nid in present_npc_ids(world, state):
+        npc = world.npcs[nid]
+        if npc.disposition is None or nid in state.guard_breached:
+            continue
+        if not _trust_adjustable_here(world, state, nid):
+            continue
+        if confession_depth(world, state, nid) < len(BANDS) - 1:
+            return True
+    return False
+
+
 def scene_exhausted_here(world: World, state: State, completed_turns: int) -> bool:
     """True when nothing here can still pay off — the AVAILABILITY half of
     `scene_is_spent`, split out so the choice author can ask it BEFORE the turn
@@ -491,19 +518,7 @@ def scene_exhausted_here(world: World, state: State, completed_turns: int) -> bo
     availability no longer holds the scene open (only this-turn movement does, a
     check the caller pairs with this). Pure; no dialogue_history read."""
     if completed_turns <= SCENE_FINDABLE_GRACE_TURNS:
-        here = state.player_location
-        for bid in emittable_beat_ids(world, state):
-            beat = world.beats[bid]
-            if not beat.requires_location or here in beat.requires_location:
-                return False
-        for nid in present_npc_ids(world, state):
-            npc = world.npcs[nid]
-            if npc.disposition is None or nid in state.guard_breached:
-                continue
-            if not _trust_adjustable_here(world, state, nid):
-                continue
-            if confession_depth(world, state, nid) < len(BANDS) - 1:
-                return False
+        return not has_live_pursuit_here(world, state)
     return True
 
 

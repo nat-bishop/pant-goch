@@ -16,6 +16,7 @@ must *hold* (pass/fail per run); these *trend* (a number you watch build-over-bu
 from __future__ import annotations
 
 import math
+import re
 from collections import Counter
 from itertools import combinations
 
@@ -239,6 +240,66 @@ def _post_exhaustion_turn_ratio(artifacts: list[SessionArtifact]) -> float:
     return sum(ratios) / len(ratios) if ratios else 0.0
 
 
+# Titles / generic adjectives that appear inside an NPC's authored name but do
+# not, on their own, NAME that person — "Old Tom Bevan" must not match "the Old
+# Vicarage", "Father Gareth" must not match a literal father, "Mrs Hughes" must
+# not match a stray honorific. Dropped from the identifying-token set so they
+# never produce a phantom leak.
+_NAME_STOP = {"old", "father", "mrs", "mr", "miss", "ms", "dr", "the", "young"}
+
+
+def _npc_identifying_tokens(world: World) -> dict[str, set[str]]:
+    """Per-NPC name tokens (≥3 chars) that UNIQUELY identify them — shared
+    surnames (Vaughn across Dylan/Eluned, Pritchard across Iwan/Wendy) and generic
+    titles/adjectives (`_NAME_STOP`) are dropped, leaving the distinctive given
+    name. So matching on these names a specific person without conflating the
+    family, tripping on the victim's surname, or matching a title used as an
+    ordinary word ('the Old Vicarage')."""
+    raw = {
+        nid: {t for t in re.findall(r"[a-z]{3,}", npc.name.lower()) if t not in _NAME_STOP}
+        for nid, npc in world.npcs.items()
+    }
+    freq = Counter(t for toks in raw.values() for t in toks)
+    return {nid: {t for t in toks if freq[t] == 1} for nid, toks in raw.items()}
+
+
+def _option_npc_leak_rate(artifacts: list[SessionArtifact], world: World) -> float:
+    """Fraction of Continue options that NAME an NPC the scene's prose has not
+    introduced yet — the choice author surfacing a person the player has not been
+    shown (the 'Turn to face Dylan Vaughn' leak). Scene-aware: an option is a leak
+    only if none of the named NPC's identifying tokens have appeared in the prose
+    of the scene SO FAR (including the current turn, so a same-turn introduction
+    is fine). The corpus guard for the prose-only choice author — it would have
+    flagged the OLD Eluned/Wendy leaks; ~0 is the target. Legacy artifacts whose
+    turns carry no `options` contribute nothing."""
+    tokens = _npc_identifying_tokens(world)
+    leaks = 0
+    total = 0
+    for art in artifacts:
+        scene_prose: dict[str, str] = {}
+        for e in art.transcript:
+            if e.get("kind") != "turn":
+                continue
+            sid = e.get("scene_id", "")
+            so_far = scene_prose.get(sid, "") + " " + (e.get("prose") or "")
+            so_far_l = so_far.lower()
+            named_here = {
+                nid for nid, toks in tokens.items()
+                if any(re.search(r"\b" + t + r"\b", so_far_l) for t in toks)
+            }
+            for opt in (e.get("options") or []):
+                total += 1
+                ol = opt.lower()
+                for nid, toks in tokens.items():
+                    if nid in named_here:
+                        continue
+                    if any(re.search(r"\b" + t + r"\b", ol) for t in toks):
+                        leaks += 1
+                        break
+            scene_prose[sid] = so_far
+    return _rate(leaks, total)
+
+
 def _beats_per_location(artifacts: list[SessionArtifact]) -> dict[str, int]:
     """Distinct beats that fired at each location across the corpus — surfaces
     locations carrying no investigative weight."""
@@ -345,6 +406,8 @@ class CorpusMetrics(BaseModel):
     person_findable_rate: float
     decision_fired_rate: float
     ending_diversity: float
+    # prose-only choice author: options must never name an unintroduced NPC
+    option_npc_leak_rate: float
     # coverage
     beats_total: int
     beats_never_fired: list[str]
@@ -420,6 +483,7 @@ def corpus_metrics(artifacts: list[SessionArtifact], world: World) -> CorpusMetr
         person_findable_rate=_rate(with_person, n),
         decision_fired_rate=_rate(with_decision, n),
         ending_diversity=_rate(len(reached_endings), n),
+        option_npc_leak_rate=round(_option_npc_leak_rate(artifacts, world), 3),
         beats_total=len(all_beats),
         beats_never_fired=sorted(all_beats - fired_beats),
         endings_total=len(world.endings),

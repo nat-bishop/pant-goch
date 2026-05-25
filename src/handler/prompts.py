@@ -34,6 +34,7 @@ from .engine import (
     confession_depth,
     emittable_beat_ids,
     has_live_findable,
+    has_live_pursuit_here,
     present_npc_ids,
 )
 from .models import Location
@@ -463,6 +464,16 @@ The register and rhythm to match:
    / ## Voices Here) speak or act in the scene; if the player is alone,
    no one speaks — write no dialogue. Do not place a named character in a
    scene they are not in, even one whose voice you know well.
+   **Everyone under ## Present is physically here with the player, right
+   now — the player can see them. The prose owns establishing and keeping
+   them in the scene: bring a present person onto the page as the scene
+   opens (a figure by the wall, someone at the bar) and let their presence
+   register from then on. NEVER spring a present person as a late surprise —
+   if Dylan is present, the player already sees him; he does not "appear"
+   three turns in because the player happened to turn his way. You need not
+   give every present person a line every turn, but their being-there is a
+   fact the prose has already shown, never one the player discovers by
+   picking an option.**
 
 9. The player stays inside the building / yard / room the scene began
    in for the entire scene. You may reference what is visible from a
@@ -529,13 +540,15 @@ emit Continue or Leave.)
    current location. They must NOT promise outcomes the engine doesn't
    know about ("Punch him," "Steal the keys," "Drive to London") and
    must NOT propose travel to another location.
-2. Ground every option in what is actually here — the just-written prose and
-   the steer blocks beneath it (## Worth Pursuing Here, ## The Player May Be
-   Ready To Act). You do not see the wider plot, endings, or backstory, so do
-   NOT invent concrete things the narrator did not put in the scene: no missing
-   parcel or package, no document, vehicle, event, or named person that has not
-   appeared. If you are not sure a thing exists in the fiction, it does not —
-   work only from what is on the page.
+2. Ground every option in the just-written prose — that is the WHOLE of what
+   the player can see, and the whole of what you may work from. You do not see
+   the wider plot, endings, backstory, who is in the room beyond what the prose
+   names, or what threads are live — so do NOT invent concrete things the
+   narrator did not put in the scene: no missing parcel or package, no document,
+   vehicle, event, or named person that has not appeared in the prose. If a
+   person or thing is not in the prose, it is not in the scene as far as the
+   player knows — never offer an option that turns to it. If you are not sure a
+   thing exists in the fiction, it does not — work only from what is on the page.
 3. Match the structure to the moment. Continue when the scene still
    has air. Leave when the beat has resolved and a next exchange would
    be filler.
@@ -551,8 +564,8 @@ emit Continue or Leave.)
    the kitchen and out the back door"). Departure is what Leave is
    for; the engine and map handle travel, not the prose.
 6. Make the options MATTER — but matter by pursuing something REAL and
-   present: a thread the prose actually opened, a person in the room, a thing
-   surfaced in the scene or named in ## Worth Pursuing Here. Distinct intents
+   present: a thread the prose actually opened, a person the prose put in the
+   room, a thing the prose surfaced in the scene. Distinct intents
    (press vs. soften, pursue this thread vs. that, reveal what you know vs. hold
    it back), NEVER an invented stake dressed up to sound consequential — a
    fabricated "missing package" is worse than an honest small move. Avoid empty
@@ -571,10 +584,11 @@ emit Continue or Leave.)
    still exploration, and offering a commitment every turn flattens the
    choice. It is a declaration in the current location — it names no
    destination and promises no outcome (Rule 1 still holds); the engine and
-   map carry out whatever follows. When the user message carries a "## The
-   Player Can Now Act" block, those are the resolutions that are live right now
-   — include one of them as an option this turn (the block is only present once
-   the player has earned the turning point).
+   map carry out whatever follows. When the user message carries a "## A Turning
+   Point Is Live" block, the prose has brought the scene to a head — include
+   exactly one resolve-to-act option this turn, grounded in what the prose just
+   charged (name nothing; the block is only present once the player has earned
+   the turning point).
 8. The diegetic exit (`leave: true`). A scene can always be left, and leaving
    should read as the player's own move, not a system button. The exit means
    the player LEAVING THE CURRENT LOCATION entirely — stepping out of the
@@ -871,6 +885,7 @@ def build_prose_writer_user_message(
     *,
     opening_seed: str | None = None,
     is_first_turn: bool,
+    turning_point: bool = False,
 ) -> str:
     """Per-turn user message for the conversation-based prose writer.
 
@@ -930,6 +945,12 @@ def build_prose_writer_user_message(
     if present_findables:
         parts.append(present_findables)
 
+    # A present NPC who cannot open up here — show the closed door in the prose
+    # (replaces the choice author's old hidden '## They Won't Talk Here' steer).
+    holding_back = _render_holding_back(state, world)
+    if holding_back:
+        parts.append(holding_back)
+
     parts.append(
         f"## State Changes Just Applied\n{_render_applied_changes(applied_beats, world)}"
     )
@@ -937,6 +958,17 @@ def build_prose_writer_user_message(
     # Per-turn anchor for the "stay inside this location" voice rule — Gemma 4
     # needs the reminder.
     parts.append(_render_stay_here(state, world))
+
+    # A decision is earned: bring the scene to a head so committing reads as the
+    # natural next move. Non-naming — the prose carries the charge, not a label.
+    # Mutually exclusive with the giving-out cue below: an emittable decision is
+    # a live pursuit, so has_live_pursuit_here is True when turning_point is.
+    if turning_point:
+        parts.append(_render_turning_point())
+    elif not is_first_turn and not has_live_pursuit_here(world, state):
+        # Room has nothing live left — let the prose show it giving out, so the
+        # close reads diegetically rather than as a sudden map jump.
+        parts.append(_render_giving_out())
 
     parts.append("## Write\nWrite the prose for what just happened.")
 
@@ -1046,6 +1078,78 @@ def _render_stay_here(state: State, world: World) -> str:
     )
 
 
+def _render_holding_back(state: State, world: World) -> str:
+    """Prose-writer texture for a PRESENT NPC who cannot open up here — their
+    `opens_up_only_at` excludes this location (Dylan in front of Eluned at
+    Tan-y-coed). The prose must SHOW the reluctance — they hold back, glance at
+    who else is about, keep it to nothing — so the player reads, from the page
+    alone, that this is not where this person will talk. This replaces the old
+    choice-author '## They Won't Talk Here' steer: the social fact now lives in
+    the prose (where the player can see it), not in a hidden hint to the choice
+    author. Same predicate as the retired `_render_not_here`. Empty when no
+    present NPC is location-blocked here."""
+    here = state.player_location
+    lines: list[str] = []
+    for nid in present_npc_ids(world, state):
+        npc = world.npcs[nid]
+        disp = getattr(npc, "disposition", None)
+        if not disp or not disp.opens_up_only_at or here in disp.opens_up_only_at:
+            continue
+        if nid in state.guard_breached or not has_live_findable(world, state, nid):
+            continue
+        lines.append(
+            f"- {npc.name} is here but will not open up at this spot — not with "
+            f"others about. Show it in the fiction: they hold back, keep to "
+            f"surface talk, glance at who is in earshot. Do NOT have them confide "
+            f"or reveal here, however the player presses."
+        )
+    if not lines:
+        return ""
+    return (
+        "## Holding Back Here\n"
+        "Someone present cannot speak freely at this spot — let the prose show "
+        "the closed door, so pressing visibly fails rather than silently:\n"
+        + "\n".join(lines)
+    )
+
+
+def _render_turning_point() -> str:
+    """Prose-writer directive when the engine judges a decision is EARNED this
+    turn (a `decided_*` beat is emittable — the same gate that drove the retired
+    choice-author '## The Player Can Now Act' block). Non-naming on purpose: it
+    tells the narrator to bring the moment to a head so committing reads as the
+    natural next move, WITHOUT naming the decision, the person, or that an ending
+    hangs on it — so nothing player-facing is spoiled. The charged prose is what
+    lets the choice author (which sees only the prose) offer a resolve-to-act
+    option, and the engine fires the decision off the player's pick."""
+    return (
+        "## A Head Of Steam\n"
+        "The scene has reached a point where the player has the measure of "
+        "something and could act on it. Bring the moment to a head — let the "
+        "weight of it settle, the choice hang in the air — so that resolving to "
+        "act would be the natural next move. Do NOT name a decision, signpost a "
+        "fork, or hint that anything hangs on it; just let the scene crest. The "
+        "player still chooses what to do."
+    )
+
+
+def _render_giving_out() -> str:
+    """Prose-writer directive when the room has nothing live left to pursue
+    (engine `has_live_pursuit_here` is False). Diegetic reinforcement of the
+    choice author's live/spent pacing cue: let the room visibly give out — a
+    silence settling, the light going, the person turning back to their work —
+    so the player FEELS the scene closing rather than being yanked out by a map
+    jump. Do NOT manufacture a new thread to keep it open; the finding is done."""
+    return (
+        "## The Room Is Giving Out\n"
+        "There is nothing here left to turn up — no new object, no fresh lead, "
+        "no one with more to give right now. Let the scene quietly settle toward "
+        "a close: a silence, the light shifting, a person returning to their "
+        "work. Do NOT invent a new clue or thread to keep it going — write the "
+        "small, honest closing beat."
+    )
+
+
 def build_closing_prose_user_message(
     state: State, world: World, to_location: str
 ) -> str:
@@ -1083,16 +1187,32 @@ PACING_QUIET_TURNS_SOLO = 1
 PACING_HARD_NUDGE_TURNS = 5
 
 
-def _render_scene_pacing(state: State, *, solo: bool) -> str:
+def _render_scene_pacing(state: State, *, solo: bool, room_spent: bool) -> str:
     """Turn-aware Leave nudge block. Empty string when no nudge needed
-    (caller renders nothing between the ## State block and ## Choose)."""
+    (caller renders nothing between the ## State block and ## Choose).
+
+    `room_spent` is the content-derived live/spent cue (engine
+    `has_live_pursuit_here` negated): nothing here is still worth pursuing — no
+    live findable, no present NPC with more to give. It carries NO world fact (it
+    names nothing), so it is pure pacing, not a leak — the replacement for the
+    'is a thread live here' awareness the removed `## Worth Pursuing Here` block
+    used to give. When set it sharpens the nudge regardless of turn count: a dead
+    room should not have to mill to the turn-count ceiling before the author
+    leans Leave."""
     turn_n = state.turn_n
     quiet = PACING_QUIET_TURNS_SOLO if solo else PACING_QUIET_TURNS
     if turn_n <= quiet:
         return ""
-    if turn_n <= PACING_HARD_NUDGE_TURNS and not solo:
+    if room_spent:
+        nudge = (
+            "Nothing here is still worth pursuing — no thread left to pull, no "
+            "one present with more to give. Unless this turn's prose opened "
+            "something genuinely new, emit Leave; another Continue would be "
+            "filler. The map is one click away."
+        )
+    elif turn_n <= PACING_HARD_NUDGE_TURNS and not solo:
         return ""
-    if turn_n <= PACING_HARD_NUDGE_TURNS:
+    elif turn_n <= PACING_HARD_NUDGE_TURNS:
         nudge = (
             "Solo exploration has shallow natural depth. If this turn mostly "
             "re-examined things the player has already seen — another look at "
@@ -1116,43 +1236,25 @@ This is turn {turn_n}. No Leave has been emitted yet. {nudge}
 """
 
 
-def _render_decisions_available(state: State, world: World) -> str:
-    """Choice-author hint: the player-decision beats whose `when` gate is
-    satisfied RIGHT NOW (e.g. confront Eluned, tell Iwan, file, walk away).
-    These fire only when the Phase-1 classifier reads an explicit player
-    commitment — which a player who is never offered the move rarely makes.
-    Surfacing the currently-earned decisions lets the choice author offer ONE
-    as an in-voice turning-point option (Rule 7), without naming or signposting
-    it. Empty string when none are earned, so the block costs nothing and never
-    tempts a premature decision. Only `decided_*` beats — observation
-    milestones (reading the letter) surface through the prose on their own.
-
-    Framed as a REQUIREMENT, not a hint: the engine emits this block only once a
-    decision's prerequisites are genuinely met, so the player has earned the
-    turning point. A soft "you may, if the prose supports it" was ignored every
-    time in playtests — the decision beats never fired and the earned endings
-    were unreachable. So when this block is present, exactly one option MUST be
-    the player resolving to act; the steering is the point."""
-    ids = [
-        bid
-        for bid in emittable_beat_ids(world, state)
-        if world.beats[bid].commitment and bid.startswith("decided_")
-    ]
-    if not ids:
-        return ""
-    parts = [
-        "## The Player Can Now Act — Offer The Turning Point",
-        "The scene has reached a genuine turning point: the player has earned "
-        "the standing to commit to a course of action. Include EXACTLY ONE "
-        "Continue option that is the player resolving to do one of the things "
-        "below, written in their own voice as a natural in-location declaration "
-        "(Rule 7 — never name it, never signpost that anything hangs on it). The "
-        "other options stay ordinary moves. Do not omit it — this is the choice "
-        "the whole scene has been building toward:",
-    ]
-    for bid in sorted(ids, key=lambda b: world.beats[b].name):
-        parts.append(f"- {world.beats[bid].description.strip()}")
-    return "\n".join(parts)
+def _render_turning_point_flag() -> str:
+    """Choice-author directive when the engine judges a decision is EARNED this
+    turn (a `decided_*` beat is emittable). Content-FREE on purpose: it names no
+    decision, no NPC, no world fact — it only says THAT a turning point is live,
+    which the just-written prose (charged by the prose writer's matching
+    directive) has already conveyed to the player. So it leaks nothing the player
+    can't see, while guaranteeing the resolve-to-act option actually appears
+    (the reachability belt — see SPEC; the prior named '## The Player Can Now
+    Act' block leaked, but a soft steer alone was historically ignored). This is
+    the single removable knob: drop this block (and its call site) to test
+    whether charged prose + Rule 7 alone suffice."""
+    return (
+        "## A Turning Point Is Live\n"
+        "The prose has brought the scene to a head. Include EXACTLY ONE option "
+        "that is the player resolving to act on what they now have the measure "
+        "of, written in their own voice as a natural in-location declaration "
+        "(Rule 7 — name nothing, signpost nothing). The other options stay "
+        "ordinary moves. Do not omit it."
+    )
 
 
 def _render_covered_ground(state: State) -> str:
@@ -1189,77 +1291,6 @@ def _pursuable_findables(state: State, world: World) -> list[str]:
     return sorted(
         (b for b in emittable_beat_ids(world, state) if not b.startswith("decided_")),
         key=lambda b: world.beats[b].name,
-    )
-
-
-def _render_not_here(state: State, world: World) -> str:
-    """Choice-author steer for an NPC who is PRESENT but cannot open up at this
-    location — their `opens_up_only_at` excludes here (Dylan, at Tan-y-coed in
-    front of Eluned). Without this the author keeps offering "press him", the
-    engine silently drops the warmth (`_trust_adjustable_here`), and the player
-    grinds a dead room with no idea why. Names where they WOULD talk so the author
-    can offer 'catch them somewhere quieter' as the natural move instead. Only
-    for NPCs who still have something to give (a live findable); empty otherwise."""
-    here = state.player_location
-    lines: list[str] = []
-    for nid in present_npc_ids(world, state):
-        npc = world.npcs[nid]
-        disp = getattr(npc, "disposition", None)
-        if not disp or not disp.opens_up_only_at or here in disp.opens_up_only_at:
-            continue
-        if nid in state.guard_breached or not has_live_findable(world, state, nid):
-            continue
-        where = " or ".join(
-            world.locations[loc].display_short
-            for loc in disp.opens_up_only_at
-            if loc in world.locations
-        )
-        lines.append(
-            f"- {npc.name} will not open up here — not with others in earshot. "
-            f"Somewhere private ({where}) is where they'd finally talk. Don't keep "
-            f"pressing them here; a natural move is to seek them out alone."
-        )
-    if not lines:
-        return ""
-    return (
-        "## They Won't Talk Here\n"
-        "Present, but holding back at this spot. If the prose supports it, one "
-        "option may steer toward catching them somewhere quieter — never a "
-        "labelled objective:\n" + "\n".join(lines)
-    )
-
-
-def _render_worth_pursuing_here(state: State, world: World) -> str:
-    """Choice-author steer: findables the player has not yet pulled here — a
-    physical thing in the room (the letter, the marked map, the funeral notice)
-    or a present person now open enough to be pressed on what they know.
-    Free-text steer only: the author may voice ONE option toward one as a
-    natural move if the prose supports it, never a labelled objective (the
-    grammar-collapse failure mode means this must NOT become a structured option
-    variant). Person-anchored findables are named spoiler-free — the thread, not
-    the answer. Decisions are surfaced separately. Empty when nothing is live
-    here (the room is heading toward spent; the pacing block / Leave carry it)."""
-    loc_lines: list[str] = []
-    npc_names: list[str] = []
-    for bid in _pursuable_findables(state, world):
-        beat = world.beats[bid]
-        if beat.requires_location:
-            loc_lines.append(f"- {beat.description.strip()}")
-        elif beat.when is not None and beat.when.npc:
-            npc_names.append(world.npcs[beat.when.npc].name)
-    lines = list(loc_lines)
-    for name in sorted(set(npc_names)):
-        lines.append(
-            f"- {name} is open enough now that pressing gently on what they "
-            "know could finally land something — if the prose supports it."
-        )
-    if not lines:
-        return ""
-    return (
-        "## Worth Pursuing Here\n"
-        "Threads the player has not yet pulled here. If the prose supports it, "
-        "ONE option may move toward one — the player's natural next move, never "
-        "a labelled objective:\n" + "\n".join(lines)
     )
 
 
@@ -1327,36 +1358,51 @@ def _render_leave_guidance(loc: Location, *, required: bool) -> str:
 
 
 def build_choice_author_user_message(
-    state: State, world: World, prose: str, *, leave_required: bool = False
+    state: State,
+    world: World,
+    prose: str,
+    *,
+    leave_required: bool = False,
+    turning_point: bool = False,
 ) -> str:
-    """Per-turn user message for the stateless choice author. The
-    just-written prose is the load-bearing context; everything else is a
-    thin scene anchor (where, who's present, what's already been done, what's
-    still live, which decisions are earned) so Continue options can ground in
-    location, avoid re-treading covered ground, and surface a turning point.
+    """Per-turn user message for the stateless, PROSE-ONLY choice author. The
+    just-written prose is the player's whole world this turn: the choice author
+    grounds every option in what the prose put on the page and references nothing
+    the player can't see. The only non-prose context is the player's OWN prior
+    picks (## Already Covered — not a leak), pure pacing, the location name (the
+    player always knows where they are), and the leave guidance.
+
+    World facts (who is present, which threads are live, why an NPC won't talk,
+    which decision is earned) are NOT surfaced here — they reach the player
+    through the prose writer instead, so the choice author cannot leak a fact the
+    prose has not established. (This is the deliberate desync fix: the option
+    "Turn to face Dylan Vaughn" once appeared when the prose never introduced
+    him.)
 
     `leave_required` (engine-judged: the scene is spent, or a decision just
-    fired) adds the "Offer The Exit" directive so the author marks one option as
-    the diegetic departure.
+    fired) adds the "Offer The Exit" directive. `turning_point` (a decision is
+    earned this turn) adds a content-free directive to include one resolve-to-act
+    option — naming nothing the prose hasn't already charged.
     """
     loc = world.locations[state.player_location]
     present_ids = present_npc_ids(world, state)
-    if present_ids:
-        npcs_line = ", ".join(world.npcs[i].name for i in present_ids)
-    else:
-        npcs_line = "no one (you are alone here)"
+    # Content-derived live/spent cue (pure pacing, names nothing): when the room
+    # has no thread left to pull and no one with more to give, the author should
+    # lean Leave. Replaces the live/spent awareness the removed ## Worth Pursuing
+    # Here block used to carry — without re-leaking what is live.
+    room_spent = not has_live_pursuit_here(world, state)
 
-    pacing_block = _render_scene_pacing(state, solo=not present_ids)
-    # Covered-ground + beat-magnet + earned decisions + (when spent) the exit
-    # directive, each its own block, joined with blank lines, rendered only when
-    # non-empty.
+    pacing_block = _render_scene_pacing(
+        state, solo=not present_ids, room_spent=room_spent
+    )
+    # Player's own prior picks + (when earned) the turning-point belt + leave
+    # guidance — each its own block, rendered only when non-empty. No world-fact
+    # steers: the prose carries those.
     extras = "".join(
         f"\n{block}\n"
         for block in (
             _render_covered_ground(state),
-            _render_worth_pursuing_here(state, world),
-            _render_not_here(state, world),
-            _render_decisions_available(state, world),
+            _render_turning_point_flag() if turning_point else "",
             _render_leave_guidance(loc, required=leave_required),
         )
         if block
@@ -1368,7 +1414,6 @@ def build_choice_author_user_message(
 
 ## State
 You are at: {loc.name}
-NPCs present: {npcs_line}
 {pacing_block}{extras}
 ## Choose
 Emit a ChoiceBundle."""

@@ -53,6 +53,7 @@ from .engine import (
     append_turn_record,
     band_name,
     effective_deltas,
+    emittable_beat_ids,
     enter_scene,
     free_text_cadence_ok,
     is_decision,
@@ -327,6 +328,7 @@ async def _stream_pace_and_author(
     emit_event: EmitEvent | None,
     skip_event: asyncio.Event | None,
     leave_required: bool = False,
+    turning_point: bool = False,
     npc_present: bool = True,
 ) -> tuple[str, object, object]:
     """Phase 2a + 2b/2c, fused so the reveal overlaps the authoring.
@@ -363,7 +365,9 @@ async def _stream_pace_and_author(
 
     async def _produce() -> None:
         try:
-            async for delta in stream_prose_text(bundle, runtime, state, applied_beats):
+            async for delta in stream_prose_text(
+                bundle, runtime, state, applied_beats, turning_point=turning_point
+            ):
                 acc.append(delta)
                 await queue.put(delta)
         finally:
@@ -416,7 +420,10 @@ async def _stream_pace_and_author(
                         _words_from_text(prose), emit_event,
                         event_kind="prose_word", skip_event=skip_event,
                     )
-            tasks = [emit_choices(bundle, state, prose, leave_required=leave_required)]
+            tasks = [emit_choices(
+            bundle, state, prose,
+            leave_required=leave_required, turning_point=turning_point,
+        )]
             if npc_present:
                 tasks.append(emit_free_text_gate(bundle, state, prose))
             results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -429,7 +436,10 @@ async def _stream_pace_and_author(
         # gather() schedules both coroutines immediately, so they run while we
         # await the pacer's remaining holds.
         prose = "".join(acc)
-        tasks = [emit_choices(bundle, state, prose, leave_required=leave_required)]
+        tasks = [emit_choices(
+            bundle, state, prose,
+            leave_required=leave_required, turning_point=turning_point,
+        )]
         if npc_present:
             tasks.append(emit_free_text_gate(bundle, state, prose))
         authoring = asyncio.gather(*tasks, return_exceptions=True)
@@ -560,6 +570,17 @@ async def run_turn(
         )
     )
 
+    # A decision is EARNED but not yet taken — the player has the standing to
+    # commit. Signal both Phase-2 writers (non-naming on each side): the prose
+    # writer brings the scene to a head, and the choice author is told to surface
+    # one resolve-to-act option. The prose carries the charge the player sees; the
+    # flag carries no world fact. Naturally mutually exclusive with `leave_required`
+    # via decision_fired — once a decision fires, no `decided_*` beat stays
+    # emittable (at-most-one-decision), so this goes False on the wind-down turn.
+    turning_point = any(
+        is_decision(b) for b in emittable_beat_ids(bundle.world, state)
+    )
+
     # Structural precondition for free text — the "words to a person" channel.
     # No one present → solo scene → the gate never runs (object/place moments
     # are click-driven). Cheap, deterministic, and shields the gate from ever
@@ -570,7 +591,8 @@ async def run_turn(
     prose, choices_res, gate_res = await _stream_pace_and_author(
         bundle, runtime, state, newly_unlocked,
         emit_event=emit_event, skip_event=skip_event,
-        leave_required=leave_required, npc_present=npc_present,
+        leave_required=leave_required, turning_point=turning_point,
+        npc_present=npc_present,
     )
 
     if isinstance(choices_res, UnexpectedModelBehavior):

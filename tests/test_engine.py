@@ -695,9 +695,11 @@ def test_prose_does_not_set_dress_npc_findable():
     assert "## Present In The Scene" not in msg
 
 
-def test_choice_author_worth_pursuing_names_present_npc_findable():
-    """The choice author's '## Worth Pursuing Here' steer surfaces a present,
-    open NPC's findable spoiler-free (the person, not the payoff)."""
+def test_choice_author_is_prose_only_no_npc_leak():
+    """The choice author is PROSE-ONLY: a present NPC the prose hasn't named must
+    not leak into its context (no NPC-present list, no 'worth pursuing' steer).
+    This is the desync fix — the option 'Turn to face Dylan Vaughn' once appeared
+    when the prose never put Dylan on the page."""
     tom = _npc("tom", "loc_a")
     world = _make_world(npcs=[tom], beats=[
         _beat("tom_tells", name="Tom tells", commitment=True,
@@ -705,9 +707,10 @@ def test_choice_author_worth_pursuing_names_present_npc_findable():
     ])
     s = _state(world, "loc_a")
     s.trust["tom"] = 2
+    # Tom is present and open, but the prose does not name him.
     msg = build_choice_author_user_message(s, world, prose="The bar is quiet.")
-    assert "## Worth Pursuing Here" in msg
-    assert "Tom" in msg
+    assert "## Worth Pursuing Here" not in msg
+    assert "Tom" not in msg  # present, but unintroduced → never surfaced
 
 
 # ───────────────────── effective deltas (realized changes) ─────────────────────
@@ -803,24 +806,35 @@ def test_seed_present_npcs_skips_when_breached():
     assert seed_present_npcs(world, s) == []
 
 
-# ───────────────────── not-here steer + bible reachability ─────────────────────
+# ───────────────────── holding-back texture (prose writer) + bible reachability ─────────────────────
 
 
-def test_choice_author_steers_away_from_dead_location():
-    """A present NPC who can't warm HERE gets a 'won't talk here / somewhere
-    quieter' steer instead of another futile press."""
+def test_prose_writer_shows_holding_back_at_dead_location():
+    """A present NPC who can't warm HERE is surfaced to the PROSE WRITER as
+    '## Holding Back Here' — the closed door is shown in the fiction (where the
+    player can see it), not steered to the choice author as a hidden hint."""
     world = _world_dylan()
     s = _state(world, location="loc_a")  # dylan present (default) but unwarmable here
-    msg = build_choice_author_user_message(s, world, prose="Dylan looks away.")
-    assert "## They Won't Talk Here" in msg
+    msg = build_prose_writer_user_message(s, world, [], is_first_turn=True)
+    assert "## Holding Back Here" in msg
 
 
-def test_choice_author_no_dead_location_steer_where_warmable():
+def test_prose_writer_no_holding_back_where_warmable():
     world = _world_dylan()
     s = _state(world, location="loc_b")
     s.npc_locations = {"dylan": "loc_b"}  # present where he opens up
-    msg = build_choice_author_user_message(s, world, prose="Dylan exhales.")
+    msg = build_prose_writer_user_message(s, world, [], is_first_turn=True)
+    assert "## Holding Back Here" not in msg
+
+
+def test_choice_author_never_leaks_holding_back_npc():
+    """The choice author, prose-only, gets no 'won't talk here' steer at all —
+    the NPC's name does not leak unless the prose itself named them."""
+    world = _world_dylan()
+    s = _state(world, location="loc_a")  # dylan present but unwarmable here
+    msg = build_choice_author_user_message(s, world, prose="The yard is still.")
     assert "## They Won't Talk Here" not in msg
+    assert "Dylan" not in msg
 
 
 REAL_WORLD = Path(__file__).parent.parent / "world"

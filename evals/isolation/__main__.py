@@ -23,13 +23,15 @@ from handler.world import load_world
 
 from ..judges.model import build_judge_model, warm_judge
 from ..retry_model import RetryModel
-from . import attention, behavioural, choices_leave, deltas, free_text_gate
+from . import (
+    attention, behavioural, choices_leak, choices_leave, deltas, free_text_gate,
+)
 from .harness import run_and_report
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _ALL_SUITES = (
-    "deltas", "attention", "prose", "choices", "choices_leave", "chronicle",
-    "free_text_gate",
+    "deltas", "attention", "prose", "choices", "choices_leave", "choices_leak",
+    "chronicle", "free_text_gate",
 )
 _NEEDS_JUDGE = frozenset({"prose", "choices"})
 
@@ -80,6 +82,7 @@ async def main(
         "prose": lambda: behavioural.prose_suite(bundle, world, judge),
         "choices": lambda: behavioural.choices_suite(bundle, world, judge),
         "choices_leave": lambda: choices_leave.suite(bundle, world),
+        "choices_leak": lambda: choices_leak.suite(bundle, world),
         "chronicle": lambda: behavioural.chronicle_suite(bundle, world),
         "free_text_gate": lambda: free_text_gate.suite(bundle, world),
     }

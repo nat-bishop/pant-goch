@@ -51,7 +51,7 @@ def _set_inferno(inferno: bool) -> None:
 @app.command()
 def iso(
     suite: Optional[str] = typer.Option(
-        None, help="comma-separated subset of deltas,attention,prose,choices,chronicle,free_text_gate (default: all)"),
+        None, help="comma-separated subset of deltas,attention,prose,choices,choices_leave,choices_leak,chronicle,free_text_gate (default: all)"),
     k: int = typer.Option(16, help="samples per case (temp=1.0); 16 keeps the 0.8 floor stable"),
     concurrency: int = typer.Option(16, help="max engine/judge calls in flight (= engine KV slots)"),
     out: Optional[Path] = typer.Option(None, help="artifact dir (default: evals/artifacts/isolation/<ts>)"),
