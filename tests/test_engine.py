@@ -4,7 +4,6 @@ ending resolution, and the per-call dynamic bundle (Literal narrowing).
 """
 from __future__ import annotations
 
-import random
 from pathlib import Path
 
 import pytest
@@ -14,7 +13,6 @@ from handler.agents import _build_state_change_bundle_type
 from handler.engine import (
     FREE_TEXT_COOLDOWN,
     FREE_TEXT_FALLBACK,
-    FREE_TEXT_OFFER_P,
     SCENE_FINDABLE_GRACE_TURNS,
     _trust_adjustable_here,
     _turns_since_typed,
@@ -618,18 +616,19 @@ def test_turns_since_typed_large_when_never_typed():
 
 
 def test_cadence_suppresses_within_cooldown():
-    assert free_text_cadence_ok(_state_with_history([True]), random.Random(0)) is False
+    # Last move was typed one turn ago — inside the cooldown, so suppressed.
+    assert free_text_cadence_ok(_state_with_history([True])) is False
 
 
-def test_cadence_probability_is_seedable_and_honored_past_cooldown():
+def test_cadence_allows_past_cooldown():
+    # No recent typed move — the cooldown is clear, so an offer is honored.
+    assert free_text_cadence_ok(_state_with_history([False, False, False])) is True
+
+
+def test_cadence_is_cooldown_only_and_deterministic():
+    # No probability, no rng: the same state always yields the same answer.
     state = _state_with_history([False, False, False])
-
-    class _Stub:
-        def __init__(self, val): self.val = val
-        def random(self): return self.val
-
-    assert free_text_cadence_ok(state, _Stub(FREE_TEXT_OFFER_P - 0.01)) is True
-    assert free_text_cadence_ok(state, _Stub(FREE_TEXT_OFFER_P + 0.01)) is False
+    assert free_text_cadence_ok(state) is free_text_cadence_ok(state) is True
 
 
 def test_free_text_fallback_is_general_agency():

@@ -11,8 +11,6 @@ Pure functions (no LLM, no SSE). The quality engine lives here:
 """
 from __future__ import annotations
 
-import random
-
 from .models import When
 from .schemas import (
     FreeText,
@@ -35,13 +33,15 @@ FREE_TEXT_FALLBACK = FreeText(prompt="What do you do next?", npc_id=None, sugges
 # ───────────────────────── free-text cadence ─────────────────────────
 #
 # The LLM gate is a stateless per-turn classifier — it sees only the prose
-# and so cannot perceive (or regulate) a global offer *rate*. Frequency is
-# a property of the distribution over many calls, not of any single call,
-# so we own it here: the gate says "this moment *could* take free text",
-# and this engine layer decides whether to actually surface it now.
+# and so cannot perceive a global offer *cadence*. Typing two turns running
+# is a chore even when both moments earn it, so we own that one ergonomic
+# here: the gate says "this moment hands the floor to the player", and this
+# engine layer only suppresses a fresh box too soon after the last typed
+# move. There is no probability — a precise gate means the moment either
+# earns free text or it doesn't, so a coin flip would only make the box's
+# appearance feel arbitrary.
 
 FREE_TEXT_COOLDOWN = 2     # min completed turns since the last typed move
-FREE_TEXT_OFFER_P = 0.5    # honor an eligible offer only this often
 
 
 def _turns_since_typed(state: State) -> int:
@@ -57,14 +57,12 @@ def _turns_since_typed(state: State) -> int:
     return len(state.dialogue_history) + 1  # effectively "no recent typed move"
 
 
-def free_text_cadence_ok(state: State, rng: random.Random) -> bool:
+def free_text_cadence_ok(state: State) -> bool:
     """Engine-side cadence gate, applied on top of the LLM gate's offer.
-    Suppress free text within `FREE_TEXT_COOLDOWN` turns of the last typed
-    move, then honor the offer only with probability `FREE_TEXT_OFFER_P`.
-    Pure and seedable (`rng`) so tests are deterministic."""
-    if _turns_since_typed(state) < FREE_TEXT_COOLDOWN:
-        return False
-    return rng.random() < FREE_TEXT_OFFER_P
+    Suppress a fresh free-text box within `FREE_TEXT_COOLDOWN` turns of the
+    last typed move so the player is never asked to type two turns running.
+    Pure and deterministic."""
+    return _turns_since_typed(state) >= FREE_TEXT_COOLDOWN
 
 
 def apply_state_changes(
