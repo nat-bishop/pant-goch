@@ -158,9 +158,9 @@ def _patch_caption(monkeypatch, captions):
 
 def _patch_cadence(monkeypatch, ok: bool):
     """Force the engine-side free-text cadence gate to a fixed result,
-    isolating run_turn/play_scene tests from the seeded probability draw."""
+    isolating run_turn/play_scene tests from the cooldown bookkeeping."""
     monkeypatch.setattr(
-        "handler.scene_loop.free_text_cadence_ok", lambda state, rng: ok
+        "handler.scene_loop.free_text_cadence_ok", lambda state: ok
     )
 
 
@@ -434,45 +434,45 @@ async def test_run_turn_leave_resolves_to_endscene_when_no_ending_satisfied(monk
     assert isinstance(result.next, EndScene)
 
 
-async def test_run_turn_gate_offers_free_text_in_exploration(monkeypatch):
-    """General agency: the gate can offer free text even with no NPC
-    present (exploration). With cadence allowing, the caption author runs
-    and its caption + suggestion ride the FreeText, overriding Continue."""
+async def test_run_turn_gate_offers_free_text_with_npc_present(monkeypatch):
+    """Free text is the "words to a person" channel: with an NPC present and
+    the gate + cadence allowing, the caption author runs and its caption +
+    suggestion ride the FreeText, overriding Continue."""
     world = load_world(FIXTURE_VALID)
     bundle = build_scene_runner_bundle(TestModel(), world)
     runtime = make_scene_runner_runtime()
     state = make_initial_state(world)
-    enter_scene(state, world, "the_old_vicarage")  # solo location — no NPC
+    enter_scene(state, world, "the_slaughtered_lamb")  # tom is here
 
     _patch_phase1(monkeypatch)
-    _patch_prose_writer(monkeypatch, ["The wood is silent."])
+    _patch_prose_writer(monkeypatch, ["Tom waits, watching you."])
     _patch_choice_author(monkeypatch, [
         ChoiceBundle(next=Continue(options=[Option(text="a"), Option(text="b")])),
     ])
     _patch_gate(monkeypatch, True)
     _patch_cadence(monkeypatch, True)
     _patch_caption(monkeypatch, [
-        FreeTextCaption(caption="What do you do?", suggested="I search the desk."),
+        FreeTextCaption(caption="What do you say to Tom?", suggested="I ask him about Megan."),
     ])
 
     result = await run_turn(bundle, runtime, state)
     assert isinstance(result.next, FreeText)
-    assert result.next.prompt == "What do you do?"
-    assert result.next.suggested == "I search the desk."
+    assert result.next.prompt == "What do you say to Tom?"
+    assert result.next.suggested == "I ask him about Megan."
     assert result.next.npc_id is None
 
 
 async def test_run_turn_cadence_suppresses_gate_offer(monkeypatch):
-    """Gate offers but the engine cadence declines → no caption call, the
-    choice author's Continue stands."""
+    """Gate offers (NPC present) but the engine cadence declines → no caption
+    call, the choice author's Continue stands."""
     world = load_world(FIXTURE_VALID)
     bundle = build_scene_runner_bundle(TestModel(), world)
     runtime = make_scene_runner_runtime()
     state = make_initial_state(world)
-    enter_scene(state, world, "the_old_vicarage")
+    enter_scene(state, world, "the_slaughtered_lamb")  # tom is here
 
     _patch_phase1(monkeypatch)
-    _patch_prose_writer(monkeypatch, ["The wood is silent."])
+    _patch_prose_writer(monkeypatch, ["Tom waits, watching you."])
     _patch_choice_author(monkeypatch, [
         ChoiceBundle(next=Continue(options=[Option(text="a"), Option(text="b")])),
     ])
@@ -495,10 +495,10 @@ async def test_run_turn_caption_failure_falls_back_to_fixed_box(monkeypatch):
     bundle = build_scene_runner_bundle(TestModel(), world)
     runtime = make_scene_runner_runtime()
     state = make_initial_state(world)
-    enter_scene(state, world, "the_old_vicarage")
+    enter_scene(state, world, "the_slaughtered_lamb")  # tom is here
 
     _patch_phase1(monkeypatch)
-    _patch_prose_writer(monkeypatch, ["The wood is silent."])
+    _patch_prose_writer(monkeypatch, ["Tom waits, watching you."])
     _patch_choice_author(monkeypatch, [
         ChoiceBundle(next=Continue(options=[Option(text="a"), Option(text="b")])),
     ])
@@ -512,6 +512,58 @@ async def test_run_turn_caption_failure_falls_back_to_fixed_box(monkeypatch):
 
     result = await run_turn(bundle, runtime, state)
     assert result.next == FREE_TEXT_FALLBACK
+
+
+async def test_run_turn_solo_location_never_offers_free_text(monkeypatch):
+    """Structural precondition: no NPC present → free text is never offered,
+    even if the gate would say yes and cadence allows. Solo scenes are
+    click-driven; the choice author's Continue stands."""
+    world = load_world(FIXTURE_VALID)
+    bundle = build_scene_runner_bundle(TestModel(), world)
+    runtime = make_scene_runner_runtime()
+    state = make_initial_state(world)
+    enter_scene(state, world, "the_old_vicarage")  # solo location — no NPC
+
+    _patch_phase1(monkeypatch)
+    _patch_prose_writer(monkeypatch, ["The study is silent."])
+    _patch_choice_author(monkeypatch, [
+        ChoiceBundle(next=Continue(options=[Option(text="a"), Option(text="b")])),
+    ])
+    _patch_gate(monkeypatch, True)
+    _patch_cadence(monkeypatch, True)
+
+    async def _fail_caption(*args, **kwargs):
+        raise AssertionError("caption author must not run in a solo scene")
+
+    monkeypatch.setattr("handler.scene_loop.emit_caption", _fail_caption)
+
+    result = await run_turn(bundle, runtime, state)
+    assert isinstance(result.next, Continue)
+
+
+async def test_run_turn_solo_location_skips_gate_llm_call(monkeypatch):
+    """The gate LLM call is never even scheduled on a solo turn — the
+    "words to a person" precondition is enforced before authoring, so no
+    cost is paid where there is no one to speak to."""
+    world = load_world(FIXTURE_VALID)
+    bundle = build_scene_runner_bundle(TestModel(), world)
+    runtime = make_scene_runner_runtime()
+    state = make_initial_state(world)
+    enter_scene(state, world, "the_old_vicarage")  # solo location — no NPC
+
+    _patch_phase1(monkeypatch)
+    _patch_prose_writer(monkeypatch, ["The study is silent."])
+    _patch_choice_author(monkeypatch, [
+        ChoiceBundle(next=Continue(options=[Option(text="a"), Option(text="b")])),
+    ])
+
+    async def _must_not_run(*args, **kwargs):
+        raise AssertionError("free-text gate must not be called in a solo scene")
+
+    monkeypatch.setattr("handler.scene_loop.emit_free_text_gate", _must_not_run)
+
+    result = await run_turn(bundle, runtime, state)
+    assert isinstance(result.next, Continue)
 
 
 # ───────────────────────── dossier standings (npc_standing) ─────────────────────────

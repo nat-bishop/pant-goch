@@ -23,11 +23,11 @@ from handler.world import load_world
 
 from ..judges.model import build_judge_model, warm_judge
 from ..retry_model import RetryModel
-from . import attention, behavioural, deltas
+from . import attention, behavioural, deltas, free_text_gate
 from .harness import run_and_report
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_ALL_SUITES = ("deltas", "attention", "prose", "choices", "chronicle")
+_ALL_SUITES = ("deltas", "attention", "prose", "choices", "chronicle", "free_text_gate")
 _NEEDS_JUDGE = frozenset({"prose", "choices"})
 
 
@@ -50,7 +50,7 @@ async def main(
     """Run the selected isolation suites (default: all) K times per case, merge
     pass-rates / judge means into `<out>/summary.json`, print the diffed report,
     and (when `gate`) exit non-zero on a floor breach. `suite` is a comma-
-    separated subset of `deltas,attention,prose,choices,chronicle`."""
+    separated subset of `deltas,attention,prose,choices,chronicle,free_text_gate`."""
     selected = [s.strip() for s in suite.split(",")] if suite else list(_ALL_SUITES)
     unknown = [s for s in selected if s not in _ALL_SUITES]
     if unknown:
@@ -77,6 +77,7 @@ async def main(
         "prose": lambda: behavioural.prose_suite(bundle, world, judge),
         "choices": lambda: behavioural.choices_suite(bundle, world, judge),
         "chronicle": lambda: behavioural.chronicle_suite(bundle, world),
+        "free_text_gate": lambda: free_text_gate.suite(bundle, world),
     }
     suites = [factories[s]() for s in selected]
 
