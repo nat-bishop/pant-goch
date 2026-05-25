@@ -31,7 +31,6 @@ from handler.schemas import (
 )
 from handler.engine import emittable_beat_ids
 from handler.scene_loop import (
-    LEAVE_OPTION_MIN_HISTORY,
     PickOption,
     PlayerAction,
     RunConfig,
@@ -60,19 +59,17 @@ class SessionBudgetExceeded(Exception):
     whose player never commits to an ending."""
 
 
-# Faithfulness: in the real UI the map exit ("Step outside") is live on every
-# turn once a scene has a couple of turns behind it, so a player who feels a
-# scene has stopped paying off just leaves. The harness mirrors that by offering
-# the player a Leave choice on every eligible Continue turn (see
-# request_player_input). Previously the player could ONLY leave at a choice-
-# author soft-close or on a rare seeded coin flip, so it milled fruitlessly —
-# inflating filler_turn_ratio and starving exploration (a single post-office
-# scene ran 43 straight filler turns in the 20260520-194311 run). The leave
-# affordance unlocks after the same LEAVE_OPTION_MIN_HISTORY the UI uses.
+# Faithfulness: in the real UI a scene is left exactly two ways — the player
+# picks an option the author marked `leave: true`, or the narrator soft-closes
+# the scene (`Leave` → EndScene → map). There is no always-available exit. The
+# harness mirrors that: it honors an authored `leave` pick as a walk and follows
+# every soft-close, but never injects its own leave on an ordinary turn. A scene
+# that has stopped paying off is bounded instead by the engine's soft-close
+# machinery (scene_is_spent / MAX_TURNS_PER_SCENE / the forced authored exit).
 
 
 class Player(Protocol):
-    async def pick_option(self, prose_part: ProsePart, *, can_leave: bool = False) -> int: ...
+    async def pick_option(self, prose_part: ProsePart) -> int: ...
     async def pick_free_text(self, req: FreeText) -> str: ...
     async def pick_walk(self, state: State, world: World) -> str: ...
 
@@ -187,9 +184,9 @@ async def run_session(
     `player` is injectable: real runs leave it None and a `GeminiPlayer` is
     built from `persona_prompt`; tests pass a stub so no cloud call is made.
 
-    `run_config` selects per-arm engine behaviour (e.g. whether the player may
-    leave mid-scene); `arm` tags the artifact for A/B diffing. Both default to
-    shipped/single-arm behaviour.
+    `run_config` selects per-arm engine behaviour for A/B diffing (currently
+    `RunConfig` is empty — no knob is defined); `arm` tags the artifact. Both
+    default to shipped/single-arm behaviour.
     """
     if player is None:
         from .player import GeminiPlayer
@@ -224,11 +221,10 @@ async def run_session(
         prose_part: ProsePart, s: State, w: World
     ) -> PlayerAction:
         # Map the awaited input back onto the Player protocol's three methods.
-        # The simulated player acts inside the scene (pick / free-text), and on
-        # any Continue turn with a couple of turns behind it may instead elect to
-        # Leave via the map — exactly the always-on UI exit — ending the turn
-        # with a WalkTo. That is how a real player escapes a scene that has
-        # stopped paying off.
+        # The simulated player acts inside the scene (pick / free-text). It can
+        # leave only the two ways a real player can: by picking an option the
+        # author marked `leave: true` (routed to a walk below), or by following a
+        # narrator soft-close. There is no always-on mid-scene exit.
         #
         # Per-turn eval signal: run_turn appended this turn's record (with its
         # applied beats) BEFORE this callback was awaited, so dialogue_history[-1]
@@ -249,30 +245,7 @@ async def run_session(
         nxt = prose_part.next
         if isinstance(nxt, Continue):
             options = nxt.options
-            # A diegetic exit the choice author wrote (leave: true) is presented
-            # as a normal in-list option; picking it ends the scene like a walk.
-            # Honored only when this arm allows mid-scene leave — the test arm
-            # withholds every voluntary exit, so a spontaneously-authored leave
-            # option is treated as an ordinary pick there (no early walk).
-            authored_leave_idx = (
-                next((i for i, o in enumerate(options) if o.leave), None)
-                if run_config.allow_mid_scene_leave
-                else None
-            )
-            # The mid-scene leave affordance mirrors the always-on UI exit, but
-            # only when this arm allows it (RunConfig.allow_mid_scene_leave) AND
-            # the author didn't already write a diegetic exit (then the player
-            # picks that — no duplicate, mirroring play_scene's append rule).
-            can_leave = (
-                run_config.allow_mid_scene_leave
-                and authored_leave_idx is None
-                and len(state.dialogue_history) >= LEAVE_OPTION_MIN_HISTORY
-            )
-            idx = await player.pick_option(prose_part, can_leave=can_leave)
-            if can_leave and idx >= len(options):
-                # Player chose the appended Leave entry over any in-scene option.
-                return await walk_out(s, w, mid_scene=True)
-            idx = min(idx, len(options) - 1)
+            idx = min(await player.pick_option(prose_part), len(options) - 1)
             chosen = options[idx]
             rec.transcript.append({
                 "kind": "turn",
@@ -287,10 +260,9 @@ async def run_session(
                 "applied_deltas": applied_deltas,
                 "fireable": fireable,
             })
-            if chosen.leave and run_config.allow_mid_scene_leave:
-                # Player picked the diegetic exit — end the scene like a walk
-                # (resolves any met ending / surfaces the map), not a Continue.
-                # Gated with the arm: the test arm never honors a voluntary exit.
+            if chosen.leave:
+                # Player picked the author's diegetic exit — end the scene like a
+                # walk (resolves any met ending / surfaces the map), not a Continue.
                 return await walk_out(s, w, mid_scene=True)
             return PickOption(index=idx)
         if isinstance(nxt, FreeText):

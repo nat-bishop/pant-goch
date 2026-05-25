@@ -40,7 +40,6 @@ from handler.schemas import (
 from handler.scene_loop import (
     MAX_TURNS_PER_SCENE,
     PickOption,
-    RunConfig,
     TypeText,
     WalkTo,
     _assemble_prose_part,
@@ -625,11 +624,55 @@ def _gated_scene_fixtures(monkeypatch):
     return bundle, runtime, state
 
 
-async def test_play_scene_default_offers_step_outside_and_arms_map_each_turn(monkeypatch):
-    """Default RunConfig (allow_mid_scene_leave=True): the "Step outside" leave
-    entry is appended to the 2nd+ Continue turn's options, and walk_ready arms
-    the map after every cue (mid-scene exit always available)."""
+async def test_play_scene_plain_continue_has_no_leave_entry_or_midscene_arm(monkeypatch):
+    """No authored leave on any Continue turn: the engine appends no exit entry
+    (there is no "Step outside") and arms walk_ready ONLY at the narrator
+    soft-close — never mid-scene, so the map cannot end a plain Continue turn."""
     bundle, runtime, state = _gated_scene_fixtures(monkeypatch)
+    events: list[dict] = []
+
+    async def collect(ev):
+        events.append(ev)
+
+    result = await play_scene(
+        bundle, runtime, state,
+        request_player_input=_walk_first_adjacent,
+        emit_event=collect,
+    )
+
+    option_events = [e for e in events if e["event"] == "options"]
+    # No Continue turn ever carries a leave entry.
+    assert not any(o.get("leave") for e in option_events for o in e["options"])
+    # walk_ready fires exactly once — at the spent-scene cue, not mid-scene.
+    walk_ready_idxs = [i for i, e in enumerate(events) if e["event"] == "walk_ready"]
+    spent_idx = next(i for i, e in enumerate(events) if e["event"] == "scene_spent")
+    assert walk_ready_idxs == [spent_idx + 1]
+    # The soft-close still ends the scene the same way.
+    assert isinstance(result.next, EndScene)
+
+
+async def test_play_scene_authored_leave_arms_map_midscene(monkeypatch):
+    """A Continue whose author marked an option `leave: true` is the player's
+    in-fiction exit: the engine carries the flag to the client AND arms
+    walk_ready that turn (so picking the exit can walk). Together with the
+    turn-2 soft-close, walk_ready therefore fires twice."""
+    world = load_world(FIXTURE_VALID)
+    bundle = build_scene_runner_bundle(TestModel(), world)
+    runtime = make_scene_runner_runtime()
+    state = make_initial_state(world)
+    state.player_location = "the_slaughtered_lamb"
+
+    _patch_populator(monkeypatch)
+    _patch_village_attention(monkeypatch)
+    _patch_phase1(monkeypatch)
+    _patch_prose_writer(monkeypatch, ["t1", "t2"])
+    _patch_closing_prose(monkeypatch)
+    _patch_choice_author(monkeypatch, [
+        ChoiceBundle(next=Continue(options=[
+            Option(text="stay"), Option(text="thank her and step out", leave=True),
+        ])),
+        ChoiceBundle(next=Leave()),
+    ])
     events: list[dict] = []
 
     async def collect(ev):
@@ -642,44 +685,15 @@ async def test_play_scene_default_offers_step_outside_and_arms_map_each_turn(mon
     )
 
     option_events = [e for e in events if e["event"] == "options"]
-    # Turn 1 (no history yet) → no leave entry; turn 2 → "Step outside" appended.
-    assert not any(o.get("leave") for o in option_events[0]["options"])
-    assert any(o.get("leave") for o in option_events[1]["options"])
-    # The map is armed after every cue, including the mid-scene Continue turns.
-    assert sum(e["event"] == "walk_ready" for e in events) == len(option_events) + 1
+    # Turn 1 carries the authored leave option through to the client.
+    assert any(o.get("leave") for o in option_events[0]["options"])
+    # Map armed on the authored-leave turn AND the soft-close → two walk_ready.
+    assert sum(e["event"] == "walk_ready" for e in events) == 2
 
 
-async def test_play_scene_gated_withholds_midscene_leave(monkeypatch):
-    """RunConfig(allow_mid_scene_leave=False): no "Step outside" entry on any
-    Continue turn, and walk_ready arms the map ONLY at the soft-close — never
-    mid-scene. The soft-close still resolves normally (player walks out)."""
-    bundle, runtime, state = _gated_scene_fixtures(monkeypatch)
-    events: list[dict] = []
-
-    async def collect(ev):
-        events.append(ev)
-
-    result = await play_scene(
-        bundle, runtime, state,
-        request_player_input=_walk_first_adjacent,
-        emit_event=collect,
-        run_config=RunConfig(allow_mid_scene_leave=False),
-    )
-
-    option_events = [e for e in events if e["event"] == "options"]
-    # No Continue turn ever offers the leave entry.
-    assert not any(o.get("leave") for e in option_events for o in e["options"])
-    # walk_ready fires exactly once — at the spent-scene cue, not mid-scene.
-    walk_ready_idxs = [i for i, e in enumerate(events) if e["event"] == "walk_ready"]
-    spent_idx = next(i for i, e in enumerate(events) if e["event"] == "scene_spent")
-    assert walk_ready_idxs == [spent_idx + 1]
-    # The soft-close still ends the scene the same way.
-    assert isinstance(result.next, EndScene)
-
-
-async def test_play_scene_gated_still_resolves_ending_on_close(monkeypatch):
-    """Gating mid-scene leave must not skip a climax: a soft-close into a
-    satisfied ending still returns EndGame (the player never had to walk)."""
+async def test_play_scene_resolves_ending_on_close(monkeypatch):
+    """A soft-close into a satisfied ending returns EndGame without awaiting a
+    walk — the climax committed in fiction, the player never had to leave."""
     world = load_world(FIXTURE_VALID)
     bundle = build_scene_runner_bundle(TestModel(), world)
     runtime = make_scene_runner_runtime()
@@ -698,12 +712,11 @@ async def test_play_scene_gated_still_resolves_ending_on_close(monkeypatch):
     _patch_choice_author(monkeypatch, [ChoiceBundle(next=Leave())])
 
     def _never_walk(prose_part, s, w):
-        raise AssertionError("gated soft-close into an ending must not await a walk")
+        raise AssertionError("soft-close into an ending must not await a walk")
 
     result = await play_scene(
         bundle, runtime, state,
         request_player_input=_never_walk,
-        run_config=RunConfig(allow_mid_scene_leave=False),
     )
     assert isinstance(result.next, EndGame)
 

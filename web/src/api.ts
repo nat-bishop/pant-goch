@@ -94,9 +94,10 @@ export async function fetchWorld(): Promise<WorldMeta> {
 
 export interface OptionPayload {
   text: string;
-  /** Engine-injected "Step outside" entry. Rendered apart from the
-   * numbered choices; clicking opens the map (the pin → /walk flow leaves).
-   * Never present on a real in-scene option. */
+  /** Marks the choice author's diegetic exit (`leave: true`) — the player's
+   * in-fiction way out. Rendered apart from the numbered choices; clicking it
+   * opens the map (the pin → /walk flow leaves). The engine never injects a
+   * generic exit, so this is set only on a real authored option. */
   leave?: boolean;
 }
 

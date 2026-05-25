@@ -1,7 +1,7 @@
 """Unified HANDLER eval CLI — one entrypoint for every eval lane.
 
     uv run python -m evals iso   [--suite deltas,attention] [--k 16]   # fast deterministic gate
-    uv run python -m evals play  [--experiment leave_mode] [--judge]   # full-session corpus / A-B
+    uv run python -m evals play  [--experiment NAME] [--judge]         # full-session corpus / A-B
     uv run python -m evals judge <run-dir>                             # re-judge a recorded corpus
 
 Two real lanes: `iso` (frozen-context per-agent gate, seconds) and `play`

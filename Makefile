@@ -18,7 +18,7 @@ help:
 	@echo "  make test                Run pytest (unit suite, skips live-llama integration)"
 	@echo "  make test-integration    Run pytest including the live-llama integration test"
 	@echo "  make eval ARGS=\"...\"      Unified eval CLI: iso | play | judge (run with --help)"
-	@echo "                             e.g. ARGS=\"iso\"  |  \"play\"  |  \"play --experiment leave_mode --judge\""
+	@echo "                             e.g. ARGS=\"iso\"  |  \"play\"  |  \"play --experiment <name> --judge\""
 	@echo "  make typecheck           Run TS typecheck on web/"
 	@echo "  make build               Production build of web/"
 	@echo "  make kill                Force-kill stragglers on :8000/:8080/:5173-5176"
@@ -77,7 +77,7 @@ test-integration:
 # `eval` is a thin pass-through so muscle memory survives:
 #   make eval ARGS="iso --suite deltas"
 #   make eval ARGS="play"                       # single-arm playtest
-#   make eval ARGS="play --experiment leave_mode --judge --human"
+#   make eval ARGS="play --experiment <name> --judge --human"
 #   make eval ARGS="judge evals/artifacts/<ts>"
 # Requires a reachable engine (inferno by default) and, for `play`, GOOGLE_API_KEY.
 .PHONY: eval

@@ -177,19 +177,16 @@ OnSceneClose = Callable[["ProsePart"], Union[None, Awaitable[None]]]
 
 @dataclass(frozen=True)
 class RunConfig:
-    """Per-session engine feature flags. Defaults reproduce shipped behaviour,
-    so every existing caller (main.py, __main__.py, tests) that omits it is
-    byte-for-byte unchanged. Threaded through `play_session` → `play_scene`;
-    the eval A/B harness varies it per arm.
+    """Per-session engine feature flags. Threaded through `play_session` →
+    `play_scene`; the eval A/B harness splats one per arm
+    (`RunConfig(**arm.run_config)`), so a future knob is a new field here plus a
+    new experiment file — not new plumbing.
 
-    - `allow_mid_scene_leave`: when True (default), the player may leave a scene
-      on any turn once it has a couple of turns behind it — the always-armed map
-      / "Step outside" affordance. When False, the only exit is a narrator
-      soft-close (`Leave`): mid-scene leaving is removed. The first A/B knob
-      (`leave_mode` experiment) flips exactly this.
+    Currently empty. Leaving a scene is fixed to two paths — a choice-author
+    `leave: true` option the player picks, or the narrator soft-close (`Leave`)
+    — with no per-session variant, so there is nothing to flag. `RunConfig()` is
+    the only shape there is, and the harness still accepts `run_config: {}` arms.
     """
-
-    allow_mid_scene_leave: bool = True
 
 
 @contextmanager
@@ -280,15 +277,6 @@ def _fallback_prose() -> str:
     return "A pause. The moment passes without movement."
 
 
-# Caption for the engine-injected leave entry appended to the options SSE
-# payload (see play_scene). Diegetic and short; the frontend styles it as a
-# distinct control, not a numbered choice.
-LEAVE_OPTION_TEXT = "Step outside"
-# Surface the leave entry only once the scene has a completed turn behind it
-# (dialogue_history length): the first turn stays focused on scene-setting,
-# every turn after offers a visible way out.
-LEAVE_OPTION_MIN_HISTORY = 2
-
 # Hard ceiling on player turns within a single scene. A scene normally ends
 # when the player leaves or the choice author soft-closes a spent scene; but
 # nothing forces either, so a player who keeps picking in-scene options can
@@ -302,7 +290,7 @@ MAX_TURNS_PER_SCENE = 20
 
 # Minimum completed turns before the content-derived soft-close (engine.scene_is_spent)
 # may fire. A scene gets at least this many turns to breathe — arrive, take the
-# room in — before a dry, beat-less turn can end it. Mirrors LEAVE_OPTION_MIN_HISTORY.
+# room in — before a dry, beat-less turn can end it.
 SPENT_CLOSE_MIN_TURNS = 2
 
 
@@ -457,7 +445,6 @@ async def run_turn(
     *,
     emit_event: EmitEvent | None = None,
     skip_event: asyncio.Event | None = None,
-    allow_mid_scene_leave: bool = True,
 ) -> ProsePart:
     """One full turn end-to-end. Returns the engine-assembled ProsePart
     so the caller can dispatch on `prose_part.next` (Continue → wait
@@ -552,18 +539,15 @@ async def run_turn(
     #    pay off (mirrors scene_is_spent, but evaluated from THIS turn's movement
     #    since the turn record isn't appended until below). Completed turns after
     #    this one == len(dialogue_history)+1, matching scene_is_spent's grace read.
-    # Gated on allow_mid_scene_leave: the `leave_mode` test arm withholds the
-    # voluntary mid-scene exit entirely, so it must NOT get a diegetic leave
-    # option either — there the scene ends only at the narrator soft-close.
+    # When this fires the author MUST write a `leave: true` option — with no
+    # generic engine exit, the player-picked diegetic departure is the only way
+    # out short of the narrator soft-close.
     decision_fired = any(is_decision(b) for b in newly_unlocked)
     this_turn_moved = bool(newly_unlocked) or bool(moved_deltas)
-    leave_required = allow_mid_scene_leave and (
-        decision_fired
-        or (
-            not this_turn_moved
-            and scene_exhausted_here(
-                bundle.world, state, len(state.dialogue_history) + 1
-            )
+    leave_required = decision_fired or (
+        not this_turn_moved
+        and scene_exhausted_here(
+            bundle.world, state, len(state.dialogue_history) + 1
         )
     )
 
@@ -681,10 +665,11 @@ async def play_scene(
 
     Each turn, `request_player_input(prose_part, state, world)` returns one
     `PlayerAction`: a `PickOption` / `TypeText` continues the scene; a
-    `WalkTo` ends it. The map is live at every await, so a `WalkTo` can end
-    any turn — a `Continue`, a `FreeText`, or a soft-close (`EndScene` from
-    the choice author's Leave, which removes the options and leaves the map
-    as the only way on).
+    `WalkTo` ends it. A `WalkTo` is only on the table when leaving is — a
+    soft-close (`EndScene` from the choice author's Leave, which removes the
+    options and leaves the map as the only way on) or a `Continue` whose author
+    marked an option `leave: true` (the player's in-fiction exit). A plain
+    `Continue` / `FreeText` turn has no walk: leaving comes from the fiction.
 
     If `emit_event` is supplied, the scene emits SSE at each boundary
     (scene_start, state_change, the live-paced prose_word stream, then the
@@ -760,7 +745,6 @@ async def play_scene(
             prose_part = await run_turn(
                 bundle, runtime, state,
                 emit_event=emit_event, skip_event=skip_event,
-                allow_mid_scene_leave=run_config.allow_mid_scene_leave,
             )
         turns_this_scene += 1
 
@@ -800,9 +784,7 @@ async def play_scene(
             isinstance(nxt, (Continue, FreeText))
             and turns_this_scene >= SPENT_CLOSE_MIN_TURNS
             and scene_is_spent(bundle.world, state)
-            and not (
-                run_config.allow_mid_scene_leave and _authored_leave_present(nxt)
-            )
+            and not _authored_leave_present(nxt)
         ):
             logfire.info(
                 "scene spent; forcing soft-close",
@@ -814,14 +796,11 @@ async def play_scene(
             prose_part = ProsePart(prose=prose_part.prose, next=nxt)
 
         # Every other branch awaits one PlayerAction. Surface the matching
-        # in-scene cue, then arm the map (walk_ready) so a WalkTo is legal.
-        # With `allow_mid_scene_leave` (default), the map is armed on EVERY
-        # cue, so a WalkTo can end any turn — including mid-scene; only the
-        # soft-close cue (scene_spent) flips the frontend to the map, options /
-        # free-text leave the location photo up (quiet voluntary leave). When
-        # the flag is off, the only exit is a narrator soft-close: the
-        # "Step outside" entry is withheld and the map is armed ONLY on the
-        # spent-scene cue (the A/B `leave_mode` test arm).
+        # in-scene cue, then arm the map (walk_ready) ONLY when leaving is on the
+        # table — a narrator soft-close (the player must pick a destination) or a
+        # Continue carrying an authored `leave: true` option (picking it opens
+        # the map to walk). On a plain Continue / free-text turn the map stays
+        # inert: leaving comes from the fiction, not an always-live escape.
         if emit_event is not None:
             soft_close = not isinstance(nxt, (Continue, FreeText))
             if isinstance(nxt, Continue):
@@ -831,23 +810,12 @@ async def play_scene(
                     {"text": o.text, "leave": True} if o.leave else {"text": o.text}
                     for o in nxt.options
                 ]
-                # Append the generic leave entry AFTER the real options (indices
-                # stay aligned with PickOption) ONLY when the author did not write
-                # one — otherwise the player would see two ways out. The walk it
-                # routes to is always legal (every location has ≥1 adjacent,
-                # invariant 11).
-                if (
-                    not _authored_leave_present(nxt)
-                    and run_config.allow_mid_scene_leave
-                    and len(state.dialogue_history) >= LEAVE_OPTION_MIN_HISTORY
-                ):
-                    payload.append({"text": LEAVE_OPTION_TEXT, "leave": True})
                 await emit_event(options_event(payload))
             elif isinstance(nxt, FreeText):
                 await emit_event(free_text_request_event(nxt))
             else:  # EndScene soft-close — scene spent, only a walk remains
                 await emit_event(scene_spent_event())
-            if run_config.allow_mid_scene_leave or soft_close:
+            if soft_close or _authored_leave_present(nxt):
                 await emit_event(walk_ready_event())
 
         action = await _maybe_await(

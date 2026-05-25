@@ -199,7 +199,7 @@ def test_coverage_report():
 
 
 class _StubPlayer:
-    async def pick_option(self, prose_part, *, can_leave: bool = False) -> int:
+    async def pick_option(self, prose_part) -> int:
         return 0
 
     async def pick_free_text(self, req) -> str:

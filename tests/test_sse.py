@@ -32,7 +32,6 @@ from handler.schemas import (
     UnlockBeat,
 )
 from handler.scene_loop import (
-    LEAVE_OPTION_TEXT,
     PickOption,
     WalkTo,
     play_scene,
@@ -377,14 +376,21 @@ async def test_play_scene_emits_options_event_for_continue(monkeypatch, world_an
     opts = options_events[0]["options"]
     assert opts[0] == {"text": "Stay quiet"}
     assert opts[1] == {"text": "Walk to post"}
-    # The options cue is followed by walk_ready (the map is armed mid-scene).
-    assert "walk_ready" in [e["event"] for e in events]
+    # The plain Continue turn (no authored leave) is NOT followed by walk_ready —
+    # the map only arms at the soft-close. The single walk_ready that appears
+    # comes after the scene_spent cue, not the options cue.
+    event_kinds = [e["event"] for e in events]
+    assert event_kinds.count("walk_ready") == 1
+    assert event_kinds.index("walk_ready") > event_kinds.index("scene_spent")
 
 
-async def test_play_scene_injects_leave_option_from_second_turn(monkeypatch, world_and_bundle):
-    """Turn 1's options stay clean; from turn 2 the engine appends a synthetic
-    leave entry (the always-visible way out) the frontend renders apart from
-    the numbered choices."""
+async def test_play_scene_carries_authored_leave_and_appends_no_synthetic_exit(
+    monkeypatch, world_and_bundle
+):
+    """The engine never appends a synthetic exit entry. A Continue's options are
+    sent verbatim; an option the author marked `leave: true` is carried through
+    with its flag (and nothing else added), so the only in-chat way out is the
+    author's own diegetic departure."""
     world, bundle = world_and_bundle
     state = make_initial_state(world)
     state.player_location = "the_slaughtered_lamb"
@@ -392,7 +398,9 @@ async def test_play_scene_injects_leave_option_from_second_turn(monkeypatch, wor
     proses = iter(["Turn one.", "Turn two.", "The hour ends."])
     choices = iter([
         ChoiceBundle(next=Continue(options=[Option(text="Stay"), Option(text="Ask")])),
-        ChoiceBundle(next=Continue(options=[Option(text="Press"), Option(text="Wait")])),
+        ChoiceBundle(next=Continue(options=[
+            Option(text="Press"), Option(text="Settle up and go", leave=True),
+        ])),
         ChoiceBundle(next=Leave()),
     ])
 
@@ -428,12 +436,14 @@ async def test_play_scene_injects_leave_option_from_second_turn(monkeypatch, wor
 
     options_events = [e for e in events if e["event"] == "options"]
     assert len(options_events) == 2
-    # Turn 1: real options only, no leave entry.
-    assert all("leave" not in o for o in options_events[0]["options"])
-    # Turn 2: leave entry appended after the real options.
-    turn2 = options_events[1]["options"]
-    assert turn2[:2] == [{"text": "Press"}, {"text": "Wait"}]
-    assert turn2[-1] == {"text": LEAVE_OPTION_TEXT, "leave": True}
+    # Turn 1: real options only, no leave entry, nothing appended.
+    assert options_events[0]["options"] == [{"text": "Stay"}, {"text": "Ask"}]
+    # Turn 2: the authored options pass through verbatim — the leave option keeps
+    # its flag and NO extra synthetic exit is appended (exactly two entries).
+    assert options_events[1]["options"] == [
+        {"text": "Press"},
+        {"text": "Settle up and go", "leave": True},
+    ]
 
 
 async def test_play_scene_emits_game_over_for_end_game(monkeypatch, world_and_bundle):

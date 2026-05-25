@@ -82,7 +82,7 @@ to merge your verdicts (human win-rate + agreement with the LLM judge):
 
 ```
 uv run python scripts/ab_rater.py --run evals/artifacts/ab/<ts>   # opens :8766
-uv run python -m evals play --experiment leave_mode --human       # merges human_ratings.jsonl
+uv run python -m evals play --experiment <name> --human           # merges human_ratings.jsonl
 ```
 
 ### Shorter command (optional shell alias)
@@ -100,7 +100,7 @@ function evals { uv run python -m evals @args }
 evals() { uv run python -m evals "$@"; }
 ```
 
-Then `evals iso`, `evals play --experiment leave_mode --judge`, etc. Tab-completion
+Then `evals iso`, `evals play --experiment <name> --judge`, etc. Tab-completion
 is available via `uv run python -m evals --install-completion`.
 
 ## Authoring

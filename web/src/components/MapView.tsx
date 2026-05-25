@@ -1,10 +1,11 @@
 // MapView: backdrop is /api/world/map.png; overlay an SVG with hotspot
 // pins (here / there / visited / reachable) and the walking tracer.
 //
-// Hotspot interaction: a reachable (adjacent) pin is clickable whenever
-// the backend is awaiting input (`walkReady`) — including mid-scene, so
-// the map is a way out of any turn → POST /walk. Reachable pins pulse a
-// ring; hovering one previews the route from the current location.
+// Hotspot interaction: a reachable (adjacent) pin is clickable only when
+// the backend has armed leaving (`walkReady`) — at a soft-close, or on a turn
+// whose author offered a diegetic exit → POST /walk. On an ordinary turn the
+// pins stay inert (no mid-scene escape). Reachable pins pulse a ring; hovering
+// one previews the route from the current location.
 //
 // Tracer: a quadratic bezier from from.map_xy → to.map_xy with a control
 // point offset perpendicular to the line by 8% of distance — gives all

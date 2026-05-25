@@ -1283,10 +1283,10 @@ def _render_present_findables(state: State, world: World) -> str:
 
 def _render_offer_the_exit() -> str:
     """Choice-author directive (rendered when the engine judges the scene spent
-    or a decision just fired): one option MUST be the diegetic exit. The engine
-    guarantees an exit either way (it appends a generic one / soft-closes), but a
-    player-picked in-fiction departure reads far better than a forced map-jump,
-    so we instruct the author to write the good version here."""
+    or a decision just fired): one option MUST be the diegetic exit. With no
+    generic engine exit, this player-picked in-fiction departure is the clean way
+    out — the only fallback is the narrator soft-close (a forced map-jump), which
+    reads worse, so we instruct the author to write the good version here."""
     return (
         "## The Scene Is Spent — Offer The Exit\n"
         "This scene has run its course — there is nothing left here worth a new "

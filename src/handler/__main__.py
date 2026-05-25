@@ -84,20 +84,18 @@ def _print_prose_part(prose_part: ProsePart) -> None:
 
 def _request_input(prose_part: ProsePart, state: State, world: World) -> PlayerAction:
     """Single stdin input handler — the CLI's `request_player_input`. Prints
-    the turn (prose + options or free-text prompt) plus the adjacent
-    locations as `go <n>`, then parses one line into a `PlayerAction`:
+    the turn (prose + options or free-text prompt), then parses one line into a
+    `PlayerAction`. A scene is left exactly two ways, mirroring the web UI — no
+    always-available walk:
 
-      - a bare number picks an option (Continue);
-      - `go <n>` walks to an adjacent location — always available, since the
-        map is a way out of any turn;
-      - any other text is a typed move (FreeText), or, at a soft-close, only
-        a `go <n>` is accepted.
+      - the player picks an option the author marked `(leave)`, or the scene
+        soft-closes (EndScene); either way we then ask where they go and walk;
+      - otherwise a bare number picks an option (Continue) or any text is a typed
+        move (FreeText). The adjacency list / destination prompt appear only when
+        a walk is actually live.
     """
     _print_prose_part(prose_part)
     adj = world.locations[state.player_location].adjacent_to
-    print()
-    for i, a in enumerate(adj, start=1):
-        print(f"  go {i}) → {world.locations[a].name}")
 
     def _parse_walk(raw: str) -> WalkTo | None:
         parts = raw.split()
@@ -111,18 +109,15 @@ def _request_input(prose_part: ProsePart, state: State, world: World) -> PlayerA
     if isinstance(nxt, Continue):
         n = len(nxt.options)
         while True:
-            raw = input(f"Pick 1-{n}, or 'go <n>' to leave: ").strip()
-            walk = _parse_walk(raw)
-            if walk is not None:
-                return walk
+            raw = input(f"Pick 1-{n}: ").strip()
             try:
                 idx = int(raw) - 1
             except ValueError:
-                print("Enter an option number or 'go <n>'.")
+                print(f"Enter an option number 1-{n}.")
                 continue
             if 0 <= idx < n:
                 if nxt.options[idx].leave:
-                    # Diegetic exit — fall through to the walk prompt below so
+                    # Diegetic exit — fall through to the destination prompt so
                     # the player picks where they go (the close resolves there).
                     break
                 return PickOption(index=idx)
@@ -131,10 +126,7 @@ def _request_input(prose_part: ProsePart, state: State, world: World) -> PlayerA
     if isinstance(nxt, FreeText):
         label = nxt.prompt.strip() or "Type your reply"
         while True:
-            raw = input(f"{label} (or 'go <n>' to leave): ").strip()
-            walk = _parse_walk(raw)
-            if walk is not None:
-                return walk
+            raw = input(f"{label}: ").strip()
             if raw:
                 return TypeText(text=raw)
             # Empty line falls back to the suggested move, mirroring the web
@@ -143,10 +135,14 @@ def _request_input(prose_part: ProsePart, state: State, world: World) -> PlayerA
                 return TypeText(text=nxt.suggested)
             print("(non-empty)")
 
-    # Soft-close (EndScene): the scene is spent — only a walk remains, so a
-    # bare number is unambiguous here and accepted alongside 'go <n>'.
+    # The player is leaving — an authored `(leave)` pick (fell through above) or
+    # a soft-close (EndScene). Surface the adjacents and ask for a destination;
+    # a bare number or 'go <n>' both walk there.
+    print()
+    for i, a in enumerate(adj, start=1):
+        print(f"  go {i}) → {world.locations[a].name}")
     while True:
-        raw = input(f"Scene's spent. Go where? 1-{len(adj)} (or 'go <n>'): ").strip()
+        raw = input(f"Where do you go? 1-{len(adj)} (or 'go <n>'): ").strip()
         walk = _parse_walk(raw)
         if walk is not None:
             return walk

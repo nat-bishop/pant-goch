@@ -76,17 +76,6 @@ def _clamp(value: int, low: int, high: int) -> int:
     return max(low, min(high, value))
 
 
-# The always-available map exit, mirroring the real UI's "Step outside" entry
-# (engine appends it to the options after LEAVE_OPTION_MIN_HISTORY turns). The
-# eval player picks this when a scene has stopped being productive — the agency
-# a human has and the harness previously denied (it could only keep picking
-# options or leave on a rare coin flip).
-LEAVE_CHOICE_LABEL = (
-    "Leave — you've got what there is to get here for now; step out and move on "
-    "elsewhere in the village."
-)
-
-
 def render_scene(prose: str, labels: list[str]) -> str:
     lines = [prose.strip(), "", "Your options:"]
     for i, label in enumerate(labels, start=1):
@@ -172,15 +161,12 @@ class GeminiPlayer:
         result = await self._run(prompt, output_type=PlayerChoice)
         return _clamp(result.output.choice - 1, 0, n - 1)
 
-    async def pick_option(self, prose_part: ProsePart, *, can_leave: bool = False) -> int:
-        """Choose among the offered options. When `can_leave` is True, a final
-        Leave entry is appended (index == len(options)); the caller routes that
-        index to a map walk. Mirrors the real UI, where the map exit is live on
-        every turn once a scene has a couple of turns behind it."""
+    async def pick_option(self, prose_part: ProsePart) -> int:
+        """Choose among the offered options. An option the author marked
+        `leave: true` reads as the in-fiction way out — the caller routes a pick
+        of it to a walk; there is no separate always-available exit."""
         options = prose_part.next.options  # type: ignore[union-attr]
         labels = [o.text for o in options]
-        if can_leave:
-            labels.append(LEAVE_CHOICE_LABEL)
         return await self._pick_index(
             render_scene(prose_part.prose, labels), len(labels),
         )

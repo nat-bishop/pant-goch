@@ -99,11 +99,12 @@ interface Store {
   worldMode: WorldMode;
   /** Active walking interstitial state; null when not walking. */
   walking: WalkingState | null;
-  /** True while the backend is awaiting the player's action (armed by the
-   * `walk_ready` event, emitted after every in-scene input cue). Gates
-   * map-pin clickability so a WalkTo can end any turn — mid-scene or at a
-   * soft-close — without an early POST /walk hitting 409. Cleared when the
-   * player acts (attachPick), on scene_start / scene_exit / location_change. */
+  /** True while the backend is awaiting the player's action with leaving armed
+   * (the `walk_ready` event, emitted only at a soft-close or on a turn whose
+   * author offered a diegetic exit). Gates map-pin clickability so a WalkTo is
+   * legal exactly when leaving is — never on an ordinary turn — without an early
+   * POST /walk hitting 409. Cleared when the player acts (attachPick), on
+   * scene_start / scene_exit / location_change. */
   walkReady: boolean;
   /** The chapter index whose body is centred in the right panel.
    * Drives which backdrop the left pane shows when scrolling back. */

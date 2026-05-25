@@ -37,12 +37,17 @@ def _sv(persona: str, sid: str) -> SessionView:
 
 # ───────────────────────── experiment loading ─────────────────────────
 
-def test_load_experiment_leave_mode():
-    exp = ab.load_experiment("leave_mode")
-    assert exp.name == "leave_mode"
+def test_load_experiment_accepts_empty_run_config_arms(tmp_path):
+    # RunConfig currently has no fields, so a valid experiment uses empty
+    # run_config arms; the loader still parses name + the control/test arms.
+    p = tmp_path / "noop.yaml"
+    p.write_text(
+        "name: noop\narms:\n  - {name: control, run_config: {}}\n"
+        "  - {name: test, run_config: {}}\n", encoding="utf-8")
+    exp = ab.load_experiment(str(p))
+    assert exp.name == "noop"
     assert [a.name for a in exp.arms] == ["control", "test"]
-    assert exp.arms[0].run_config == {"allow_mid_scene_leave": True}
-    assert exp.arms[1].run_config == {"allow_mid_scene_leave": False}
+    assert exp.arms[0].run_config == {} and exp.arms[1].run_config == {}
 
 
 def test_load_experiment_rejects_non_two_arms(tmp_path):
@@ -62,11 +67,13 @@ def test_load_experiment_rejects_wrong_arm_names(tmp_path):
 
 
 def test_load_experiment_rejects_unknown_run_config_key(tmp_path):
+    # RunConfig has no fields, so any run_config key is unknown and caught at load
+    # (the guard against an experiment naming a knob that doesn't exist).
     p = tmp_path / "bad.yaml"
     p.write_text(
-        "name: bad\narms:\n  - {name: control, run_config: {allow_midscene_leave: true}}\n"
-        "  - {name: test, run_config: {allow_mid_scene_leave: false}}\n", encoding="utf-8")
-    with pytest.raises(SystemExit):  # typo'd key (missing underscore) caught at load
+        "name: bad\narms:\n  - {name: control, run_config: {nonexistent_knob: true}}\n"
+        "  - {name: test, run_config: {}}\n", encoding="utf-8")
+    with pytest.raises(SystemExit):
         ab.load_experiment(str(p))
 
 
@@ -172,9 +179,8 @@ def _summary(**extra) -> dict:
     }
     test_metrics = {**base_metrics, "filler_turn_ratio": 0.35, "beats_fired": 12}
     s = {
-        "generated_at": "now", "experiment": "leave_mode", "description": "d",
-        "arms": {"control": {"allow_mid_scene_leave": True},
-                 "test": {"allow_mid_scene_leave": False}},
+        "generated_at": "now", "experiment": "noop", "description": "d",
+        "arms": {"control": {}, "test": {}},
         "metrics": {"control": base_metrics, "test": test_metrics},
         "invariants": {"control": {}, "test": {}},
     }
