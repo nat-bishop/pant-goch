@@ -11,9 +11,9 @@ are unlock units identified by id. Schema mirrors that simplicity.
 """
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 
 
 class _Frozen(BaseModel):
@@ -33,6 +33,16 @@ class Location(_Frozen):
     adjacent_to: list[str] = Field(default_factory=list)
     description: str
     notes: list[str] = Field(default_factory=list)
+    # 1-3 author-written departure lines for THIS location, each describing the
+    # player LEAVING here — stepping out / away / off. They must NOT name where
+    # the player goes next (the player picks a destination on the map after
+    # leaving) and must NOT describe moving to another room inside the same
+    # building ("step back into the hall" was the bug these examples cure). The
+    # choice author is fed these per turn so a `leave: true` option reads as
+    # leaving the named location, not a generic "Leave" or an inward move.
+    exit_lines: list[
+        Annotated[str, StringConstraints(min_length=1, max_length=100, strip_whitespace=True)]
+    ] = Field(min_length=1, max_length=3)
 
     @property
     def display_short(self) -> str:

@@ -36,6 +36,7 @@ from .engine import (
     has_live_findable,
     present_npc_ids,
 )
+from .models import Location
 from .state import State
 from .world import World
 
@@ -508,8 +509,9 @@ Read the prose, then emit ONE structured output: a ChoiceBundle whose
     declaration of intent. Most are low-stakes; at a charged turning point
     one may be the player resolving to act (see Rule 7). At most ONE option
     may be the player LEAVING the scene — set `leave: true` on it and write
-    it as a diegetic departure ("Thank Maud and step back into the lane");
-    picking it ends the scene the same way Leave does (see Rule 8).
+    it as the player leaving the current location (the user message names that
+    location and gives location-fitted examples — see Rule 8). Picking it ends
+    the scene the same way Leave does.
 
   - Leave. The conversation has reached a natural close — a goodbye, a
     door, a silence the player would step out of. The engine treats the
@@ -574,14 +576,21 @@ emit Continue or Leave.)
    — include one of them as an option this turn (the block is only present once
    the player has earned the turning point).
 8. The diegetic exit (`leave: true`). A scene can always be left, and leaving
-   should read as the player's own move, not a system button. When you judge
-   the scene is winding down, you MAY mark one option `leave: true`, written
-   in-fiction as the player stepping out ("Settle the tab and go", "Thank him
-   and let yourself out"). When the user message carries a "## The Scene Is
-   Spent — Offer The Exit" block, you MUST include exactly one such option —
-   the scene has nothing left to give and the player needs a clean way out.
-   Never set `leave: true` on more than one option, and never use the bare word
-   "Leave" as the option text — it is a real line of departure in the fiction.
+   should read as the player's own move, not a system button. The exit means
+   the player LEAVING THE CURRENT LOCATION entirely — stepping out of the
+   building / off the ground they are standing on. It is a PHYSICAL departure —
+   the player getting up and going — never a nod, a silence, or merely
+   accepting what was said. The user message names that
+   exact location (a "## Leaving <place>" or "## The Scene Is Spent" block) and
+   gives location-fitted example lines; follow their shape. NEVER name where the
+   player goes next, and never write the exit as moving to another room inside
+   the same place ("step back into the hall" is wrong — that stays inside):
+   picking this option opens the map and the PLAYER chooses their destination.
+   When you judge the scene is winding down you MAY mark one option
+   `leave: true`; when the user message carries the "## The Scene Is Spent —
+   Offer The Exit" block you MUST include exactly one. Never set `leave: true`
+   on more than one option, and never use the bare word "Leave" as the option
+   text — it is a real line of departure in the fiction.
 """
 
 
@@ -1281,20 +1290,39 @@ def _render_present_findables(state: State, world: World) -> str:
     )
 
 
-def _render_offer_the_exit() -> str:
-    """Choice-author directive (rendered when the engine judges the scene spent
-    or a decision just fired): one option MUST be the diegetic exit. With no
-    generic engine exit, this player-picked in-fiction departure is the clean way
-    out — the only fallback is the narrator soft-close (a forced map-jump), which
-    reads worse, so we instruct the author to write the good version here."""
+def _render_leave_guidance(loc: Location, *, required: bool) -> str:
+    """Choice-author leave directive — names the CURRENT location and feeds the
+    author its hand-written `exit_lines`. Rendered EVERY turn so a voluntary
+    `leave: true` (Rule 8's MAY case) still reads as leaving THIS place: the
+    "step back into the hall" bug was a voluntary leave that named an interior
+    room, and only the system prompt (location-blind, with a destination-flavored
+    example) steered it. `required=True` (engine judged the scene spent / a
+    decision fired) escalates to the MUST form — exactly one option has to be the
+    exit, because the only fallback is the narrator soft-close (a forced map-jump)
+    that reads worse, so we instruct the author to write the good version."""
+    examples = "; ".join(f'"{line}"' for line in loc.exit_lines)
+    if required:
+        return (
+            f"## The Scene Is Spent — Offer The Exit\n"
+            f"This scene has run its course — there is nothing left here worth a "
+            f"new exchange. EXACTLY ONE of your options MUST be the player "
+            f"PHYSICALLY leaving {loc.name} — getting up and going, written "
+            f"in-fiction as their way out (e.g. {examples}). It must show them "
+            f"MOVING TO LEAVE; do NOT instead flag a sitting-still option (a nod, "
+            f"a silence, accepting or acknowledging what was said) as the exit. "
+            f"Name no destination (picking it opens the map and the player chooses "
+            f"where to go next); never the bare word \"Leave\". Mark that option "
+            f"`leave: true`. The other options may stay, but a clean way out of "
+            f"{loc.name} must be on the table."
+        )
     return (
-        "## The Scene Is Spent — Offer The Exit\n"
-        "This scene has run its course — there is nothing left here worth a new "
-        "exchange. EXACTLY ONE of your options must be the player leaving, written "
-        "in-fiction as their natural way out (\"Thank Maud and step back into the "
-        "lane\", \"Drain the glass and go\") — never the bare word \"Leave\". Mark "
-        "that option with `leave: true`. The other options may stay, but a clean, "
-        "in-character way out must be on the table."
+        f"## Leaving {loc.name}\n"
+        f"If you offer the diegetic exit this turn (`leave: true`), it is the "
+        f"player PHYSICALLY leaving {loc.name} — write it as them getting up and "
+        f"stepping out of {loc.name} (e.g. {examples}), naming no destination (the "
+        f"player picks where to go next on the map). Never write it as moving to "
+        f"another room inside {loc.name}, and never as merely a nod, a silence, or "
+        f"accepting what was said — it must show them moving to go."
     )
 
 
@@ -1329,7 +1357,7 @@ def build_choice_author_user_message(
             _render_worth_pursuing_here(state, world),
             _render_not_here(state, world),
             _render_decisions_available(state, world),
-            _render_offer_the_exit() if leave_required else "",
+            _render_leave_guidance(loc, required=leave_required),
         )
         if block
     )

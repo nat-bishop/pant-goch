@@ -185,6 +185,20 @@ def test_choice_author_system_prompt_describes_variants():
     assert "FreeText" not in sys_prompt
 
 
+def test_choice_author_system_prompt_drops_destination_flavored_exit_example():
+    """Regression: the static exit example was "step back into the lane",
+    which the model copied into "step back into the hall" — an interior room,
+    not leaving the location. The system prompt must no longer carry a
+    destination-flavored example; the rule now says the exit means leaving the
+    CURRENT LOCATION (named, with examples, in the user message)."""
+    world = load_world(FIXTURE_VALID)
+    sys_prompt = build_choice_author_system_prompt(world)
+    assert "step back into the lane" not in sys_prompt
+    assert "current location" in sys_prompt.lower()
+    # The cautionary anti-example (don't write the exit as an inward move).
+    assert "step back into the hall" in sys_prompt
+
+
 def test_free_text_gate_system_prompt_is_byte_stable_and_minimal():
     """Byte-stable for KV-cache; mechanics-only (no bible, no voice)."""
     world = load_world(FIXTURE_VALID)
@@ -546,6 +560,43 @@ def test_choice_author_user_message_no_nudge_for_npc_scene_midrange():
     ]
     msg = build_choice_author_user_message(state, world, "Anything.")
     assert "## Scene Pacing" not in msg
+
+
+def test_choice_author_user_message_leave_guidance_names_location_and_examples():
+    """Every turn the user message carries location-named leave guidance: a
+    "## Leaving <place>" block that names the current location, says to name no
+    destination, and injects the location's authored exit_lines. This is what
+    keeps a voluntary `leave: true` from reading as an inward room move (the
+    "step back into the hall" bug was a voluntary leave with location-blind
+    guidance)."""
+    world = load_world(FIXTURE_VALID)
+    state = make_initial_state(world)
+    state.player_location = "the_slaughtered_lamb"
+    loc = world.locations["the_slaughtered_lamb"]
+    msg = build_choice_author_user_message(state, world, "Tom drains his pint.")
+    assert f"## Leaving {loc.name}" in msg
+    assert "no destination" in msg
+    for line in loc.exit_lines:
+        assert line in msg
+
+
+def test_choice_author_user_message_offer_exit_when_required():
+    """leave_required=True escalates to the imperative "Offer The Exit" block:
+    EXACTLY ONE option must be the player leaving the named location, with the
+    authored exit_lines as examples and no destination named."""
+    world = load_world(FIXTURE_VALID)
+    state = make_initial_state(world)
+    state.player_location = "the_slaughtered_lamb"
+    loc = world.locations["the_slaughtered_lamb"]
+    msg = build_choice_author_user_message(
+        state, world, "Tom drains his pint.", leave_required=True
+    )
+    assert "The Scene Is Spent — Offer The Exit" in msg
+    assert "EXACTLY ONE" in msg
+    assert loc.name in msg
+    assert "destination" in msg
+    for line in loc.exit_lines:
+        assert line in msg
 
 
 # ───────────────────────── npc_memory + beat description ─────────────────────────

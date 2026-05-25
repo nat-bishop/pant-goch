@@ -22,17 +22,18 @@ export function ChoicesBlock({
     ? options.findIndex((o) => o.text === picked.text)
     : -1;
   const hasPick = picked !== null;
-  // The engine appends leave entries after the real options, so the real
-  // ones keep indices 0..N-1 (aligned with PickOption). Render the leave
-  // entry apart from the numbered list; clicking it opens the map rather
-  // than consuming the turn's pick.
-  const leaveEntry = options.find((o) => o.leave);
+  // Every option — including the diegetic exit (`leave`) — renders in the
+  // numbered list and keeps its array index, so a non-leave option's number
+  // still equals the PickOption index the backend expects. The leave option
+  // also gets a number (so it reads as one of the choices), but its click is
+  // routed to onLeave (open the map; the pin → walk flow does the leaving)
+  // instead of consuming the turn's pick, and it carries a muted "leave the
+  // location" treatment + a trailing arrow.
 
   return (
     <div className="choices-wrap">
       <ol className="choices">
         {options.map((opt, i) => {
-          if (opt.leave) return null;
           const state: "default" | "chosen" | "unchosen" = !hasPick
             ? "default"
             : i === pickedIdx
@@ -42,31 +43,26 @@ export function ChoicesBlock({
           // their height to zero so the chosen line rises into place.
           const itemCls =
             state === "unchosen" ? "choice-item unchosen" : "choice-item";
-          const btnCls = state === "chosen" ? "choice chosen" : "choice";
+          const btnCls =
+            (opt.leave ? "choice choice--leave" : "choice") +
+            (state === "chosen" ? " chosen" : "");
           return (
             <li key={i} className={itemCls}>
               <button
                 className={btnCls}
-                onClick={() => onPick(i)}
+                onClick={() => (opt.leave ? onLeave() : onPick(i))}
                 disabled={busy || hasPick}
               >
                 <span className="choice-num">{i + 1}</span>
-                <span>{opt.text}</span>
+                <span>
+                  {opt.text}
+                  {opt.leave && <span className="choice-leave-arrow"> →</span>}
+                </span>
               </button>
             </li>
           );
         })}
       </ol>
-      {leaveEntry && !hasPick && (
-        <button
-          type="button"
-          className="choice-leave"
-          onClick={onLeave}
-          disabled={busy}
-        >
-          {leaveEntry.text} <span className="choice-leave-arrow">→</span>
-        </button>
-      )}
     </div>
   );
 }

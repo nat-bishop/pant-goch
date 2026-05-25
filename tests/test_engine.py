@@ -76,8 +76,8 @@ def _make_world(
     starts_at: str = "loc_a",
 ) -> World:
     locations = locations or [
-        Location(id="loc_a", name="A", adjacent_to=["loc_b"], description="a"),
-        Location(id="loc_b", name="B", adjacent_to=["loc_a"], description="b"),
+        Location(id="loc_a", name="A", adjacent_to=["loc_b"], description="a", exit_lines=["leave A"]),
+        Location(id="loc_b", name="B", adjacent_to=["loc_a"], description="b", exit_lines=["leave B"]),
     ]
     locations_dict = {loc.id: loc for loc in locations}
     npcs = npcs or []

@@ -92,6 +92,26 @@ def test_location_display_short_uses_short_name_then_name(tmp_path):
     assert world.locations["the_post_office"].display_short == "The Post Office"
 
 
+def test_load_world_rejects_location_without_exit_lines(tmp_path):
+    """Every location must author 1-3 `exit_lines` — the hand-written departure
+    lines fed to the choice author so a `leave: true` option reads as leaving
+    that location (no destination, no interior-room move). A location missing
+    them (or with an empty list) hard-fails the loader."""
+    target = _copy_valid(tmp_path)
+    p = target / "locations" / "the_slaughtered_lamb.yaml"
+
+    data = yaml.safe_load(p.read_text(encoding="utf-8"))
+    del data["exit_lines"]
+    _write_yaml(p, data)
+    with pytest.raises(WorldLoadError, match="exit_lines"):
+        load_world(target)
+
+    data["exit_lines"] = []
+    _write_yaml(p, data)
+    with pytest.raises(WorldLoadError, match="exit_lines"):
+        load_world(target)
+
+
 def test_load_world_rejects_dead_end_location(tmp_path):
     """Invariant 11 — a location with no adjacent_to is an unrecoverable
     soft-lock under player-authored movement (the map is the only exit), so
@@ -193,6 +213,7 @@ def test_invariant_1_location_id_uniqueness(tmp_path):
         "adjacent_to": [],
         "description": "x",
         "notes": [],
+        "exit_lines": ["leave"],
     })
     with pytest.raises(WorldLoadError, match="duplicate location id"):
         load_world(target)

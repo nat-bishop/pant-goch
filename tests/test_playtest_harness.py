@@ -98,8 +98,8 @@ def _evidence_world() -> World:
     carries requires_any_beats) plus a trivial walk-away ending (decision beat
     with no evidence). Enough for EndingEarned / ExploredBeyondStart."""
     locs = {
-        "start": Location(id="start", name="Start", adjacent_to=["village"], description="x"),
-        "village": Location(id="village", name="Village", adjacent_to=["start"], description="y"),
+        "start": Location(id="start", name="Start", adjacent_to=["village"], description="x", exit_lines=["leave Start"]),
+        "village": Location(id="village", name="Village", adjacent_to=["start"], description="y", exit_lines=["leave Village"]),
     }
     beats = {
         # Observation milestone (LLM-emitted, location-gated).

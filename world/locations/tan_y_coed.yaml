@@ -23,3 +23,7 @@ notes:
   - The dogs (a collie called Cap and a younger one called Mab) bark at the player on first arrival; thereafter they do not.
   - The kitchen radio is permanently tuned to BBC Radio Cymru; Eluned does not speak Welsh fluently but says she finds the rhythm of it settling.
   - Eluned will receive a visitor in the yard, briefly. Being invited into the kitchen means something has shifted.
+
+exit_lines:
+  - Make your excuses and leave the farm
+  - Cross the yard and leave Tan-y-coed

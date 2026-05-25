@@ -23,11 +23,11 @@ from handler.world import load_world
 
 from ..judges.model import build_judge_model, warm_judge
 from ..retry_model import RetryModel
-from . import attention, behavioural, deltas
+from . import attention, behavioural, choices_leave, deltas
 from .harness import run_and_report
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_ALL_SUITES = ("deltas", "attention", "prose", "choices", "chronicle")
+_ALL_SUITES = ("deltas", "attention", "prose", "choices", "choices_leave", "chronicle")
 _NEEDS_JUDGE = frozenset({"prose", "choices"})
 
 
@@ -76,6 +76,7 @@ async def main(
         "attention": lambda: attention.suite(bundle, world),
         "prose": lambda: behavioural.prose_suite(bundle, world, judge),
         "choices": lambda: behavioural.choices_suite(bundle, world, judge),
+        "choices_leave": lambda: choices_leave.suite(bundle, world),
         "chronicle": lambda: behavioural.chronicle_suite(bundle, world),
     }
     suites = [factories[s]() for s in selected]

@@ -1149,33 +1149,22 @@ a { color: inherit; text-decoration: none; }
   color: var(--ink-faint);
   font-variant-numeric: tabular-nums;
 }
-/* Engine-injected leave control — always-visible way out, set apart from
-   the numbered choices because it opens the map (the pin → walk flow does
-   the leaving) rather than picking an in-scene option. */
-.choice-leave {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 0.4rem;
-  margin: 1.1em 0 0 0.8em;
-  font-family: var(--serif);
-  font-style: italic;
-  font-size: 16px;
+/* The diegetic exit. It keeps a number and sits inline with the numbered
+   choices (so it reads as one of the options), but is set apart by a muted
+   tone, a little top space, and a trailing arrow — it means LEAVING the
+   location, and clicking it opens the map (the pin → walk flow does the
+   leaving) rather than picking an in-scene option. */
+.choice--leave {
   color: var(--ink-faint);
-  background: transparent;
-  border: 0;
-  border-left: 2px solid transparent;
-  padding: 0.2em 0.6em 0.2em 0.4em;
-  cursor: pointer;
-  transition: color 200ms, border-color 200ms, padding-left 220ms;
+  margin-top: 0.5em;
 }
-.choice-leave:hover:not(:disabled) {
-  color: var(--red);
-  border-left-color: var(--red);
-  padding-left: 0.8em;
+.choice--leave .choice-num { color: var(--ink-faint); }
+.choice-leave-arrow {
+  font-style: normal;
+  color: var(--ink-faint);
+  transition: color 200ms;
 }
-.choice-leave:focus-visible { outline: 1px solid var(--red-soft); outline-offset: 2px; }
-.choice-leave:disabled { cursor: default; opacity: 0.5; }
-.choice-leave-arrow { font-style: normal; }
+.choice--leave:hover:not(:disabled):not(.chosen) .choice-leave-arrow { color: var(--red); }
 /* The picked-option mark that remains in the log once the choice block
    unmounts. Matches the chosen-choice register (quiet italic serif) so
    the handoff doesn't jar. */
