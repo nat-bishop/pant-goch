@@ -44,7 +44,6 @@ no JSON schema involved.
 """
 from __future__ import annotations
 
-import random
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Annotated, Any, Literal
@@ -145,22 +144,14 @@ class SceneRunnerRuntime:
     generic stand-in prose.
 
     The choice author is stateless per call (no history field needed).
-
-    `rng` is the session-scoped source for the free-text cadence draw
-    (`engine.free_text_cadence_ok`). It is NOT reset at scene boundary —
-    cadence is a session-long property. Seedable via
-    `make_scene_runner_runtime(seed=...)` so tests are deterministic.
     """
 
     prose_writer_message_history: list[ModelMessage] = field(default_factory=list)
-    rng: random.Random = field(default_factory=random.Random)
 
 
-def make_scene_runner_runtime(seed: int | None = None) -> SceneRunnerRuntime:
-    """Construct a fresh scene-runner runtime. Call once per session.
-    `seed` makes the free-text cadence RNG deterministic (default: system
-    entropy)."""
-    return SceneRunnerRuntime(rng=random.Random(seed))
+def make_scene_runner_runtime() -> SceneRunnerRuntime:
+    """Construct a fresh scene-runner runtime. Call once per session."""
+    return SceneRunnerRuntime()
 
 
 # ───────────────────────── dynamic type builders ─────────────────────────

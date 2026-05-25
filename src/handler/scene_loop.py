@@ -327,6 +327,7 @@ async def _stream_pace_and_author(
     emit_event: EmitEvent | None,
     skip_event: asyncio.Event | None,
     leave_required: bool = False,
+    npc_present: bool = True,
 ) -> tuple[str, object, object]:
     """Phase 2a + 2b/2c, fused so the reveal overlaps the authoring.
 
@@ -338,10 +339,16 @@ async def _stream_pace_and_author(
     free during pacing (those are pure `asyncio.sleep`s), so the authoring
     decode overlaps the reveal and options are ready as it ends.
 
+    `npc_present` is the structural precondition for free text: it is the
+    "words to a person" channel, so when no one is present the gate
+    coroutine is never scheduled (no LLM call) and `gate_res` is a literal
+    `False`. Object/place moments in a solo scene are click-driven.
+
     Returns `(prose, choices_res, gate_res)` where the two results are the
-    raw `asyncio.gather(..., return_exceptions=True)` outputs; the caller
-    interprets their fallbacks. `prose` is the streamed text (or the
-    engine fallback on prose-writer failure).
+    raw `asyncio.gather(..., return_exceptions=True)` outputs (or, for the
+    gate on a solo turn, a bare `False`); the caller interprets their
+    fallbacks. `prose` is the streamed text (or the engine fallback on
+    prose-writer failure).
 
     Mechanics: a producer task drains `stream_prose_text` eagerly into a
     queue (so the LLM is NOT throttled to pacing speed by TCP back-pressure
@@ -409,11 +416,12 @@ async def _stream_pace_and_author(
                         _words_from_text(prose), emit_event,
                         event_kind="prose_word", skip_event=skip_event,
                     )
-            choices_res, gate_res = await asyncio.gather(
-                emit_choices(bundle, state, prose, leave_required=leave_required),
-                emit_free_text_gate(bundle, state, prose),
-                return_exceptions=True,
-            )
+            tasks = [emit_choices(bundle, state, prose, leave_required=leave_required)]
+            if npc_present:
+                tasks.append(emit_free_text_gate(bundle, state, prose))
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            choices_res = results[0]
+            gate_res = results[1] if npc_present else False  # solo → no LLM call
             return prose, choices_res, gate_res
 
         # Generation finished cleanly: the full prose is known and the model
@@ -421,13 +429,14 @@ async def _stream_pace_and_author(
         # gather() schedules both coroutines immediately, so they run while we
         # await the pacer's remaining holds.
         prose = "".join(acc)
-        authoring = asyncio.gather(
-            emit_choices(bundle, state, prose, leave_required=leave_required),
-            emit_free_text_gate(bundle, state, prose),
-            return_exceptions=True,
-        )
+        tasks = [emit_choices(bundle, state, prose, leave_required=leave_required)]
+        if npc_present:
+            tasks.append(emit_free_text_gate(bundle, state, prose))
+        authoring = asyncio.gather(*tasks, return_exceptions=True)
         await pacer
-        choices_res, gate_res = await authoring
+        results = await authoring
+        choices_res = results[0]
+        gate_res = results[1] if npc_present else False  # solo → no LLM call
         return prose, choices_res, gate_res
     finally:
         # Safety net: a non-UnexpectedModelBehavior escaping above must not
@@ -551,11 +560,17 @@ async def run_turn(
         )
     )
 
+    # Structural precondition for free text — the "words to a person" channel.
+    # No one present → solo scene → the gate never runs (object/place moments
+    # are click-driven). Cheap, deterministic, and shields the gate from ever
+    # needing to know who is present.
+    npc_present = bool(present_npc_ids(bundle.world, state))
+
     # ── Phase 2a + 2b/2c: stream prose live, author over the reveal tail ────
     prose, choices_res, gate_res = await _stream_pace_and_author(
         bundle, runtime, state, newly_unlocked,
         emit_event=emit_event, skip_event=skip_event,
-        leave_required=leave_required,
+        leave_required=leave_required, npc_present=npc_present,
     )
 
     if isinstance(choices_res, UnexpectedModelBehavior):
@@ -581,12 +596,13 @@ async def run_turn(
         gate_offered = gate_res
 
     # ── Phase 2d: caption author (only when free text actually surfaces) ────
-    # The LLM gate only judges whether the moment *could* take free text;
-    # the engine cadence (cooldown + probability, seeded RNG) decides whether
-    # to surface it now. We apply cadence BEFORE the caption call so its cost
-    # is paid only on turns that show a box. On caption failure the offer
-    # still stands — _assemble falls back to a fixed caption.
-    free_text_offer = gate_offered and free_text_cadence_ok(state, runtime.rng)
+    # The LLM gate only judges whether the moment hands the floor to the
+    # player; the engine cadence (a cooldown — no probability) suppresses a
+    # fresh box too soon after the last typed move. We apply cadence BEFORE
+    # the caption call so its cost is paid only on turns that show a box. On
+    # caption failure the offer still stands — _assemble falls back to a
+    # fixed caption.
+    free_text_offer = gate_offered and free_text_cadence_ok(state)
     caption: FreeTextCaption | None = None
     if free_text_offer:
         try:
