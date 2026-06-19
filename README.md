@@ -1,5 +1,7 @@
 # HANDLER v2 — Pant Goch
 
+![Pant Goch — a folk-noir investigation](design/screenshots/title3.png)
+
 LLM-driven investigation game set in the Welsh Marches village of Pant Goch. You're a freelance journalist who arrives to look into a death the local police closed too quickly. The world — ten locations, nine villagers, the truth, the major beats — is hand-authored. The scenes inside it are LLM-improvised. The map is the primary navigation surface: walk the village by clicking locations.
 
 The architectural bet, in one sentence: **the LLM writes prose, the engine writes state**. State changes flow through a discriminated-union type with grammar-sampled enums; the model literally cannot invent a beat or location it doesn't have permission for.
@@ -159,5 +161,9 @@ models/                        ← Gemma 4 E4B Q8 GGUF
 - **Inferno mode fails immediately** — inferno isn't reachable at `INFERNO_URL` (default `http://127.0.0.1:7770`). The lifespan probe fails loud by design; no silent fallback. Start inferno or drop `SMALLVILLE_USE_INFERNO`.
 
 ## License + attribution
+
+© 2026 Nat Bishop. All rights reserved. This repository is published for portfolio
+and evaluation purposes only; it is not licensed for reuse, redistribution, or
+derivative works.
 
 Courier Prime via Google Fonts. Gemma 4 E4B via Hugging Face.
